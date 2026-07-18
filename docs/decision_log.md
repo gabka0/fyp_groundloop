@@ -25,6 +25,14 @@ savings remain M4+.
 Evidence: `docs/m3_model_dataset_audit.md`, `docs/m3_design_freeze.md`, and
 `docs/m3_multiagent_execution_plan.md`.
 
+Implementation correction: the coordinator accepted two lane-raised
+provenance gaps without changing M3 semantics. `CitedAnswer` and
+`ClaimExtractionResult` now record bounded-repair provenance, while each
+`VerificationResult` identifies its retrieval candidate, model, prompt,
+calibration version, and temperature. The manifest now carries complete
+structured claim/answer states and confirmed-epoch provenance. These are
+schema-completeness fixes, not changes to D-1 through D-20.
+
 ## 2026-07-18 — M2 Accepted; Exact-Flip Result Conservatively Classified
 
 Decision status: implemented and accepted.

@@ -72,6 +72,8 @@ Generation receives only retrieved evidence text and immutable chunk IDs.
 Output is schema-constrained JSON with `answer_text` and a nonempty ordered
 list of cited chunk IDs. Unresolved or non-retrieved citations are rejected.
 One bounded repair attempt is allowed; a second failure terminates the run.
+The answer record carries the normalized input hash, final raw-output hash,
+and repair count.
 
 ### M3-6 — atomic claims
 
@@ -79,6 +81,8 @@ Extraction receives the generated answer and resolved cited passages. It emits
 JSON claims with local IDs, text, `required`, and cited chunk IDs. At least one
 required claim is mandatory. The extractor cannot create citations outside
 the answer's resolved citation set. One bounded repair attempt is allowed.
+`ClaimExtractionResult` records the complete input hash, final raw-output hash,
+repair count, and exact ordered claim tuple.
 
 ### M3-7 — verifier semantics
 
@@ -86,7 +90,10 @@ The cross-encoder input order is evidence as premise, claim as hypothesis.
 Base label indices are `0=contradiction`, `1=entailment`, `2=neutral`, mapped
 to GroundLoop `(refute, support, neutral)`. Temperature-scaled softmax must
 produce a finite normalized triple. The current decision policy derives the
-label; the verifier never stores a permanent label.
+label; the verifier never stores a permanent label. Every result identifies
+its candidate, model artifact, prompt artifact, calibration version, and
+temperature. Raw logits retain base-model order; stored scores use GroundLoop
+`(support, refute, neutral)` order.
 
 ### M3-8 — immutable artifact identity
 

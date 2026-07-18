@@ -144,7 +144,8 @@ CREATE TABLE groundloop_generation_execution (
         REFERENCES groundloop_prompt_artifact(prompt_artifact_id),
     input_hash char(64) NOT NULL,
     decoding_config_hash char(64) NOT NULL,
-    raw_output_hash char(64) NOT NULL
+    raw_output_hash char(64) NOT NULL,
+    repair_count integer NOT NULL CHECK (repair_count IN (0, 1))
 );
 
 CREATE TABLE groundloop_claim_extraction_execution (
@@ -155,7 +156,8 @@ CREATE TABLE groundloop_claim_extraction_execution (
     prompt_artifact_id text NOT NULL
         REFERENCES groundloop_prompt_artifact(prompt_artifact_id),
     input_hash char(64) NOT NULL,
-    raw_output_hash char(64) NOT NULL
+    raw_output_hash char(64) NOT NULL,
+    repair_count integer NOT NULL CHECK (repair_count IN (0, 1))
 );
 
 CREATE TABLE groundloop_verification_execution (

@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
-from groundloop.domain import normalized_text_hash
+from groundloop.domain import AnswerState, ClaimState, normalized_text_hash
 from groundloop.errors import ValidationError
 
 _HEX = frozenset("0123456789abcdef")
@@ -217,11 +217,14 @@ class CitedAnswer:
     cited_chunk_version_ids: tuple[str, ...]
     input_hash: str
     raw_output_hash: str
+    repair_count: int = 0
 
     def __post_init__(self) -> None:
         _require_text("answer text", self.text)
         _require_sha256("input_hash", self.input_hash)
         _require_sha256("raw_output_hash", self.raw_output_hash)
+        if self.repair_count not in (0, 1):
+            raise ValidationError("generation repair_count must be zero or one")
         if not self.cited_chunk_version_ids:
             raise ValidationError("a cited answer must resolve at least one chunk")
         if len(set(self.cited_chunk_version_ids)) != len(
@@ -249,6 +252,27 @@ class AtomicClaim:
 
 
 @dataclass(frozen=True, slots=True)
+class ClaimExtractionResult:
+    claims: tuple[AtomicClaim, ...]
+    input_hash: str
+    raw_output_hash: str
+    repair_count: int = 0
+
+    def __post_init__(self) -> None:
+        _require_sha256("extraction input_hash", self.input_hash)
+        _require_sha256("extraction raw_output_hash", self.raw_output_hash)
+        if not self.claims:
+            raise ValidationError("claim extraction must produce at least one claim")
+        if not any(claim.required for claim in self.claims):
+            raise ValidationError("claim extraction requires a required claim")
+        local_ids = tuple(claim.local_claim_id for claim in self.claims)
+        if len(set(local_ids)) != len(local_ids):
+            raise ValidationError("extracted local claim identifiers must be unique")
+        if self.repair_count not in (0, 1):
+            raise ValidationError("extraction repair_count must be zero or one")
+
+
+@dataclass(frozen=True, slots=True)
 class ScoreTriple:
     support: float
     refute: float
@@ -266,6 +290,11 @@ class ScoreTriple:
 class VerificationResult:
     claim_id: str
     chunk_version_id: str
+    candidate_id: str
+    model_artifact_id: str
+    prompt_artifact_id: str
+    calibration_version: str
+    temperature: float
     scores: ScoreTriple
     input_hash: str
     raw_output_hash: str
@@ -274,6 +303,12 @@ class VerificationResult:
     def __post_init__(self) -> None:
         _require_text("claim_id", self.claim_id)
         _require_text("chunk_version_id", self.chunk_version_id)
+        _require_text("candidate_id", self.candidate_id)
+        _require_text("model_artifact_id", self.model_artifact_id)
+        _require_text("prompt_artifact_id", self.prompt_artifact_id)
+        _require_text("calibration_version", self.calibration_version)
+        if not math.isfinite(self.temperature) or self.temperature <= 0:
+            raise ValidationError("verifier temperature must be finite and positive")
         _require_sha256("input_hash", self.input_hash)
         _require_sha256("raw_output_hash", self.raw_output_hash)
         if self.raw_logits is not None and any(
@@ -303,15 +338,21 @@ class PipelineRunManifest:
     input_hash: str
     corpus_hash: str
     question_id: str
+    decision_policy_version: str
     answer_version_id: str | None
     semantic_epoch_id: int | None
+    confirmed_as_of_epoch: int | None
     model_artifact_ids: tuple[str, ...]
     prompt_artifact_ids: tuple[str, ...]
     chunk_version_ids: tuple[str, ...]
+    chunk_text_hashes: tuple[tuple[str, str], ...]
     retrieval_candidates: tuple[RetrievalCandidate, ...]
     answer: CitedAnswer | None
+    extraction: ClaimExtractionResult | None
     claims: tuple[AtomicClaim, ...]
     verifications: tuple[VerificationResult, ...]
+    claim_states: tuple[ClaimState, ...]
+    answer_states: tuple[AnswerState, ...]
     timings: tuple[ComponentTiming, ...]
     reused_artifact_ids: tuple[str, ...]
     new_artifact_ids: tuple[str, ...]
@@ -322,6 +363,7 @@ class PipelineRunManifest:
             ("schema_version", self.schema_version),
             ("run_id", self.run_id),
             ("question_id", self.question_id),
+            ("decision_policy_version", self.decision_policy_version),
         ):
             _require_text(name, value)
         for name, value in (
@@ -335,12 +377,28 @@ class PipelineRunManifest:
                 raise ValidationError("published runs require an answer")
             if not self.claims:
                 raise ValidationError("published runs require at least one claim")
+            if self.extraction is None or self.extraction.claims != self.claims:
+                raise ValidationError(
+                    "published runs require matching extraction provenance"
+                )
+            if not self.claim_states or not self.answer_states:
+                raise ValidationError("published runs require structured states")
+            if self.semantic_epoch_id is None or self.confirmed_as_of_epoch is None:
+                raise ValidationError(
+                    "published runs require confirmed epoch provenance"
+                )
             if self.failure_code is not None:
                 raise ValidationError("published runs cannot carry a failure code")
         if self.status is PipelineRunStatus.FAILED and not self.failure_code:
             raise ValidationError("failed runs require a failure code")
         if set(self.reused_artifact_ids) & set(self.new_artifact_ids):
             raise ValidationError("an artifact cannot be both reused and new")
+        if tuple(chunk_id for chunk_id, _ in self.chunk_text_hashes) != (
+            self.chunk_version_ids
+        ):
+            raise ValidationError("chunk hashes must align with chunk-version order")
+        for _, text_hash in self.chunk_text_hashes:
+            _require_sha256("chunk text_hash", text_hash)
 
 
 class Chunker(Protocol):
@@ -379,7 +437,7 @@ class ClaimExtractor(Protocol):
         self,
         answer: CitedAnswer,
         evidence: tuple[EvidencePassage, ...],
-    ) -> tuple[AtomicClaim, ...]: ...
+    ) -> ClaimExtractionResult: ...
 
 
 class EvidenceVerifier(Protocol):
