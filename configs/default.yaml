@@ -1,0 +1,31 @@
+project:
+  name: groundloop
+  environment: development
+
+retrieval:
+  embedding_model: null
+  top_k: 10
+  impact_candidate_limit: 50
+
+generation:
+  model: null
+  prompt_version: v0
+  temperature: 0.0
+
+claim_extraction:
+  model: null
+  prompt_version: v0
+
+verification:
+  model: null
+  prompt_version: v0
+  support_threshold: 0.80
+  refute_threshold: 0.80
+
+maintenance:
+  enable_evidence_groups: false
+  publish_pending_semantic_state: true
+
+evaluation:
+  random_seed: 23200588
+  require_relational_equivalence: true

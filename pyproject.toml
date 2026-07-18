@@ -1,0 +1,58 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "groundloop"
+version = "0.1.0"
+description = "Incremental grounding maintenance for evolving RAG corpora"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "numpy>=2,<3",
+  "pgvector>=0.3,<1",
+  "psycopg[binary]>=3.2,<4",
+  "pydantic>=2.9,<3",
+  "pydantic-settings>=2.5,<3",
+  "sqlalchemy>=2.0,<3",
+  "uvicorn[standard]>=0.30,<1",
+]
+
+[project.optional-dependencies]
+ml = [
+  "scikit-learn>=1.5,<2",
+  "sentence-transformers>=3,<6",
+  "torch>=2.4,<3",
+  "transformers>=4.45,<6",
+]
+dev = [
+  "mypy>=1.11,<3",
+  "pytest>=8.3,<10",
+  "pytest-cov>=5,<7",
+  "ruff>=0.6,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/groundloop"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["src", "tests", "experiments/streams"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# Pre-M1 standalone rendering utility; not part of the maintained package.
+"scripts/render_design_pdf.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+packages = ["groundloop"]
