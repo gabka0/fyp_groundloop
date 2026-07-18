@@ -13,7 +13,7 @@
 
 ## Current step
 
-Implementation and validation complete; ready for coordinator review.
+Implementation committed at `7719edf`; ready for coordinator review.
 
 ## Last validation
 
@@ -36,5 +36,5 @@ None. No shared-contract change was required.
 
 ## Next action
 
-Commit the validated lane, rebase on current `main` if it advanced, rerun the
-full gate, and hand the commit to the coordinator.
+Coordinator reviews the ownership diff and integrates the lane. `main` remains
+at the recorded baseline commit, so no rebase transformation was required.

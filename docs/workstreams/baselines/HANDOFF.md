@@ -2,6 +2,11 @@
 
 ## Outcome
 
+Implementation commit: `7719edf` (`add structured baseline evaluation harness`).
+The current `main` tip is still the recorded baseline
+`5e5181b3920a5ed548f12880e280fe4b869c05aa`, so the required rebase check found
+no newer integration commits to apply.
+
 The lane now provides a dependency-free structured evaluation framework with:
 
 - an independent global full-recomputation baseline;
