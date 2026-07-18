@@ -8,6 +8,8 @@ calibration API's leakage guard. The deterministic log-temperature golden
 search produced:
 
 - Method: `scalar-temperature-golden-v1`
+- Calibration version:
+  `temperature-v1:6ae200db8d75477da143bd6d8d6c8927cfdfdbd8995932bbc1c59ce67e090727`
 - Temperature: `1.1037657679769346`
 - Development NLL before: `0.5039963095039312`
 - Development NLL after: `0.5016337471652763`
@@ -103,4 +105,3 @@ for in-distribution calibration improvement under the stated truncation and
 missing-class limitations. On the 18-example transfer fixture, Brier improves
 but ECE worsens from 0.2698 to 0.2834 and intervals are wide. No across-domain
 calibration-improvement claim is supported.
-

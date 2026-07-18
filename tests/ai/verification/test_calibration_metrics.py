@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from groundloop.ai.verification.calibration import TemperatureCalibration
@@ -20,6 +23,18 @@ def test_temperature_fit_accepts_development_only() -> None:
         TemperatureCalibration.fit(LOGITS, LABELS, split="test")
     with pytest.raises(ValidationError, match="leakage"):
         TemperatureCalibration.fit(LOGITS, LABELS, split="train")
+
+
+def test_calibration_artifact_identity_detects_tampering(tmp_path: Path) -> None:
+    path = tmp_path / "temperature.json"
+    fitted = TemperatureCalibration.fit(LOGITS, LABELS, split="development")
+    fitted.write_json(path)
+    assert TemperatureCalibration.read_json(path) == fitted
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["temperature"] = fitted.temperature + 0.1
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValidationError, match="identity"):
+        TemperatureCalibration.read_json(path)
 
 
 def test_probability_validation_rejects_malformed_rows() -> None:

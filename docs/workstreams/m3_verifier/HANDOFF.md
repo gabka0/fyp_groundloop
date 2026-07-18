@@ -70,6 +70,8 @@ PYTHONPATH=src /home/kassym/Desktop/groundloop/.venv/bin/python \
   `81c49c30048dcbcc9fb2895b56622f702b4aa9894e7d055f28bb520c09f74e3e`
 - Checkpoint including training manifest:
   `81870b683cec57eff82665103fcff3a35f45b9c9be0e18b53dcd40f485bfa4cf`
+- Development-fitted calibration version:
+  `temperature-v1:6ae200db8d75477da143bd6d8d6c8927cfdfdbd8995932bbc1c59ce67e090727`
 
 ## Exact real-run evidence
 
@@ -81,6 +83,21 @@ PYTHONPATH=src /home/kassym/Desktop/groundloop/.venv/bin/python \
   1.1037657679769346; development NLL 0.5039963 to 0.5016337.
 - Evaluate: exit 0; 2m18.92s; 1,284,184 KiB peak RSS. Exact metrics and CIs
   are in `CALIBRATION_REPORT.md`.
+- Rebased real smoke: exit 0; 7.30s; 692,308 KiB peak RSS; score sum
+  `0.9999999999999999`; calibrated SUPPORT score `0.9722729195552015`.
+
+## Final software gates
+
+```text
+pytest -q tests/ai/verification                         PASS (19)
+pytest -q                                               PASS (165, 17 skipped)
+ruff check .                                            PASS
+mypy --strict src                                       PASS (56 files)
+python -m compileall -q src tests scripts experiments training  PASS
+```
+
+The skipped tests require a live PostgreSQL DSN. The coordinator owns that
+post-merge integration gate.
 
 ## Limitations and integration notes
 
@@ -91,4 +108,3 @@ PYTHONPATH=src /home/kassym/Desktop/groundloop/.venv/bin/python \
 - Dynamic impact discovery and M4 verifier-call savings are out of lane scope.
 - Coordinator-owned contracts, persistence, pipeline, migrations, CLI, and M2
   engines were not modified in this lane.
-

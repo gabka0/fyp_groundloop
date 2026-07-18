@@ -94,6 +94,11 @@ def test_fake_is_deterministic_batched_and_records_truncation() -> None:
     assert verifier.last_diagnostics.examples == 2
     assert verifier.last_diagnostics.batches == 1
     assert verifier.last_diagnostics.truncated_examples == 2
+    assert first[0].candidate_id
+    assert first[0].model_artifact_id == verifier.model_artifact.artifact_id
+    assert first[0].prompt_artifact_id == verifier.prompt_artifact.artifact_id
+    assert first[0].calibration_version == verifier.calibration_version
+    assert first[0].temperature == verifier.temperature
 
 
 def test_empty_evidence_is_rejected_at_adapter_boundary() -> None:

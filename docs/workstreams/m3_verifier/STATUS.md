@@ -1,7 +1,7 @@
 # M3 Verifier Lane Status
 
-Status: implementation and D-5 real experiment complete in the lane; final
-integration rebase and shared-gate validation pending.
+Status: implementation and D-5 real experiment complete in the lane. Rebased
+onto integration commit `5305bb7`; lane and repository gates pass.
 
 ## Delivered
 
@@ -36,3 +36,28 @@ are under `/tmp/groundloop-m3-verifier-20260718` and are not Git deliverables.
 The external location may be ephemeral; hashes in the model card and handoff
 are the durable identity record.
 
+## Final validation
+
+```text
+pytest -q tests/ai/verification
+PASS (19 tests)
+
+pytest -q
+PASS (182 collected: 165 passed, 17 live-PostgreSQL tests skipped without DSN)
+
+ruff check .
+PASS
+
+mypy --strict src
+PASS (56 source files)
+
+python -m compileall -q src tests scripts experiments training
+PASS
+
+experiments/m3/verifier/real_smoke.py
+PASS (exit 0; 7.30s; 692,308 KiB peak RSS)
+```
+
+Live PostgreSQL integration was not claimed from this worktree because no test
+DSN was supplied to the final lane command. The coordinator owns the post-merge
+live persistence and top-level application gate.
