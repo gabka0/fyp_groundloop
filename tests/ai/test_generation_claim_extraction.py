@@ -274,6 +274,10 @@ def test_claim_extraction_repairs_malformed_json_and_preserves_unicode() -> None
         '"required":true,"cited_chunk_version_ids":["chunk-1"]},'
         '{"local_claim_id":"claim-1","text":"B.",'
         '"required":true,"cited_chunk_version_ids":["chunk-1"]}]}',
+        '{"claims":[{"local_claim_id":"claim-1","text":"Same claim.",'
+        '"required":true,"cited_chunk_version_ids":["chunk-1"]},'
+        '{"local_claim_id":"claim-2","text":"  Same   claim. ",'
+        '"required":true,"cited_chunk_version_ids":["chunk-1"]}]}',
     ],
 )
 def test_claim_extraction_rejects_invalid_output_after_one_repair(

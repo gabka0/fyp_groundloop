@@ -14,7 +14,7 @@ a proposition is true.
 Return exactly one JSON object with this schema:
 """ + (
     '{"claims":[{"local_claim_id":"claim-1","text":"one proposition",'
-    '"required":true,"cited_chunk_version_ids":["chunk-id"]}]}\n'
+    '"required":true,"cited_chunk_version_ids":["chunk-id"]}]}'
 ) + """
 
 Rules:

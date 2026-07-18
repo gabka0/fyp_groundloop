@@ -135,6 +135,7 @@ class StructuredClaimExtractor:
                 raise StructuredOutputError("claims must be a nonempty list")
             claims: list[AtomicClaim] = []
             local_ids: set[str] = set()
+            normalized_claim_texts: set[str] = set()
             allowed_citations = set(answer.cited_chunk_version_ids)
             expected_claim_keys = {
                 "local_claim_id",
@@ -157,15 +158,22 @@ class StructuredClaimExtractor:
                     raise StructuredOutputError(
                         f"claim {position} local_claim_id must be nonempty"
                     )
-                if local_id in local_ids:
+                normalized_local_id = local_id.strip()
+                if normalized_local_id in local_ids:
                     raise StructuredOutputError(
-                        f"duplicate local claim ID: {local_id}"
+                        f"duplicate local claim ID: {normalized_local_id}"
                     )
-                local_ids.add(local_id)
+                local_ids.add(normalized_local_id)
                 if not isinstance(text, str) or not text.strip():
                     raise StructuredOutputError(
                         f"claim {position} text must be nonempty"
                     )
+                normalized_claim_text = normalize_text_v1(text).casefold()
+                if normalized_claim_text in normalized_claim_texts:
+                    raise StructuredOutputError(
+                        f"claim {position} duplicates an extracted proposition"
+                    )
+                normalized_claim_texts.add(normalized_claim_text)
                 if not isinstance(required, bool):
                     raise StructuredOutputError(
                         f"claim {position} required must be a boolean"
@@ -194,7 +202,7 @@ class StructuredClaimExtractor:
                     )
                 claims.append(
                     AtomicClaim(
-                        local_claim_id=local_id.strip(),
+                        local_claim_id=normalized_local_id,
                         text=text.strip(),
                         required=required,
                         cited_chunk_version_ids=citations,

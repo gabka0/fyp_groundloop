@@ -166,6 +166,7 @@ class StructuredCitedAnswerGenerator:
             cited_chunk_version_ids=citations,
             input_hash=input_hash,
             raw_output_hash=sha256_text(raw_output),
+            repair_count=repair_count,
         )
         provenance = make_provenance(
             task=ModelTask.GENERATION,
