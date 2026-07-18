@@ -1,0 +1,87 @@
+{
+  "schema_version": "m3-claim-extraction-fixture-v1",
+  "cases": [
+    {
+      "case_id": "nimbus-python-support",
+      "answer_text": "Nimbus 4.0 requires Python 3.12 or later. Python 3.10 and 3.11 are not supported by Nimbus 4.0.",
+      "answer_citations": ["chunk-nimbus-python"],
+      "evidence": [
+        {
+          "chunk_version_id": "chunk-nimbus-python",
+          "text": "Nimbus 4.0 requires Python 3.12 or later. Python 3.10 and 3.11 are no longer supported."
+        }
+      ],
+      "gold_claims": [
+        {
+          "local_claim_id": "claim-1",
+          "text": "Nimbus 4.0 requires Python 3.12 or later.",
+          "required": true,
+          "cited_chunk_version_ids": ["chunk-nimbus-python"]
+        },
+        {
+          "local_claim_id": "claim-2",
+          "text": "Python 3.10 and 3.11 are not supported by Nimbus 4.0.",
+          "required": true,
+          "cited_chunk_version_ids": ["chunk-nimbus-python"]
+        }
+      ],
+      "known_non_atomic_claim_texts": []
+    },
+    {
+      "case_id": "nimbus-retry-conditions",
+      "answer_text": "When Nimbus safe mode is enabled, a failed request is retried at most three times. Without safe mode, Nimbus uses a default retry limit of five.",
+      "answer_citations": ["chunk-nimbus-retries"],
+      "evidence": [
+        {
+          "chunk_version_id": "chunk-nimbus-retries",
+          "text": "When safe mode is enabled, Nimbus retries a failed request at most three times. Without safe mode, the default retry limit is five."
+        }
+      ],
+      "gold_claims": [
+        {
+          "local_claim_id": "claim-1",
+          "text": "When Nimbus safe mode is enabled, a failed request is retried at most three times.",
+          "required": true,
+          "cited_chunk_version_ids": ["chunk-nimbus-retries"]
+        },
+        {
+          "local_claim_id": "claim-2",
+          "text": "Without safe mode, Nimbus uses a default retry limit of five.",
+          "required": true,
+          "cited_chunk_version_ids": ["chunk-nimbus-retries"]
+        }
+      ],
+      "known_non_atomic_claim_texts": [
+        "Nimbus retries a failed request at most three times and uses a default retry limit of five."
+      ]
+    },
+    {
+      "case_id": "nimbus-strict-mode",
+      "answer_text": "Nimbus maintainers recommend enabling strict mode for production deployments. Strict mode rejects unsigned plugins.",
+      "answer_citations": ["chunk-nimbus-strict"],
+      "evidence": [
+        {
+          "chunk_version_id": "chunk-nimbus-strict",
+          "text": "The maintainers recommend enabling strict mode for production deployments. Strict mode rejects unsigned plugins."
+        }
+      ],
+      "gold_claims": [
+        {
+          "local_claim_id": "claim-1",
+          "text": "Nimbus maintainers recommend enabling strict mode for production deployments.",
+          "required": false,
+          "cited_chunk_version_ids": ["chunk-nimbus-strict"]
+        },
+        {
+          "local_claim_id": "claim-2",
+          "text": "Strict mode rejects unsigned plugins.",
+          "required": true,
+          "cited_chunk_version_ids": ["chunk-nimbus-strict"]
+        }
+      ],
+      "known_non_atomic_claim_texts": [
+        "Strict mode should be enabled for production deployments."
+      ]
+    }
+  ]
+}
