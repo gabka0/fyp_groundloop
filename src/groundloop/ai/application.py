@@ -152,6 +152,8 @@ class M3Application:
             self.config.config_hash,
             self.chunker.artifact_id,
             self.config.policy.policy_version,
+            self.verifier.calibration_version,
+            repr(self.verifier.temperature),
             *(item.artifact_id for item in model_artifacts),
             *(item.artifact_id for item in prompt_artifacts),
         )

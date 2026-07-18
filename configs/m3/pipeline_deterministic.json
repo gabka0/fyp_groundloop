@@ -1,0 +1,23 @@
+{
+  "schema_version": "groundloop-m3-cli-config-v1",
+  "corpus_namespace": "groundloop-local-v1",
+  "chunker": {
+    "artifact_id": "fixed-char-v1-1200-no-overlap",
+    "max_characters": 1200
+  },
+  "retrieval": {
+    "question_top_k": 6,
+    "claim_top_k": 4
+  },
+  "policy": {
+    "version": "m3-policy-v1",
+    "support_threshold": 0.8,
+    "refute_threshold": 0.8
+  },
+  "verifier": {
+    "logical_model_id": "groundloop/deterministic-fake-verifier",
+    "revision": "fake-v1",
+    "max_length": 256,
+    "batch_size": 8
+  }
+}

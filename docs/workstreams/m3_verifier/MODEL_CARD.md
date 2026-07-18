@@ -119,4 +119,3 @@ run does not establish an across-domain ECE improvement.
   license review.
 - The model does not guarantee claim-extraction quality, retrieval
   completeness, objective truth, freshness, security, or privacy.
-

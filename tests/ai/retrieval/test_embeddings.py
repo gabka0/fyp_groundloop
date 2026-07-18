@@ -88,6 +88,10 @@ def test_pinned_adapter_records_truncation_without_loading_a_model() -> None:
     assert BGE_MODEL_ARTIFACT.tokenizer_revision == BGE_REVISION
 
 
+def test_pinned_adapter_disables_downloads_by_default() -> None:
+    assert not BgeSmallEmbedder().allow_download
+
+
 def test_pinned_adapter_fails_clearly_when_local_artifact_is_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

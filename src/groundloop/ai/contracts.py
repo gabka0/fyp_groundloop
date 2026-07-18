@@ -443,6 +443,8 @@ class ClaimExtractor(Protocol):
 class EvidenceVerifier(Protocol):
     model_artifact: ModelArtifact
     prompt_artifact: PromptArtifact
+    calibration_version: str
+    temperature: float
 
     def verify(self, claim: AtomicClaim, chunk: ChunkDraft) -> VerificationResult: ...
 

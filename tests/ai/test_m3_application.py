@@ -34,6 +34,8 @@ HASH = "a" * 64
 class FixedVerifier:
     model_artifact: ModelArtifact
     prompt_artifact: PromptArtifact
+    calibration_version: str = "test-temperature-v1"
+    temperature: float = 1.0
     calls: int = 0
 
     @classmethod
@@ -69,8 +71,8 @@ class FixedVerifier:
             candidate_id="assigned-by-coordinator",
             model_artifact_id=self.model_artifact.artifact_id,
             prompt_artifact_id=self.prompt_artifact.artifact_id,
-            calibration_version="test-temperature-v1",
-            temperature=1.0,
+            calibration_version=self.calibration_version,
+            temperature=self.temperature,
             scores=ScoreTriple(0.9, 0.05, 0.05),
             input_hash=input_hash,
             raw_output_hash=stable_digest("raw", input_hash),
@@ -144,3 +146,32 @@ def test_model_failure_marks_run_failed_without_publishing_bundle(
         application.register(root, "What is present?")
     assert not store.bundles
     assert tuple(store.manifests.values())[0].failure_code == "RuntimeError"
+
+
+def test_verifier_calibration_changes_pipeline_identity(tmp_path: object) -> None:
+    from pathlib import Path
+
+    root = Path(str(tmp_path)) / "corpus"
+    root.mkdir()
+    (root / "guide.txt").write_text("Evidence.", encoding="utf-8")
+    store = InMemoryPublicationStore()
+
+    def register(calibration_version: str, temperature: float) -> str:
+        verifier = FixedVerifier.create()
+        verifier.calibration_version = calibration_version
+        verifier.temperature = temperature
+        application = M3Application(
+            store=store,
+            chunker=FixedCharChunker(),
+            embedder=DeterministicFakeEmbedder(),
+            generator=DeterministicAnswerGenerator(),
+            extractor=DeterministicClaimExtractor(),
+            verifier=verifier,
+            config=M3ApplicationConfig(config_hash=HASH),
+        )
+        return application.register(root, "What is present?").run_id
+
+    first = register("temperature-v1:first", 1.0)
+    second = register("temperature-v1:second", 1.1)
+
+    assert first != second

@@ -54,6 +54,7 @@ class BgeSmallEmbedder:
     """Load only the frozen BGE revision already present on local disk."""
 
     cache_dir: Path | None = None
+    allow_download: bool = False
     model_artifact: ModelArtifact = BGE_MODEL_ARTIFACT
     dimension: int = EMBEDDING_DIMENSION
     last_audit: tuple[EmbeddingInputAudit, ...] = field(default=(), init=False)
@@ -69,7 +70,7 @@ class BgeSmallEmbedder:
                 BGE_MODEL_ID,
                 revision=BGE_REVISION,
                 cache_folder=str(self.cache_dir) if self.cache_dir else None,
-                local_files_only=True,
+                local_files_only=not self.allow_download,
                 trust_remote_code=False,
                 device="cpu",
             )
