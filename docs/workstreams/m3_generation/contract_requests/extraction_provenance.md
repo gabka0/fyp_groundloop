@@ -1,5 +1,22 @@
 # Extraction provenance contract request
 
+Decision: **accepted with amendment** in coordinator commits `ce514c9` and
+`4e6165c`.
+
+The accepted shared shape is narrower than the proposal below:
+
+- `CitedAnswer` carries generation input hash, raw-output hash, and bounded
+  `repair_count`;
+- `ClaimExtractionResult` carries claims, extraction input hash,
+  raw-output hash, and bounded `repair_count`;
+- model/prompt task identities remain in the typed artifact registries and
+  publication bundle/database execution rows;
+- ordered context is the immutable ordered citation tuple included in the
+  normalized complete input hash.
+
+No additional shared provenance DTO was added. The lane retains an equivalent
+runtime provenance view for inspectable component execution and handoff.
+
 ## Failing case
 
 The frozen M3 generation-lane prompt requires every claim-extraction execution
