@@ -219,43 +219,47 @@ END;
 $$;
 
 CREATE TRIGGER groundloop_model_artifact_immutable
-BEFORE UPDATE ON groundloop_model_artifact
+BEFORE UPDATE OR DELETE ON groundloop_model_artifact
 FOR EACH ROW EXECUTE FUNCTION groundloop_reject_immutable_ai_update();
 
 CREATE TRIGGER groundloop_prompt_artifact_immutable
-BEFORE UPDATE ON groundloop_prompt_artifact
+BEFORE UPDATE OR DELETE ON groundloop_prompt_artifact
 FOR EACH ROW EXECUTE FUNCTION groundloop_reject_immutable_ai_update();
 
 CREATE TRIGGER groundloop_chunker_artifact_immutable
-BEFORE UPDATE ON groundloop_chunker_artifact
+BEFORE UPDATE OR DELETE ON groundloop_chunker_artifact
 FOR EACH ROW EXECUTE FUNCTION groundloop_reject_immutable_ai_update();
 
 CREATE TRIGGER groundloop_chunk_provenance_immutable
-BEFORE UPDATE ON groundloop_chunk_provenance
+BEFORE UPDATE OR DELETE ON groundloop_chunk_provenance
 FOR EACH ROW EXECUTE FUNCTION groundloop_reject_immutable_ai_update();
 
 CREATE TRIGGER groundloop_chunk_embedding_immutable
-BEFORE UPDATE ON groundloop_chunk_embedding
+BEFORE UPDATE OR DELETE ON groundloop_chunk_embedding
 FOR EACH ROW EXECUTE FUNCTION groundloop_reject_immutable_ai_update();
 
 CREATE TRIGGER groundloop_retrieval_candidate_immutable
-BEFORE UPDATE ON groundloop_retrieval_candidate
+BEFORE UPDATE OR DELETE ON groundloop_retrieval_candidate
 FOR EACH ROW EXECUTE FUNCTION groundloop_reject_immutable_ai_update();
 
 CREATE TRIGGER groundloop_answer_citation_immutable
-BEFORE UPDATE ON groundloop_answer_citation
+BEFORE UPDATE OR DELETE ON groundloop_answer_citation
 FOR EACH ROW EXECUTE FUNCTION groundloop_reject_immutable_ai_update();
 
 CREATE TRIGGER groundloop_generation_execution_immutable
-BEFORE UPDATE ON groundloop_generation_execution
+BEFORE UPDATE OR DELETE ON groundloop_generation_execution
 FOR EACH ROW EXECUTE FUNCTION groundloop_reject_immutable_ai_update();
 
 CREATE TRIGGER groundloop_claim_extraction_execution_immutable
-BEFORE UPDATE ON groundloop_claim_extraction_execution
+BEFORE UPDATE OR DELETE ON groundloop_claim_extraction_execution
 FOR EACH ROW EXECUTE FUNCTION groundloop_reject_immutable_ai_update();
 
 CREATE TRIGGER groundloop_verification_execution_immutable
-BEFORE UPDATE ON groundloop_verification_execution
+BEFORE UPDATE OR DELETE ON groundloop_verification_execution
+FOR EACH ROW EXECUTE FUNCTION groundloop_reject_immutable_ai_update();
+
+CREATE TRIGGER groundloop_semantic_observation_immutable
+BEFORE UPDATE OR DELETE ON groundloop_semantic_observation
 FOR EACH ROW EXECUTE FUNCTION groundloop_reject_immutable_ai_update();
 
 CREATE FUNCTION groundloop_validate_pipeline_run_transition()

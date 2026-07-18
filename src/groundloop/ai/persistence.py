@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 
 from psycopg import Connection
@@ -69,14 +70,23 @@ class PostgresArtifactStore:
 
     def initialize_schema(self) -> bool:
         """Initialize the current search path once; return whether it was new."""
-        exists = self._connection.execute(
-            "SELECT to_regclass('groundloop_pipeline_run')"
-        ).fetchone()
-        if exists is not None and exists[0] is not None:
-            return False
         with self._connection.transaction():
-            apply_m2_schema(self._connection)
-        return True
+            m3_exists = self._connection.execute(
+                "SELECT to_regclass('groundloop_pipeline_run')"
+            ).fetchone()
+            if m3_exists is not None and m3_exists[0] is not None:
+                return False
+            m2_exists = self._connection.execute(
+                "SELECT to_regclass('groundloop_epoch')"
+            ).fetchone()
+            if m2_exists is not None and m2_exists[0] is not None:
+                root = Path(__file__).resolve().parents[3]
+                self._connection.execute(
+                    (root / "migrations/002_m3_static_ai.sql").read_text()
+                )
+            else:
+                apply_m2_schema(self._connection)
+            return True
 
     def lookup(self, run_id: str) -> PipelineRunManifest | None:
         row = self._connection.execute(
@@ -465,15 +475,25 @@ class PostgresArtifactStore:
             for item in bundle.embeddings
         }
         for document in bundle.documents:
-            self._connection.execute(
+            document_created = self._connection.execute(
                 """
                 INSERT INTO groundloop_document (
                     document_id, source_uri, authority_class
                 ) VALUES (%s, %s, 'local-m3')
-                ON CONFLICT (document_id) DO NOTHING
+                ON CONFLICT (document_id) DO NOTHING RETURNING true
                 """,
                 (document.document_id, document.source_uri),
-            )
+            ).fetchone()
+            if document_created is None:
+                self._require_existing(
+                    """
+                    SELECT source_uri, authority_class FROM groundloop_document
+                    WHERE document_id = %s
+                    """,
+                    (document.document_id,),
+                    (document.source_uri, "local-m3"),
+                    "document",
+                )
             version = self._connection.execute(
                 """
                 INSERT INTO groundloop_document_version (
@@ -489,9 +509,20 @@ class PostgresArtifactStore:
                     epoch_id,
                 ),
             ).fetchone()
-            (new_ids if version is not None else reused_ids).append(
-                document.document_version_id
-            )
+            if version is None:
+                self._require_existing(
+                    """
+                    SELECT document_id, content_hash, valid_to_epoch
+                    FROM groundloop_document_version
+                    WHERE document_version_id = %s
+                    """,
+                    (document.document_version_id,),
+                    (document.document_id, document.content_hash, None),
+                    "document version",
+                )
+                reused_ids.append(document.document_version_id)
+            else:
+                new_ids.append(document.document_version_id)
             for chunk in document.chunks:
                 created = self._connection.execute(
                     """
@@ -531,17 +562,31 @@ class PostgresArtifactStore:
                     reused_ids.append(chunk.chunk_version_id)
                 else:
                     new_ids.append(chunk.chunk_version_id)
-                self._connection.execute(
+                provenance_created = self._connection.execute(
                     """
                     INSERT INTO groundloop_chunk_provenance VALUES (%s, %s, %s)
-                    ON CONFLICT (chunk_version_id) DO NOTHING
+                    ON CONFLICT (chunk_version_id) DO NOTHING RETURNING true
                     """,
                     (
                         chunk.chunk_version_id,
                         bundle.chunker_artifact.artifact_id,
                         document.content_hash,
                     ),
-                )
+                ).fetchone()
+                if provenance_created is None:
+                    self._require_existing(
+                        """
+                        SELECT chunker_artifact_id, input_hash
+                        FROM groundloop_chunk_provenance
+                        WHERE chunk_version_id = %s
+                        """,
+                        (chunk.chunk_version_id,),
+                        (
+                            bundle.chunker_artifact.artifact_id,
+                            document.content_hash,
+                        ),
+                        "chunk provenance",
+                    )
                 for key, embedding in embedding_by_chunk.items():
                     if key[0] != chunk.chunk_version_id:
                         continue
@@ -565,9 +610,29 @@ class PostgresArtifactStore:
                         f"embedding:{embedding.chunk_version_id}:"
                         f"{embedding.model_artifact_id}"
                     )
-                    (new_ids if embedded is not None else reused_ids).append(
-                        embedding_id
-                    )
+                    if embedded is None:
+                        matches = self._connection.execute(
+                            """
+                            SELECT count(*) FROM groundloop_chunk_embedding
+                            WHERE chunk_version_id = %s
+                              AND model_artifact_id = %s
+                              AND input_hash = %s
+                              AND embedding = %s::vector
+                            """,
+                            (
+                                embedding.chunk_version_id,
+                                embedding.model_artifact_id,
+                                embedding.input_hash,
+                                list(embedding.vector),
+                            ),
+                        ).fetchone()
+                        if matches != (1,):
+                            raise ArtifactConflictError(
+                                "embedding payload conflict"
+                            )
+                        reused_ids.append(embedding_id)
+                    else:
+                        new_ids.append(embedding_id)
 
     def _insert_answer(
         self,
@@ -577,13 +642,21 @@ class PostgresArtifactStore:
         reused_ids: list[str],
     ) -> None:
         structured = bundle.structured
-        self._connection.execute(
+        question_created = self._connection.execute(
             """
             INSERT INTO groundloop_question (question_id, text, created_epoch)
             VALUES (%s, %s, %s) ON CONFLICT (question_id) DO NOTHING
+            RETURNING true
             """,
             (structured.question.question_id, structured.question.text, epoch_id),
-        )
+        ).fetchone()
+        if question_created is None:
+            self._require_existing(
+                "SELECT text FROM groundloop_question WHERE question_id = %s",
+                (structured.question.question_id,),
+                (structured.question.text,),
+                "question",
+            )
         answer_created = self._connection.execute(
             """
             INSERT INTO groundloop_answer_version (
@@ -602,9 +675,26 @@ class PostgresArtifactStore:
                 epoch_id,
             ),
         ).fetchone()
-        (new_ids if answer_created is not None else reused_ids).append(
-            structured.answer.answer_version_id
-        )
+        if answer_created is None:
+            self._require_existing(
+                """
+                SELECT question_id, text, generator_model_id,
+                       generator_model_version, prompt_version
+                FROM groundloop_answer_version WHERE answer_version_id = %s
+                """,
+                (structured.answer.answer_version_id,),
+                (
+                    structured.answer.question_id,
+                    structured.answer.text,
+                    structured.answer.producer.model_id,
+                    structured.answer.producer.model_version,
+                    structured.answer.producer.prompt_version,
+                ),
+                "answer version",
+            )
+            reused_ids.append(structured.answer.answer_version_id)
+        else:
+            new_ids.append(structured.answer.answer_version_id)
         for claim in structured.claims:
             created = self._connection.execute(
                 """
@@ -624,24 +714,56 @@ class PostgresArtifactStore:
                     claim.required,
                 ),
             ).fetchone()
-            (new_ids if created is not None else reused_ids).append(claim.claim_id)
+            if created is None:
+                self._require_existing(
+                    """
+                    SELECT answer_version_id, text, extractor_model_id,
+                           extractor_model_version, extractor_prompt_version,
+                           required
+                    FROM groundloop_claim WHERE claim_id = %s
+                    """,
+                    (claim.claim_id,),
+                    (
+                        claim.answer_version_id,
+                        claim.text,
+                        claim.extractor.model_id,
+                        claim.extractor.model_version,
+                        claim.extractor.prompt_version,
+                        claim.required,
+                    ),
+                    "claim",
+                )
+                reused_ids.append(claim.claim_id)
+            else:
+                new_ids.append(claim.claim_id)
         assert bundle.manifest.answer is not None
         for ordinal, chunk_id in enumerate(
             bundle.manifest.answer.cited_chunk_version_ids, start=1
         ):
-            self._connection.execute(
+            citation_created = self._connection.execute(
                 """
                 INSERT INTO groundloop_answer_citation VALUES (%s, %s, %s)
-                ON CONFLICT DO NOTHING
+                ON CONFLICT DO NOTHING RETURNING true
                 """,
                 (structured.answer.answer_version_id, ordinal, chunk_id),
-            )
+            ).fetchone()
+            if citation_created is None:
+                self._require_existing(
+                    """
+                    SELECT chunk_version_id FROM groundloop_answer_citation
+                    WHERE answer_version_id = %s AND citation_ordinal = %s
+                    """,
+                    (structured.answer.answer_version_id, ordinal),
+                    (chunk_id,),
+                    "answer citation",
+                )
         answer = bundle.manifest.answer
-        self._connection.execute(
+        generation_created = self._connection.execute(
             """
             INSERT INTO groundloop_generation_execution VALUES
                 (%s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (answer_version_id) DO NOTHING
+            RETURNING true
             """,
             (
                 structured.answer.answer_version_id,
@@ -657,15 +779,40 @@ class PostgresArtifactStore:
                 answer.raw_output_hash,
                 answer.repair_count,
             ),
+        ).fetchone()
+        generation_decoding_hash = next(
+            item.decoding_config_hash
+            for item in bundle.prompt_artifacts
+            if item.artifact_id == bundle.generation_prompt_artifact_id
         )
+        if generation_created is None:
+            self._require_existing(
+                """
+                SELECT model_artifact_id, prompt_artifact_id, input_hash,
+                       decoding_config_hash, raw_output_hash, repair_count
+                FROM groundloop_generation_execution
+                WHERE answer_version_id = %s
+                """,
+                (structured.answer.answer_version_id,),
+                (
+                    bundle.generation_model_artifact_id,
+                    bundle.generation_prompt_artifact_id,
+                    answer.input_hash,
+                    generation_decoding_hash,
+                    answer.raw_output_hash,
+                    answer.repair_count,
+                ),
+                "generation execution",
+            )
         assert bundle.manifest.extraction is not None
         extraction = bundle.manifest.extraction
         for claim in structured.claims:
-            self._connection.execute(
+            extraction_created = self._connection.execute(
                 """
                 INSERT INTO groundloop_claim_extraction_execution VALUES
                     (%s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (claim_id) DO NOTHING
+                RETURNING true
                 """,
                 (
                     claim.claim_id,
@@ -676,7 +823,25 @@ class PostgresArtifactStore:
                     extraction.raw_output_hash,
                     extraction.repair_count,
                 ),
-            )
+            ).fetchone()
+            if extraction_created is None:
+                self._require_existing(
+                    """
+                    SELECT model_artifact_id, prompt_artifact_id, input_hash,
+                           raw_output_hash, repair_count
+                    FROM groundloop_claim_extraction_execution
+                    WHERE claim_id = %s
+                    """,
+                    (claim.claim_id,),
+                    (
+                        bundle.extraction_model_artifact_id,
+                        bundle.extraction_prompt_artifact_id,
+                        extraction.input_hash,
+                        extraction.raw_output_hash,
+                        extraction.repair_count,
+                    ),
+                    "claim-extraction execution",
+                )
 
     def _insert_candidates(
         self,
@@ -709,9 +874,30 @@ class PostgresArtifactStore:
                     candidate.rank,
                 ),
             ).fetchone()
-            (new_ids if created is not None else reused_ids).append(
-                candidate.candidate_id
-            )
+            if created is None:
+                self._require_existing(
+                    """
+                    SELECT query_kind, query_id, claim_id, chunk_version_id,
+                           embedding_model_artifact_id, method_version, score,
+                           rank
+                    FROM groundloop_retrieval_candidate WHERE candidate_id = %s
+                    """,
+                    (candidate.candidate_id,),
+                    (
+                        candidate.query_kind.value,
+                        candidate.query_id,
+                        claim_id,
+                        candidate.chunk_version_id,
+                        candidate.embedding_model_artifact_id,
+                        candidate.method_version,
+                        candidate.score,
+                        candidate.rank,
+                    ),
+                    "retrieval candidate",
+                )
+                reused_ids.append(candidate.candidate_id)
+            else:
+                new_ids.append(candidate.candidate_id)
 
     def _insert_observations(
         self,
@@ -751,9 +937,36 @@ class PostgresArtifactStore:
                     result.raw_output_hash,
                 ),
             ).fetchone()
-            (new_ids if created is not None else reused_ids).append(
-                observation.observation_id
-            )
+            if created is None:
+                self._require_existing(
+                    """
+                    SELECT subject_kind::text, subject_id, chunk_version_id,
+                           task_type, support_score, refute_score, neutral_score,
+                           model_id, model_version, prompt_version, input_hash,
+                           raw_output_hash
+                    FROM groundloop_semantic_observation
+                    WHERE observation_id = %s
+                    """,
+                    (observation.observation_id,),
+                    (
+                        observation.subject_kind.value,
+                        observation.subject_id,
+                        observation.chunk_version_id,
+                        observation.task_type,
+                        observation.support_score,
+                        observation.refute_score,
+                        observation.neutral_score,
+                        observation.producer.model_id,
+                        observation.producer.model_version,
+                        observation.producer.prompt_version,
+                        observation.input_hash,
+                        result.raw_output_hash,
+                    ),
+                    "semantic observation",
+                )
+                reused_ids.append(observation.observation_id)
+            else:
+                new_ids.append(observation.observation_id)
             self._connection.execute(
                 """
                 INSERT INTO groundloop_observation_currency (
@@ -773,7 +986,7 @@ class PostgresArtifactStore:
                 ),
             )
             logits = result.raw_logits or (0.0, 0.0, 0.0)
-            self._connection.execute(
+            execution_created = self._connection.execute(
                 """
                 INSERT INTO groundloop_verification_execution (
                     observation_id, run_id, candidate_id, model_artifact_id,
@@ -781,6 +994,7 @@ class PostgresArtifactStore:
                     raw_logits, raw_output_hash
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (observation_id) DO NOTHING
+                RETURNING true
                 """,
                 (
                     observation.observation_id,
@@ -793,7 +1007,28 @@ class PostgresArtifactStore:
                     list(logits),
                     result.raw_output_hash,
                 ),
-            )
+            ).fetchone()
+            if execution_created is None:
+                self._require_existing(
+                    """
+                    SELECT candidate_id, model_artifact_id, prompt_artifact_id,
+                           calibration_version, temperature, raw_logits,
+                           raw_output_hash
+                    FROM groundloop_verification_execution
+                    WHERE observation_id = %s
+                    """,
+                    (observation.observation_id,),
+                    (
+                        result.candidate_id,
+                        result.model_artifact_id,
+                        result.prompt_artifact_id,
+                        result.calibration_version,
+                        result.temperature,
+                        list(logits),
+                        result.raw_output_hash,
+                    ),
+                    "verification execution",
+                )
 
     def _insert_materialized_state(
         self, bundle: M3PublicationBundle, epoch_id: int
@@ -931,3 +1166,14 @@ class PostgresArtifactStore:
     @staticmethod
     def _strip(row: tuple[Any, ...]) -> tuple[Any, ...]:
         return tuple(item.strip() if isinstance(item, str) else item for item in row)
+
+    def _require_existing(
+        self,
+        query: str,
+        parameters: tuple[object, ...],
+        expected: tuple[object, ...],
+        label: str,
+    ) -> None:
+        row = self._connection.execute(query, parameters).fetchone()
+        if row is None or self._strip(row) != expected:
+            raise ArtifactConflictError(f"{label} payload conflict")

@@ -145,6 +145,15 @@ def test_artifact_identity_is_reusable_but_conflicts_and_updates_fail(
                     """
                 )
 
+        with pytest.raises(errors.RaiseException, match="immutable M3"):
+            with live_connection.transaction():
+                live_connection.execute(
+                    """
+                    DELETE FROM groundloop_prompt_artifact
+                    WHERE prompt_artifact_id = 'prompt'
+                    """
+                )
+
 
 def test_embedding_dimension_candidate_rank_and_foreign_keys_are_enforced(
     live_connection: Connection[tuple[object, ...]],
