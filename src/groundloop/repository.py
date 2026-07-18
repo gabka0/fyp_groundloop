@@ -37,6 +37,28 @@ def _interval_active(interval: Interval) -> bool:
     return interval[1] is None
 
 
+@dataclass(frozen=True, slots=True)
+class RepositorySnapshot:
+    """Immutable public export of repository base/history relations.
+
+    Persistence adapters consume this contract instead of coupling themselves
+    to the repository's private indexes. Derived convenience indexes are
+    intentionally excluded because they can be reconstructed from these rows.
+    """
+
+    revision: int
+    questions: tuple[Question, ...]
+    answers: tuple[AnswerVersion, ...]
+    claims: tuple[Claim, ...]
+    document_versions: tuple[tuple[DocumentVersion, Interval], ...]
+    chunks: tuple[tuple[ChunkVersion, Interval], ...]
+    policies: tuple[tuple[DecisionPolicy, Interval], ...]
+    observations: tuple[SemanticObservation, ...]
+    current_observation_ids: tuple[str, ...]
+    processed_events: tuple[tuple[str, str, tuple[StatusDelta, ...]], ...]
+    status_deltas: tuple[StatusDelta, ...]
+
+
 @dataclass(slots=True)
 class InMemoryRepository:
     """Historical store plus activation indexes and the event registry."""
@@ -84,6 +106,44 @@ class InMemoryRepository:
                 repository_field.name,
                 getattr(staged, repository_field.name),
             )
+
+    def export_snapshot(self) -> RepositorySnapshot:
+        """Return a detached, immutable persistence snapshot.
+
+        Event order is preserved because M1 revisions are assigned in commit
+        order. All identifier-keyed historical relations are sorted so exports
+        are deterministic across equivalent repository instances.
+        """
+        return RepositorySnapshot(
+            revision=self.current_epoch,
+            questions=tuple(self._questions[key] for key in sorted(self._questions)),
+            answers=tuple(self._answers[key] for key in sorted(self._answers)),
+            claims=tuple(self._claims[key] for key in sorted(self._claims)),
+            document_versions=tuple(
+                (
+                    self._document_versions[key],
+                    self._document_version_validity[key],
+                )
+                for key in sorted(self._document_versions)
+            ),
+            chunks=tuple(
+                (self._chunk_versions[key], self._chunk_validity[key])
+                for key in sorted(self._chunk_versions)
+            ),
+            policies=tuple(
+                (self._policies[key], self._policy_validity[key])
+                for key in sorted(self._policies)
+            ),
+            observations=tuple(
+                self._observations[key] for key in sorted(self._observations)
+            ),
+            current_observation_ids=tuple(sorted(self._current_by_key.values())),
+            processed_events=tuple(
+                (event_id, digest, deltas)
+                for event_id, (digest, deltas) in self._processed_events.items()
+            ),
+            status_deltas=tuple(self.status_deltas),
+        )
 
     # ---------------------------------------------------------- registration
 

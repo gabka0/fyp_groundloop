@@ -43,9 +43,7 @@ def test_duplicate_identifiers_fail_explicitly() -> None:
         )
     observe(repo, "ev-2", "o1", "c1", "p1", SUPPORT_SCORES)
     with pytest.raises(DuplicateIdentifierError):
-        repo.register_observation(
-            make_observation("o1", "c1", "p1", SUPPORT_SCORES)
-        )
+        repo.register_observation(make_observation("o1", "c1", "p1", SUPPORT_SCORES))
 
 
 def test_dangling_references_fail_explicitly() -> None:
@@ -186,6 +184,29 @@ def test_currency_supersession_keeps_history() -> None:
     assert repo.observations_for_chunk("p1") == ("o1", "o2")
     current = [o.observation_id for o in repo.current_observations()]
     assert current == ["o2"]
+
+
+def test_public_snapshot_export_is_deterministic_and_detached() -> None:
+    repo = make_repo()
+    register_answer(repo)
+    insert_document(repo, "ev-1", "doc", "dv1", (("p1", "a"),))
+    observe(repo, "ev-2", "o1", "c1", "p1", SUPPORT_SCORES)
+
+    snapshot = repo.export_snapshot()
+    assert snapshot.revision == repo.current_epoch
+    assert tuple(item.claim_id for item in snapshot.claims) == ("c1",)
+    assert tuple(item.observation_id for item in snapshot.observations) == ("o1",)
+    assert snapshot.current_observation_ids == ("o1",)
+    assert tuple(event_id for event_id, _, _ in snapshot.processed_events) == (
+        "ev-policy-initial",
+        "ev-1",
+        "ev-2",
+    )
+
+    observe(repo, "ev-3", "o2", "c1", "p1", SUPPORT_SCORES)
+    assert snapshot.revision == 3
+    assert snapshot.current_observation_ids == ("o1",)
+    assert tuple(item.observation_id for item in snapshot.observations) == ("o1",)
 
 
 def test_observation_for_inactive_chunk_is_stored_but_inert() -> None:

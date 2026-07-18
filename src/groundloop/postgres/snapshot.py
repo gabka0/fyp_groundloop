@@ -97,23 +97,19 @@ class PostgresSnapshot:
         repository: InMemoryRepository,
         engine: IncrementalMaintenanceEngine,
     ) -> PostgresSnapshot:
-        """Capture base relations and independent incremental output.
-
-        Private repository collections are read because M1 deliberately keeps
-        its historical store encapsulated and exposes no bulk persistence
-        contract. No collection is mutated. If that contract changes, this
-        lane must request a coordinator-owned shared-contract update.
-        """
-        if repository.current_epoch <= 0:
+        """Capture base relations and independent incremental output."""
+        exported = repository.export_snapshot()
+        if exported.revision <= 0:
             raise ValueError("a PostgreSQL snapshot requires at least one revision")
-        processed = tuple(repository._processed_events.items())
-        if len(processed) != repository.current_epoch:
+        if len(exported.processed_events) != exported.revision:
             raise ValueError(
                 "snapshot revisions cannot be mapped one-to-one to processed events"
             )
         epochs = tuple(
-            EpochRow(epoch_id=index, event_id=event_id, payload_hash=record[0])
-            for index, (event_id, record) in enumerate(processed, start=1)
+            EpochRow(epoch_id=index, event_id=event_id, payload_hash=payload_hash)
+            for index, (event_id, payload_hash, _) in enumerate(
+                exported.processed_events, start=1
+            )
         )
         claim_states = engine.claim_states
         certificates = engine.certificates
@@ -125,41 +121,25 @@ class PostgresSnapshot:
         if set(answer_states) != set(repository.all_answer_ids()):
             raise ValueError("incremental answer state is not synchronized to snapshot")
         return cls(
-            revision=repository.current_epoch,
+            revision=exported.revision,
             epochs=epochs,
-            questions=tuple(
-                repository._questions[key] for key in sorted(repository._questions)
-            ),
-            answers=tuple(
-                repository._answers[key] for key in sorted(repository._answers)
-            ),
-            claims=tuple(repository._claims[key] for key in sorted(repository._claims)),
+            questions=exported.questions,
+            answers=exported.answers,
+            claims=exported.claims,
             document_versions=tuple(
-                VersionedDocumentRow(
-                    repository._document_versions[key],
-                    repository._document_version_validity[key],
-                )
-                for key in sorted(repository._document_versions)
+                VersionedDocumentRow(value, validity)
+                for value, validity in exported.document_versions
             ),
             chunks=tuple(
-                VersionedChunkRow(
-                    repository._chunk_versions[key], repository._chunk_validity[key]
-                )
-                for key in sorted(repository._chunk_versions)
+                VersionedChunkRow(value, validity)
+                for value, validity in exported.chunks
             ),
             policies=tuple(
-                VersionedPolicyRow(
-                    repository._policies[key], repository._policy_validity[key]
-                )
-                for key in sorted(repository._policies)
+                VersionedPolicyRow(value, validity)
+                for value, validity in exported.policies
             ),
-            observations=tuple(
-                repository._observations[key]
-                for key in sorted(repository._observations)
-            ),
-            current_observation_ids=tuple(
-                sorted(repository._current_by_key.values())
-            ),
+            observations=exported.observations,
+            current_observation_ids=exported.current_observation_ids,
             materialized_claims=tuple(
                 MaterializedClaimRow(claim_states[key], certificates[key])
                 for key in sorted(claim_states)
@@ -167,7 +147,7 @@ class PostgresSnapshot:
             materialized_answers=tuple(
                 answer_states[key] for key in sorted(answer_states)
             ),
-            status_deltas=tuple(repository.status_deltas),
+            status_deltas=exported.status_deltas,
         )
 
 

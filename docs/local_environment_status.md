@@ -19,9 +19,11 @@ Host observations:
 - The repository now has a working `.venv`, created with user-space
   `virtualenv` because the operating-system `python3-venv` package is still
   missing. The project and normal `dev` dependencies are installed editable.
-- Docker is not currently installed, so the PostgreSQL Compose service has not
-  been started or validated on this host.
-- `psql` and a local PostgreSQL server are not installed. The repository
+- Docker Engine 29.6.2 and Docker Compose v5.3.1 are installed. The account is
+  in the `docker` group; existing shells may require `sg docker` until the next
+  logout/login. The Compose PostgreSQL service is running and healthy.
+- `psql` is not installed on the host. PostgreSQL 16.14 runs in Compose with
+  pgvector 0.8.5 available and installed. The repository
   `.venv` now contains Psycopg 3.3.4, SQLAlchemy 2.0.51, pgvector client 0.5.0,
   FastAPI 0.139.2, NumPy 2.5.1, pytest 9.1.1, Ruff 0.15.22, and mypy 2.3.0.
 - `pglast` 7.17 was installed in the user site on 2026-07-18 solely for static

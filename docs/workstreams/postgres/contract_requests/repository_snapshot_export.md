@@ -1,6 +1,7 @@
 # Contract request: stable repository snapshot export
 
-Status: nonblocking request for coordinator review.
+Status: accepted and implemented by the coordinator after PostgreSQL-lane
+integration.
 
 ## Problem
 
@@ -23,6 +24,13 @@ iterators covering:
 - status deltas.
 
 The adapter can then depend on a public contract instead of `_...` fields.
+
+## Resolution
+
+`InMemoryRepository.export_snapshot()` now returns a detached immutable
+`RepositorySnapshot` containing the requested base/history relations. The
+PostgreSQL adapter consumes that public export and no longer reads private
+repository collections.
 
 ## Current compatibility
 
