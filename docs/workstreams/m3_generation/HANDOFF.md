@@ -104,7 +104,10 @@ offline baseline.
 
 ## Validation summary
 
-On coordinator base `4e6165c`: lane tests `21 passed`; full offline suite
-`119 passed, 15 live-PostgreSQL skips`; Ruff clean; strict mypy clean across
-37 source files; compileall clean; fixture report reproduced exactly. See
+On final coordinator base `dc48c70`: lane tests `21 passed`; Ruff clean;
+strict mypy clean across 47 source files; compileall clean. The full offline
+suite on the immediately preceding coordinator base `4e6165c` reported
+`119 passed, 15 live-PostgreSQL skips`; the fixture report reproduced exactly.
+The retrieval-lane merge rebased cleanly, and the coordinator requested the
+targeted lane/static gates rather than a duplicate full-suite run. See
 `STATUS.md` for commands and limitations.

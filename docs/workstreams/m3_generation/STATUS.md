@@ -4,7 +4,8 @@ Status: **offline implementation complete; ready for coordinator integration**
 
 Updated: 2026-07-18
 
-Final integration base: coordinator `main` commit `4e6165c`
+Final pre-merge base: coordinator `main` commit `dc48c70` (including the
+merged M3 retrieval lane)
 
 ## Delivered
 
@@ -43,12 +44,13 @@ PYTHONPATH=src /home/kassym/Desktop/groundloop/.venv/bin/python \
   -m pytest -o addopts='' -q \
   tests/ai/test_generation_claim_extraction.py \
   --junitxml=/tmp/m3-generation-lane.xml
-PASS: 21 passed in 0.21s; 0 failed, 0 errors, 0 skipped
+PASS on final base dc48c70: 21 passed in 0.27s; 0 failed, 0 errors, 0 skipped
 
 PYTHONPATH=src /home/kassym/Desktop/groundloop/.venv/bin/python \
   -m pytest -o addopts='' -q \
   --junitxml=/tmp/m3-generation-full.xml
-PASS: 134 collected; 119 passed, 15 skipped; 0 failed, 0 errors
+PASS on pre-retrieval base 4e6165c: 134 collected; 119 passed, 15 skipped;
+0 failed, 0 errors
 SKIP REASON: all 15 require an explicit live PostgreSQL DSN
 
 /home/kassym/Desktop/groundloop/.venv/bin/python -m ruff check .
@@ -56,7 +58,7 @@ PASS: All checks passed!
 
 PYTHONPATH=src /home/kassym/Desktop/groundloop/.venv/bin/python \
   -m mypy --strict src
-PASS: Success: no issues found in 37 source files
+PASS on final base dc48c70: Success: no issues found in 47 source files
 
 /home/kassym/Desktop/groundloop/.venv/bin/python \
   -m compileall -q src tests scripts experiments
