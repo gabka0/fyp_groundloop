@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,7 @@ from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from groundloop.ai.contracts import (
+    ComponentTiming,
     EmbeddingRecord,
     ModelArtifact,
     PipelineRunManifest,
@@ -173,6 +175,7 @@ class PostgresArtifactStore:
 
     def publish_bundle(self, bundle: M3PublicationBundle) -> PipelineRunManifest:
         """Publish every structured record in one transaction or none."""
+        publication_started = time.perf_counter()
         with self._connection.transaction():
             row = self._connection.execute(
                 """
@@ -236,6 +239,14 @@ class PostgresArtifactStore:
                 confirmed_as_of_epoch=epoch_id,
                 reused_artifact_ids=tuple(sorted(set(reused_ids))),
                 new_artifact_ids=tuple(sorted(set(new_ids))),
+                timings=bundle.manifest.timings
+                + (
+                    ComponentTiming(
+                        "database_publication",
+                        (time.perf_counter() - publication_started) * 1_000.0,
+                        False,
+                    ),
+                ),
                 failure_code=None,
             )
             self._insert_artifact_use_and_timings(published, bundle)

@@ -50,8 +50,6 @@ class CorpusDocument:
             raise ValidationError("document identities must be nonempty")
         if not self.source_uri or not self.content_hash:
             raise ValidationError("document source and content hash must be nonempty")
-        if not self.chunks:
-            raise ValidationError("M3 corpus documents must contain a chunk")
         for chunk in self.chunks:
             if chunk.document_version_id != self.document_version_id:
                 raise ValidationError("chunk/document-version identity mismatch")
@@ -85,7 +83,8 @@ def _model_stamp(model: ModelArtifact, prompt: PromptArtifact) -> ModelStamp:
     )
 
 
-def _claim_id(answer_version_id: str, claim: AtomicClaim) -> str:
+def claim_version_id(answer_version_id: str, claim: AtomicClaim) -> str:
+    """Return the immutable global claim ID for one extracted local claim."""
     return "claim-" + stable_digest(
         "m3-claim-v1",
         answer_version_id,
@@ -159,7 +158,7 @@ def build_structured_grounding(
                     f"claim {atomic.local_claim_id} cites unknown chunk {chunk_id}"
                 )
         claim = Claim(
-            claim_id=_claim_id(answer_version_id, atomic),
+            claim_id=claim_version_id(answer_version_id, atomic),
             answer_version_id=answer_version_id,
             text=atomic.text,
             extractor=extraction_stamp,
