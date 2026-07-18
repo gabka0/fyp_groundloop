@@ -1,217 +1,165 @@
 #!/usr/bin/env python3
-"""Apply M2 SQL in a temporary schema and validate a three-path fixture.
+"""Run the live PostgreSQL M2 three-engine validation fixture.
 
-The transaction is always rolled back, so the target database is unchanged.
-Requires the normal project dependency ``psycopg`` and a running PostgreSQL 16
-instance. It intentionally fails rather than silently skipping unavailable DB
-infrastructure.
+The fixture uses the same typed snapshot adapter as database tests. Its unique
+schema is created and removed transactionally; the target database retains no
+fixture rows. Unavailable database infrastructure is a hard error here, not a
+skip, because this script is the explicit live-runtime gate.
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
+import json
 import os
-import re
-import uuid
-from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[1]
+import psycopg
+from psycopg import Connection
 
-
-def _normalized_text_hash(text: str) -> str:
-    normalized = re.sub(r"\s+", " ", text.strip())
-    return hashlib.sha256(normalized.encode()).hexdigest()
+from groundloop.domain import (
+    AnswerVersion,
+    Claim,
+    DecisionPolicy,
+    ModelStamp,
+    Question,
+    SemanticObservation,
+    SubjectKind,
+)
+from groundloop.events import (
+    ChunkInput,
+    InsertDocumentEvent,
+    ObserveEvent,
+    PolicyChangeEvent,
+    apply_event,
+)
+from groundloop.incremental import IncrementalMaintenanceEngine
+from groundloop.postgres import (
+    MismatchCounts,
+    PostgresSnapshot,
+    load_snapshot,
+    read_mismatch_counts,
+    read_oracle_states,
+    read_server_metadata,
+    temporary_m2_schema,
+)
+from groundloop.reference import compute_all_states
+from groundloop.repository import InMemoryRepository
 
 
 def _psycopg_url(url: str) -> str:
     return url.replace("postgresql+psycopg://", "postgresql://", 1)
 
 
-def validate(database_url: str) -> dict[str, Any]:
-    import psycopg
-    from psycopg import sql
+def _fixture() -> tuple[InMemoryRepository, IncrementalMaintenanceEngine]:
+    stamp = ModelStamp("postgres-validator", "v1", "p1")
+    repository = InMemoryRepository()
+    apply_event(
+        repository,
+        PolicyChangeEvent("fixture-policy", DecisionPolicy("k1", 0.8, 0.8)),
+    )
+    repository.register_question(Question("q", "question"))
+    repository.register_answer(
+        AnswerVersion("a", "q", "answer", stamp),
+        (Claim("c", "a", "claim", stamp, True),),
+    )
+    apply_event(
+        repository,
+        InsertDocumentEvent(
+            "fixture-insert",
+            "doc",
+            "dv",
+            "content-dv",
+            (ChunkInput("p", 0, "fixture evidence"),),
+        ),
+    )
+    apply_event(
+        repository,
+        ObserveEvent(
+            "fixture-observe",
+            SemanticObservation(
+                "o",
+                SubjectKind.CLAIM,
+                "c",
+                "p",
+                "verify",
+                0.9,
+                0.05,
+                0.05,
+                stamp,
+                "input-o",
+            ),
+        ),
+    )
+    return repository, IncrementalMaintenanceEngine.from_repository(repository)
 
-    migration = (ROOT / "migrations/001_m2_base.sql").read_text()
-    oracle = (ROOT / "sql/m2_full_recompute_oracle.sql").read_text()
-    schema = f"groundloop_m2_validation_{uuid.uuid4().hex}"
+
+def _plan(
+    connection: Connection[tuple[object, ...]], query: str
+) -> tuple[str, ...]:
+    rows = connection.execute(f"EXPLAIN (ANALYZE, BUFFERS) {query}").fetchall()
+    return tuple(str(row[0]) for row in rows)
+
+
+def validate(database_url: str) -> dict[str, Any]:
+    repository, engine = _fixture()
+    expected_claims, expected_answers = compute_all_states(repository)
+    snapshot = PostgresSnapshot.capture(repository, engine)
 
     with psycopg.connect(_psycopg_url(database_url)) as connection:
-        try:
-            connection.execute(
-                sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema))
-            )
-            connection.execute(
-                sql.SQL("SET LOCAL search_path TO {}, public").format(
-                    sql.Identifier(schema)
-                )
-            )
-            connection.execute(migration)
-            connection.execute(oracle)
+        with temporary_m2_schema(connection) as schema:
+            metadata = read_server_metadata(connection)
+            load_snapshot(connection, snapshot)
+            oracle = read_oracle_states(connection)
+            mismatches = read_mismatch_counts(connection)
+            assert oracle.claims == expected_claims == engine.claim_states
+            assert oracle.answers == expected_answers == engine.answer_states
+            assert mismatches == MismatchCounts(0, 0, 0)
 
-            epoch_id = connection.execute(
-                """
-                INSERT INTO groundloop_epoch (
-                    event_id, payload_hash, structural_status,
-                    semantic_status, evaluation_state, publication_mode
-                ) VALUES (
-                    'fixture-event', %s, 'committed', 'complete', 'complete',
-                    'provisional'
-                )
-                RETURNING epoch_id
-                """,
-                ("0" * 64,),
-            ).fetchone()[0]
-            connection.execute(
-                """
-                INSERT INTO groundloop_document
-                    (document_id, source_uri, authority_class)
-                VALUES ('doc', 'fixture://doc', 'fixture')
-                """
+            current_query = """
+                SELECT observation_id FROM groundloop_observation_currency
+                WHERE chunk_version_id = 'p'
+            """
+            policy_query = """
+                SELECT observation_id FROM groundloop_semantic_observation
+                WHERE support_score >= 0.8 AND support_score < 0.95
+            """
+            natural_current_plan = _plan(connection, current_query)
+            natural_policy_plan = _plan(connection, policy_query)
+            connection.execute("SET LOCAL enable_seqscan = off")
+            indexed_current_plan = _plan(connection, current_query)
+            indexed_policy_plan = _plan(connection, policy_query)
+            current_index_usable = any(
+                "groundloop_current_observations_by_chunk" in line
+                for line in indexed_current_plan
             )
-            connection.execute(
-                """
-                INSERT INTO groundloop_document_version
-                    (document_version_id, document_id, content_hash,
-                     valid_from_epoch)
-                VALUES ('dv', 'doc', 'content-dv', %s)
-                """,
-                (epoch_id,),
+            policy_index_usable = any(
+                "groundloop_observation_support_scores" in line
+                for line in indexed_policy_plan
             )
-            connection.execute(
-                """
-                INSERT INTO groundloop_chunk_version
-                    (chunk_version_id, document_version_id, chunk_index, text,
-                     text_hash, chunker_version, valid_from_epoch)
-                VALUES ('p', 'dv', 0, 'fixture evidence', %s, 'fixed-v1', %s)
-                """,
-                (_normalized_text_hash("fixture evidence"), epoch_id),
-            )
-            connection.execute(
-                """
-                INSERT INTO groundloop_question (question_id, text, created_epoch)
-                VALUES ('q', 'question', %s)
-                """,
-                (epoch_id,),
-            )
-            connection.execute(
-                """
-                INSERT INTO groundloop_answer_version (
-                    answer_version_id, question_id, text, generator_model_id,
-                    generator_model_version, prompt_version, created_epoch
-                ) VALUES ('a', 'q', 'answer', 'fixture', 'v1', 'p1', %s)
-                """,
-                (epoch_id,),
-            )
-            connection.execute(
-                """
-                INSERT INTO groundloop_claim (
-                    claim_id, answer_version_id, text, extractor_model_id,
-                    extractor_model_version, extractor_prompt_version, required
-                ) VALUES ('c', 'a', 'claim', 'fixture', 'v1', 'p1', true)
-                """
-            )
-            connection.execute("SET CONSTRAINTS ALL IMMEDIATE")
-            connection.execute("SET CONSTRAINTS ALL DEFERRED")
-            connection.execute(
-                """
-                INSERT INTO groundloop_decision_policy (
-                    policy_version, support_threshold, refute_threshold,
-                    tie_rule_version, valid_from_epoch
-                ) VALUES ('k1', 0.8, 0.8, 'v1', %s)
-                """,
-                (epoch_id,),
-            )
-            connection.execute(
-                """
-                INSERT INTO groundloop_semantic_observation (
-                    observation_id, subject_kind, subject_id, chunk_version_id,
-                    task_type, support_score, refute_score, neutral_score,
-                    model_id, model_version, prompt_version, input_hash,
-                    produced_epoch
-                ) VALUES (
-                    'o', 'claim', 'c', 'p', 'verify', 0.9, 0.05, 0.05,
-                    'fixture', 'v1', 'p1', 'input-o', %s
-                )
-                """,
-                (epoch_id,),
-            )
-            connection.execute(
-                """
-                INSERT INTO groundloop_observation_currency (
-                    subject_kind, subject_id, chunk_version_id, task_type,
-                    observation_id, installed_revision
-                ) VALUES ('claim', 'c', 'p', 'verify', 'o', 1)
-                """
-            )
-            connection.execute(
-                """
-                INSERT INTO groundloop_claim_state_materialized VALUES (
-                    'c', 1, 0, 0.9, NULL, ARRAY['o'], ARRAY[]::text[],
-                    'supported', %s, 1
-                )
-                """,
-                (epoch_id,),
-            )
-            connection.execute(
-                """
-                INSERT INTO groundloop_answer_state_materialized VALUES (
-                    'a', 1, 1, 0, 0, 0, 'valid', %s, 1
-                )
-                """,
-                (epoch_id,),
-            )
-            connection.execute(
-                """
-                INSERT INTO groundloop_claim_certificate VALUES (
-                    'c', 'o', NULL, %s, 1
-                )
-                """,
-                (epoch_id,),
-            )
+            assert current_index_usable
+            assert policy_index_usable
 
-            claim = connection.execute(
-                """
-                SELECT support_count, refute_count, best_support_score,
-                       supporting_observation_ids, status
-                FROM groundloop_claim_state_oracle WHERE claim_id = 'c'
-                """
-            ).fetchone()
-            answer = connection.execute(
-                """
-                SELECT required_claim_count, supported_count, status
-                FROM groundloop_answer_state_oracle
-                WHERE answer_version_id = 'a'
-                """
-            ).fetchone()
-            claim_mismatches = connection.execute(
-                "SELECT count(*) FROM groundloop_claim_state_mismatches"
-            ).fetchone()[0]
-            answer_mismatches = connection.execute(
-                "SELECT count(*) FROM groundloop_answer_state_mismatches"
-            ).fetchone()[0]
-            invalid_certificates = connection.execute(
-                """
-                SELECT count(*)
-                FROM groundloop_claim_certificate_validity_oracle
-                WHERE NOT certificate_valid
-                """
-            ).fetchone()[0]
-
-            assert tuple(claim) == (1, 0, 0.9, ["o"], "supported")
-            assert tuple(answer) == (1, 1, "valid")
-            assert claim_mismatches == 0
-            assert answer_mismatches == 0
-            assert invalid_certificates == 0
             return {
                 "schema": schema,
-                "claim_mismatches": claim_mismatches,
-                "answer_mismatches": answer_mismatches,
-                "invalid_certificates": invalid_certificates,
+                "postgres_version": metadata.postgres_version,
+                "postgres_version_num": metadata.postgres_version_num,
+                "pgvector_available_version": (
+                    metadata.pgvector_available_version
+                ),
+                "pgvector_installed_version": (
+                    metadata.pgvector_installed_version
+                ),
+                "claim_mismatches": mismatches.claims,
+                "answer_mismatches": mismatches.answers,
+                "invalid_certificates": mismatches.invalid_certificates,
+                "current_index_usable": current_index_usable,
+                "policy_index_usable": policy_index_usable,
+                "natural_current_plan": natural_current_plan,
+                "natural_policy_plan": natural_policy_plan,
+                "indexed_current_plan": indexed_current_plan,
+                "indexed_policy_plan": indexed_policy_plan,
             }
-        finally:
-            connection.rollback()
 
 
 def main() -> None:
@@ -223,7 +171,7 @@ def main() -> None:
     args = parser.parse_args()
     if not args.database_url:
         parser.error("set GROUNDLOOP_DATABASE_URL or pass --database-url")
-    print(validate(args.database_url))
+    print(json.dumps(validate(args.database_url), indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":
