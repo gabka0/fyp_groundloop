@@ -30,6 +30,19 @@ Host observations:
   PostgreSQL parsing. It parsed all 29 migration statements and all 6 oracle
   statements. This proves parser acceptance, not execution or constraint/view
   behavior on a live server.
+- The M3 hardware audit found an AMD Ryzen 7 5700U with 8 physical cores / 16
+  logical CPUs, 14 GiB RAM, 4 GiB swap, and approximately 92 GiB free disk.
+  No NVIDIA device, CUDA driver, or `nvidia-smi` is available. M3 is therefore
+  CPU-first and uses compact pinned models; sustained work is reserved for the
+  verifier lane and real-model executions are serialized.
+- Before the M3 contract baseline, the ML group was absent. The coordinator
+  installed and verified the CPU stack on 2026-07-18: PyTorch 2.13.0+cpu,
+  Transformers 4.57.6, Sentence Transformers 5.6.0, scikit-learn 1.9.0,
+  Datasets 4.8.5, Accelerate 1.14.0, Hugging Face Hub 0.36.2, and Safetensors
+  0.8.0. `torch.cuda.is_available()` is false and `pip check` reports no
+  broken requirements.
+- The Docker service is healthy, but shells created before the account joined
+  the `docker` group need `sg docker -c '<command>'` until the next login.
 
 The privileged host prerequisites were installed using Docker's official
 Ubuntu repository procedure:
@@ -48,6 +61,7 @@ set +a
 make validate-postgres
 ```
 
-The optional `ml` dependency group is intentionally not installed. Select and
-record the initial embedding, claim-extraction, and verification models before
-installing it.
+The initial M3 models and datasets are now frozen in
+`docs/m3_model_dataset_audit.md`. The optional `ml` dependency group may be
+installed by the coordinator; model weights, datasets, and trained checkpoints
+must remain outside Git.

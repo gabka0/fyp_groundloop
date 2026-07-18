@@ -26,3 +26,7 @@ class EventConflictError(GroundLoopError):
 
 class InvalidEventError(GroundLoopError):
     """An event is structurally invalid for the current repository state."""
+
+
+class ArtifactConflictError(GroundLoopError):
+    """An immutable M3 artifact identifier was reused with different content."""

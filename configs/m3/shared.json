@@ -1,0 +1,33 @@
+{
+  "schema_version": "m3-v1",
+  "chunker": {
+    "artifact_id": "fixed-char-v1-1200-no-overlap",
+    "max_characters": 1200,
+    "normalization_version": "v1",
+    "overlap_characters": 0,
+    "version": "fixed-char-v1"
+  },
+  "embedding": {
+    "dimension": 384,
+    "model_id": "BAAI/bge-small-en-v1.5",
+    "query_prefix": "Represent this sentence for searching relevant passages: ",
+    "revision": "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
+  },
+  "generation": {
+    "max_new_tokens": 384,
+    "model_id": "Qwen/Qwen2.5-0.5B-Instruct",
+    "revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+    "temperature": 0.0
+  },
+  "retrieval": {
+    "claim_top_k": 4,
+    "method_version": "bge-cosine-v1",
+    "question_top_k": 6
+  },
+  "verifier": {
+    "base_model_id": "cross-encoder/nli-MiniLM2-L6-H768",
+    "base_revision": "b95119ce93d3e065de6214e38cd4a97b0f2f2c6d",
+    "max_length": 512,
+    "seed": 20260718
+  }
+}

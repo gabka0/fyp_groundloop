@@ -1,5 +1,30 @@
 # GroundLoop Decision Log
 
+## 2026-07-18 — M3 Static AI Contracts Frozen
+
+Decision status: accepted for parallel implementation; M3 is not yet complete.
+
+M3 is a static, locally reproducible grounding pipeline. The exactness claim
+still begins only after immutable verifier score observations exist. Retrieval,
+generation, extraction, and verification quality remain empirical.
+
+The contract baseline selects fixed-char-v1 chunking, 384-dimensional
+BGE-small-en-v1.5 retrieval, Qwen2.5-0.5B-Instruct generation/extraction, and a
+MiniLM2 three-way NLI verifier adapted on a SciFact/WiCE-derived design and
+temperature-calibrated on development data. All model revisions, prompt
+content, decoding settings, inputs, and retrieval settings are immutable
+provenance. WiCE `not_supported` is NEUTRAL, never REFUTE, because WiCE does
+not annotate contradiction.
+
+Long model calls run outside the database publication transaction. A complete
+run publishes atomically from STAGED to PUBLISHED; failures publish no partial
+answer/claim/observation state. Identical run inputs reuse immutable artifacts.
+Dynamic impact discovery, update admission, scheduling, and verifier-call
+savings remain M4+.
+
+Evidence: `docs/m3_model_dataset_audit.md`, `docs/m3_design_freeze.md`, and
+`docs/m3_multiagent_execution_plan.md`.
+
 ## 2026-07-18 — M2 Accepted; Exact-Flip Result Conservatively Classified
 
 Decision status: implemented and accepted.
