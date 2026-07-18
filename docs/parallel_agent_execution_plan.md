@@ -1,16 +1,15 @@
 # GroundLoop Three-Agent Parallel Execution Plan
 
-Status: ready after the coordinator creates the first Git baseline commit.
+Status: completed and integrated on 2026-07-18.
 
 Date: 2026-07-18
 
 ## Strongest constraint
 
-The repository currently has no Git commit and every project file is untracked.
-Starting three coding agents in this checkout would be reckless: Git cannot
-construct independent worktrees, attribute changes to a stable baseline, or
-merge lanes safely. The coordinator must create and validate the initial commit
-before launching the lanes.
+This was the pre-execution constraint: the repository initially had no Git
+commit, so independent worktrees could not be created safely. The coordinator
+created commit `5e5181b`, tagged it `parallel-baseline-2026-07-18`, and then
+launched the three isolated lanes.
 
 The lanes are deliberately different:
 
@@ -263,3 +262,8 @@ Parallel execution succeeds only if:
 - all lanes rebase and pass the full integrated suite;
 - no forbidden path was edited by a child lane;
 - no novelty or superiority claim exceeds the literature evidence.
+
+All completion gates passed. PostgreSQL, baselines, and algorithm lanes were
+merged in that order. One shared-contract request was accepted: the
+coordinator added the immutable public `RepositorySnapshot` export before
+final integrated validation.

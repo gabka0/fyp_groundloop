@@ -1,7 +1,6 @@
 # PostgreSQL Lane Status
 
-Status: implementation and live lane validation complete; coordinator review,
-rebase, and integration remain.
+Status: complete and integrated into `main`.
 
 Branch: `workstream/postgres`
 
@@ -50,6 +49,6 @@ Success: no issues found in 12 source files
 
 ## Blocker / next action
 
-No live-server blocker remains. Next action: coordinator reviews the private
-repository-field assumption documented in the contract request, then rebases
-and integrates this lane. This lane does not declare M2 complete.
+No blocker remains. The coordinator accepted the snapshot contract request,
+added `InMemoryRepository.export_snapshot()`, refactored the adapter to consume
+it, and completed integrated live validation.

@@ -1,7 +1,7 @@
 # Algorithm Workstream Status
 
-Current step: implementation, proof, adversarial evaluation, and literature
-audit complete; awaiting coordinator review and integration.
+Current step: implementation, proof, adversarial evaluation, literature audit,
+coordinator review, and integration complete.
 
 Owned-path deliverables:
 
@@ -39,5 +39,6 @@ Recorded explicit gates:
 
 Blocker: none within lane scope. No shared-contract change was required.
 
-Next action: coordinator reviews theorem assumptions and diff, then merges the
-lane after the integration branch is ready.
+Next action: keep the engine as an evaluated candidate component; do not
+replace the signed-delta engine or upgrade the novelty claim without a new
+integration decision and evidence.

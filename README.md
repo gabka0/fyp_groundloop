@@ -3,8 +3,8 @@
 The authoritative design is [docs/technical_design.md](docs/technical_design.md)
 (v0.2 with M1.1 amendments D-19 and D-20). The original
 [initial technical design](docs/initial_technical_design.pdf) is retained for
-audit only. M1 and M1.1 are complete. The in-memory portion of M2 is complete;
-PostgreSQL runtime validation remains blocked on local infrastructure.
+audit only. M1, M1.1, and M2 are complete, including live PostgreSQL 16
+validation.
 
 GroundLoop is an FYP research system for maintaining the grounding status of
 previously generated RAG answers as the underlying document collection evolves.
@@ -38,10 +38,9 @@ verification remain empirical AI components.
 The repository contains the trusted full-recomputation semantics, an
 independent signed-delta engine, differential execution after every event,
 distinct-content zero-crossing maintenance, policy range deltas, compact
-certificates, and a separate semantic-epoch/publication oracle. The M2
-PostgreSQL migration, full-recomputation views, and validation harness are
-present but have not run locally because PostgreSQL and Docker are absent. The
-AI/RAG pipeline begins in M3 and is not implemented yet.
+certificates, a separate semantic-epoch/publication oracle, a live PostgreSQL
+third oracle, structured baselines, and an exact-flip policy-index prototype.
+The AI/RAG pipeline begins in M3 and is not implemented yet.
 
 ## Read First
 
@@ -90,7 +89,7 @@ secrets or hosted-model API keys.
 
 ## Current Milestone
 
-Install/start PostgreSQL, run `make validate-postgres`, and close the remaining
-M2 persistence gate. The detailed implementation and evidence are in
-[the M2 status](docs/m2_implementation_status.md); M3 then adds the first
-versioned static RAG pipeline.
+M2 is closed. The next milestone is M3: the first versioned static RAG
+pipeline, while preserving the exact/empirical boundary. The integrated M2
+implementation and evidence are in
+[the M2 status](docs/m2_implementation_status.md).

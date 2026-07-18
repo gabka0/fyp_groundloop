@@ -1,8 +1,7 @@
 # GroundLoop Research Plan
 
-Status: project direction and v0.2 design frozen; M1/M1.1 complete; M2
-in-memory implementation and SQL artifacts complete, with live PostgreSQL
-validation still required
+Status: project direction and v0.2 design frozen; M1, M1.1, and M2 complete,
+including live PostgreSQL validation; M3 is next
 
 ## Working Title
 

@@ -120,10 +120,10 @@ These tiny-fixture timings are smoke evidence, not performance claims.
   registry rows to the first captured revision and observations to the current
   captured revision. This preserves current snapshot semantics but is not an
   event-history reconstruction.
-- The repository lacks a public bulk snapshot contract. The adapter currently
-  reads private historical collections without mutation. A nonblocking
-  coordinator request is in
-  `contract_requests/repository_snapshot_export.md`.
+- The lane initially lacked a public bulk snapshot contract. The coordinator
+  accepted `contract_requests/repository_snapshot_export.md`, added the
+  detached immutable `RepositorySnapshot` export, and refactored the adapter
+  to use it before final integration.
 - Database randomized coverage is intentionally bounded (20 events) for the
   normal live suite. The existing 100,000-event in-memory differential result
   is separate evidence; no 100,000-event PostgreSQL claim is made.

@@ -13,7 +13,7 @@
 
 ## Current step
 
-Implementation committed at `7719edf`; ready for coordinator review.
+Implementation committed in `7719edf` and `c14494e`; integrated into `main`.
 
 ## Last validation
 
@@ -36,5 +36,5 @@ None. No shared-contract change was required.
 
 ## Next action
 
-Coordinator reviews the ownership diff and integrates the lane. `main` remains
-at the recorded baseline commit, so no rebase transformation was required.
+No lane action remains. Dissertation-grade performance runs are deferred until
+the workload scale and host-control protocol are frozen.

@@ -1,9 +1,34 @@
 # GroundLoop Decision Log
 
+## 2026-07-18 — M2 Accepted; Exact-Flip Result Conservatively Classified
+
+Decision status: implemented and accepted.
+
+The live PostgreSQL 16.14 gate passes with pgvector 0.8.5: the Python
+full-recomputation oracle, signed-delta engine, and independent SQL oracle agree
+on the tested snapshots, with zero claim mismatches, zero answer mismatches,
+and zero invalid certificates. Current-observation and policy-score indexes are
+usable. The integrated suite passes 100 tests with the live DSN.
+
+The additional exact-flip prototype partitions observations by their
+threshold-independent winning score and uses balanced ordered indexes to
+enumerate exactly the labels changed by frozen tie rule v1. Under the explicit
+model in `docs/theory/exact_flip_theorem.md`, a threshold-only policy update is
+expected `O(log E + f + p)`, and explicit maintenance has an `Omega(f+p)`
+write lower bound. Dense flips and high-fanout withdrawals remain linear.
+
+Classification: **known mechanism specialized to GroundLoop**. This is not
+recorded as a novel IVM algorithm, a result faster than DBSP/F-IVM/CROWN, or a
+publication-level theorem. It is retained as a rigorous specialization,
+portfolio artifact, and evaluation target.
+
+Evidence: `docs/m2_implementation_status.md`, `docs/theory/`, and the three
+workstream handoffs under `docs/workstreams/`.
+
 ## 2026-07-18 — M2 In-Memory Delta Contract Implemented
 
-Decision status: implementation accepted; PostgreSQL runtime gate remains
-open.
+Decision status: implementation accepted; superseded only with respect to the
+now-closed PostgreSQL gate by the entry above.
 
 The optimized path is independent of the Python reference oracle: it consumes
 event-local signed contributions, maintains distinct-content reference counts

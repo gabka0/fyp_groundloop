@@ -16,9 +16,9 @@ Host observations:
   `python3 -m pytest` / `python3 -m ruff` / `python3 -m mypy`.
 - The validated versions are inside the development ranges declared by
   `pyproject.toml` (`pytest<10`, `mypy<3`, `ruff<1`).
-- The repository now has a working `.venv`, created with user-space
-  `virtualenv` because the operating-system `python3-venv` package is still
-  missing. The project and normal `dev` dependencies are installed editable.
+- The repository has a working `.venv`; the project and normal `dev`
+  dependencies are installed editable. The system `python3-venv` prerequisite
+  is now installed.
 - Docker Engine 29.6.2 and Docker Compose v5.3.1 are installed. The account is
   in the `docker` group; existing shells may require `sg docker` until the next
   logout/login. The Compose PostgreSQL service is running and healthy.
@@ -26,22 +26,19 @@ Host observations:
   pgvector 0.8.5 available and installed. The repository
   `.venv` now contains Psycopg 3.3.4, SQLAlchemy 2.0.51, pgvector client 0.5.0,
   FastAPI 0.139.2, NumPy 2.5.1, pytest 9.1.1, Ruff 0.15.22, and mypy 2.3.0.
-- `pglast` 7.17 was installed in the user site on 2026-07-18 solely for static
+- `pglast` 7.17 was installed on 2026-07-18 solely for static
   PostgreSQL parsing. It parsed all 29 migration statements and all 6 oracle
   statements. This proves parser acceptance, not execution or constraint/view
   behavior on a live server.
 
-To install the missing privileged host prerequisites using Docker's official
+The privileged host prerequisites were installed using Docker's official
 Ubuntu repository procedure:
 
 ```bash
 scripts/install_system_prerequisites_ubuntu.sh
 ```
 
-Install Docker Engine and the Compose plugin using the instructions for the
-host distribution; package names and repository setup vary. Depending on the
-host's Docker policy, add the user to the Docker group or run Docker through
-the configured service mechanism. Then execute:
+The database gate can be rerun with:
 
 ```bash
 docker compose up -d db

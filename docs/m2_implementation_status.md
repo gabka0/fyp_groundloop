@@ -1,9 +1,8 @@
 # M2 Implementation Status: Relational IVM and Differential Testing
 
-Status: **in progress**. The in-memory algorithms, randomized differential
-gate, epoch coordinator, PostgreSQL schema, SQL oracle, and DB validation
-harness are implemented. M2 is not marked complete until the PostgreSQL
-harness runs successfully on a live PostgreSQL 16 instance.
+Status: **complete**. The in-memory algorithms, randomized differential gate,
+epoch coordinator, PostgreSQL schema, independent SQL oracle, live database
+adapter, and differential validation harness all pass their M2 gates.
 
 Date: 2026-07-18
 
@@ -81,17 +80,35 @@ incremental-engine performance result.
 
 ### PostgreSQL artifacts
 
+- `migrations/000_extensions.sql`: explicit pgvector extension installation.
 - `migrations/001_m2_base.sql`: epochs, immutable/versioned base relations,
   active-version uniqueness, claim-subject observations, observation currency,
   score indexes, materialized state tables, certificates, and status deltas.
 - `sql/m2_full_recompute_oracle.sql`: current decisions, full claim/answer
   state recomputation, certificate validity, and zero-row mismatch views.
-- `scripts/validate_m2_postgres.py`: applies both files in a unique temporary
-  schema, loads a deterministic fixture, compares materialized and oracle
-  state, validates its certificate, and rolls back the entire transaction.
+- `src/groundloop/postgres/snapshot.py`: typed immutable snapshot capture,
+  atomic loading, typed SQL-oracle reads, isolated temporary schemas, and
+  idempotent event recording.
+- `scripts/validate_m2_postgres.py`: applies the SQL in a unique temporary
+  schema, compares Python reference, signed-delta, and SQL state, validates
+  certificates, records server metadata and query plans, and removes the
+  fixture transactionally.
 
-Static validation with `pglast` 7.17 parsed 29 migration statements and 6
-oracle statements. Static parsing is not equivalent to PostgreSQL execution.
+Static validation with `pglast` 7.17 parsed the extension statement, all 29
+base-migration statements, and all 6 oracle statements. Live execution also
+passes on PostgreSQL 16.14 with pgvector 0.8.5.
+
+### Additional evaluation lanes
+
+- `src/groundloop/baselines/` supplies an independent global recomputation
+  baseline, exact keyed affected-claim recomputation, the signed-delta
+  treatment, and explicitly non-equivalent invalidation policies.
+- `src/groundloop/optimized/` supplies an independent exact-flip candidate
+  engine backed by deterministic AVL indexes. For frozen tie rule v1, a
+  threshold-only change has expected `O(log E + f + p)` maintenance time under
+  the stated hash-table model. This is a known ordered-range mechanism
+  specialized to GroundLoop, not a new general IVM result. See
+  `docs/theory/exact_flip_theorem.md`.
 
 ## Correctness scenarios
 
@@ -109,40 +126,36 @@ The automated suite covers:
 - 1,000 randomized events in the normal pytest suite;
 - 100,000 randomized events in the explicit M2 stress gate.
 
-## Validation evidence
+## Final integrated validation evidence
 
 Executed successfully on 2026-07-18:
 
 ```text
-python3 -m pytest -q
-62 passed
+GROUNDLOOP_TEST_DATABASE_URL=... .venv/bin/python -m pytest -q
+100 passed
 
-python3 -m ruff check src tests experiments/streams
+.venv/bin/python -m ruff check .
 All checks passed!
 
-python3 -m mypy --strict src
-Success: no issues found in 10 source files
+.venv/bin/python -m mypy --strict src
+Success: no issues found in 23 source files
+
+GROUNDLOOP_DATABASE_URL=... .venv/bin/python scripts/validate_m2_postgres.py
+PostgreSQL 16.14; pgvector 0.8.5
+0 claim mismatches; 0 answer mismatches; 0 invalid certificates
+current-observation and policy-score indexes usable
 
 PYTHONPATH=src python3 experiments/streams/run_m2_differential.py \
   --events 100000 --events-per-stream 100 --seed 20260718
 100000 events, 1000 streams, no mismatch
+
+PYTHONPATH=src .venv/bin/python \
+  experiments/streams/algorithm_randomized_differential.py \
+  --events 10000 --events-per-stream 100 --seed 20260718
+10000 events, 100 streams, no mismatch
 ```
 
-## Remaining gate
-
-This host has no `docker`, `psql`, or PostgreSQL server, so the SQL was not
-executed against a database. Psycopg is now installed in `.venv`. After running
-the privileged prerequisite installer and starting the Compose service:
-
-```bash
-cp .env.example .env
-docker compose up -d db
-set -a
-source .env
-set +a
-make validate-postgres
-```
-
-M2 can be marked complete only if that command reports zero claim mismatches,
-zero answer mismatches, and zero invalid certificates. Do not begin claiming
-three-engine equality before this gate passes.
+The live randomized PostgreSQL suite covers 20 committed events; the
+100,000-event gate is in-memory and must not be described as a database
+throughput result. Likewise, the structured benchmark is a smoke harness, not
+a dissertation-grade performance result.

@@ -66,8 +66,8 @@ python3 -m pytest
 python3 -m compileall src tests
 ```
 
-M1/M1.1 and the in-memory M2 signed-delta engine, differential harness, and
-semantic-epoch coordinator oracle are implemented and tested. PostgreSQL
-migration/oracle SQL exists but has not been executed because this host has no
-PostgreSQL or Docker runtime. Consult `docs/m2_implementation_status.md` and
-`docs/roadmap.md` before expanding scope.
+M1, M1.1, and M2 are implemented and tested. M2 includes the signed-delta
+engine, differential harness, semantic-epoch coordinator, live PostgreSQL
+third oracle, structured baselines, and the exact-flip policy-index prototype.
+Consult `docs/m2_implementation_status.md` and `docs/roadmap.md` before
+starting M3 or expanding scope.

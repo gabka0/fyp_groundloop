@@ -100,9 +100,10 @@ Exit criteria:
 
 ## M2 — Relational IVM and Differential Testing
 
-Status: in progress. In-memory implementation and SQL artifacts complete on
-2026-07-18; live PostgreSQL validation is blocked because this host has neither
-PostgreSQL nor Docker. See `docs/m2_implementation_status.md`.
+Status: complete (2026-07-18). All integrated tests pass against live
+PostgreSQL 16.14 with pgvector 0.8.5; the Python reference, signed-delta engine,
+and SQL oracle agree on the validated snapshots and randomized DB stream. See
+`docs/m2_implementation_status.md`.
 
 Deliverables:
 
@@ -113,6 +114,9 @@ Deliverables:
 - Generated update streams.
 - Differential comparison after every event.
 - Separate semantic-epoch/publication coordinator oracle (D-20).
+- Structured exact and heuristic baseline harness.
+- Exact-flip policy-index prototype with an explicit output-sensitive bound,
+  adversarial tests, and conservative literature positioning.
 
 Exit criteria:
 
