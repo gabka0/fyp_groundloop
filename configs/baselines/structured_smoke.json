@@ -1,0 +1,35 @@
+{
+  "run_id": "structured-smoke-v1",
+  "warmup": 1,
+  "repetitions": 5,
+  "scenarios": [
+    {
+      "name": "local-small-flip",
+      "seed": 2026071801,
+      "parameters": {
+        "E": 48,
+        "C": 24,
+        "A": 8,
+        "k": 3,
+        "f": 2,
+        "duplicate_content_ratio": 0.25,
+        "skew": 0.5,
+        "locality": "local"
+      }
+    },
+    {
+      "name": "high-fanout-large-flip",
+      "seed": 2026071802,
+      "parameters": {
+        "E": 48,
+        "C": 24,
+        "A": 8,
+        "k": 24,
+        "f": 24,
+        "duplicate_content_ratio": 0.5,
+        "skew": 1.0,
+        "locality": "high_fanout"
+      }
+    }
+  ]
+}
