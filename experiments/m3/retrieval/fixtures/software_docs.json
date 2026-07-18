@@ -1,0 +1,63 @@
+{
+  "corpus_namespace": "groundloop-m3-software-docs-v1",
+  "documents": [
+    {
+      "path": "nimbus/python.md",
+      "text": "Nimbus 3 supports Python 3.11 and Python 3.12. Python 3.10 is no longer supported."
+    },
+    {
+      "path": "nimbus/cache.md",
+      "text": "Nimbus caches successful API responses for sixty seconds by default. Set cache_ttl_seconds to zero to disable this cache."
+    },
+    {
+      "path": "nimbus/auth.md",
+      "text": "Nimbus accepts OAuth 2.0 bearer tokens. Static API keys are supported only by the legacy compatibility endpoint."
+    },
+    {
+      "path": "nimbus/retries.md",
+      "text": "The client retries idempotent requests twice with exponential backoff. POST requests are not retried automatically."
+    },
+    {
+      "path": "nimbus/platforms.md",
+      "text": "Official Nimbus packages are published for Linux, macOS, and Windows."
+    },
+    {
+      "path": "nimbus/config.md",
+      "text": "Configuration is loaded from nimbus.toml and then overridden by environment variables prefixed with NIMBUS_."
+    },
+    {
+      "path": "nimbus/logging.md",
+      "text": "Structured JSON logging is enabled with log_format=json. The default console format is human readable."
+    },
+    {
+      "path": "nimbus/limits.md",
+      "text": "A single upload may contain at most 100 files and each file may be at most 20 MiB."
+    }
+  ],
+  "queries": [
+    {
+      "id": "question-python",
+      "kind": "question",
+      "text": "Which Python versions does Nimbus 3 support?",
+      "relevant_paths": ["nimbus/python.md"]
+    },
+    {
+      "id": "question-cache",
+      "kind": "question",
+      "text": "How long are successful responses cached by default?",
+      "relevant_paths": ["nimbus/cache.md"]
+    },
+    {
+      "id": "claim-auth",
+      "kind": "claim",
+      "text": "Nimbus accepts OAuth 2.0 bearer tokens.",
+      "relevant_paths": ["nimbus/auth.md"]
+    },
+    {
+      "id": "claim-upload",
+      "kind": "claim",
+      "text": "Nimbus limits one upload to 100 files.",
+      "relevant_paths": ["nimbus/limits.md"]
+    }
+  ]
+}
