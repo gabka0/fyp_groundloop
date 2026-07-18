@@ -1,0 +1,18 @@
+{
+  "schema_version": "groundloop-m3-verifier-train-v1",
+  "base_model_id": "cross-encoder/nli-MiniLM2-L6-H768",
+  "base_model_revision": "b95119ce93d3e065de6214e38cd4a97b0f2f2c6d",
+  "seed": 20260718,
+  "max_length": 256,
+  "train_examples_max": 6000,
+  "development_examples_max": 1800,
+  "batch_size": 8,
+  "gradient_accumulation_steps": 4,
+  "epochs": 1,
+  "learning_rate": 0.00002,
+  "weight_decay": 0.01,
+  "warmup_ratio": 0.06,
+  "max_threads": 8,
+  "ece_bins": 10,
+  "bootstrap_resamples": 1000
+}
