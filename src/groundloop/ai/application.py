@@ -36,6 +36,7 @@ from groundloop.ai.pipeline import (
     claim_version_id,
 )
 from groundloop.ai.retrieval import (
+    EmbeddingStore,
     InMemoryCosineStore,
     StaticCosineRetriever,
     claim_query,
@@ -60,6 +61,10 @@ class PublicationStore(Protocol):
     def lookup(self, run_id: str) -> PipelineRunManifest | None: ...
 
     def stage(self, manifest: PipelineRunManifest) -> None: ...
+
+    def prepare_retrieval_store(
+        self, embeddings: tuple[EmbeddingRecord, ...]
+    ) -> EmbeddingStore: ...
 
     def fail(self, manifest: PipelineRunManifest) -> None: ...
 
@@ -226,8 +231,7 @@ class M3Application:
         started = time.perf_counter()
         embeddings = self.embedder.embed(typed_chunks)
         timings.append(self._timing("embedding", started))
-        embedding_store = InMemoryCosineStore()
-        embedding_store.add(embeddings)
+        embedding_store = self.store.prepare_retrieval_store(embeddings)
         retriever = StaticCosineRetriever(self.embedder, embedding_store)
         chunk_by_id = {item.chunk_version_id: item for item in typed_chunks}
 
@@ -451,6 +455,13 @@ class InMemoryPublicationStore:
         if existing is not None and existing != manifest:
             raise ArtifactConflictError("in-memory run payload conflict")
         self.manifests[manifest.run_id] = manifest
+
+    def prepare_retrieval_store(
+        self, embeddings: tuple[EmbeddingRecord, ...]
+    ) -> EmbeddingStore:
+        store = InMemoryCosineStore()
+        store.add(embeddings)
+        return store
 
     def fail(self, manifest: PipelineRunManifest) -> None:
         existing = self.manifests.get(manifest.run_id)

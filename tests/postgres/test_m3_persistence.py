@@ -230,6 +230,43 @@ def test_publish_is_atomic_and_replay_reports_reuse(
         ).fetchone() == (1,)
 
 
+def test_staged_retrieval_uses_session_private_pgvector_index(
+    live_connection: Connection[tuple[object, ...]],
+) -> None:
+    with temporary_m2_schema(live_connection):
+        store = PostgresArtifactStore(live_connection)
+        embeddings = (
+            EmbeddingRecord(
+                "chunk-a",
+                "embedder",
+                (1.0,) + (0.0,) * 383,
+                "1" * 64,
+            ),
+            EmbeddingRecord(
+                "chunk-b",
+                "embedder",
+                (0.0, 1.0) + (0.0,) * 382,
+                "2" * 64,
+            ),
+        )
+
+        retrieval = store.prepare_retrieval_store(embeddings)
+        hits = retrieval.search_cosine(
+            vector=(0.0, 1.0) + (0.0,) * 382,
+            model_artifact_id="embedder",
+            limit=2,
+        )
+
+        assert tuple(hit.chunk_version_id for hit in hits) == (
+            "chunk-b",
+            "chunk-a",
+        )
+        assert hits[0].distance == pytest.approx(0.0)
+        assert live_connection.execute(
+            "SELECT count(*) FROM groundloop_chunk_embedding"
+        ).fetchone() == (0,)
+
+
 def test_verifier_change_appends_and_supersedes_without_overwrite(
     live_connection: Connection[tuple[object, ...]],
 ) -> None:

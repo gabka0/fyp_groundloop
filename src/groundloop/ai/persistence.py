@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -18,8 +19,10 @@ from groundloop.ai.contracts import (
     PipelineRunStatus,
     PromptArtifact,
 )
+from groundloop.ai.embeddings.common import normalized_vector
 from groundloop.ai.manifest import manifest_from_dict, manifest_to_dict
 from groundloop.ai.pipeline import CorpusDocument, StructuredGroundingResult
+from groundloop.ai.retrieval.store import EmbeddingStore, StoredEmbeddingHit
 from groundloop.domain import DecisionPolicy
 from groundloop.errors import ArtifactConflictError, ValidationError
 from groundloop.postgres import (
@@ -64,6 +67,42 @@ class M3PublicationBundle:
             raise ValidationError("manifest claims differ from extraction result")
 
 
+@dataclass(slots=True)
+class StagedPgvectorCosineStore:
+    """Session-private pgvector index used before atomic final publication."""
+
+    connection: Connection[Any]
+
+    def search_cosine(
+        self,
+        *,
+        vector: tuple[float, ...],
+        model_artifact_id: str,
+        limit: int,
+    ) -> tuple[StoredEmbeddingHit, ...]:
+        if limit <= 0:
+            raise ValidationError("retrieval limit must be positive")
+        values = normalized_vector(vector)
+        literal = "[" + ",".join(format(item, ".17g") for item in values) + "]"
+        rows = self.connection.execute(
+            """
+            SELECT chunk_version_id, embedding <=> %s::vector AS distance
+            FROM pg_temp.groundloop_m3_staged_embedding
+            WHERE model_artifact_id = %s
+            ORDER BY distance, chunk_version_id
+            LIMIT %s
+            """,
+            (literal, model_artifact_id, limit),
+        ).fetchall()
+        hits = tuple(
+            StoredEmbeddingHit(str(chunk_id), float(distance))
+            for chunk_id, distance in rows
+        )
+        if any(not math.isfinite(item.distance) for item in hits):
+            raise ValidationError("staged pgvector returned non-finite distance")
+        return hits
+
+
 class PostgresArtifactStore:
     """Conflict-detecting M3 store with staged, terminal run transitions."""
 
@@ -98,6 +137,49 @@ class PostgresArtifactStore:
         if row is None or not row[0]:
             return None
         return manifest_from_dict(row[0])
+
+    def prepare_retrieval_store(
+        self, embeddings: tuple[EmbeddingRecord, ...]
+    ) -> EmbeddingStore:
+        """Build a session-private pgvector index for pre-publication retrieval."""
+        with self._connection.transaction():
+            self._connection.execute(
+                """
+                DROP TABLE IF EXISTS pg_temp.groundloop_m3_staged_embedding
+                """
+            )
+            self._connection.execute(
+                """
+                CREATE TEMP TABLE groundloop_m3_staged_embedding (
+                    chunk_version_id text NOT NULL,
+                    model_artifact_id text NOT NULL,
+                    embedding vector(384) NOT NULL,
+                    input_hash char(64) NOT NULL,
+                    PRIMARY KEY (chunk_version_id, model_artifact_id)
+                ) ON COMMIT PRESERVE ROWS
+                """
+            )
+            for item in embeddings:
+                self._connection.execute(
+                    """
+                    INSERT INTO groundloop_m3_staged_embedding VALUES
+                        (%s, %s, %s, %s)
+                    """,
+                    (
+                        item.chunk_version_id,
+                        item.model_artifact_id,
+                        list(item.vector),
+                        item.input_hash,
+                    ),
+                )
+            self._connection.execute(
+                """
+                CREATE INDEX groundloop_m3_staged_embedding_hnsw
+                ON groundloop_m3_staged_embedding
+                USING hnsw (embedding vector_cosine_ops)
+                """
+            )
+        return StagedPgvectorCosineStore(self._connection)
 
     def stage(self, manifest: PipelineRunManifest) -> None:
         if manifest.status is not PipelineRunStatus.STAGED:
