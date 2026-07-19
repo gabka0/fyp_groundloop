@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Any
 
-from psycopg import Connection
+from psycopg import Connection, Cursor
 from psycopg.types.json import Jsonb
 
 from groundloop.errors import EventConflictError, InvalidEventError, ValidationError
@@ -59,7 +59,8 @@ from groundloop.m4.runtime.epoch import (
 )
 
 FailureInjector = Callable[[str], None]
-PublicationAction = Callable[[Connection[Any], int], None]
+StructuralAction = Callable[[Cursor[Any], int], None]
+PublicationAction = Callable[[Cursor[Any], int], None]
 _RUNTIME_MANIFEST_KEY = "_groundloop_m4_runtime_v1"
 
 
@@ -295,10 +296,16 @@ class PostgresM4RuntimeStore:
         discovery_scopes: tuple[DiscoveryScope, ...] = (),
         *,
         registry_snapshot_id: str,
+        structural_action: StructuralAction,
         event_manifest: Mapping[str, object] | None = None,
         failure_injector: FailureInjector | None = None,
     ) -> OpenEpochResult:
-        """Atomically register a serialized structural epoch and root work."""
+        """Atomically run structural mutation and declare the epoch/root work.
+
+        ``structural_action`` receives only a transaction-scoped cursor, not
+        the connection, so it cannot commit the document/chunk mutation apart
+        from the epoch declaration.
+        """
         canonical_jobs = tuple(sorted(root_jobs, key=lambda item: item.job_id))
         canonical_scopes = tuple(
             sorted(discovery_scopes, key=lambda item: item.root_job_id)
@@ -419,6 +426,10 @@ class PostgresM4RuntimeStore:
                     Jsonb(manifest_json),
                 ),
             )
+            with self._connection.cursor() as transaction_cursor:
+                structural_action(transaction_cursor, epoch_id)
+            if failure_injector is not None:
+                failure_injector("open_structural_written")
             for spec in canonical_jobs:
                 self._insert_job(epoch_id, spec, created_revision=1)
             for scope in canonical_scopes:
@@ -755,7 +766,8 @@ class PostgresM4RuntimeStore:
                 raise InvalidEventError("SQL coordination surface is not sealable")
             if failure_injector is not None:
                 failure_injector("seal_checked")
-            publication_action(self._connection, epoch_id)
+            with self._connection.cursor() as transaction_cursor:
+                publication_action(transaction_cursor, epoch_id)
             head = self._connection.execute(
                 """
                 SELECT epoch_id FROM groundloop_m4_publication_head

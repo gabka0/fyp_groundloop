@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from psycopg import Connection
+from psycopg import Connection, Cursor
 
 from groundloop.errors import EventConflictError, InvalidEventError
 from groundloop.m4.contracts import (
@@ -103,8 +103,8 @@ def _seed_base(connection: Connection[tuple[object, ...]]) -> int:
     return sealed_epoch
 
 
-def _advance_head(connection: Connection[Any], epoch_id: int) -> None:
-    connection.execute(
+def _advance_head(cursor: Cursor[Any], epoch_id: int) -> None:
+    cursor.execute(
         """
         INSERT INTO groundloop_m4_publication_head(singleton, epoch_id)
         VALUES (true, %s)
@@ -113,6 +113,10 @@ def _advance_head(connection: Connection[Any], epoch_id: int) -> None:
         """,
         (epoch_id,),
     )
+
+
+def _no_structural(_cursor: Cursor[Any], _epoch_id: int) -> None:
+    return
 
 
 def _policy(cap: int = 4) -> CandidatePolicyManifest:
@@ -233,6 +237,7 @@ def _opened_store(
         (root,),
         (scope,),
         registry_snapshot_id="registry-1",
+        structural_action=_no_structural,
         event_manifest={"fixture": "runtime-store-v1"},
     )
     return store, opened.epoch.epoch_id, root
@@ -262,6 +267,7 @@ def test_parent_expansion_retry_child_completion_and_seal_match_pure_model(
         (root,),
         (DiscoveryScope(root.job_id, "registry-1", ("claim-1",)),),
         registry_snapshot_id="registry-1",
+        structural_action=_no_structural,
         event_manifest={"fixture": "runtime-store-v1"},
     ).replayed
 
@@ -415,6 +421,7 @@ def test_serialization_rejects_second_epoch_until_first_seals(
             second_update,
             (),
             registry_snapshot_id="registry-1",
+            structural_action=_no_structural,
         )
     with pytest.raises(EventConflictError, match="different declaration"):
         original = store.read_epoch(epoch_id)
@@ -422,7 +429,52 @@ def test_serialization_rejects_second_epoch_until_first_seals(
             replace(original.update, payload_hash=_hash("conflict")),
             original.jobs[0:0],
             registry_snapshot_id="registry-1",
+            structural_action=_no_structural,
         )
+
+
+def test_structural_callback_and_epoch_declaration_roll_back_together(
+    m4_connection: Connection[tuple[object, ...]],
+) -> None:
+    published_epoch = _seed_base(m4_connection)
+    store = PostgresM4RuntimeStore(m4_connection)
+    store.register_candidate_policy(_policy())
+    root = _job(JobKind.IMPACT_DISCOVERY, event_id="atomic-open-event")
+
+    def write_structural(cursor: Cursor[Any], epoch_id: int) -> None:
+        cursor.execute(
+            """
+            INSERT INTO groundloop_document
+                (document_id, source_uri, authority_class)
+            VALUES (%s, %s, %s)
+            """,
+            (f"new-doc-{epoch_id}", "new.txt", "test"),
+        )
+
+    def crash(point: str) -> None:
+        if point == "open_structural_written":
+            raise RuntimeError("injected structural crash")
+
+    with pytest.raises(RuntimeError, match="injected structural crash"):
+        store.open_epoch(
+            _update("atomic-open-event", published_epoch),
+            (root,),
+            (DiscoveryScope(root.job_id, "registry-1", ("claim-1",)),),
+            registry_snapshot_id="registry-1",
+            structural_action=write_structural,
+            failure_injector=crash,
+        )
+
+    assert m4_connection.execute(
+        "SELECT count(*) FROM groundloop_epoch WHERE event_id = 'atomic-open-event'"
+    ).fetchone() == (0,)
+    assert m4_connection.execute(
+        "SELECT count(*) FROM groundloop_document WHERE source_uri = 'new.txt'"
+    ).fetchone() == (0,)
+    assert m4_connection.execute(
+        "SELECT count(*) FROM groundloop_semantic_job WHERE job_id = %s",
+        (root.job_id,),
+    ).fetchone() == (0,)
 
 
 def test_initialized_publication_head_is_authoritative_over_unrelated_seal(
@@ -452,6 +504,7 @@ def test_initialized_publication_head_is_authoritative_over_unrelated_seal(
         (root,),
         (DiscoveryScope(root.job_id, "registry-1", ("claim-1",)),),
         registry_snapshot_id="registry-1",
+        structural_action=_no_structural,
     )
 
     assert opened.epoch.update.previous_published_epoch_id == published_epoch
