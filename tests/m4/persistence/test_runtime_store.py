@@ -26,7 +26,11 @@ from groundloop.m4.contracts import (
     VectorIndexKind,
 )
 from groundloop.m4.persistence import PostgresM4RuntimeStore
-from groundloop.m4.runtime.epoch import CompletionPlan, RuntimeEpochState
+from groundloop.m4.runtime.epoch import (
+    CompletionPlan,
+    RuntimeEpochState,
+    TransitionResult,
+)
 from groundloop.postgres import record_epoch
 
 
@@ -243,6 +247,22 @@ def _opened_store(
     return store, opened.epoch.epoch_id, root
 
 
+def _complete_store(
+    store: PostgresM4RuntimeStore,
+    plan: CompletionPlan,
+    attempt: JobAttempt,
+    *,
+    active_chunk_ids: frozenset[str],
+) -> TransitionResult:
+    return store.complete(
+        plan,
+        active_chunk_ids=active_chunk_ids,
+        attempt_id=attempt.attempt_id,
+        lease_token_hash=attempt.lease_token_hash,
+        lease_expected_revision=plan.expected_revision,
+    )
+
+
 def test_candidate_policy_registration_is_content_validated(
     m4_connection: Connection[tuple[object, ...]],
 ) -> None:
@@ -278,7 +298,8 @@ def test_parent_expansion_retry_child_completion_and_seal_match_pure_model(
         lease_expires_at=datetime.now(UTC) + timedelta(minutes=1),
     )
     store.mark_retryable_failure(epoch_id, root.job_id, first.attempt_id)
-    store.start_attempt(epoch_id, _attempt(root, 2))
+    second = _attempt(root, 2)
+    store.start_attempt(epoch_id, second)
     child = _job(JobKind.VERIFY_PAIR, event_id="event-1", parent=root.job_id)
     before_parent = store.read_epoch(epoch_id)
     parent_plan = CompletionPlan(
@@ -287,25 +308,32 @@ def test_parent_expansion_retry_child_completion_and_seal_match_pure_model(
         _completion(root, JobState.COMPLETED_ACTIVE, (child,)),
         (child,),
     )
-    store.complete(parent_plan, active_chunk_ids=frozenset({"chunk-1"}))
-    assert store.complete(parent_plan, active_chunk_ids=frozenset({"chunk-1"})).replayed
+    _complete_store(store, parent_plan, second, active_chunk_ids=frozenset({"chunk-1"}))
+    assert _complete_store(
+        store, parent_plan, second, active_chunk_ids=frozenset({"chunk-1"})
+    ).replayed
     conflicting_completion = replace(
         parent_plan,
         completion=_completion(root, JobState.COMPLETED_INACTIVE, (child,)),
     )
     with pytest.raises(EventConflictError, match="different content"):
-        store.complete(
+        _complete_store(
+            store,
             conflicting_completion,
+            second,
             active_chunk_ids=frozenset({"chunk-1"}),
         )
-    store.start_attempt(epoch_id, _attempt(child))
+    child_attempt = _attempt(child)
+    store.start_attempt(epoch_id, child_attempt)
     before_child = store.read_epoch(epoch_id)
     child_plan = CompletionPlan(
         epoch_id,
         before_child.revision,
         _completion(child, JobState.COMPLETED_ACTIVE),
     )
-    store.complete(child_plan, active_chunk_ids=frozenset({"chunk-1"}))
+    _complete_store(
+        store, child_plan, child_attempt, active_chunk_ids=frozenset({"chunk-1"})
+    )
     complete_epoch = store.read_epoch(epoch_id)
     assert complete_epoch.state is RuntimeEpochState.SEMANTIC_COMPLETE
     sealed = store.seal_epoch(
@@ -322,7 +350,8 @@ def test_completion_failure_injection_rolls_back_children_parent_and_revision(
     m4_connection: Connection[tuple[object, ...]],
 ) -> None:
     store, epoch_id, root = _opened_store(m4_connection)
-    store.start_attempt(epoch_id, _attempt(root))
+    root_attempt = _attempt(root)
+    store.start_attempt(epoch_id, root_attempt)
     child = _job(JobKind.VERIFY_PAIR, event_id="event-1", parent=root.job_id)
     before = store.read_book()
     plan = CompletionPlan(
@@ -340,6 +369,9 @@ def test_completion_failure_injection_rolls_back_children_parent_and_revision(
         store.complete(
             plan,
             active_chunk_ids=frozenset({"chunk-1"}),
+            attempt_id=root_attempt.attempt_id,
+            lease_token_hash=root_attempt.lease_token_hash,
+            lease_expected_revision=plan.expected_revision,
             failure_injector=crash,
         )
 
@@ -350,18 +382,92 @@ def test_completion_failure_injection_rolls_back_children_parent_and_revision(
     ).fetchone() == (0,)
 
 
+def test_completion_rejects_stale_attempt_and_updates_only_bound_attempt(
+    m4_connection: Connection[tuple[object, ...]],
+) -> None:
+    store, epoch_id, root = _opened_store(m4_connection)
+    first = _attempt(root)
+    first_started = store.start_attempt(epoch_id, first)
+    first_revision = next(
+        epoch.revision
+        for epoch in first_started.book.epochs
+        if epoch.epoch_id == epoch_id
+    )
+    store.mark_retryable_failure(epoch_id, root.job_id, first.attempt_id)
+    second = _attempt(root, 2)
+    second_started = store.start_attempt(epoch_id, second)
+    current = next(
+        epoch for epoch in second_started.book.epochs if epoch.epoch_id == epoch_id
+    )
+    plan = CompletionPlan(
+        epoch_id,
+        current.revision,
+        _completion(root, JobState.COMPLETED_ACTIVE),
+    )
+    before = store.read_book()
+
+    with pytest.raises(EventConflictError, match="stale attempt"):
+        store.complete(
+            plan,
+            active_chunk_ids=frozenset({"chunk-1"}),
+            attempt_id=first.attempt_id,
+            lease_token_hash=first.lease_token_hash,
+            lease_expected_revision=first_revision,
+        )
+    with pytest.raises(EventConflictError, match="lease token"):
+        store.complete(
+            plan,
+            active_chunk_ids=frozenset({"chunk-1"}),
+            attempt_id=second.attempt_id,
+            lease_token_hash=_hash("wrong-lease-token"),
+            lease_expected_revision=current.revision,
+        )
+    assert store.read_book() == before
+    assert m4_connection.execute(
+        """
+        SELECT attempt_id, attempt_state
+        FROM groundloop_semantic_job_attempt
+        WHERE job_id = %s ORDER BY attempt_ordinal
+        """,
+        (root.job_id,),
+    ).fetchall() == [
+        (first.attempt_id, "failed"),
+        (second.attempt_id, "leased"),
+    ]
+
+    completed = _complete_store(
+        store, plan, second, active_chunk_ids=frozenset({"chunk-1"})
+    )
+    assert not completed.replayed
+    assert m4_connection.execute(
+        """
+        SELECT attempt_id, attempt_state
+        FROM groundloop_semantic_job_attempt
+        WHERE job_id = %s ORDER BY attempt_ordinal
+        """,
+        (root.job_id,),
+    ).fetchall() == [
+        (first.attempt_id, "failed"),
+        (second.attempt_id, "completed"),
+    ]
+
+
 def test_seal_failure_injection_preserves_complete_unsealed_epoch(
     m4_connection: Connection[tuple[object, ...]],
 ) -> None:
     store, epoch_id, root = _opened_store(m4_connection)
-    store.start_attempt(epoch_id, _attempt(root))
+    root_attempt = _attempt(root)
+    store.start_attempt(epoch_id, root_attempt)
     before_done = store.read_epoch(epoch_id)
-    store.complete(
-        CompletionPlan(
-            epoch_id,
-            before_done.revision,
-            _completion(root, JobState.COMPLETED_ACTIVE),
-        ),
+    completion_plan = CompletionPlan(
+        epoch_id,
+        before_done.revision,
+        _completion(root, JobState.COMPLETED_ACTIVE),
+    )
+    _complete_store(
+        store,
+        completion_plan,
+        root_attempt,
         active_chunk_ids=frozenset({"chunk-1"}),
     )
     before_seal = store.read_book()
@@ -389,7 +495,8 @@ def test_failed_epoch_replay_conflict_and_late_inactive_completion(
     m4_connection: Connection[tuple[object, ...]],
 ) -> None:
     store, epoch_id, root = _opened_store(m4_connection)
-    store.start_attempt(epoch_id, _attempt(root))
+    root_attempt = _attempt(root)
+    store.start_attempt(epoch_id, root_attempt)
     running = store.read_epoch(epoch_id)
     failed = store.fail_epoch(epoch_id, running.revision, "operator stop")
     assert failed.book.active_epoch_id is None
@@ -405,10 +512,17 @@ def test_failed_epoch_replay_conflict_and_late_inactive_completion(
         current.revision,
         _completion(root, JobState.COMPLETED_INACTIVE),
     )
-    store.complete(late, active_chunk_ids=frozenset())
+    _complete_store(store, late, root_attempt, active_chunk_ids=frozenset())
     persisted = store.read_epoch(epoch_id)
     assert persisted.state is RuntimeEpochState.FAILED
     assert persisted.failure_reason == "operator stop"
+    assert m4_connection.execute(
+        """
+        SELECT attempt_state FROM groundloop_semantic_job_attempt
+        WHERE attempt_id = %s
+        """,
+        (root_attempt.attempt_id,),
+    ).fetchone() == ("completed",)
 
 
 def test_serialization_rejects_second_epoch_until_first_seals(

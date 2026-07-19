@@ -152,17 +152,17 @@ class StructuralPayload:
 
     @property
     def inserted_chunk_ids(self) -> tuple[str, ...]:
-        return () if self.inserted is None else tuple(
-            chunk.chunk_version_id for chunk in self.inserted.chunks
+        return (
+            ()
+            if self.inserted is None
+            else tuple(chunk.chunk_version_id for chunk in self.inserted.chunks)
         )
 
     @property
     def manifest(self) -> dict[str, object]:
         return {
             "schema": "groundloop-m4-structural-payload-v1",
-            "deactivated_document_version_id": (
-                self.deactivated_document_version_id
-            ),
+            "deactivated_document_version_id": (self.deactivated_document_version_id),
             "inserted_document_version_id": (
                 None
                 if self.inserted is None
@@ -322,9 +322,7 @@ class PostgresM4VerificationExecutionWriter:
                 "persisted observation differs from model artifact"
             )
         raw_logits = artifact.result.raw_logits
-        calibration_hash = (
-            self.verifier_port.adapter.spec.calibration_artifact_sha256
-        )
+        calibration_hash = self.verifier_port.adapter.spec.calibration_artifact_sha256
         if raw_logits is None or calibration_hash is None:
             raise ValidationError(
                 "durable M4 model provenance requires raw logits and calibration hash"
@@ -867,8 +865,8 @@ class PostgresM4ApplicationPorts:
         self._failure_injector = failure_injector
         self._fallback_blocked: set[str] = set()
         head = self._publication_head()
-        self._published_repository, self._published_engine = (
-            _load_published_repository(connection, head)
+        self._published_repository, self._published_engine = _load_published_repository(
+            connection, head
         )
         self._working_repository = deepcopy(self._published_repository)
         self._working_engine = deepcopy(self._published_engine)
@@ -1545,6 +1543,24 @@ class PostgresM4ApplicationPorts:
             if claim_evaluation_state(epoch, claim_id).value == "pending"
         )
 
+    @staticmethod
+    def _completion_lease_binding(lease: JobLease, job_id: str) -> tuple[str, str, int]:
+        if lease.job_id != job_id:
+            raise EventConflictError("completion lease belongs to another job")
+        if not lease.should_execute or lease.already_completed:
+            raise EventConflictError("completion requires an executable job lease")
+        if (
+            lease.attempt_id is None
+            or lease.lease_token_hash is None
+            or lease.expected_revision is None
+        ):
+            raise ValidationError("executable lease binding is incomplete")
+        return (
+            lease.attempt_id,
+            lease.lease_token_hash,
+            lease.expected_revision,
+        )
+
     def acquire_job(self, epoch_id: int, spec: LogicalJobSpec) -> JobLease:
         epoch = self.runtime_store.read_epoch(epoch_id)
         job = next(
@@ -1568,10 +1584,24 @@ class PostgresM4ApplicationPorts:
                     "m4-lease-token-v1", spec.job_id, str(ordinal)
                 ),
             )
-            self.runtime_store.start_attempt(epoch_id, attempt)
+            started = self.runtime_store.start_attempt(epoch_id, attempt)
+            epoch = next(
+                item for item in started.book.epochs if item.epoch_id == epoch_id
+            )
         elif job.state is not JobState.RUNNING:
             raise InvalidEventError("job is not executable")
-        return JobLease(spec.job_id, True, False)
+        else:
+            if not job.attempts:
+                raise ValidationError("running job has no persisted attempt")
+            attempt = job.attempts[-1]
+        return JobLease(
+            spec.job_id,
+            True,
+            False,
+            attempt_id=attempt.attempt_id,
+            lease_token_hash=attempt.lease_token_hash,
+            expected_revision=epoch.revision,
+        )
 
     def complete_expansion(
         self,
@@ -1580,15 +1610,21 @@ class PostgresM4ApplicationPorts:
         completion: JobCompletion,
         child_jobs: tuple[LogicalJobSpec, ...],
     ) -> None:
-        del lease
+        attempt_id, lease_token_hash, lease_revision = self._completion_lease_binding(
+            lease, completion.job_id
+        )
         with self.connection.transaction():
             epoch = self.runtime_store.read_epoch(epoch_id)
-            self.runtime_store.complete(
+            transition = self.runtime_store.complete(
                 CompletionPlan(epoch_id, epoch.revision, completion, child_jobs),
                 active_chunk_ids=self._active_chunk_ids(),
+                attempt_id=attempt_id,
+                lease_token_hash=lease_token_hash,
+                lease_expected_revision=lease_revision,
             )
-            with self.connection.cursor() as cursor:
-                self._sync_evaluation(cursor, epoch_id)
+            if not transition.replayed:
+                with self.connection.cursor() as cursor:
+                    self._sync_evaluation(cursor, epoch_id)
 
     def children_of(
         self, epoch_id: int, root_job_id: str
@@ -1644,7 +1680,11 @@ class PostgresM4ApplicationPorts:
         *,
         make_effective: bool,
     ) -> ObservationCompletionReceipt:
-        del lease
+        if completion.job_id != verifier_job.job_id:
+            raise EventConflictError("completion belongs to another verifier job")
+        attempt_id, lease_token_hash, lease_revision = self._completion_lease_binding(
+            lease, completion.job_id
+        )
         if observation.key != (
             SubjectKind.CLAIM,
             verifier_job.pair.claim_id if verifier_job.pair else "",
@@ -1656,9 +1696,17 @@ class PostgresM4ApplicationPorts:
         if make_effective != expected_effective:
             raise EventConflictError("observation activity and completion disagree")
 
+        known_epoch = self.runtime_store.read_epoch(epoch_id)
+        known_job = next(
+            (job for job in known_epoch.jobs if job.spec.job_id == completion.job_id),
+            None,
+        )
+        if known_job is None:
+            raise InvalidEventError("verifier completion names an unknown job")
+        known_completion = known_job.completion is not None
         staged_repository = deepcopy(self._working_repository)
         staged_engine = deepcopy(self._working_engine)
-        if make_effective:
+        if make_effective and not known_completion:
             before = deepcopy(staged_repository)
             staged_repository.register_observation(observation)
             staged_engine.apply_committed_event(
@@ -1675,16 +1723,24 @@ class PostgresM4ApplicationPorts:
             )
 
         inserted = False
+        replayed = False
         with self.connection.transaction():
             epoch = self.runtime_store.read_epoch(epoch_id)
-            self.runtime_store.complete(
+            transition = self.runtime_store.complete(
                 CompletionPlan(epoch_id, epoch.revision, completion),
                 active_chunk_ids=self._active_chunk_ids(),
+                attempt_id=attempt_id,
+                lease_token_hash=lease_token_hash,
+                lease_expected_revision=lease_revision,
             )
+            replayed = transition.replayed
             self._inject("verifier_runtime_completed")
-            inserted = self._insert_observation(observation, epoch_id, completion)
+            if replayed:
+                self._validate_observation(observation, epoch_id, completion)
+            else:
+                inserted = self._insert_observation(observation, epoch_id, completion)
             self._inject("verifier_observation_archived")
-            if verifier_job.pair is not None:
+            if not replayed and verifier_job.pair is not None:
                 self.connection.execute(
                     """
                     UPDATE groundloop_candidate_frontier
@@ -1706,8 +1762,18 @@ class PostgresM4ApplicationPorts:
                     self._verification_writer(
                         cursor, epoch_id, verifier_job, completion, observation
                     )
-            completed_epoch = self.runtime_store.read_epoch(epoch_id)
-            if make_effective:
+            if replayed:
+                with self.connection.cursor() as cursor:
+                    self._validate_verifier_completion_replay(
+                        cursor,
+                        epoch_id,
+                        completion.job_id,
+                        observation,
+                        make_effective=make_effective,
+                    )
+            else:
+                completed_epoch = self.runtime_store.read_epoch(epoch_id)
+            if make_effective and not replayed:
                 self._insert_working_observation_delta(
                     epoch_id, completed_epoch.revision, observation
                 )
@@ -1724,8 +1790,11 @@ class PostgresM4ApplicationPorts:
                         cursor, epoch_id, staged_repository, staged_engine
                     )
                 self._inject("verifier_state_written")
-            with self.connection.cursor() as cursor:
-                self._sync_evaluation(cursor, epoch_id)
+            if not replayed:
+                with self.connection.cursor() as cursor:
+                    self._sync_evaluation(cursor, epoch_id)
+        if replayed:
+            return ObservationCompletionReceipt(False, False)
         if make_effective:
             self._working_repository = staged_repository
             self._working_engine = staged_engine
@@ -1770,11 +1839,26 @@ class PostgresM4ApplicationPorts:
                 ),
             ),
         ).fetchone()
+        self._validate_observation(observation, epoch_id, completion)
+        return inserted is not None
+
+    def _validate_observation(
+        self,
+        observation: SemanticObservation,
+        epoch_id: int,
+        completion: JobCompletion,
+    ) -> None:
+        raw_output_hash = (
+            self._verification_writer.raw_output_hash(completion.result_artifact_id)
+            if self._verification_writer is not None
+            else completion.result_artifact_hash
+        )
         row = self.connection.execute(
             """
             SELECT subject_kind, subject_id, chunk_version_id, task_type,
                    support_score, refute_score, neutral_score, model_id,
-                   model_version, prompt_version, input_hash
+                   model_version, prompt_version, input_hash, produced_epoch,
+                   raw_output_hash
             FROM groundloop_semantic_observation WHERE observation_id = %s
             """,
             (observation.observation_id,),
@@ -1791,12 +1875,95 @@ class PostgresM4ApplicationPorts:
             observation.producer.model_version,
             observation.producer.prompt_version,
             observation.input_hash,
+            epoch_id,
+            raw_output_hash,
         )
         if row is None or tuple(row) != expected:
             raise EventConflictError(
                 "observation identity was reused with different content"
             )
-        return inserted is not None
+
+    def _validate_verifier_completion_replay(
+        self,
+        cursor: Cursor[Any],
+        epoch_id: int,
+        job_id: str,
+        observation: SemanticObservation,
+        *,
+        make_effective: bool,
+    ) -> None:
+        completed = cursor.execute(
+            """
+            SELECT completed_revision FROM groundloop_semantic_job
+            WHERE epoch_id = %s AND job_id = %s
+            """,
+            (epoch_id, job_id),
+        ).fetchone()
+        if completed is None or completed[0] is None:
+            raise EventConflictError("replayed verifier job lacks completion revision")
+        delta = cursor.execute(
+            """
+            SELECT base_observation_id, working_observation_id,
+                   installed_revision
+            FROM groundloop_working_observation_delta
+            WHERE epoch_id = %s AND subject_kind = %s AND subject_id = %s
+              AND chunk_version_id = %s AND task_type = %s
+            """,
+            (
+                epoch_id,
+                observation.subject_kind.value,
+                observation.subject_id,
+                observation.chunk_version_id,
+                observation.task_type,
+            ),
+        ).fetchone()
+        if not make_effective:
+            if delta is not None and delta[1] == observation.observation_id:
+                raise EventConflictError(
+                    "inactive completion replay has an effective observation delta"
+                )
+            return
+        previous = cursor.execute(
+            """
+            SELECT previous_published_epoch_id FROM groundloop_m4_update
+            WHERE epoch_id = %s
+            """,
+            (epoch_id,),
+        ).fetchone()
+        if previous is None:
+            raise EventConflictError("replayed verifier epoch lacks update metadata")
+        base = None
+        if previous[0] is not None:
+            base_row = cursor.execute(
+                """
+                SELECT observation_id
+                FROM groundloop_published_observation_currency
+                WHERE subject_kind = %s AND subject_id = %s
+                  AND chunk_version_id = %s AND task_type = %s
+                  AND valid_from_epoch <= %s
+                  AND (valid_to_epoch IS NULL OR %s < valid_to_epoch)
+                """,
+                (
+                    observation.subject_kind.value,
+                    observation.subject_id,
+                    observation.chunk_version_id,
+                    observation.task_type,
+                    previous[0],
+                    previous[0],
+                ),
+            ).fetchone()
+            base = None if base_row is None else base_row[0]
+        expected = (base, observation.observation_id, int(completed[0]))
+        if delta is None or tuple(delta) != expected:
+            raise EventConflictError(
+                "replayed verifier completion differs from its working delta"
+            )
+        self._assert_grounding_equality(
+            cursor,
+            epoch_id,
+            self._working_repository,
+            self._working_engine,
+        )
 
     def _insert_working_observation_delta(
         self, epoch_id: int, revision: int, observation: SemanticObservation

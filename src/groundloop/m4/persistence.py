@@ -602,18 +602,52 @@ class PostgresM4RuntimeStore:
         plan: CompletionPlan,
         *,
         active_chunk_ids: frozenset[str],
+        attempt_id: str,
+        lease_token_hash: str,
+        lease_expected_revision: int,
         failure_injector: FailureInjector | None = None,
     ) -> TransitionResult:
         before = self.read_book()
+        before_epoch = self._epoch(before, plan.expected_epoch_id)
+        before_job = next(
+            (
+                job
+                for job in before_epoch.jobs
+                if job.spec.job_id == plan.completion.job_id
+            ),
+            None,
+        )
+        if before_job is None:
+            raise InvalidEventError("completion names an unknown job")
+        self._validate_completion_lease(
+            before_epoch,
+            before_job,
+            attempt_id=attempt_id,
+            lease_token_hash=lease_token_hash,
+            lease_expected_revision=lease_expected_revision,
+        )
         expected = apply_pure_completion(
             before, plan, active_chunk_ids=active_chunk_ids
         )
         if expected.replayed:
+            with self._connection.transaction():
+                self._lock_completion_attempt(
+                    plan.completion.job_id,
+                    attempt_id=attempt_id,
+                    lease_token_hash=lease_token_hash,
+                    expected_state="completed",
+                )
             return expected
         expected_epoch = self._epoch(expected.book, plan.expected_epoch_id)
         completed_revision = expected_epoch.revision
         with self._connection.transaction():
             self._lock_revision(plan.expected_epoch_id, plan.expected_revision)
+            self._lock_completion_attempt(
+                plan.completion.job_id,
+                attempt_id=attempt_id,
+                lease_token_hash=lease_token_hash,
+                expected_state="leased",
+            )
             for child in plan.child_jobs:
                 self._insert_job(
                     plan.expected_epoch_id,
@@ -635,14 +669,14 @@ class PostgresM4RuntimeStore:
             if failure_injector is not None:
                 failure_injector("completion_children_written")
             closure = plan.completion.child_closure
-            self._connection.execute(
+            completed_jobs = self._connection.execute(
                 """
                 UPDATE groundloop_semantic_job
                 SET job_state = %s, child_closed = %s, child_set_hash = %s,
                     completion_digest = %s, result_artifact_id = %s,
                     result_artifact_hash = %s, completed_revision = %s,
                     completed_at = now()
-                WHERE job_id = %s AND epoch_id = %s
+                WHERE job_id = %s AND epoch_id = %s AND job_state = 'running'
                 """,
                 (
                     plan.completion.terminal_state.value,
@@ -655,18 +689,20 @@ class PostgresM4RuntimeStore:
                     plan.completion.job_id,
                     plan.expected_epoch_id,
                 ),
-            )
-            self._connection.execute(
+            ).rowcount
+            if completed_jobs != 1:
+                raise EventConflictError("completion job changed before commit")
+            completed_attempts = self._connection.execute(
                 """
                 UPDATE groundloop_semantic_job_attempt
                 SET attempt_state = 'completed', finished_at = now()
-                WHERE attempt_id = (
-                    SELECT attempt_id FROM groundloop_semantic_job_attempt
-                    WHERE job_id = %s ORDER BY attempt_ordinal DESC LIMIT 1
-                )
+                WHERE attempt_id = %s AND job_id = %s
+                  AND lease_token_hash = %s AND attempt_state = 'leased'
                 """,
-                (plan.completion.job_id,),
-            )
+                (attempt_id, plan.completion.job_id, lease_token_hash),
+            ).rowcount
+            if completed_attempts != 1:
+                raise EventConflictError("completion lease changed before commit")
             if closure is not None:
                 self._connection.execute(
                     """
@@ -684,6 +720,61 @@ class PostgresM4RuntimeStore:
             self._write_epoch_projection(expected_epoch)
             self._assert_equal(expected.book, self.read_book())
         return expected
+
+    @staticmethod
+    def _validate_completion_lease(
+        epoch: RuntimeEpoch,
+        job: RuntimeJob,
+        *,
+        attempt_id: str,
+        lease_token_hash: str,
+        lease_expected_revision: int,
+    ) -> None:
+        if not attempt_id.strip():
+            raise ValidationError("completion attempt_id must be non-empty")
+        if len(lease_token_hash) != 64:
+            raise ValidationError("completion lease token must be a SHA-256 digest")
+        if lease_expected_revision <= 0:
+            raise ValidationError("completion lease revision must be positive")
+        if lease_expected_revision > epoch.revision:
+            raise EventConflictError("completion lease names a future epoch revision")
+        if not job.attempts:
+            raise InvalidEventError("completion job has no leased attempt")
+        latest = job.attempts[-1]
+        if latest.attempt_id != attempt_id:
+            raise EventConflictError("completion result belongs to a stale attempt")
+        if latest.lease_token_hash != lease_token_hash:
+            raise EventConflictError("completion lease token differs from the attempt")
+
+    def _lock_completion_attempt(
+        self,
+        job_id: str,
+        *,
+        attempt_id: str,
+        lease_token_hash: str,
+        expected_state: str,
+    ) -> None:
+        row = self._connection.execute(
+            """
+            SELECT attempt_id, lease_token_hash, attempt_state
+            FROM groundloop_semantic_job_attempt
+            WHERE job_id = %s
+            ORDER BY attempt_ordinal DESC
+            LIMIT 1
+            FOR UPDATE
+            """,
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            raise InvalidEventError("completion job has no persisted attempt")
+        if str(row[0]) != attempt_id:
+            raise EventConflictError("completion result belongs to a stale attempt")
+        if _strip(row[1]) != lease_token_hash:
+            raise EventConflictError("completion lease token differs from persistence")
+        if str(row[2]) != expected_state:
+            raise EventConflictError(
+                f"completion attempt is {str(row[2])}, expected {expected_state}"
+            )
 
     def fail_epoch(
         self,

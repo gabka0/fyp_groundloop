@@ -11,7 +11,7 @@ from groundloop.domain import (
     SemanticObservation,
     SubjectKind,
 )
-from groundloop.errors import EventConflictError
+from groundloop.errors import EventConflictError, ValidationError
 from groundloop.m4.application import (
     ApplicationExecutionPolicy,
     DiscoveryResult,
@@ -65,6 +65,31 @@ def _hash(value: str) -> str:
 
 POLICY = DecisionPolicy("decision-v1", 0.7, 0.7)
 PRODUCER = ModelStamp("fake-verifier", "1", "prompt-1")
+
+
+def test_job_lease_requires_complete_attempt_binding() -> None:
+    with pytest.raises(ValidationError, match="requires attempt"):
+        JobLease("job-1", True, False)
+    with pytest.raises(ValidationError, match="cannot carry"):
+        JobLease(
+            "job-1",
+            False,
+            True,
+            attempt_id="attempt-1",
+            lease_token_hash=_hash("lease-1"),
+            expected_revision=2,
+        )
+    assert (
+        JobLease(
+            "job-1",
+            True,
+            False,
+            attempt_id="attempt-1",
+            lease_token_hash=_hash("lease-1"),
+            expected_revision=2,
+        ).expected_revision
+        == 2
+    )
 
 
 def _scores(label: str) -> tuple[float, float, float]:
@@ -213,6 +238,19 @@ class FakeStructural:
         return chunk_version_id in self.world.active_chunk_ids
 
 
+def _validate_fake_lease(epoch: RuntimeEpoch, lease: JobLease, job_id: str) -> None:
+    job = next(item for item in epoch.jobs if item.spec.job_id == job_id)
+    latest = job.attempts[-1]
+    if (
+        lease.job_id != job_id
+        or lease.attempt_id != latest.attempt_id
+        or lease.lease_token_hash != latest.lease_token_hash
+        or lease.expected_revision is None
+        or lease.expected_revision > epoch.revision
+    ):
+        raise EventConflictError("completion result belongs to a stale attempt")
+
+
 @dataclass
 class FakeRuntime:
     world: FakeWorld
@@ -255,8 +293,18 @@ class FakeRuntime:
             self.world.runtime_book = start_attempt(
                 self.world.runtime_book, epoch_id, attempt
             ).book
+            epoch = self.world.epoch(epoch_id)
+        else:
+            attempt = runtime_job.attempts[-1]
         self.world.operation_log.append(f"acquire:{spec.kind.value}")
-        return JobLease(spec.job_id, True, False)
+        return JobLease(
+            spec.job_id,
+            True,
+            False,
+            attempt_id=attempt.attempt_id,
+            lease_token_hash=attempt.lease_token_hash,
+            expected_revision=epoch.revision,
+        )
 
     def complete_expansion(
         self,
@@ -266,6 +314,7 @@ class FakeRuntime:
         child_jobs: tuple[LogicalJobSpec, ...],
     ) -> None:
         epoch = self.world.epoch(epoch_id)
+        _validate_fake_lease(epoch, lease, completion.job_id)
         self.world.runtime_book = apply_completion(
             self.world.runtime_book,
             CompletionPlan(epoch_id, epoch.revision, completion, child_jobs),
@@ -429,6 +478,7 @@ class FakeObservations:
             if existing != observation:
                 raise EventConflictError("observation identity conflict")
         epoch = self.world.epoch(epoch_id)
+        _validate_fake_lease(epoch, lease, completion.job_id)
         staged_book = apply_completion(
             self.world.runtime_book,
             CompletionPlan(epoch_id, epoch.revision, completion),

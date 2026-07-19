@@ -24,7 +24,9 @@ from groundloop.m4.application import (
     DiscoveryResult,
     DynamicEventPlan,
     EventRunState,
+    JobLease,
     M4Application,
+    ObservationCompletionReceipt,
     VerificationResult,
 )
 from groundloop.m4.contracts import (
@@ -33,6 +35,7 @@ from groundloop.m4.contracts import (
     CandidatePolicyManifest,
     ChannelHit,
     CorpusUpdateIdentity,
+    JobCompletion,
     JobKind,
     LogicalJobSpec,
     PairKey,
@@ -286,6 +289,49 @@ class ScriptedVerifier:
             f"verification:{observation.observation_id}",
             _hash(repr(observation)),
             observation,
+        )
+
+
+@dataclass(slots=True)
+class RecordingObservationPort:
+    delegate: PostgresM4ApplicationPorts
+    last_completion: (
+        tuple[
+            int,
+            JobLease,
+            LogicalJobSpec,
+            JobCompletion,
+            SemanticObservation,
+            bool,
+        ]
+        | None
+    ) = None
+
+    def complete_verifier_atomically(
+        self,
+        epoch_id: int,
+        lease: JobLease,
+        verifier_job: LogicalJobSpec,
+        completion: JobCompletion,
+        observation: SemanticObservation,
+        *,
+        make_effective: bool,
+    ) -> ObservationCompletionReceipt:
+        self.last_completion = (
+            epoch_id,
+            lease,
+            verifier_job,
+            completion,
+            observation,
+            make_effective,
+        )
+        return self.delegate.complete_verifier_atomically(
+            epoch_id,
+            lease,
+            verifier_job,
+            completion,
+            observation,
+            make_effective=make_effective,
         )
 
 
@@ -698,6 +744,106 @@ def test_verifier_microtransaction_rolls_back_every_logical_step(
     assert m4_pipeline_connection.execute(
         "SELECT epoch_id FROM groundloop_m4_publication_head"
     ).fetchone() == (base,)
+
+
+def test_active_verifier_completion_exact_replay_is_read_only_and_validated(
+    m4_pipeline_connection: Connection[Any],
+) -> None:
+    base = _seed_b0(m4_pipeline_connection)
+    inserted_document = _inserted(
+        "doc-replay", "dv-replay", "chunk-replay", "Nimbus is blue."
+    )
+    ports = PostgresM4ApplicationPorts(
+        m4_pipeline_connection,
+        structural_payloads={
+            "verifier-replay": StructuralPayload(inserted=inserted_document)
+        },
+    )
+    ports.runtime_store.register_candidate_policy(_candidate_policy())
+    recorder = RecordingObservationPort(ports)
+    application = M4Application(
+        structural=ports,
+        runtime=ports,
+        admission=PersistingAdmissionPort(
+            m4_pipeline_connection,
+            ScriptedAdmission({"chunk-replay": ("claim-1",)}),
+        ),
+        verifier=ScriptedVerifier({"chunk-replay": "neutral"}),
+        observations=recorder,
+        equality_gates=ports,
+        publication=ports,
+        execution_policy=ApplicationExecutionPolicy(
+            IMPACT_HASH, FRONTIER_HASH, VERIFIER_HASH
+        ),
+    )
+    result = application.run_event(
+        _event(
+            "verifier-replay",
+            UpdateKind.INSERT,
+            base,
+            inserted=("chunk-replay",),
+        )
+    )
+    assert result.state is EventRunState.SEALED
+    assert recorder.last_completion is not None
+    before = m4_pipeline_connection.execute(
+        """
+        SELECT
+          (SELECT count(*) FROM groundloop_semantic_observation
+           WHERE produced_epoch = %s),
+          (SELECT count(*) FROM groundloop_working_observation_delta
+           WHERE epoch_id = %s),
+          (SELECT count(*) FROM groundloop_working_transition
+           WHERE epoch_id = %s),
+          (SELECT revision FROM groundloop_epoch WHERE epoch_id = %s)
+        """,
+        (result.epoch_id, result.epoch_id, result.epoch_id, result.epoch_id),
+    ).fetchone()
+    assert before is not None
+    epoch_id, lease, job, completion, observation, effective = recorder.last_completion
+
+    replay = ports.complete_verifier_atomically(
+        epoch_id,
+        lease,
+        job,
+        completion,
+        observation,
+        make_effective=effective,
+    )
+    assert replay == ObservationCompletionReceipt(False, False)
+    assert (
+        m4_pipeline_connection.execute(
+            """
+        SELECT
+          (SELECT count(*) FROM groundloop_semantic_observation
+           WHERE produced_epoch = %s),
+          (SELECT count(*) FROM groundloop_working_observation_delta
+           WHERE epoch_id = %s),
+          (SELECT count(*) FROM groundloop_working_transition
+           WHERE epoch_id = %s),
+          (SELECT revision FROM groundloop_epoch WHERE epoch_id = %s)
+        """,
+            (result.epoch_id, result.epoch_id, result.epoch_id, result.epoch_id),
+        ).fetchone()
+        == before
+    )
+    assert m4_pipeline_connection.execute(
+        """
+        SELECT attempt_state FROM groundloop_semantic_job_attempt
+        WHERE attempt_id = %s
+        """,
+        (lease.attempt_id,),
+    ).fetchone() == ("completed",)
+
+    with pytest.raises(EventConflictError, match="different content"):
+        ports.complete_verifier_atomically(
+            epoch_id,
+            lease,
+            job,
+            completion,
+            replace(observation, input_hash=_hash("replay-input-drift")),
+            make_effective=effective,
+        )
 
 
 @pytest.mark.parametrize(

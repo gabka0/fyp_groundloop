@@ -1,6 +1,37 @@
 # M4.2 Durable Execution Schema Handoff
 
-Status: lane implementation complete; coordinator integration pending
+Status: durable schema and lease/replay correctness follow-up complete;
+coordinator integration pending
+
+## Lease-attempt and completion-replay follow-up
+
+The coordinator explicitly expanded this lane's ownership for one correctness
+follow-up over the M4 application, PostgreSQL runtime, composition pipeline and
+their lane-local/integration tests. The implementation now enforces:
+
+- every executable `JobLease` carries the exact attempt ID, hashed lease token
+  and acquisition revision;
+- the acquisition revision is a lower bound, while the transaction's current
+  epoch revision remains the compare-and-swap revision, because other jobs may
+  legitimately advance the same serialized epoch after a lease is issued;
+- a fresh completion must name the latest persisted `leased` attempt and exact
+  token, and updates only that row to `completed`;
+- an older attempt is rejected after a retry rather than being attributed to
+  the newest attempt;
+- failed epochs can still archive the result of their exact already-running
+  attempt as the frozen `COMPLETED_INACTIVE` path requires;
+- exact completion replay requires the bound attempt already to be
+  `completed`; expansion replay performs no evaluation rewrite;
+- active verifier replay read-validates the complete immutable observation,
+  historical-base working delta, installed completion revision, optional real
+  model provenance and structured-state equality without reinserting the
+  immutable delta or advancing epoch state;
+- replay returns `ObservationCompletionReceipt(False, False)` because it
+  stores and activates nothing in the replay transaction.
+
+The follow-up deliberately does not change structural overlay/failure
+semantics, discovery/admission atomicity, persisted-hit replay, or Surface-C
+sealing. Those remain coordinator-owned defects outside this task.
 
 ## Ownership observed
 
@@ -125,6 +156,35 @@ The tests inspect exact column order, all admission index access methods and
 HNSW reloptions, verifier foreign-key count, working-state checks and terminal
 guards, role-safe immutable admission rows, finite three-logit enforcement,
 job/pair/execution binding and immutable verifier provenance.
+
+Follow-up validation from the rebased `workstream/m4_2-provenance` branch:
+
+```bash
+.venv/bin/pytest -q tests/m4/application/test_application.py
+# 15 passed
+
+set -a; source .env; set +a
+GROUNDLOOP_TEST_DATABASE_URL="$GROUNDLOOP_DATABASE_URL" \
+  .venv/bin/pytest -q \
+  tests/m4/persistence/test_runtime_store.py \
+  tests/m4/integration/test_postgres_pipeline.py
+# 21 passed
+
+.venv/bin/ruff check \
+  src/groundloop/m4/application.py \
+  src/groundloop/m4/persistence.py \
+  src/groundloop/m4/pipeline.py \
+  tests/m4/application tests/m4/persistence tests/m4/integration
+# All checks passed
+
+.venv/bin/mypy --strict src
+# Success: no issues found in 101 source files
+
+.venv/bin/python -m compileall -q \
+  src/groundloop/m4 tests/m4/application tests/m4/persistence \
+  tests/m4/integration
+# passed
+```
 
 ## Limitation
 

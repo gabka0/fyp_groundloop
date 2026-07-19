@@ -138,17 +138,47 @@ class OpenEventReceipt:
 
 @dataclass(frozen=True, slots=True)
 class JobLease:
-    """Result of an idempotent runtime acquire-or-observe transition."""
+    """Attempt-bound acquire result.
+
+    ``expected_revision`` is the epoch revision observed at acquisition. Other
+    jobs may advance the epoch before this attempt returns, so it is a lower
+    bound; completion still uses the transaction's current revision for CAS.
+    """
 
     job_id: str
     should_execute: bool
     already_completed: bool
+    attempt_id: str | None = None
+    lease_token_hash: str | None = None
+    expected_revision: int | None = None
 
     def __post_init__(self) -> None:
         _require_text("job_id", self.job_id)
         if self.should_execute == self.already_completed:
             raise ValidationError(
                 "a job lease must either execute or identify an existing completion"
+            )
+        binding = (
+            self.attempt_id,
+            self.lease_token_hash,
+            self.expected_revision,
+        )
+        if self.should_execute:
+            if any(value is None for value in binding):
+                raise ValidationError(
+                    "an executable job lease requires attempt, token, and revision"
+                )
+            assert self.attempt_id is not None
+            assert self.lease_token_hash is not None
+            assert self.expected_revision is not None
+            _require_text("attempt_id", self.attempt_id)
+            if len(self.lease_token_hash) != 64:
+                raise ValidationError("lease_token_hash must be a SHA-256 digest")
+            if self.expected_revision <= 0:
+                raise ValidationError("lease expected_revision must be positive")
+        elif any(value is not None for value in binding):
+            raise ValidationError(
+                "an already-completed job observation cannot carry an active lease"
             )
 
 
