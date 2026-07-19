@@ -86,6 +86,15 @@ class WithdrawalPlan:
     observation_edge_visits: int
     candidate_edge_visits: int
 
+    @property
+    def indexed_operation_count(self) -> int:
+        """Count logical index probes and enumerated reverse edges."""
+        return (
+            self.chunk_lookups
+            + self.observation_edge_visits
+            + self.candidate_edge_visits
+        )
+
 
 def plan_withdrawal(
     index: ReverseDependencyIndex, deactivated_chunk_ids: tuple[str, ...]
