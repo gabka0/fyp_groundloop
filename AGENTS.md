@@ -28,6 +28,7 @@ order:
 22. `docs/m4_multiagent_execution_plan.md` (ownership and contract barriers)
 23. `docs/m4_implementation_status.md` (implemented evidence and next gate)
 24. `docs/m4_1_multiagent_implementation_plan.md` (active M4.1 ownership)
+25. `docs/m4_1_acceptance_matrix.md` (required deterministic/live gates)
 
 `docs/initial_technical_design.md` (v0.1) is superseded and retained for audit
 only. The M0.5 design freeze and M1.1 amendments are complete; frozen decisions

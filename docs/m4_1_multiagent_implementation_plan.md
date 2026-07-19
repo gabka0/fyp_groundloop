@@ -6,6 +6,8 @@ Date: 2026-07-19
 
 Baseline: `m4-wave2-integrated-2026-07-19`
 
+Executable exit cases: `docs/m4_1_acceptance_matrix.md`.
+
 ## 1. Outcome and strongest risk
 
 M4.1 must turn the existing deterministic components into one durable dynamic
