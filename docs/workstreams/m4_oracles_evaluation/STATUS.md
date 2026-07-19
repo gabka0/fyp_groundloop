@@ -4,62 +4,67 @@ Date: 2026-07-19
 
 Branch: `workstream/m4-oracles-evaluation`
 
-Current integration baseline:
+Wave 3 integration baseline:
 
 ```text
-0b28df6 Merge M4 oracle evaluation lane
+b3623fe Merge M4 evaluation mechanics lane
 ```
 
 ## Verdict
 
-The independent Wave 2 evaluation-mechanics increment is complete and ready
-for coordinator review. Wave 1 is already present on `main`; this increment
-touches only lane-owned oracle source, tests, and workstream documentation.
+Wave 3 controlled dynamic workload and paired-report mechanics are complete
+and ready for coordinator review. No empirical system-performance claim is
+made: this increment uses deterministic controlled inputs and contains no
+model, admission, runtime, database or pipeline execution.
 
-## Wave 2 Mechanics Implemented
+## Implemented
 
-- Immutable event-level raw records containing all four frozen integer
-  numerator/denominator metrics.
-- Metric units derived from metric identity, preventing pair, claim,
-  status-claim, and answer counts from being silently mixed.
-- Explicit `None`/N/A for a zero denominator. Such events and failure-coded
-  events remain in total raw-event counts and are never assigned fake zero or
-  one values.
-- Micro pooled ratios, eligible-event counts, total-event counts, and macro
-  per-event ratios regenerated from validated raw rows.
-- Complete provenance for dataset, split and split manifest, seed manifest,
-  treatment policy, verifier, decision policy, oracle kind, named baseline,
-  and oracle policy. The provenance has a content-derived manifest hash.
-- Homogeneous-run validation rejecting mixed run, policy, split, seed,
-  verifier, decision, oracle, or baseline identities, duplicate event IDs,
-  and duplicate event positions within one history.
-- Paired-policy alignment requiring distinct policy hashes and exact agreement
-  on event IDs, history/index/type, before/after corpus snapshots, baseline
-  manifest, common experimental provenance, and per-event denominators.
-- Deterministic paired history-cluster bootstrap using SHA-256-derived draws,
-  not process-global randomness or event-level resampling.
-- A frozen bootstrap configuration binding seed `20260719`, 10,000
-  replicates, 95% percentile interval, minimum two eligible histories, and the
-  macro-history pooled-ratio-difference estimand.
-- Descriptive-only output for no eligible history or a single eligible
-  history; no unsupported confidence interval is fabricated.
-- Controlled proof that duplicating events within one history neither
-  increases independent cluster count nor changes the paired macro-history
-  bootstrap result when the duplicated observations are identical.
+- Immutable insert, replacement and delete event specifications.
+- Continuous per-history corpus-snapshot chains and contiguous event indexes.
+- Four deterministic independent histories: two development and two test,
+  each containing insert, replacement and delete.
+- Content-derived event, history, seed, split and workload manifests.
+- Leakage rejection across split-component, lineage, claim-family, normalized
+  content, claim, answer and chunk identities. Linked identifiers cannot be
+  assigned to separate histories or cross development/test.
+- Deliberate miss probes restricted to registered-claim by inserted-chunk
+  pairs and required to be oracle-positive when metrics are derived.
+- Immutable oracle and treatment event-result inputs with canonical pair and
+  status ordering.
+- Derivation of positive-pair, positive-claim, status-effect and answer-effect
+  integer metrics. Admission and final-status agreement are deliberately
+  separate.
+- Delete-only positive-pair and positive-claim metrics remain explicit `0/0`
+  records and serialize as JSON `null`, not fake zero or one values.
+- Canonical paired JSON reports containing full workload, run, split, policy,
+  verifier, decision, oracle, event, artifact and bootstrap provenance.
+- Event diagnostics retain designated probes and actual missed positive pairs
+  for both compared treatments.
+- Report manifests bind the complete canonical payload, including raw event
+  counts and bootstrap replicates.
+
+## Frozen Controlled Workload Identities
+
+```text
+workload: 165c5e0999ad40593e222c6335144742c9e226a370a35c38025e53e21b075836
+seeds:    7ef3b0cf803e32bae8809f403581752c8ca09326bbcca6948868dc943615d538
+splits:   ca54bf4bd24ae721095737f515bb720039a8ed91f2e46b9dcb9f2328d317c1f6
+```
+
+These identify the deterministic fixture definition only. They are not
+experimental measurements.
 
 ## Validation
 
-All commands ran after the implementation commit from the lane worktree:
-
 ```text
 .venv/bin/pytest -q tests/m4/oracles tests/m4/test_m4_contracts.py
-30 passed
+36 passed
 
 .venv/bin/ruff check src/groundloop/m4/oracles tests/m4/oracles
 All checks passed!
 
 .venv/bin/mypy --strict src/groundloop/m4/oracles
-Success: no issues found in 9 source files
+Success: no issues found in 11 source files
 
 .venv/bin/python -m compileall -q src/groundloop/m4/oracles tests/m4/oracles
 exit 0
@@ -70,8 +75,7 @@ exit 0
 
 ## Scope Boundary
 
-This increment contains pure deterministic evaluation mechanics. It does not
-add model execution, admission or runtime imports, migrations, PostgreSQL
-persistence, a top-level pipeline, ANN, workload generation, or neural TARGET
-training. Raw append-only storage and bounded model runners remain separate
-future integration work.
+No selective admission or runtime delta module is imported. No shared
+contract, migration, persistence, pipeline, CLI, roadmap or decision-log file
+changed. No model was downloaded or run. Real workload ingestion, append-only
+report persistence and bounded model runners remain later integration work.

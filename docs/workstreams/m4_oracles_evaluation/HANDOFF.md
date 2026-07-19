@@ -1,121 +1,113 @@
-# M4 Oracles/Evaluation Wave 2 Mechanics Handoff
+# M4 Oracles/Evaluation Wave 3 Handoff
 
 ## Integration
 
-Baseline already containing Wave 1:
+Baseline containing Waves 1-2:
 
 ```text
-0b28df6
+b3623feb36f719ef8715e6011e92c1a865530d7d
 ```
 
-Wave 2 implementation commit:
+Wave 3 implementation/tests commit:
 
 ```text
-c5f29ee2e2b3f3e63c7743ed58efaa2a26b574c8
+33076ef1704254631071d5536bf4add7b1b11517
 ```
 
 The coordinator should cherry-pick the implementation commit and the separate
-documentation commit containing this handoff. No shared contract, migration,
-runtime, admission, CLI, pipeline, or M1-M3 path changed.
+documentation commit containing this handoff. All changed paths are owned by
+the oracle/evaluation lane.
 
-## API
+## Workload API
 
-The new API is exported from `groundloop.m4.oracles`:
+Exports from `groundloop.m4.oracles`:
 
-- `MetricName`, `MetricUnit`, `MetricCount`
-- `OracleKind`, `EvaluationProvenance`, `EventMetricRecord`
-- `PolicyRun`, `validate_policy_run(...)`
-- `PolicyMetricSummary`, `summarize_policy_metric(...)`
-- `AlignedEventPair`, `PairedPolicyRun`,
-  `align_paired_policy_records(...)`
-- `BootstrapConfig`, `FROZEN_HISTORY_BOOTSTRAP_V1`
-- `PairedBootstrapResult`, `paired_history_cluster_bootstrap(...)`
+- `WorkloadSplit`
+- `ControlledEventSpec`
+- `ControlledHistorySpec`
+- `ControlledWorkload`
+- `build_controlled_dynamic_workload_v1()`
 
-## Raw Record Contract
+An event freezes update kind, ordered index, before/after corpus hashes,
+inserted and deactivated chunk versions, registered claims/answers, and any
+deliberate miss probes. Shapes are exact:
 
-Every `EventMetricRecord` contains exactly one integer numerator/denominator
-for each frozen metric:
+- insert: inserted nonempty, deactivated empty;
+- delete: inserted empty, deactivated nonempty;
+- replacement: both nonempty and disjoint.
 
-| Metric | Unit |
-|---|---|
-| `positive_pair_recall` | pair |
-| `positive_claim_recall` | claim |
-| `status_effect_recall` | status-claim |
-| `answer_effect_recall` | answer |
+A history requires contiguous indexes and a continuous snapshot chain. The
+workload requires canonical unique history/event IDs and prevents split or
+independence leakage through split components, lineage components, claim
+families, normalized content, claims, answers or chunks.
 
-The metric name determines its unit; callers cannot provide a contradictory
-unit. Numerators and denominators must be actual nonnegative integers, with
-`numerator <= denominator`. A `0/0` record has value `None`, remains in the
-raw event population, and is excluded only from that metric's eligible-value
-mean.
-
-Every event still carries all four metrics. Delete-only inserted-pair metrics
-therefore use `0/0`; they are not omitted. Failure-coded events are also
-retained.
-
-## Provenance and Aggregation
-
-`EvaluationProvenance` binds:
-
-- schema and dataset version;
-- split ID and split-manifest hash;
-- seed-manifest hash;
-- treatment-policy ID and hash;
-- verifier artifact and execution-spec hash;
-- decision-policy ID;
-- oracle kind;
-- named comparison baseline;
-- oracle-policy ID and hash.
-
-`validate_policy_run` fails closed if any of these values differ within a run.
-It also rejects mixed run IDs, duplicate event IDs, and duplicate event-index
-positions within a history. `summarize_policy_metric` can only aggregate a
-validated homogeneous run and returns both total and eligible event counts,
-the pooled integer counts, micro ratio, and macro event ratio.
-
-## Paired Comparison
-
-`align_paired_policy_records` accepts two distinct treatment-policy runs. It
-rejects:
-
-- missing or extra event IDs;
-- duplicate event IDs or history positions;
-- mixed split, verifier, decision, seed, oracle, baseline, or dataset identity;
-- the same policy under aliases or one policy ID mapped to conflicting hashes;
-- mismatched history ID, event index/type, corpus snapshots, or baseline
-  manifest for an aligned event;
-- different denominators for the same event and metric.
-
-The result is canonically ordered by `(history_id, event_index, event_id)`.
-Treatment outcomes and failure codes may differ; those are results, not
-pairing identities.
-
-## History-Cluster Bootstrap
-
-The paired bootstrap first pools each metric's integer counts within each
-history and computes `first_policy - second_policy`. It then resamples the
-same independent history clusters for both policies and computes the macro
-mean of within-history differences.
-
-The implementation never resamples events as independent observations.
-Deterministic draws are derived from SHA-256 over seed, replicate index, and
-draw index. The returned result retains total and eligible cluster IDs, both
-policy provenances, the bootstrap-config hash, the descriptive estimate, the
-interval, and exact replicate values.
-
-`FROZEN_HISTORY_BOOTSTRAP_V1` fixes:
+The built-in fixture contains four independent histories, with two assigned to
+development and two to test. Every history contains insert, replacement and
+delete; every insert carries one deliberate miss probe. Its current identities
+are:
 
 ```text
-seed:                  20260719
-replicates:            10000
-confidence:            0.95
-minimum clusters:      2
-interval method:       percentile-v1
-estimand:              macro-history-pooled-ratio-difference-v1
+workload manifest: 165c5e0999ad40593e222c6335144742c9e226a370a35c38025e53e21b075836
+seed manifest:     7ef3b0cf803e32bae8809f403581752c8ca09326bbcca6948868dc943615d538
+split manifest:    ca54bf4bd24ae721095737f515bb720039a8ed91f2e46b9dcb9f2328d317c1f6
 ```
 
-No interval is emitted for zero or one eligible history. This is deliberate:
-one sequential history is not independent replication.
+`ControlledWorkload.to_canonical_json()` produces byte-stable,
+machine-readable JSON containing every event/history identity and manifest.
+
+## Result-to-Metric API
+
+- `ClaimStatusResult`, `AnswerStatusResult`
+- `OracleEventResult`, `TreatmentEventResult`
+- `derive_event_metric_record(...)`
+
+The oracle result supplies verifier-relative positive inserted pairs and the
+expected post-event statuses only for oracle-affected claims/answers. The
+treatment result supplies admitted pairs and its actual post-event statuses.
+The conversion computes:
+
+```text
+positive pair:  |oracle positives intersect admitted pairs| / |oracle positives|
+positive claim: |positive claim projection intersect admitted claim projection|
+                / |positive claim projection|
+status effect:  affected claims whose treatment post-status equals oracle target
+                / oracle-affected claims
+answer effect:  affected answers whose treatment post-status equals oracle target
+                / oracle-affected answers
+```
+
+An admitted positive pair does not count as a detected status effect unless
+the treatment reaches the oracle's post-event status. Missing status rows
+therefore count as undetected, not silently successful.
+
+For delete-only events, inserted-pair denominators are zero. Both metrics are
+still present as integer `0/0` records and their value is N/A/JSON `null`.
+
+## Paired Report API
+
+- `PairedEventDiagnostic`
+- `PairedEvaluationReport`
+- `build_paired_evaluation_report(...)`
+
+The builder accepts one workload split, one exact oracle result per selected
+event, and one treatment result per policy/event. It rejects missing or extra
+events, wrong workload/seed/split identities, out-of-domain pairs/statuses,
+non-positive designated miss probes, and every mismatch already enforced by
+Wave 2 paired alignment.
+
+The canonical report contains:
+
+- workload schema/dataset/manifest/seed/split identities;
+- both complete evaluation provenances and their hashes;
+- every raw event metric and oracle/treatment artifact identity;
+- homogeneous per-policy summaries for all four metric units;
+- the full frozen bootstrap configuration and paired results;
+- every deterministic replicate value;
+- per-event deliberate probes and actual missed oracle-positive pairs;
+- a content hash over the entire canonical report payload.
+
+Input tuple ordering cannot alter the report. No narrative headline or
+performance conclusion is generated by this machinery.
 
 ## Acceptance Commands
 
@@ -126,12 +118,12 @@ one sequential history is not independent replication.
 .venv/bin/python -m compileall -q src/groundloop/m4/oracles tests/m4/oracles
 ```
 
-Expected at handoff: 30 tests pass, Ruff clean, strict mypy clean across nine
+Expected at handoff: 36 tests pass, Ruff clean, strict mypy clean across 11
 oracle source modules, and compileall exits zero.
 
 ## Remaining Work
 
-This handoff does not authorize neural or full-corpus model execution. The
-next independent evaluation work should be append-only persistence and bounded
-batch/checkpoint runners, followed by the resource pilot. It must reuse these
-raw identities and must not silently filter timeouts or unaffordable events.
+This is controlled workload/report infrastructure, not an empirical study.
+No real CORE or learned policy result exists here. Later work may add
+append-only report persistence and bounded checkpointed model runners, but it
+must retain these identities, exact integer raw rows, failures and N/A events.
