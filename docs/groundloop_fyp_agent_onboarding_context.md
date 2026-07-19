@@ -6,8 +6,9 @@
 > and broad context. Its proposed schema, labels, phases, and first-task list
 > predate the adversarial review. `docs/technical_design.md` v0.2 plus decisions
 > D-1 through D-20 govern implementation. In particular, observations store
-> scores rather than permanent labels, M1/M1.1 are complete, and M2 is partly
-> complete. Read `docs/m2_implementation_status.md` for the exact boundary.
+> scores rather than permanent labels, and M1 through M3 are complete. Read
+> `docs/m2_implementation_status.md` and `docs/m3_implementation_status.md`
+> for the implemented boundary before planning M4.
 
 Last updated: 2026-07-18
 

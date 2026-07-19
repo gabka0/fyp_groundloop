@@ -128,6 +128,10 @@ Exit criteria:
 
 ## M3 — Static AI Pipeline
 
+Status: complete (2026-07-18). The real pinned-model path, fine-tuned and
+temperature-calibrated verifier, live PostgreSQL publication, exact replay,
+and all 187 integrated tests pass. See `docs/m3_implementation_status.md`.
+
 Deliverables:
 
 - Passage chunking and embeddings.
@@ -136,6 +140,8 @@ Deliverables:
 - Candidate evidence retrieval.
 - Versioned support/refute/neutral verifier outputs.
 - Model and prompt registry.
+- Atomic staged publication and machine-readable run manifest.
+- Real-model evaluation and explicit neural-quality limitations.
 
 Exit criteria:
 
@@ -143,6 +149,8 @@ Exit criteria:
   claims with evidence and verifier scores.
 - Repeated runs reuse versioned observations rather than silently overwriting
   them.
+- The Python incremental engine, Python full recomputation, and SQL oracle
+  agree over every published score observation.
 
 ## M4 — Selective Semantic Maintenance
 

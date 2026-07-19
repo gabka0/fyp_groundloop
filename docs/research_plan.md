@@ -1,7 +1,8 @@
 # GroundLoop Research Plan
 
-Status: project direction and v0.2 design frozen; M1, M1.1, and M2 complete,
-including live PostgreSQL validation; M3 is next
+Status: project direction and v0.2 design frozen; M1 through M3 complete,
+including live PostgreSQL, pgvector, and real pinned-model validation; M4 is
+next
 
 ## Working Title
 

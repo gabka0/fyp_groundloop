@@ -22,6 +22,7 @@ order:
 16. `docs/m3_model_dataset_audit.md`
 17. `docs/m3_design_freeze.md`
 18. `docs/m3_multiagent_execution_plan.md`
+19. `docs/m3_implementation_status.md`
 
 `docs/initial_technical_design.md` (v0.1) is superseded and retained for audit
 only. The M0.5 design freeze and M1.1 amendments are complete; frozen decisions
@@ -75,6 +76,8 @@ third oracle, structured baselines, and the exact-flip policy-index prototype.
 Consult `docs/m2_implementation_status.md` and `docs/roadmap.md` before
 starting M3 or expanding scope.
 
-M3 is under active implementation. The three M3 agents must additionally read
-only their lane's `docs/workstreams/m3_*/AGENT_PROMPT.md` and must obey the
-path ownership and contract-request protocol in the M3 execution plan.
+M3 is complete. It includes the static real-model pipeline, a fine-tuned and
+temperature-calibrated verifier, atomic PostgreSQL publication, exact replay,
+and the top-level CLI. Read `docs/m3_implementation_status.md` before starting
+M4. The M3 lane prompts and ownership protocol remain historical execution
+evidence, not authorization to reopen frozen M3 contracts silently.

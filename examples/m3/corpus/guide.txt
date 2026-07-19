@@ -1,0 +1,8 @@
+GroundLoop maintains grounding state for generated answers by decomposing each
+answer into required atomic claims. Each claim is linked to versioned evidence
+chunks and immutable support, refute, and neutral score observations.
+
+GroundLoop applies a versioned decision policy to stored scores. Its exact
+guarantee is that incremental structured claim and answer state equals full
+recomputation over the same stored observations; it does not guarantee that a
+neural verifier has discovered objective truth.

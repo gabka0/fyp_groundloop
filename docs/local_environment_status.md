@@ -65,3 +65,20 @@ The initial M3 models and datasets are now frozen in
 `docs/m3_model_dataset_audit.md`. The optional `ml` dependency group may be
 installed by the coordinator; model weights, datasets, and trained checkpoints
 must remain outside Git.
+
+M3 real artifacts are installed durably under ignored paths:
+
+- `models/m3/verifier-run-20260718/` contains the prepared-data manifests,
+  fine-tuned checkpoint, calibration, logits, and evaluation reports (619 MiB).
+- `models/m3/huggingface-cache/` contains the pinned BGE-small-en-v1.5 and
+  Qwen2.5-0.5B-Instruct cache (1.4 GiB).
+- The fine-tuned weights SHA-256 is
+  `81c49c30048dcbcc9fb2895b56622f702b4aa9894e7d055f28bb520c09f74e3e`.
+- The development calibration temperature is 1.1037657679769346 and its
+  content-derived version is
+  `temperature-v1:6ae200db8d75477da143bd6d8d6c8927cfdfdbd8995932bbc1c59ce67e090727`.
+- PostgreSQL schema `groundloop_m3_demo` retains the successful real published
+  run and can be replayed using `docs/m3_implementation_status.md`.
+
+The first full real CLI run took 1m33.86s and 3,688,928 KiB peak RSS. The
+cache-only replay took 0.44s and 42,060 KiB peak RSS with zero new artifacts.

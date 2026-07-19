@@ -3,8 +3,8 @@
 The authoritative design is [docs/technical_design.md](docs/technical_design.md)
 (v0.2 with M1.1 amendments D-19 and D-20). The original
 [initial technical design](docs/initial_technical_design.pdf) is retained for
-audit only. M1, M1.1, and M2 are complete, including live PostgreSQL 16
-validation.
+audit only. M1 through M3 are complete, including live PostgreSQL 16,
+pgvector, and real pinned-model validation.
 
 GroundLoop is an FYP research system for maintaining the grounding status of
 previously generated RAG answers as the underlying document collection evolves.
@@ -39,8 +39,12 @@ The repository contains the trusted full-recomputation semantics, an
 independent signed-delta engine, differential execution after every event,
 distinct-content zero-crossing maintenance, policy range deltas, compact
 certificates, a separate semantic-epoch/publication oracle, a live PostgreSQL
-third oracle, structured baselines, and an exact-flip policy-index prototype.
-The AI/RAG pipeline begins in M3 and is not implemented yet.
+third oracle, structured baselines, an exact-flip policy-index prototype, and
+the complete static M3 AI pipeline. M3 includes fixed chunking, BGE/pgvector
+retrieval, cited Qwen generation, atomic claim extraction, a fine-tuned and
+temperature-calibrated MiniLM2 verifier, atomic publication, and exact replay.
+See [the M3 status](docs/m3_implementation_status.md) for commands, measured
+results, and neural-quality limitations.
 
 ## Read First
 
@@ -77,8 +81,7 @@ set +a
 make validate-postgres
 ```
 
-Install the optional ML dependencies only when the first static pipeline is
-ready:
+Install the optional ML dependencies to run the real M3 pipeline:
 
 ```bash
 python3 -m pip install -e '.[ml,dev]'
@@ -89,7 +92,7 @@ secrets or hosted-model API keys.
 
 ## Current Milestone
 
-M2 is closed. The next milestone is M3: the first versioned static RAG
-pipeline, while preserving the exact/empirical boundary. The integrated M2
-implementation and evidence are in
-[the M2 status](docs/m2_implementation_status.md).
+M3 is closed. The next milestone is M4: selective maintenance under corpus
+insertions, replacements, and deletions. M4 must measure affected-claim recall
+and verifier-call savings against full recomputation; it must not infer these
+properties from the static M3 result.

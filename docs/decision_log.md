@@ -1,5 +1,32 @@
 # GroundLoop Decision Log
 
+## 2026-07-18 — M3 Static AI Pipeline Accepted
+
+Decision status: implemented and accepted.
+
+M3 now provides a complete static path from local files through immutable
+chunks, BGE/pgvector retrieval, cited Qwen generation, atomic claim
+extraction, a genuinely fine-tuned and development-calibrated MiniLM2
+verifier, immutable score observations, the unchanged M2 maintenance engine,
+and atomic PostgreSQL publication. The top-level CLI writes complete model,
+prompt, calibration, candidate, score, state, epoch, timing, and reuse
+provenance.
+
+The acceptance claim is systems completeness and exact structured maintenance
+over stored scores, not neural truth. The first real integrated answer was
+incomplete and remained UNSUPPORTED because its support probability was below
+the frozen threshold. Public verifier evaluation lacks REFUTE examples and all
+358 public-test inputs truncated; the 18-row transfer fixture is too small for
+a strong quality claim. These are recorded results, not hidden failures.
+
+Identical replay is checked before model loading. Calibration identity and
+temperature participate in run identity. The real replay produced zero new
+and 17 reused artifacts. Dynamic affected-claim discovery and verifier-call
+savings remain M4.
+
+Evidence: `docs/m3_implementation_status.md` and the three M3 workstream
+handoffs.
+
 ## 2026-07-18 — M3 Static AI Contracts Frozen
 
 Decision status: accepted for parallel implementation; M3 is not yet complete.
