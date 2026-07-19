@@ -1,0 +1,38 @@
+{
+  "schema_version": "groundloop-m4-m3-reuse-v1",
+  "embedding": {
+    "model_id": "BAAI/bge-small-en-v1.5",
+    "revision": "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a",
+    "tokenizer_revision": "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a",
+    "dimension": 384,
+    "query_prefix": "Represent this sentence for searching relevant passages: ",
+    "snapshot_tree_sha256": "22ad3b4f1d45d362fed00289e1d5ae2910e566a044767adb33865a9e98863b40",
+    "cache_relative_path": "models/m3/huggingface-cache",
+    "snapshot_relative_path": "models/m3/huggingface-cache/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
+  },
+  "verifier": {
+    "logical_model_id": "groundloop/minilm2-m3-bounded-v1",
+    "revision": "groundloop-m3-bounded-v1",
+    "base_model_id": "cross-encoder/nli-MiniLM2-L6-H768",
+    "base_model_revision": "b95119ce93d3e065de6214e38cd4a97b0f2f2c6d",
+    "checkpoint_tree_sha256": "81870b683cec57eff82665103fcff3a35f45b9c9be0e18b53dcd40f485bfa4cf",
+    "model_file_sha256": "81c49c30048dcbcc9fb2895b56622f702b4aa9894e7d055f28bb520c09f74e3e",
+    "checkpoint_relative_path": "models/m3/verifier-run-20260718/checkpoints/minilm2-m3-bounded-v1",
+    "max_length": 256,
+    "batch_size": 8,
+    "prompt_artifact_id": "groundloop-verifier-pair-v1",
+    "prompt_template_sha256": "620388c57ab7e034ac6fb7dc18fc0c6b2b5a6ec1cf101ccc01bad51b2e63a41e"
+  },
+  "calibration": {
+    "version": "temperature-v1:6ae200db8d75477da143bd6d8d6c8927cfdfdbd8995932bbc1c59ce67e090727",
+    "temperature": 1.1037657679769346,
+    "file_sha256": "d0ec9d23ded61fbcfaccc550e0486ce89845685abb4f27a0ca20e22d4934b873",
+    "relative_path": "models/m3/verifier-run-20260718/reports/temperature_calibration.json"
+  },
+  "decision_policy": {
+    "version": "m3-policy-v1",
+    "support_threshold": 0.8,
+    "refute_threshold": 0.8,
+    "tie_rule_version": "v1"
+  }
+}
