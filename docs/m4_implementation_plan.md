@@ -701,11 +701,18 @@ empirical results:
 
 ## 14. Immediate next actions
 
-1. Give `docs/claude_fable5_m4_audit_prompt.md` to Claude Fable 5.
-2. Require the reviewer to write `docs/claude_fable5_m4_plan_audit.md` and
-   return one explicit verdict.
-3. Resolve every P0/P1 finding in writing; do not start implementation agents
-   while the verdict is `DISAGREE` or `BLOCKED`.
-4. If accepted, create `docs/m4_design_freeze.md`, migration 003, shared DTOs,
-   lane prompts and a tagged M4 contract baseline.
-5. Only then create three fresh worktrees and begin M4.1–M4.4 in parallel.
+The original audit/contract actions are complete. The authoritative current
+state is `docs/m4_implementation_status.md`.
+
+1. Keep the three Wave 2 tasks path-exclusive: randomized withdrawal
+   differential evidence, live PostgreSQL admission adapters, and controlled
+   workload/report mechanics.
+2. In the coordinator-owned main worktree, implement the M4.1 deterministic
+   persistence and pipeline vertical slice over migration 003.
+3. Prove insert/delete/replacement publication, PENDING, exact replay,
+   failure preservation and late-inactive completion against the two exact
+   structured-state oracles.
+4. Integrate one lane at a time and rerun the full live gate after every merge.
+5. Connect pinned M3 models only after the deterministic path passes; do not
+   train the learned admission TARGET before full-pair labels and history
+   splits are frozen.
