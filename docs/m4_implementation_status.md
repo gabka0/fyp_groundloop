@@ -2,8 +2,8 @@
 
 Status date: 2026-07-19
 
-Milestone status: **active; contract freeze and deterministic Wave 1 are
-integrated, but M4 CORE is not complete**.
+Milestone status: **active; contract freeze, deterministic Wave 1 and
+path-exclusive Wave 2 are integrated, but M4 CORE is not complete**.
 
 ## 1. Honest verdict
 
@@ -26,6 +26,8 @@ therefore justified yet.
   `a1059ff63883fa388def0e39986fa4b8393ef709`.
 - Deterministic Wave 1 integration point:
   `b3623feb36f719ef8715e6011e92c1a865530d7d`.
+- Lane-local Wave 2 integration point:
+  `74ddefd` (before this status-only update).
 - Authoritative semantic contract: `docs/m4_design_freeze.md`.
 - Ownership and merge protocol: `docs/m4_multiagent_execution_plan.md`.
 
@@ -86,7 +88,7 @@ approximate-channel cap rather than the observed verifier cost.
 - Deterministic history-cluster percentile bootstrap with frozen seed,
   10,000 replicates and no interval below two eligible histories.
 
-## 4. Validation at the Wave 1 integration point
+## 4. Validation
 
 The following commands passed from the main worktree with the live database
 configured:
@@ -100,7 +102,7 @@ PYTHONPATH=src .venv/bin/python scripts/validate_m2_postgres.py
 .venv/bin/pip check
 ```
 
-Observed results:
+Wave 1 observed results:
 
 - 266 tests collected and passed, including live PostgreSQL tests.
 - Ruff passed.
@@ -111,20 +113,36 @@ Observed results:
   usable.
 - dependency check reported no broken requirements.
 
-## 5. Parallel Wave 2 assignments
+After all three Wave 2 lanes were integrated, the same live gate passed again:
 
-Each lane rebases onto the integrated baseline and remains inside its existing
-owned paths.
+- 341 tests collected and passed.
+- Ruff passed.
+- strict mypy passed over 83 source files.
+- compileall passed.
+- PostgreSQL 16.14 and pgvector 0.8.5 validator again reported zero claim
+  mismatches, zero answer mismatches and zero invalid certificates; both
+  checked indexes were usable.
+- dependency check reported no broken requirements.
 
-| Lane | Independent task | Required evidence |
+## 5. Completed path-exclusive Wave 2
+
+Each lane remained inside its existing owned paths.
+
+| Lane | Implemented task | Evidence |
 |---|---|---|
-| Epoch/runtime | Randomized indexed-withdrawal versus naive full-scan differential testing under skew | Exact equality, operation counters, dense-fanout limitation stated |
-| Impact admission | Real PostgreSQL lexical-v1 plus exact/approximate pgvector adapter boundaries | Live unique-schema tests, deterministic ordering, index/query provenance |
-| Oracles/evaluation | Controlled history workloads and machine-readable paired reports | Leakage-safe history splits, missed-candidate and zero-denominator fixtures |
+| Epoch/runtime | Randomized indexed-withdrawal versus naive full-scan differential testing under skew | 60 seeded event-shape cases plus duplicates, empty/absent and hot/cold skew; dense fanout limitation stated |
+| Impact admission | Real PostgreSQL lexical-v1 plus exact/approximate pgvector adapter boundaries | Live unique-schema GIN/HNSW plan tests, deterministic ordering and complete index/query provenance |
+| Oracles/evaluation | Controlled history workloads and machine-readable paired reports | Four independent histories, development/test leakage rejection, missed-candidate and zero-denominator fixtures |
 
 The coordinator alone owns shared persistence, migrations, M4 pipeline, CLI,
 end-to-end PostgreSQL tests, merges and research claims. This makes the three
 lane tasks independent at the file and semantic-contract levels.
+
+The indexed withdrawal work is output-sensitive, not worst-case sublinear. In
+the frozen skew fixture, cold deletion required 2 logical indexed operations
+versus 12,002 full-scan operations; dense deletion required 10,001 in both
+paths. The PostgreSQL HNSW fixture's recall@8 of 1.0 is a wiring check on a tiny
+population, not evidence of admission quality.
 
 ## 6. Immediate coordinator stage: M4.1 vertical slice
 
@@ -151,12 +169,11 @@ would produce an evaluation that cannot support a serious research claim.
 ## 7. Remaining M4 CORE gates
 
 - Coordinator persistence/pipeline/CLI and deterministic end-to-end history.
-- Randomized exact-withdrawal differential evidence.
-- Live PostgreSQL lexical and pgvector discovery.
 - Production pinned M3 embedding and calibrated-verifier adapters.
 - Real insert/delete/replacement execution with PENDING and publication
   behavior.
-- Event-level baseline and ablation runner over controlled and real histories.
+- An executable event-level baseline/ablation runner over the now-frozen
+  controlled workload and later real histories.
 - Recall versus actual verifier calls and latency, with history-cluster
   uncertainty and inspectable misses.
 - One clean reproduction command and manifest-linked raw outputs.

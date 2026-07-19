@@ -154,10 +154,10 @@ Exit criteria:
 
 ## M4 — Selective Semantic Maintenance
 
-Status: active. Three-lane audit, corrected contract freeze, migration 003 and
-deterministic Wave 1 were integrated on 2026-07-19. Wave 2 lane-local evidence
-and the coordinator-owned M4.1 end-to-end vertical slice are next. M4 CORE is
-not complete. See `docs/m4_design_freeze.md`,
+Status: active. Three-lane audit, corrected contract freeze, migration 003,
+deterministic Wave 1 and path-exclusive Wave 2 were integrated on 2026-07-19.
+The coordinator-owned M4.1 end-to-end vertical slice is next. M4 CORE is not
+complete. See `docs/m4_design_freeze.md`,
 `docs/m4_multiagent_execution_plan.md` and
 `docs/m4_implementation_status.md`.
 

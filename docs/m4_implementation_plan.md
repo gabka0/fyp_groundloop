@@ -704,9 +704,8 @@ empirical results:
 The original audit/contract actions are complete. The authoritative current
 state is `docs/m4_implementation_status.md`.
 
-1. Keep the three Wave 2 tasks path-exclusive: randomized withdrawal
-   differential evidence, live PostgreSQL admission adapters, and controlled
-   workload/report mechanics.
+1. Treat the completed Wave 2 modules as frozen lane-local inputs; reopen a
+   lane only through a new explicit, path-exclusive assignment.
 2. In the coordinator-owned main worktree, implement the M4.1 deterministic
    persistence and pipeline vertical slice over migration 003.
 3. Prove insert/delete/replacement publication, PENDING, exact replay,

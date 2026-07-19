@@ -98,5 +98,6 @@ another lane's paths.
 
 M4 deterministic Wave 1 is integrated. It is not M4 completion: read
 `docs/m4_implementation_status.md` before proposing work or making performance
-claims. The current parallel wave is lane-local; shared PostgreSQL persistence,
-pipeline, CLI, end-to-end tests and merges remain coordinator-owned.
+claims. Path-exclusive Wave 2 is also integrated; shared PostgreSQL
+persistence, pipeline, CLI, end-to-end tests and merges remain
+coordinator-owned.

@@ -1,7 +1,7 @@
 # GroundLoop M4 Multi-Agent Execution Plan
 
-Status: active coordinator plan; audit/contract barriers and deterministic
-Wave 1 complete, path-exclusive Wave 2 active
+Status: active coordinator plan; audit/contract barriers and path-exclusive
+Waves 1–2 complete, coordinator M4.1 integration is next
 
 Date: 2026-07-19
 
@@ -185,7 +185,8 @@ Epoch/runtime supplies SQL fragments and index expectations. Admission adds
 pinned pgvector/BGE adapters. Oracles add bounded full-pair/full-refresh
 runners. Each PostgreSQL test uses a unique schema and cleans it.
 
-Current path-exclusive assignments are narrower to preserve independence:
+The completed path-exclusive assignments were narrowed to preserve
+independence:
 
 - epoch/runtime: randomized indexed-withdrawal versus naive-scan differential
   evidence under skew;
@@ -194,8 +195,8 @@ Current path-exclusive assignments are narrower to preserve independence:
 - oracles/evaluation: controlled history workloads, history-safe split
   manifests and machine-readable paired reports.
 
-The coordinator develops M4 persistence and the deterministic end-to-end
-vertical slice concurrently. No lane edits coordinator integration files.
+The coordinator now develops M4 persistence and the deterministic end-to-end
+vertical slice. No lane edits coordinator integration files.
 
 ### Wave 3 — coordinator integration
 

@@ -1,5 +1,33 @@
 # GroundLoop Decision Log
 
+## 2026-07-19 — M4 Lane-Local Wave 2 Accepted; Coordinator Integration Remains
+
+Decision status: lane-local evidence accepted; M4 CORE remains active.
+
+The runtime lane now differentially checks indexed withdrawal against an
+independent full scan under seeded event shapes and skew. The result supports
+the output-sensitive logical-work expression
+`Theta(|D| + |E_obs(D)| + |E_cand(D)|)` but explicitly shows no sublinear
+worst-case bound for dense fanout.
+
+The admission lane now exercises real PostgreSQL `simple` lexical search,
+`ts_rank_cd(..., 32)`, exhaustive materialized pgvector search and a separately
+identified HNSW path. Physical index/search settings are provenance-bound.
+The tiny fixture's perfect recall is accepted only as a wiring check, not a
+quality result.
+
+The evaluation lane now supplies immutable controlled histories, leakage-safe
+development/test validation, exact event-metric construction, explicit miss
+diagnostics and canonical paired reports. It remains structurally independent
+of runtime and selective admission.
+
+The integrated live gate passes 341 collected tests, Ruff, strict mypy over 83
+source files, compileall, the PostgreSQL three-oracle validator and dependency
+checking. The next blocker is coordinator-owned persistence and the M4.1
+deterministic insert/delete/replacement vertical slice.
+
+Evidence: `docs/m4_implementation_status.md` and the three M4 lane handoffs.
+
 ## 2026-07-19 — M4 Deterministic Wave 1 Integrated; Performance Claims Deferred
 
 Decision status: implementation foundation accepted; M4 CORE remains active.
