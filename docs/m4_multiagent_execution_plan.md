@@ -34,6 +34,11 @@ Agents work only in their assigned worktree and branch. They do not merge,
 cherry-pick another lane, rebase without coordinator instruction, or modify the
 main worktree.
 
+The coordinator creates ignored `.venv` and `.env` symlinks in each worktree
+pointing to the main repository's local environment. Agents may use them but
+must never stage the links, print secret values, install dependencies
+concurrently, or replace the shared environment.
+
 ## 3. Coordinator-owned shared surface
 
 Only the coordinator may edit:
@@ -253,4 +258,3 @@ reproducible recall/work report.
 
 The learned-impact TARGET succeeds only if it improves the fixed-budget
 recall/work Pareto frontier. A negative result is valid and must be retained.
-
