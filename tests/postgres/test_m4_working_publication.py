@@ -291,3 +291,33 @@ def test_working_delta_is_immutable_and_key_bound(
                     (epoch_id,),
                 )
         live_connection.execute("SET CONSTRAINTS ALL IMMEDIATE")
+
+
+def test_database_rejects_two_open_structural_epochs(
+    live_connection: Connection[Any],
+) -> None:
+    with temporary_m2_schema(live_connection):
+        first, _ = record_epoch(
+            live_connection, event_id="first-open", payload_hash="5" * 64
+        )
+        live_connection.execute(
+            """
+            UPDATE groundloop_epoch
+            SET structural_status = 'committed'
+            WHERE epoch_id = %s
+            """,
+            (first,),
+        )
+        second, _ = record_epoch(
+            live_connection, event_id="second-open", payload_hash="6" * 64
+        )
+        with pytest.raises(errors.UniqueViolation):
+            with live_connection.transaction():
+                live_connection.execute(
+                    """
+                    UPDATE groundloop_epoch
+                    SET structural_status = 'committed'
+                    WHERE epoch_id = %s
+                    """,
+                    (second,),
+                )

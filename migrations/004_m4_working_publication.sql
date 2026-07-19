@@ -6,6 +6,11 @@
 -- coordinator transaction.  A failed epoch can therefore never contaminate
 -- the next epoch's B0 observation snapshot.
 
+CREATE UNIQUE INDEX groundloop_one_open_structural_epoch
+    ON groundloop_epoch ((true))
+    WHERE structural_status = 'committed'
+      AND semantic_status IN ('pending', 'complete');
+
 CREATE TABLE groundloop_m4_publication_head (
     singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
     epoch_id bigint NOT NULL UNIQUE REFERENCES groundloop_epoch(epoch_id),
@@ -124,4 +129,3 @@ $$;
 CREATE TRIGGER groundloop_working_observation_delta_immutable
 BEFORE UPDATE OR DELETE ON groundloop_working_observation_delta
 FOR EACH ROW EXECUTE FUNCTION groundloop_reject_immutable_working_delta();
-
