@@ -1,13 +1,59 @@
 # M4 Impact-Admission Lane Status
 
-Status: **Wave 1 deterministic CORE complete; ready for coordinator review**
+Status: **Wave 2 PostgreSQL admission boundaries complete; ready for integration**
 
 Updated: 2026-07-19
 
-Contract baseline: `a1059ff63883fa388def0e39986fa4b8393ef709`
-(`m4-contract-baseline-2026-07-19`)
+Wave 2 base: integrated `main` commit
+`b3623feb36f719ef8715e6011e92c1a865530d7d`
 
-## Delivered
+## Wave 2 delivered
+
+- A runtime identity inspection binding the exact PostgreSQL version,
+  pgvector extension version and resolved `simple` regconfig.
+- A real PostgreSQL lexeme analyzer using parameterized
+  `to_tsvector(%s::regconfig, %s)` and `tsvector_to_array`.
+- A real lexical backend that constructs an OR `tsquery` inside PostgreSQL
+  from a parameterized lexeme array, searches a GIN-indexable `tsvector`,
+  evaluates `ts_rank_cd(..., 32)`, and returns deterministic
+  `(score DESC, claim_id ASC)` order.
+- Full lexical-registry validation against the frozen in-memory IDF snapshot:
+  claim IDs and actual server lexemes must match, not merely the row count.
+- A pgvector exact reference that computes every filtered cosine distance in
+  a materialized CTE, then sorts by `(distance, claim_id)`. The live plan does
+  not use the HNSW index.
+- An explicitly approximate pgvector HNSW adapter. It validates the physical
+  access method, cosine operator class, dimension, explicit `m` and
+  `ef_construction`, and hashes `pg_get_indexdef` into query provenance.
+- Complete recorded HNSW search settings: `ef_search`, iterative-scan mode,
+  maximum scan tuples, scan-memory multiplier, candidate-pool rule, distance
+  and tie rule. Settings are installed transaction-locally with parameterized
+  `set_config` calls.
+- An HNSW population-scope guard: the indexed relation must contain one sealed
+  claim-registry/model/role population. This prevents unrelated snapshots from
+  silently changing filtered-ANN behavior.
+- A two-stage HNSW query: the inner operator-order/limit is indexable; the
+  outer result applies deterministic distance/claim ordering to the returned
+  approximate set. Rebuild identity is not asserted; replay must use persisted
+  channel hits.
+- Unique-schema live tests with real GIN and HNSW indexes, exact versus
+  in-memory pair-order comparison, HNSW recall measurement, malicious-text
+  parameterization coverage, registry-drift rejection, physical-index
+  mismatch rejection, and population-isolation rejection.
+
+Live server exercised:
+
+```text
+PostgreSQL: 16.14 (Debian 16.14-1.pgdg12+1)
+pgvector:   0.8.5
+regconfig:  simple
+```
+
+The tiny 64-claim, three-dimensional live fixture measured HNSW recall@8 of
+`1.0` against the brute-force role-vector reference. This is a wiring and
+measurement result, not a semantic-quality, scale or general recall claim.
+
+## Wave 1 retained
 
 - Role-specific normalized claim and inserted-chunk vector DTOs.
 - A brute-force exact reverse-vector reference ordered by cosine distance and
@@ -39,9 +85,10 @@ Contract baseline: `a1059ff63883fa388def0e39986fa4b8393ef709`
   lexical/PostgreSQL identity, claim-registry snapshot/count, fusion version,
   cap, frontier, verifier execution spec, decision policy, and lineage mode.
 
-## Test coverage
+## Combined test coverage
 
-The 22 deterministic tests cover:
+The admission suite now has 28 test cases, including the parameterized vector
+validation cases and four PostgreSQL-adapter tests. It covers:
 
 - vector tie ordering, exact dot-product scores, replay, invalid normalization,
   duplicate claim IDs, and dimensional mismatch;
@@ -59,39 +106,44 @@ The 22 deterministic tests cover:
 Executed in this worktree with its `.venv` link:
 
 ```text
+set -a; source /home/kassym/Desktop/groundloop/.env; set +a
 .venv/bin/pytest -q tests/m4/admission
-22 passed
+28 passed
+
+.venv/bin/pytest -q tests/m4/test_m4_contracts.py tests/m4/admission
+37 passed
 
 .venv/bin/ruff check src/groundloop/m4/admission tests/m4/admission
 All checks passed!
 
 .venv/bin/mypy --strict src/groundloop/m4/admission
-Success: no issues found in 6 source files
+Success: no issues found in 9 source files
 
 .venv/bin/python -m compileall -q \
   src/groundloop/m4/admission tests/m4/admission
 PASS: exit 0, no diagnostics
 ```
 
-No ordinary test downloaded a model, contacted a model hub, or required a
-database.
+Without either database environment variable, exactly the two unique-schema
+live tests skip; missing DSN is their only skip path. With the project DSN,
+both execute. No test downloads a model or contacts a model hub.
 
 ## Deferred work and limits
 
 - No real BGE embedding run or reverse-geometry quality result is claimed.
-- No HNSW adapter, index build, rebuild/replay experiment, scale benchmark, or
-  recall measurement has run. The interface and exact comparison hook are now
-  available for that experiment.
-- No live PostgreSQL lexical analyzer or `ts_rank_cd` adapter has run. Fake
-  lexical results test policy plumbing only and must not be reported as
-  PostgreSQL equivalence or retrieval quality.
+- No HNSW scale, latency, index-size, rebuild or cross-parameter recall sweep
+  has run. One tiny live recall check cannot choose production parameters.
+- No real BGE vectors were used. The live vector fixture is three-dimensional
+  synthetic geometry and establishes database/query mechanics only.
+- No shared migration or coordinator persistence was added. Integration must
+  supply the documented claim-admission relation and indexes transactionally.
 - No learned impact model was trained. The learned dual-encoder TARGET remains
   blocked on coordinator/oracle delivery of typed teacher and human judgments,
   leakage-safe history-component splits, and fixed-budget evaluation data.
 - This lane does not implement persistence, epoch scheduling, logical job
   execution, frontier propagation, semantic oracles, or end-to-end evaluation.
 
-Confidence is **high** for the deterministic Wave 1 contracts, ordering,
-deduplication and accounting; **unknown** for reverse-BGE, HNSW, PostgreSQL
-lexical quality, and learned-admission quality until their explicit empirical
-gates run.
+Confidence is **high** for the deterministic Wave 1 contracts and the tested
+PostgreSQL query/provenance boundaries; **moderate** for production physical
+integration until coordinator migrations exist; **unknown** for reverse-BGE,
+large-index HNSW and learned-admission quality until their empirical gates run.

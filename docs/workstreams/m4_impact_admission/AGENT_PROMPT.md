@@ -17,7 +17,7 @@ Read `AGENTS.md`, `docs/technical_design.md`,
 `docs/m4_implementation_plan.md`, and
 `docs/m4_multiagent_execution_plan.md` completely before acting.
 
-## First task: audit only
+## Historical first task: audit barrier (complete)
 
 Do not implement code or train a model in the first turn. Write only:
 
@@ -37,7 +37,37 @@ falsifying tests. Explicitly decide whether verifier improvement must precede
 learned admission. Commit the audit and stop for the coordinator's contract
 freeze. Do not download or train models during the audit barrier.
 
-## Implementation ownership after coordinator release
+The audit was committed, its contract corrections were accepted, and Wave 1
+was integrated. `AUDIT.md`, `STATUS.md`, and `HANDOFF.md` retain that evidence.
+
+## Current task: Wave 2 real PostgreSQL admission boundaries
+
+Start from integrated `main` commit `b3623fe` or a current descendant. Preserve
+the Wave 1 deterministic references and fake adapters.
+
+Implement real PostgreSQL adapter boundaries for frozen lexical-v1 and
+reverse-vector search:
+
+- parameterize every runtime SQL value;
+- use PostgreSQL `simple` tsvector/tsquery OR semantics and
+  `ts_rank_cd(..., 32)`, ordered by score descending then claim ID;
+- implement pgvector exhaustive search as an exact score-all/materialize/sort
+  reference;
+- implement HNSW as explicitly approximate, bind complete build/search
+  provenance, inspect the physical index, and never claim exactness or
+  deterministic rebuilds;
+- add unique-schema live PostgreSQL tests that skip only when no test DSN is
+  configured, including actual GIN/HNSW plan checks where feasible;
+- do not download BGE, run text encoding, train a model, or begin the learned
+  impact TARGET.
+
+Do not add migrations or edit coordinator-owned persistence. The adapter owns
+an explicit relation/index interface which the coordinator may later satisfy
+in shared schema work. Run owned tests plus shared M4 contracts, Ruff, strict
+mypy, compileall, diff and ownership checks. Commit code/tests first and the
+updated `STATUS.md`/`HANDOFF.md` separately.
+
+## Implementation ownership
 
 - `src/groundloop/m4/admission/**`
 - `tests/m4/admission/**`
@@ -67,4 +97,3 @@ docs/workstreams/m4_impact_admission/contract_requests/
 Do not merge. Commit only owned changes, run lane gates, write `STATUS.md` and
 `HANDOFF.md`, and report exact commit hashes and command results. Ordinary
 tests perform no download. Real model work requires coordinator scheduling.
-
