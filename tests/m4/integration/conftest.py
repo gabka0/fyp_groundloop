@@ -18,10 +18,10 @@ def m4_pipeline_connection() -> Iterator[Connection[tuple[object, ...]]]:
     if not url:
         pytest.skip("live PostgreSQL is required for the M4 pipeline tests")
     psycopg_url = url.replace("postgresql+psycopg://", "postgresql://", 1)
-    with psycopg.connect(psycopg_url) as connection:
+    with psycopg.connect(psycopg_url, autocommit=True) as connection:
         with temporary_m2_schema(connection):
             try:
                 yield connection
             finally:
-                connection.execute("SET CONSTRAINTS ALL IMMEDIATE")
-
+                with connection.transaction():
+                    connection.execute("SET CONSTRAINTS ALL IMMEDIATE")

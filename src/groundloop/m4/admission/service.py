@@ -67,6 +67,13 @@ class PostgresHybridAdmissionPort:
     lineage_provider: LineageProvider | None = None
     frontier_score_floor: float = -1.0
 
+    def __post_init__(self) -> None:
+        if not self.connection.autocommit:
+            raise ValidationError(
+                "M4 admission requires a psycopg autocommit connection so model "
+                "inference cannot inherit an implicit database transaction"
+            )
+
     def discover(
         self, epoch_id: int, root_job: LogicalJobSpec
     ) -> DiscoveryResult:

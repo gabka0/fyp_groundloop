@@ -85,6 +85,15 @@ from groundloop.reference import compute_all_states
 from groundloop.repository import InMemoryRepository
 
 
+def _require_autocommit(connection: Connection[Any]) -> None:
+    """Prevent implicit transactions from spanning external model work."""
+    if not connection.autocommit:
+        raise ValidationError(
+            "M4 application composition requires a psycopg autocommit connection; "
+            "its atomic writes use explicit transaction blocks"
+        )
+
+
 def _certificate_digest(claim_id: str, state: ClaimState) -> str:
     return stable_m4_digest(
         "m4-claim-certificate-v1",
@@ -208,6 +217,9 @@ class PostgresPairInputResolver:
     """Resolve a VERIFY_PAIR input from immutable relational identities."""
 
     connection: Connection[Any]
+
+    def __post_init__(self) -> None:
+        _require_autocommit(self.connection)
 
     def resolve_pair_input(
         self, *, epoch_id: int, pair: PairKey
@@ -730,6 +742,7 @@ class PostgresM4ApplicationPorts:
         verification_provenance_writer: VerificationProvenanceWriter | None = None,
         failure_injector: Callable[[str], None] | None = None,
     ) -> None:
+        _require_autocommit(connection)
         self.connection = connection
         self.runtime_store = PostgresM4RuntimeStore(connection)
         self._payloads = dict(structural_payloads)
