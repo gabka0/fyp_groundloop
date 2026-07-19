@@ -93,7 +93,7 @@ def _insert_observation(
             observation_id, subject_kind, subject_id, chunk_version_id,
             task_type, support_score, refute_score, neutral_score, model_id,
             model_version, prompt_version, input_hash, produced_epoch
-        ) VALUES (%s, 'claim', 'claim', 'chunk', 'nli', %s, 0.05, %s,
+        ) VALUES (%s, 'claim', 'claim', 'chunk', 'nli', %s, %s, 0.05,
                   'model', 'revision', 'prompt', %s, %s)
         """,
         (observation_id, score, 0.95 - score, HASH, epoch_id),
@@ -188,6 +188,14 @@ def test_pending_and_failed_work_never_mutate_published_currency(
             """,
             (failed_epoch,),
         ).fetchone() == ("failed-observation",)
+        assert live_connection.execute(
+            """
+            SELECT support_count, refute_count, status
+            FROM groundloop_m4_claim_state_oracle
+            WHERE epoch_id = %s AND claim_id = 'claim'
+            """,
+            (failed_epoch,),
+        ).fetchone() == (0, 1, "refuted")
 
         live_connection.execute(
             """
@@ -209,6 +217,22 @@ def test_pending_and_failed_work_never_mutate_published_currency(
             """,
             (next_epoch,),
         ).fetchone() == ("old-observation",)
+        assert live_connection.execute(
+            """
+            SELECT support_count, refute_count, status
+            FROM groundloop_m4_claim_state_oracle
+            WHERE epoch_id = %s AND claim_id = 'claim'
+            """,
+            (next_epoch,),
+        ).fetchone() == (1, 0, "supported")
+        assert live_connection.execute(
+            """
+            SELECT supported_count, refuted_count, status
+            FROM groundloop_m4_answer_state_oracle
+            WHERE epoch_id = %s AND answer_version_id = 'answer'
+            """,
+            (next_epoch,),
+        ).fetchone() == (1, 0, "valid")
         assert live_connection.execute(
             "SELECT epoch_id FROM groundloop_m4_publication_head"
         ).fetchone() == (published_epoch,)

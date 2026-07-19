@@ -180,9 +180,13 @@ def apply_m2_schema(connection: Connection[Any]) -> None:
     """Apply the owned migration and independent oracle in the search path."""
     migrations = sorted((ROOT / "migrations").glob("*.sql"))
     oracle = (ROOT / "sql/m2_full_recompute_oracle.sql").read_text()
+    m4_working_oracle = (
+        ROOT / "sql/m4_working_full_recompute_oracle.sql"
+    ).read_text()
     for migration in migrations:
         connection.execute(migration.read_text())
     connection.execute(oracle)
+    connection.execute(m4_working_oracle)
 
 
 def record_epoch(
