@@ -159,7 +159,8 @@ deterministic Wave 1 and path-exclusive Wave 2 were integrated on 2026-07-19.
 The coordinator-owned M4.1 end-to-end vertical slice is next. M4 CORE is not
 complete. See `docs/m4_design_freeze.md`,
 `docs/m4_multiagent_execution_plan.md` and
-`docs/m4_implementation_status.md`.
+`docs/m4_implementation_status.md`. Active M4.1 and real-model ownership is
+frozen in `docs/m4_1_multiagent_implementation_plan.md`.
 
 Deliverables:
 

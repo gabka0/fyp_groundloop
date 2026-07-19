@@ -27,6 +27,7 @@ order:
 21. `docs/m4_implementation_plan.md` (phasing; freeze overrides its proposal)
 22. `docs/m4_multiagent_execution_plan.md` (ownership and contract barriers)
 23. `docs/m4_implementation_status.md` (implemented evidence and next gate)
+24. `docs/m4_1_multiagent_implementation_plan.md` (active M4.1 ownership)
 
 `docs/initial_technical_design.md` (v0.1) is superseded and retained for audit
 only. The M0.5 design freeze and M1.1 amendments are complete; frozen decisions
@@ -101,3 +102,9 @@ M4 deterministic Wave 1 is integrated. It is not M4 completion: read
 claims. Path-exclusive Wave 2 is also integrated; shared PostgreSQL
 persistence, pipeline, CLI, end-to-end tests and merges remain
 coordinator-owned.
+
+M4.1 uses a new three-lane ownership manifest in
+`docs/m4_1_multiagent_implementation_plan.md`. Its explicit delegation of the
+new M4 persistence/application/model modules overrides the older general
+coordinator reservation for those exact paths only. Shared contracts,
+migrations, CLI and end-to-end integration remain coordinator-only.
