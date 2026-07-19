@@ -1,6 +1,7 @@
 # GroundLoop M4 Dynamic Impact Discovery — Proposed Implementation Plan
 
-Status: proposed for adversarial review; not yet frozen
+Status: accepted for phased implementation subject to
+`docs/m4_design_freeze.md`, which supersedes conflicting proposal details
 
 Date: 2026-07-19
 
@@ -8,6 +9,13 @@ Authority: `docs/technical_design.md` v0.2 and decisions D-1 through D-20
 remain authoritative. This plan specializes M4 without reopening those
 decisions. Any genuine conflict must be recorded in `docs/decision_log.md`
 before implementation.
+
+The audit barrier found material corrections to affected-set, baseline,
+publication, job-DAG, PENDING and neural-label semantics. The corrected
+contracts are frozen in `docs/m4_design_freeze.md`. In particular, the sets in
+the proposal below are not generally nested, top-`k` snapshot refresh is not
+admission ground truth, M4 CORE uses serialized structural epochs, and working
+state is distinct from append-only published state.
 
 ## 1. Verdict on the next stage
 

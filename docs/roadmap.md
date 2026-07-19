@@ -154,12 +154,19 @@ Exit criteria:
 
 ## M4 — Selective Semantic Maintenance
 
+Status: active. Three-lane audit and corrected contract freeze completed on
+2026-07-19; implementation begins from the tagged M4 contract baseline. See
+`docs/m4_design_freeze.md` and `docs/m4_multiagent_execution_plan.md`.
+
 Deliverables:
 
 - Exact reverse dependency handling for deletions (withdrawal path).
 - Asymmetric admission discovery: reverse-ANN + lexical union at fixed top-L.
 - Candidate frontier with mandatory retrieval fallback.
-- Full end-to-end recomputation baseline.
+- Independent exhaustive pair/delta audit and policy-relative snapshot-refresh
+  baseline.
+- Dynamic job-DAG coordination with versioned working/published state.
+- Optional learned impact retriever TARGET after CORE labels are frozen.
 
 Exit criteria:
 

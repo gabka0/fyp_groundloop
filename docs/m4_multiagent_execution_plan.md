@@ -1,6 +1,7 @@
 # GroundLoop M4 Multi-Agent Execution Plan
 
-Status: coordinator plan; M4.0 audit begins after baseline commit
+Status: active coordinator plan; audit barrier complete, contract baseline
+pending final validation/tag
 
 Date: 2026-07-19
 

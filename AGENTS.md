@@ -23,9 +23,9 @@ order:
 17. `docs/m3_design_freeze.md`
 18. `docs/m3_multiagent_execution_plan.md`
 19. `docs/m3_implementation_status.md`
-20. `docs/m4_implementation_plan.md` (proposed; requires independent audit
-    before it can be frozen or implemented)
-21. `docs/m4_multiagent_execution_plan.md` (ownership and contract barriers)
+20. `docs/m4_design_freeze.md` (authoritative M4 contracts)
+21. `docs/m4_implementation_plan.md` (phasing; freeze overrides its proposal)
+22. `docs/m4_multiagent_execution_plan.md` (ownership and contract barriers)
 
 `docs/initial_technical_design.md` (v0.1) is superseded and retained for audit
 only. The M0.5 design freeze and M1.1 amendments are complete; frozen decisions
@@ -85,10 +85,10 @@ and the top-level CLI. Read `docs/m3_implementation_status.md` before starting
 M4. The M3 lane prompts and ownership protocol remain historical execution
 evidence, not authorization to reopen frozen M3 contracts silently.
 
-M4 is proposed, not active. Read `docs/m4_implementation_plan.md` and obtain
-the independent verdict requested by `docs/claude_fable5_m4_audit_prompt.md`
-before freezing contracts, creating implementation worktrees, or writing M4
-code.
+M4 audit and contract correction are complete. The authoritative contract is
+`docs/m4_design_freeze.md`; the earlier plan is retained for phasing and audit
+history. Do not implement an older proposal where it conflicts with the
+freeze.
 
 M4 uses three path-exclusive lanes. Agents must follow
 `docs/m4_multiagent_execution_plan.md` and their lane prompt. No lane may cross

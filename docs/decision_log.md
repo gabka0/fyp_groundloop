@@ -1,5 +1,37 @@
 # GroundLoop Decision Log
 
+## 2026-07-19 — M4 Dynamic Impact Contracts Frozen After Three-Lane Audit
+
+Decision status: accepted for M4 CORE implementation.
+
+Three independent worktree audits agreed that M1–M3 are sound enough to build
+on but rejected the original M4 proposal as an executable contract until its
+affected-set, empirical-baseline, publication and dynamic-job ambiguities were
+resolved. The authoritative correction is `docs/m4_design_freeze.md`.
+
+M4 now separates exhaustive additive update audit from policy-relative
+top-`k` snapshot refresh; affected sets are baseline-qualified and not falsely
+called nested. Exactness remains three-way structured equality over an
+identical stored-observation snapshot, with separate coordination and
+evaluation-completeness surfaces.
+
+CORE retains serialized structural epochs. Working grounding state and
+append-only published snapshots are separate, so a failed provisional epoch
+cannot destroy the last sealed payload. Expandable discovery jobs declare and
+close their child set atomically under content-derived completion identity.
+Open discovery creates a lazy global PENDING scope. Degraded sealing is
+disabled in CORE.
+
+Admission uses deterministic vector/lexical fusion plus mandatory lineage.
+`L` is an approximate-channel cap; actual unique verifier calls are the
+evaluation budget. Teacher and human judgments are typed separately, and M4
+teacher labels use the operational threshold policy rather than verifier
+argmax. The learned impact retriever remains a TARGET after CORE audit labels
+are frozen; verifier retraining does not precede CORE.
+
+Evidence: the three `docs/workstreams/m4_*/AUDIT.md` files and
+`docs/m4_design_freeze.md`.
+
 ## 2026-07-18 — M3 Static AI Pipeline Accepted
 
 Decision status: implemented and accepted.
