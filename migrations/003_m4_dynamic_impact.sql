@@ -57,7 +57,11 @@ CREATE TABLE groundloop_m4_update (
     previous_published_epoch_id bigint REFERENCES groundloop_epoch(epoch_id),
     registry_snapshot_id text NOT NULL,
     manifest jsonb NOT NULL DEFAULT '{}'::jsonb,
-    created_at timestamptz NOT NULL DEFAULT now()
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CHECK (
+        previous_published_epoch_id IS NULL
+        OR previous_published_epoch_id <> epoch_id
+    )
 );
 
 CREATE TABLE groundloop_semantic_job (
@@ -170,7 +174,7 @@ CREATE TABLE groundloop_semantic_job_attempt (
 );
 
 CREATE TABLE groundloop_discovery_scope (
-    root_job_id text PRIMARY KEY REFERENCES groundloop_semantic_job(job_id),
+    root_job_id text PRIMARY KEY,
     epoch_id bigint NOT NULL REFERENCES groundloop_epoch(epoch_id),
     registry_snapshot_id text NOT NULL,
     scope_kind text NOT NULL CHECK (
@@ -182,7 +186,10 @@ CREATE TABLE groundloop_discovery_scope (
         (scope_kind = 'all_registered_claims' AND explicit_claim_ids IS NULL)
         OR
         (scope_kind = 'explicit_claims' AND explicit_claim_ids IS NOT NULL)
-    )
+    ),
+    FOREIGN KEY (root_job_id, epoch_id)
+        REFERENCES groundloop_semantic_job(job_id, epoch_id)
+        DEFERRABLE INITIALLY DEFERRED
 );
 
 CREATE TABLE groundloop_impact_channel_hit (
@@ -223,7 +230,11 @@ CREATE TABLE groundloop_admitted_pair (
     fused_rank integer NOT NULL CHECK (fused_rank > 0),
     reasons text[] NOT NULL CHECK (cardinality(reasons) > 0),
     mandatory_lineage boolean NOT NULL,
-    UNIQUE (epoch_id, chunk_version_id, claim_id, candidate_policy_id)
+    UNIQUE (epoch_id, chunk_version_id, claim_id, candidate_policy_id),
+    CHECK (
+        reasons <@ ARRAY['vector', 'lexical', 'lineage', 'frontier', 'learned']
+    ),
+    CHECK (mandatory_lineage = ('lineage' = ANY(reasons)))
 );
 
 CREATE INDEX groundloop_admitted_pairs_by_chunk

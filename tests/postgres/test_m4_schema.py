@@ -209,6 +209,39 @@ def test_m4_job_shapes_child_epoch_and_terminal_transitions(
                     chunk_id="chunk",
                 )
 
+        live_connection.execute(
+            """
+            INSERT INTO groundloop_discovery_scope VALUES
+                ('discover', %s, 'registry-1', 'all_registered_claims', NULL, NULL)
+            """,
+            (epoch_id,),
+        )
+
+
+def test_m4_admitted_pair_reasons_bind_lineage_override(
+    live_connection: Connection[tuple[object, ...]],
+) -> None:
+    with temporary_m2_schema(live_connection):
+        _, epoch_id = _seed_m4(live_connection)
+        live_connection.execute(
+            """
+            INSERT INTO groundloop_admitted_pair VALUES
+                ('pair', %s, 'chunk', 'claim', 'candidate-v1', 1,
+                 ARRAY['lexical', 'lineage'], true)
+            """,
+            (epoch_id,),
+        )
+        with pytest.raises(errors.CheckViolation):
+            with live_connection.transaction():
+                live_connection.execute(
+                    """
+                    INSERT INTO groundloop_admitted_pair VALUES
+                        ('bad-pair', %s, 'chunk', 'claim', 'candidate-v1', 2,
+                         ARRAY['lineage'], false)
+                    """,
+                    (epoch_id,),
+                )
+
 
 def test_m4_typed_judgments_do_not_mix_human_and_model_payloads(
     live_connection: Connection[tuple[object, ...]],
