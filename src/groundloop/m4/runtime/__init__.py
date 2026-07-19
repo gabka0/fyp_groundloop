@@ -1,0 +1,56 @@
+"""Pure deterministic runtime primitives for GroundLoop M4."""
+
+from groundloop.m4.runtime.epoch import (
+    CompletionPlan,
+    EvaluationState,
+    RuntimeBook,
+    RuntimeEpoch,
+    RuntimeEpochState,
+    RuntimeJob,
+    TransitionResult,
+    answer_evaluation_state,
+    apply_completion,
+    cancel_job,
+    claim_evaluation_state,
+    fail_epoch,
+    mark_retryable_failure,
+    mark_terminal_failure,
+    open_epoch,
+    seal_epoch,
+    start_attempt,
+)
+from groundloop.m4.runtime.frontier import FrontierRefillPlan, plan_frontier_refill
+from groundloop.m4.runtime.withdrawal import (
+    CandidateDependency,
+    ObservationDependency,
+    ReverseDependencyIndex,
+    WithdrawalPlan,
+    plan_withdrawal,
+)
+
+__all__ = [
+    "CandidateDependency",
+    "CompletionPlan",
+    "EvaluationState",
+    "FrontierRefillPlan",
+    "ObservationDependency",
+    "ReverseDependencyIndex",
+    "RuntimeBook",
+    "RuntimeEpoch",
+    "RuntimeEpochState",
+    "RuntimeJob",
+    "TransitionResult",
+    "WithdrawalPlan",
+    "answer_evaluation_state",
+    "apply_completion",
+    "cancel_job",
+    "claim_evaluation_state",
+    "fail_epoch",
+    "mark_retryable_failure",
+    "mark_terminal_failure",
+    "open_epoch",
+    "plan_frontier_refill",
+    "plan_withdrawal",
+    "seal_epoch",
+    "start_attempt",
+]
