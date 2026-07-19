@@ -13,7 +13,8 @@ from groundloop.m4.contracts import (
 )
 
 
-def _config_hash(namespace: str, values: Sequence[tuple[str, str]]) -> str:
+def hash_config_pairs(namespace: str, values: Sequence[tuple[str, str]]) -> str:
+    """Hash canonical sorted config pairs for manifest/provenance validation."""
     keys = tuple(key for key, _value in values)
     if keys != tuple(sorted(set(keys))):
         raise ValidationError("config fields must be sorted with unique keys")
@@ -59,10 +60,10 @@ def build_candidate_policy_manifest(
         ),
         vector_method_version=vector_method_version,
         vector_index_kind=vector_index_kind,
-        vector_index_build_config_hash=_config_hash(
+        vector_index_build_config_hash=hash_config_pairs(
             "m4-vector-index-build-config-v1", vector_index_build_config
         ),
-        vector_search_config_hash=_config_hash(
+        vector_search_config_hash=hash_config_pairs(
             "m4-vector-search-config-v1", vector_search_config
         ),
         lexical_method_version=lexical_method_version,

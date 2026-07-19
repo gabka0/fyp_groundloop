@@ -29,6 +29,7 @@ def policy_manifest(
     vector_index_kind: VectorIndexKind = VectorIndexKind.EXACT,
     vector_build: Sequence[tuple[str, str]] = (("algorithm", "brute-force"),),
     vector_search: Sequence[tuple[str, str]] = (("distance", "cosine"),),
+    postgres_version: str = "fake-wave1",
     lineage: bool = True,
 ) -> CandidatePolicyManifest:
     return build_candidate_policy_manifest(
@@ -44,7 +45,7 @@ def policy_manifest(
         vector_search_config=vector_search,
         lexical_method_version="postgres-lexical-v1",
         lexical_config=lexical_config,
-        lexical_postgres_version="fake-wave1",
+        lexical_postgres_version=postgres_version,
         lexical_regconfig_identity="simple",
         claim_registry_snapshot_id=registry_snapshot_id,
         claim_count=claim_count,

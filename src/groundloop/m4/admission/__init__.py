@@ -17,7 +17,27 @@ from groundloop.m4.admission.lexical import (
     PreparedLexicalQuery,
     load_frozen_lexical_v1,
 )
-from groundloop.m4.admission.manifest import build_candidate_policy_manifest
+from groundloop.m4.admission.manifest import (
+    build_candidate_policy_manifest,
+    hash_config_pairs,
+)
+from groundloop.m4.admission.postgres_common import (
+    CLAIM_ADMISSION_HNSW_INDEX,
+    CLAIM_ADMISSION_RELATION,
+    PostgresAdmissionServerIdentity,
+)
+from groundloop.m4.admission.postgres_lexical import (
+    PostgresLexicalSearchBackend,
+    PostgresSimpleLexemeAnalyzer,
+)
+from groundloop.m4.admission.postgres_vector import (
+    ExactPgvectorConfig,
+    HnswPgvectorBuildConfig,
+    HnswPgvectorSearchConfig,
+    PhysicalHnswIndex,
+    PostgresExactReverseVectorIndex,
+    PostgresHnswReverseVectorIndex,
+)
 from groundloop.m4.admission.vector import (
     AnnRecallMeasurement,
     ApproximateReverseVectorIndex,
@@ -35,18 +55,30 @@ __all__ = [
     "ApproximateReverseVectorIndex",
     "ChunkRoleVector",
     "ClaimRoleVector",
+    "CLAIM_ADMISSION_HNSW_INDEX",
+    "CLAIM_ADMISSION_RELATION",
     "DeterministicFakeApproximateIndex",
     "DeterministicFakeLexemeAnalyzer",
     "DeterministicFakeLexicalBackend",
     "ExactReverseVectorIndex",
+    "ExactPgvectorConfig",
+    "HnswPgvectorBuildConfig",
+    "HnswPgvectorSearchConfig",
     "LexicalRawHit",
     "LexicalRegistrySnapshot",
     "LexicalV1Config",
     "LexicalV1Policy",
     "PreparedLexicalQuery",
+    "PhysicalHnswIndex",
+    "PostgresAdmissionServerIdentity",
+    "PostgresExactReverseVectorIndex",
+    "PostgresHnswReverseVectorIndex",
+    "PostgresLexicalSearchBackend",
+    "PostgresSimpleLexemeAnalyzer",
     "ReverseVectorSearch",
     "build_candidate_policy_manifest",
     "fuse_admission_channels",
+    "hash_config_pairs",
     "lineage_channel_hits",
     "load_frozen_lexical_v1",
     "measure_ann_recall",
