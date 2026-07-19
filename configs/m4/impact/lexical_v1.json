@@ -1,0 +1,15 @@
+{
+  "channel_depth_rule": "approximate_cap_per_inserted_chunk",
+  "empty_query_behavior": "no_hits",
+  "idf_formula": "ln((claim_count + 1) / (document_frequency + 1))",
+  "lexeme_selection_tie_rule": "idf_desc_then_lexeme_asc",
+  "max_query_lexemes": 32,
+  "normalization_version": "postgres-simple-v1",
+  "postgres_regconfig": "simple",
+  "query_operator": "or",
+  "ranking_expression": "ts_rank_cd",
+  "ranking_normalization_mask": 32,
+  "result_tie_rule": "score_desc_then_claim_id_asc",
+  "schema_version": "groundloop-m4-lexical-v1",
+  "stop_word_policy": "none"
+}

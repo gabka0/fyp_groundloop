@@ -335,11 +335,22 @@ assuming HNSW rebuilds are identical.
 
 ### M4-13 — lexical-v1 freeze gate
 
-Before the admission lane implements PostgreSQL lexical retrieval, its config
-must freeze `regconfig`, normalization, stop-word source/hash, maximum selected
-lexemes, lexeme-selection statistics snapshot, OR/AND construction, ranking,
-depth, empty-query behavior and `(score DESC, claim_id ASC)` tie rule. This
-configuration is chosen on development data only.
+Lexical-v1 uses the checked-in `configs/m4/impact/lexical_v1.json`:
+
+- PostgreSQL `simple` regconfig and its built-in lowercase/token rules;
+- no separate GroundLoop stop-word list;
+- at most 32 distinct chunk lexemes;
+- lexemes selected by frozen claim-registry IDF
+  `ln((claim_count + 1) / (document_frequency + 1)) DESC`, then lexeme ASC;
+- OR query construction;
+- `ts_rank_cd` with normalization mask 32;
+- channel depth equal to the event policy's approximate cap `L`;
+- empty query returns no lexical hits;
+- final order `(score DESC, claim_id ASC)`.
+
+The manifest records the config hash, PostgreSQL version, regconfig identity,
+claim-registry statistics snapshot and claim count. Test histories may not
+change this policy.
 
 ### M4-14 — candidate identities
 
@@ -465,4 +476,3 @@ may consume but not redefine these types.
 8. Learned TARGET begins only after frozen development audit labels exist.
 
 No lane may edit shared contracts or start work from the older planning tag.
-
