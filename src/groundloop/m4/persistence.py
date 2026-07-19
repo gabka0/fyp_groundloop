@@ -151,14 +151,14 @@ class PostgresM4RuntimeStore:
         with self._connection.transaction():
             existing = self._connection.execute(
                 """
-                SELECT manifest FROM groundloop_candidate_policy
+                SELECT candidate_policy_id FROM groundloop_candidate_policy
                 WHERE candidate_policy_id = %s
                 FOR UPDATE
                 """,
                 (manifest.policy_id,),
             ).fetchone()
             if existing is not None:
-                stored = _policy_from_payload(existing[0])
+                stored = self.read_candidate_policy(manifest.policy_id)
                 if stored == manifest:
                     return False
                 raise EventConflictError(
@@ -220,16 +220,71 @@ class PostgresM4RuntimeStore:
     def read_candidate_policy(self, policy_id: str) -> CandidatePolicyManifest:
         row = self._connection.execute(
             """
-            SELECT manifest FROM groundloop_candidate_policy
+            SELECT candidate_policy_id, policy_hash,
+                   embedding_model_artifact_id, decision_policy_version,
+                   claim_role_template_hash, chunk_role_template_hash,
+                   vector_method_version, vector_index_kind,
+                   vector_index_build_config_hash, vector_search_config_hash,
+                   lexical_method_version, lexical_config_hash,
+                   lexical_postgres_version, lexical_regconfig_identity,
+                   claim_registry_snapshot_id, claim_count, fusion_version,
+                   approximate_cap_per_inserted_chunk, frontier_depth, manifest
+            FROM groundloop_candidate_policy
             WHERE candidate_policy_id = %s
             """,
             (policy_id,),
         ).fetchone()
         if row is None:
             raise InvalidEventError(f"unknown candidate policy: {policy_id}")
-        manifest = _policy_from_payload(row[0])
+        manifest = _policy_from_payload(row[19])
         if manifest.policy_id != policy_id:
             raise ValidationError("stored candidate-policy ID disagrees with row key")
+        relational_identity = (
+            str(row[0]),
+            _strip(row[1]),
+            str(row[2]),
+            str(row[3]),
+            _strip(row[4]),
+            _strip(row[5]),
+            str(row[6]),
+            str(row[7]),
+            _strip(row[8]),
+            _strip(row[9]),
+            str(row[10]),
+            _strip(row[11]),
+            str(row[12]),
+            str(row[13]),
+            str(row[14]),
+            int(row[15]),
+            str(row[16]),
+            int(row[17]),
+            int(row[18]),
+        )
+        manifest_identity = (
+            manifest.policy_id,
+            manifest.policy_hash,
+            manifest.embedding_model_artifact_id,
+            manifest.decision_policy_version,
+            manifest.claim_role_template_hash,
+            manifest.chunk_role_template_hash,
+            manifest.vector_method_version,
+            manifest.vector_index_kind.value,
+            manifest.vector_index_build_config_hash,
+            manifest.vector_search_config_hash,
+            manifest.lexical_method_version,
+            manifest.lexical_config_hash,
+            manifest.lexical_postgres_version,
+            manifest.lexical_regconfig_identity,
+            manifest.claim_registry_snapshot_id,
+            manifest.claim_count,
+            manifest.fusion_version,
+            manifest.approximate_cap_per_inserted_chunk,
+            manifest.frontier_depth,
+        )
+        if relational_identity != manifest_identity:
+            raise ValidationError(
+                "candidate-policy columns disagree with its canonical manifest"
+            )
         return manifest
 
     def open_epoch(
