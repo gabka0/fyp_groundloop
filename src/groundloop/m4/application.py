@@ -128,12 +128,18 @@ class OpenEventReceipt:
     replayed: bool
     already_sealed: bool
     publication_id: str | None = None
+    already_failed: bool = False
+    failure_reason: str | None = None
 
     def __post_init__(self) -> None:
         if self.epoch_id <= 0:
             raise ValidationError("epoch_id must be positive")
         if self.already_sealed != (self.publication_id is not None):
             raise ValidationError("sealed replay and publication identity disagree")
+        if self.already_sealed and self.already_failed:
+            raise ValidationError("an event cannot be both sealed and failed")
+        if self.already_failed != (self.failure_reason is not None):
+            raise ValidationError("failed replay and failure reason disagree")
 
 
 @dataclass(frozen=True, slots=True)
@@ -425,6 +431,19 @@ class M4Application:
                 observation_artifact_count=0,
                 effective_observation_count=0,
                 inactive_completion_count=0,
+            )
+        if opened.already_failed:
+            return EventRunResult(
+                event_id=event.update.event_id,
+                epoch_id=opened.epoch_id,
+                state=EventRunState.FAILED,
+                publication_id=None,
+                discovery_call_count=0,
+                verifier_call_count=0,
+                observation_artifact_count=0,
+                effective_observation_count=0,
+                inactive_completion_count=0,
+                failure_reason=opened.failure_reason,
             )
 
         self._validate_initial_pending(opened.epoch_id, event, withdrawal)

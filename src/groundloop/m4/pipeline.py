@@ -1141,7 +1141,8 @@ class PostgresM4ApplicationPorts:
                 event_manifest=payload.manifest,
             )
             sealed = str(existing[1]) == "sealed"
-            if not sealed and str(existing[1]) != "failed":
+            failed = str(existing[1]) == "failed"
+            if not sealed and not failed:
                 previous_epoch = event.update.previous_published_epoch_id
                 if previous_epoch is None:
                     raise ValidationError(
@@ -1171,6 +1172,8 @@ class PostgresM4ApplicationPorts:
                     if sealed
                     else None
                 ),
+                already_failed=failed,
+                failure_reason=opened.epoch.failure_reason if failed else None,
             )
 
         self._validate_payload(event, payload)
@@ -1520,6 +1523,8 @@ class PostgresM4ApplicationPorts:
                 (chunk_version_id, epoch_id, epoch_id),
             ).fetchone()
             return row is not None
+        if self.runtime_store.read_epoch(epoch_id).state is RuntimeEpochState.FAILED:
+            return False
         row = self.connection.execute(
             """
             SELECT 1 FROM groundloop_m4_effective_chunk_version
@@ -1617,7 +1622,7 @@ class PostgresM4ApplicationPorts:
             epoch = self.runtime_store.read_epoch(epoch_id)
             transition = self.runtime_store.complete(
                 CompletionPlan(epoch_id, epoch.revision, completion, child_jobs),
-                active_chunk_ids=self._active_chunk_ids(),
+                active_chunk_ids=self._active_chunk_ids(epoch_id),
                 attempt_id=attempt_id,
                 lease_token_hash=lease_token_hash,
                 lease_expected_revision=lease_revision,
@@ -1728,7 +1733,7 @@ class PostgresM4ApplicationPorts:
             epoch = self.runtime_store.read_epoch(epoch_id)
             transition = self.runtime_store.complete(
                 CompletionPlan(epoch_id, epoch.revision, completion),
-                active_chunk_ids=self._active_chunk_ids(),
+                active_chunk_ids=self._active_chunk_ids(epoch_id),
                 attempt_id=attempt_id,
                 lease_token_hash=lease_token_hash,
                 lease_expected_revision=lease_revision,
@@ -2003,10 +2008,12 @@ class PostgresM4ApplicationPorts:
             ),
         )
 
-    def _active_chunk_ids(self) -> frozenset[str]:
-        epoch_id = self._active_epoch_id
-        if epoch_id is None:
-            raise InvalidEventError("no active M4 working epoch")
+    def _active_chunk_ids(self, epoch_id: int) -> frozenset[str]:
+        state = self.runtime_store.read_epoch(epoch_id).state
+        if state is RuntimeEpochState.FAILED:
+            return frozenset()
+        if state is not RuntimeEpochState.SEALED and self._active_epoch_id != epoch_id:
+            raise InvalidEventError("completion does not target the working epoch")
         return frozenset(
             str(row[0])
             for row in self.connection.execute(

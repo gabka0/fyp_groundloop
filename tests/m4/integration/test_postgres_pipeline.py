@@ -37,6 +37,7 @@ from groundloop.m4.contracts import (
     CorpusUpdateIdentity,
     JobCompletion,
     JobKind,
+    JobState,
     LogicalJobSpec,
     PairKey,
     UpdateKind,
@@ -562,18 +563,22 @@ def test_failed_event_preserves_publication_head_and_published_state(
 
     @dataclass(slots=True)
     class FailingAdmission:
+        calls: int = 0
+
         def discover(
             self, epoch_id: int, root_job: LogicalJobSpec
         ) -> DiscoveryResult:
             del epoch_id, root_job
             from groundloop.m4.application import ExternalWorkFailure
 
+            self.calls += 1
             raise ExternalWorkFailure("injected admission failure")
 
+    failing_admission = FailingAdmission()
     application = M4Application(
         structural=ports,
         runtime=ports,
-        admission=FailingAdmission(),
+        admission=failing_admission,
         verifier=ScriptedVerifier({}),
         observations=ports,
         equality_gates=ports,
@@ -584,6 +589,28 @@ def test_failed_event_preserves_publication_head_and_published_state(
     )
     result = application.run_event(event)
     assert result.state is EventRunState.FAILED
+    restarted_ports = PostgresM4ApplicationPorts(
+        m4_pipeline_connection,
+        structural_payloads={
+            "failed-insert": StructuralPayload(inserted=inserted_document)
+        },
+    )
+    replay = M4Application(
+        structural=restarted_ports,
+        runtime=restarted_ports,
+        admission=failing_admission,
+        verifier=ScriptedVerifier({}),
+        observations=restarted_ports,
+        equality_gates=restarted_ports,
+        publication=restarted_ports,
+        execution_policy=ApplicationExecutionPolicy(
+            IMPACT_HASH, FRONTIER_HASH, VERIFIER_HASH
+        ),
+    ).run_event(event)
+    assert replay.state is EventRunState.FAILED
+    assert replay.failure_reason == "injected admission failure"
+    assert replay.discovery_call_count == 0
+    assert failing_admission.calls == 1
     assert _state(m4_pipeline_connection) == ("supported", "valid")
     assert m4_pipeline_connection.execute(
         "SELECT epoch_id FROM groundloop_m4_publication_head"
@@ -1313,6 +1340,94 @@ def test_restart_after_one_verifier_completion_rebuilds_working_snapshot(
     assert _state(m4_pipeline_connection) == ("supported", "valid")
 
 
+def test_late_postgres_completion_after_failure_is_archive_only(
+    m4_pipeline_connection: Connection[Any],
+) -> None:
+    base = _seed_b0(m4_pipeline_connection)
+    inserted_document = _inserted(
+        "doc-late", "dv-late", "chunk-late", "Nimbus is blue."
+    )
+    event = _event(
+        "late-insert",
+        UpdateKind.INSERT,
+        base,
+        inserted=("chunk-late",),
+    )
+    ports = PostgresM4ApplicationPorts(
+        m4_pipeline_connection,
+        structural_payloads={
+            "late-insert": StructuralPayload(inserted=inserted_document)
+        },
+    )
+    ports.runtime_store.register_candidate_policy(_candidate_policy())
+
+    @dataclass(slots=True)
+    class FailingVerifier:
+        def verify(
+            self, epoch_id: int, verifier_job: LogicalJobSpec
+        ) -> VerificationResult:
+            del epoch_id, verifier_job
+            from groundloop.m4.application import ExternalWorkFailure
+
+            raise ExternalWorkFailure("worker disconnected")
+
+    failed = M4Application(
+        structural=ports,
+        runtime=ports,
+        admission=PersistingAdmissionPort(
+            m4_pipeline_connection,
+            ScriptedAdmission({"chunk-late": ("claim-1",)}),
+        ),
+        verifier=FailingVerifier(),
+        observations=ports,
+        equality_gates=ports,
+        publication=ports,
+        execution_policy=ApplicationExecutionPolicy(
+            IMPACT_HASH, FRONTIER_HASH, VERIFIER_HASH
+        ),
+    ).run_event(event)
+    assert failed.state is EventRunState.FAILED
+    epoch = ports.runtime_store.read_epoch(failed.epoch_id)
+    child = next(job.spec for job in epoch.jobs if job.spec.kind is JobKind.VERIFY_PAIR)
+    lease = ports.acquire_job(failed.epoch_id, child)
+    verified = ScriptedVerifier({"chunk-late": "neutral"}).verify(
+        failed.epoch_id, child
+    )
+    completion = JobCompletion.build(
+        job_id=child.job_id,
+        payload_hash=child.payload_hash,
+        execution_spec_hash=child.execution_spec_hash,
+        result_artifact_id=verified.result_artifact_id,
+        result_artifact_hash=verified.result_artifact_hash,
+        terminal_state=JobState.COMPLETED_INACTIVE,
+    )
+    receipt = ports.complete_verifier_atomically(
+        failed.epoch_id,
+        lease,
+        child,
+        completion,
+        verified.observation,
+        make_effective=False,
+    )
+    assert receipt.artifact_stored
+    assert not receipt.made_effective
+    assert ports.runtime_store.read_epoch(failed.epoch_id).state.value == "failed"
+    assert m4_pipeline_connection.execute(
+        "SELECT job_state FROM groundloop_semantic_job WHERE job_id = %s",
+        (child.job_id,),
+    ).fetchone() == ("completed_inactive",)
+    assert m4_pipeline_connection.execute(
+        """
+        SELECT count(*) FROM groundloop_working_observation_delta
+        WHERE epoch_id = %s
+        """,
+        (failed.epoch_id,),
+    ).fetchone() == (0,)
+    assert m4_pipeline_connection.execute(
+        "SELECT epoch_id FROM groundloop_m4_publication_head"
+    ).fetchone() == (base,)
+
+
 def test_failed_replacement_overlay_cannot_poison_next_published_event(
     m4_pipeline_connection: Connection[Any],
 ) -> None:
@@ -1370,6 +1485,24 @@ def test_failed_replacement_overlay_cannot_poison_next_published_event(
     ).run_event(failed_event)
     assert failed.state is EventRunState.FAILED
     assert _state(m4_pipeline_connection) == ("supported", "valid")
+    replay_ports = PostgresM4ApplicationPorts(
+        m4_pipeline_connection,
+        structural_payloads={"failed-replace-overlay": failed_payload},
+    )
+    replay = M4Application(
+        structural=replay_ports,
+        runtime=replay_ports,
+        admission=ExternalFailure(),
+        verifier=ScriptedVerifier({}),
+        observations=replay_ports,
+        equality_gates=replay_ports,
+        publication=replay_ports,
+        execution_policy=ApplicationExecutionPolicy(
+            IMPACT_HASH, FRONTIER_HASH, VERIFIER_HASH
+        ),
+    ).run_event(failed_event)
+    assert replay.state is EventRunState.FAILED
+    assert replay.failure_reason == "failed replacement discovery"
 
     successful_document = replacement(
         "dv-success-replace",
