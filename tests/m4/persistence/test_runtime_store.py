@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 from psycopg import Connection
@@ -95,7 +96,23 @@ def _seed_base(connection: Connection[tuple[object, ...]]) -> int:
         """,
         (_hash("embedder-config"),),
     )
+    connection.execute(
+        "INSERT INTO groundloop_m4_publication_head(epoch_id) VALUES (%s)",
+        (sealed_epoch,),
+    )
     return sealed_epoch
+
+
+def _advance_head(connection: Connection[Any], epoch_id: int) -> None:
+    connection.execute(
+        """
+        INSERT INTO groundloop_m4_publication_head(singleton, epoch_id)
+        VALUES (true, %s)
+        ON CONFLICT (singleton) DO UPDATE
+        SET epoch_id = EXCLUDED.epoch_id, updated_at = now()
+        """,
+        (epoch_id,),
+    )
 
 
 def _policy(cap: int = 4) -> CandidatePolicyManifest:
@@ -285,7 +302,11 @@ def test_parent_expansion_retry_child_completion_and_seal_match_pure_model(
     store.complete(child_plan, active_chunk_ids=frozenset({"chunk-1"}))
     complete_epoch = store.read_epoch(epoch_id)
     assert complete_epoch.state is RuntimeEpochState.SEMANTIC_COMPLETE
-    sealed = store.seal_epoch(epoch_id, complete_epoch.revision)
+    sealed = store.seal_epoch(
+        epoch_id,
+        complete_epoch.revision,
+        publication_action=_advance_head,
+    )
 
     assert sealed.book.last_sealed_epoch_id == epoch_id
     assert store.read_epoch(epoch_id).state is RuntimeEpochState.SEALED
@@ -347,11 +368,15 @@ def test_seal_failure_injection_preserves_complete_unsealed_epoch(
         store.seal_epoch(
             epoch_id,
             before_seal.epochs[-1].revision,
+            publication_action=_advance_head,
             failure_injector=crash,
         )
 
     assert store.read_book() == before_seal
     assert store.read_epoch(epoch_id).state is RuntimeEpochState.SEMANTIC_COMPLETE
+    assert m4_connection.execute(
+        "SELECT epoch_id FROM groundloop_m4_publication_head WHERE singleton"
+    ).fetchone() == (before_seal.epochs[-1].update.previous_published_epoch_id,)
 
 
 def test_failed_epoch_replay_conflict_and_late_inactive_completion(
@@ -398,3 +423,35 @@ def test_serialization_rejects_second_epoch_until_first_seals(
             original.jobs[0:0],
             registry_snapshot_id="registry-1",
         )
+
+
+def test_initialized_publication_head_is_authoritative_over_unrelated_seal(
+    m4_connection: Connection[tuple[object, ...]],
+) -> None:
+    published_epoch = _seed_base(m4_connection)
+    unrelated_epoch, _ = record_epoch(
+        m4_connection,
+        event_id="unrelated-sealed-event",
+        payload_hash=_hash("unrelated"),
+    )
+    m4_connection.execute(
+        """
+        UPDATE groundloop_epoch
+        SET structural_status = 'committed', semantic_status = 'sealed',
+            evaluation_state = 'complete', publication_mode = 'strict',
+            sealed_at = now()
+        WHERE epoch_id = %s
+        """,
+        (unrelated_epoch,),
+    )
+    store = PostgresM4RuntimeStore(m4_connection)
+    store.register_candidate_policy(_policy())
+    root = _job(JobKind.IMPACT_DISCOVERY, event_id="head-event")
+    opened = store.open_epoch(
+        _update("head-event", published_epoch),
+        (root,),
+        (DiscoveryScope(root.job_id, "registry-1", ("claim-1",)),),
+        registry_snapshot_id="registry-1",
+    )
+
+    assert opened.epoch.update.previous_published_epoch_id == published_epoch

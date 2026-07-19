@@ -59,6 +59,7 @@ from groundloop.m4.runtime.epoch import (
 )
 
 FailureInjector = Callable[[str], None]
+PublicationAction = Callable[[Connection[Any], int], None]
 _RUNTIME_MANIFEST_KEY = "_groundloop_m4_runtime_v1"
 
 
@@ -359,13 +360,26 @@ class PostgresM4RuntimeStore:
                 is not None
             ):
                 raise InvalidEventError("a structural epoch is already active")
+            publication_head = self._connection.execute(
+                """
+                SELECT epoch_id FROM groundloop_m4_publication_head
+                WHERE singleton
+                FOR SHARE
+                """
+            ).fetchone()
             last_sealed = self._connection.execute(
                 """
                 SELECT max(epoch_id) FROM groundloop_epoch
                 WHERE semantic_status = 'sealed'
                 """
             ).fetchone()
-            actual_previous = None if last_sealed is None else last_sealed[0]
+            actual_previous = (
+                publication_head[0]
+                if publication_head is not None
+                else None
+                if last_sealed is None
+                else last_sealed[0]
+            )
             if actual_previous != update.previous_published_epoch_id:
                 raise InvalidEventError("update does not name the last sealed epoch")
             row = self._connection.execute(
@@ -704,9 +718,16 @@ class PostgresM4RuntimeStore:
         epoch_id: int,
         expected_revision: int,
         *,
+        publication_action: PublicationAction,
         failure_injector: FailureInjector | None = None,
     ) -> TransitionResult:
-        """Seal coordination only; final grounding publication is coordinator-owned."""
+        """Seal around a coordinator-supplied atomic publication action.
+
+        The callback must install every final grounding artifact and advance
+        ``groundloop_m4_publication_head`` to ``epoch_id`` on this same
+        connection.  This store never mutates M2 observation currency or
+        claim/answer publication tables itself.
+        """
         before = self.read_book()
         expected = seal_pure_epoch(before, epoch_id, expected_revision)
         if expected.replayed:
@@ -734,6 +755,19 @@ class PostgresM4RuntimeStore:
                 raise InvalidEventError("SQL coordination surface is not sealable")
             if failure_injector is not None:
                 failure_injector("seal_checked")
+            publication_action(self._connection, epoch_id)
+            head = self._connection.execute(
+                """
+                SELECT epoch_id FROM groundloop_m4_publication_head
+                WHERE singleton
+                """
+            ).fetchone()
+            if head is None or int(head[0]) != epoch_id:
+                raise ValidationError(
+                    "publication action did not advance the M4 publication head"
+                )
+            if failure_injector is not None:
+                failure_injector("seal_publication_written")
             self._write_epoch_projection(expected_epoch)
             if failure_injector is not None:
                 failure_injector("seal_epoch_written")
