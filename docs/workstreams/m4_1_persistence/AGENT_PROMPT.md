@@ -15,6 +15,11 @@ expandable completion, verifier completion, epoch failure, strict sealing,
 exact replay, conflicts and revision CAS must have the same projection as the
 pure runtime model.
 
+Epoch opening must execute a coordinator-supplied structural mutation callback
+inside the same D-19 transaction as the update, root jobs and discovery
+scopes. The callback receives a transaction-scoped cursor and cannot commit
+independently.
+
 Every live test uses a unique temporary schema. Inject exceptions after child
 insertion and after publication-head advancement to prove whole-transaction
 rollback. Sealing must compose with a coordinator-supplied publication action

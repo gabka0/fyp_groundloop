@@ -8,6 +8,8 @@ review and merge.
 - Canonical, content-derived candidate-policy registration and exact replay.
 - Serialized structural epoch opening with immutable update, roots and global
   discovery-scope membership.
+- D-19 composition with a coordinator-supplied structural mutation callback
+  inside the epoch-opening transaction.
 - Canonical SQL-to-`RuntimeEpoch` and SQL-to-`RuntimeBook` projection.
 - Attempt leasing, retryable failure and contiguous attempt history.
 - Atomic expandable completion with exact child declaration, dependency
@@ -44,8 +46,8 @@ git diff --check main...HEAD
 
 Observed before this documentation-only commit:
 
-- 102 focused/shared tests passed against live PostgreSQL.
-- Seven persistence tests passed in isolated schemas.
+- 103 focused/shared tests passed against live PostgreSQL.
+- Eight persistence tests passed in isolated schemas.
 - Ruff passed.
 - Strict mypy passed for the owned source module.
 - Compileall passed.

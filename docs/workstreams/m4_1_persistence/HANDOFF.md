@@ -5,7 +5,8 @@
 `PostgresM4RuntimeStore` provides:
 
 - `register_candidate_policy` and `read_candidate_policy`;
-- `open_epoch`, `read_epoch` and `read_book`;
+- `open_epoch` with a required `structural_action`, plus `read_epoch` and
+  `read_book`;
 - `start_attempt` and `mark_retryable_failure`;
 - `complete` for both expandable roots and verifier jobs;
 - `fail_epoch`;
@@ -18,7 +19,14 @@ transaction, and aborts if it differs.
 
 ## Integration rules
 
-The publication callback receives the active psycopg connection and epoch ID.
+The structural callback receives a transaction-scoped psycopg cursor and the
+new epoch ID after the epoch/update rows are allocated but before roots and
+scopes are installed. It must perform document/chunk insert, deactivation and
+exact-withdrawal working-state writes needed for D-19. A cursor deliberately
+has no commit operation, so structural state cannot commit independently of
+the epoch declaration.
+
+The publication callback receives a transaction-scoped cursor and epoch ID.
 It must install all coordinator-owned published state and upsert
 `groundloop_m4_publication_head` to that epoch. If it does not advance the
 head, sealing raises and the whole transaction rolls back. Calling seal with a
@@ -39,6 +47,7 @@ event-level metadata.
 Available injection points are:
 
 - `open_rows_written`;
+- `open_structural_written`;
 - `completion_children_written`;
 - `completion_parent_written`;
 - `failure_reason_written`;
