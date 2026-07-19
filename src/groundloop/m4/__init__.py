@@ -26,6 +26,7 @@ from groundloop.m4.contracts import (
     PairKey,
     SnapshotRefreshResult,
     UpdateKind,
+    VectorIndexKind,
     stable_m4_digest,
 )
 
@@ -55,5 +56,6 @@ __all__ = [
     "PairKey",
     "SnapshotRefreshResult",
     "UpdateKind",
+    "VectorIndexKind",
     "stable_m4_digest",
 ]

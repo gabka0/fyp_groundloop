@@ -57,6 +57,11 @@ class AdmissionChannel(StrEnum):
     LEARNED = "learned"
 
 
+class VectorIndexKind(StrEnum):
+    EXACT = "exact"
+    HNSW = "hnsw"
+
+
 class JobKind(StrEnum):
     IMPACT_DISCOVERY = "impact_discovery"
     FRONTIER_RETRIEVE = "frontier_retrieve"
@@ -144,7 +149,15 @@ class CandidatePolicyManifest:
     claim_role_template_hash: str
     chunk_role_template_hash: str
     vector_method_version: str
+    vector_index_kind: VectorIndexKind
+    vector_index_build_config_hash: str
+    vector_search_config_hash: str
     lexical_method_version: str
+    lexical_config_hash: str
+    lexical_postgres_version: str
+    lexical_regconfig_identity: str
+    claim_registry_snapshot_id: str
+    claim_count: int
     fusion_version: str
     approximate_cap_per_inserted_chunk: int
     frontier_depth: int
@@ -158,6 +171,9 @@ class CandidatePolicyManifest:
             ("embedding_model_artifact_id", self.embedding_model_artifact_id),
             ("vector_method_version", self.vector_method_version),
             ("lexical_method_version", self.lexical_method_version),
+            ("lexical_postgres_version", self.lexical_postgres_version),
+            ("lexical_regconfig_identity", self.lexical_regconfig_identity),
+            ("claim_registry_snapshot_id", self.claim_registry_snapshot_id),
             ("fusion_version", self.fusion_version),
             ("decision_policy_version", self.decision_policy_version),
         ):
@@ -166,6 +182,9 @@ class CandidatePolicyManifest:
             ("policy_hash", self.policy_hash),
             ("claim_role_template_hash", self.claim_role_template_hash),
             ("chunk_role_template_hash", self.chunk_role_template_hash),
+            ("vector_index_build_config_hash", self.vector_index_build_config_hash),
+            ("vector_search_config_hash", self.vector_search_config_hash),
+            ("lexical_config_hash", self.lexical_config_hash),
             ("verifier_execution_spec_hash", self.verifier_execution_spec_hash),
         ):
             _require_sha256(name, value)
@@ -173,6 +192,104 @@ class CandidatePolicyManifest:
             raise ValidationError("approximate admission cap must be positive")
         if self.frontier_depth <= 0:
             raise ValidationError("frontier depth must be positive")
+        if self.claim_count < 0:
+            raise ValidationError("claim_count must be nonnegative")
+        if self.policy_hash != self.expected_policy_hash():
+            raise ValidationError("policy_hash does not match candidate policy fields")
+
+    def expected_policy_hash(self) -> str:
+        return stable_m4_digest(
+            "m4-candidate-policy-v1",
+            self.embedding_model_artifact_id,
+            self.claim_role_template_hash,
+            self.chunk_role_template_hash,
+            self.vector_method_version,
+            self.vector_index_kind.value,
+            self.vector_index_build_config_hash,
+            self.vector_search_config_hash,
+            self.lexical_method_version,
+            self.lexical_config_hash,
+            self.lexical_postgres_version,
+            self.lexical_regconfig_identity,
+            self.claim_registry_snapshot_id,
+            str(self.claim_count),
+            self.fusion_version,
+            str(self.approximate_cap_per_inserted_chunk),
+            str(self.frontier_depth),
+            self.verifier_execution_spec_hash,
+            self.decision_policy_version,
+            "lineage" if self.lineage_safety_override else "no-lineage",
+        )
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        policy_id: str,
+        embedding_model_artifact_id: str,
+        claim_role_template_hash: str,
+        chunk_role_template_hash: str,
+        vector_method_version: str,
+        vector_index_kind: VectorIndexKind,
+        vector_index_build_config_hash: str,
+        vector_search_config_hash: str,
+        lexical_method_version: str,
+        lexical_config_hash: str,
+        lexical_postgres_version: str,
+        lexical_regconfig_identity: str,
+        claim_registry_snapshot_id: str,
+        claim_count: int,
+        fusion_version: str,
+        approximate_cap_per_inserted_chunk: int,
+        frontier_depth: int,
+        verifier_execution_spec_hash: str,
+        decision_policy_version: str,
+        lineage_safety_override: bool = True,
+    ) -> CandidatePolicyManifest:
+        fields = (
+            embedding_model_artifact_id,
+            claim_role_template_hash,
+            chunk_role_template_hash,
+            vector_method_version,
+            vector_index_kind.value,
+            vector_index_build_config_hash,
+            vector_search_config_hash,
+            lexical_method_version,
+            lexical_config_hash,
+            lexical_postgres_version,
+            lexical_regconfig_identity,
+            claim_registry_snapshot_id,
+            str(claim_count),
+            fusion_version,
+            str(approximate_cap_per_inserted_chunk),
+            str(frontier_depth),
+            verifier_execution_spec_hash,
+            decision_policy_version,
+            "lineage" if lineage_safety_override else "no-lineage",
+        )
+        return cls(
+            policy_id=policy_id,
+            policy_hash=stable_m4_digest("m4-candidate-policy-v1", *fields),
+            embedding_model_artifact_id=embedding_model_artifact_id,
+            claim_role_template_hash=claim_role_template_hash,
+            chunk_role_template_hash=chunk_role_template_hash,
+            vector_method_version=vector_method_version,
+            vector_index_kind=vector_index_kind,
+            vector_index_build_config_hash=vector_index_build_config_hash,
+            vector_search_config_hash=vector_search_config_hash,
+            lexical_method_version=lexical_method_version,
+            lexical_config_hash=lexical_config_hash,
+            lexical_postgres_version=lexical_postgres_version,
+            lexical_regconfig_identity=lexical_regconfig_identity,
+            claim_registry_snapshot_id=claim_registry_snapshot_id,
+            claim_count=claim_count,
+            fusion_version=fusion_version,
+            approximate_cap_per_inserted_chunk=approximate_cap_per_inserted_chunk,
+            frontier_depth=frontier_depth,
+            verifier_execution_spec_hash=verifier_execution_spec_hash,
+            decision_policy_version=decision_policy_version,
+            lineage_safety_override=lineage_safety_override,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,6 +346,8 @@ class LogicalJobSpec:
     execution_spec_hash: str
     parent_job_id: str | None = None
     pair: PairKey | None = None
+    target_claim_id: str | None = None
+    target_chunk_version_id: str | None = None
     expandable: bool = False
 
     def __post_init__(self) -> None:
@@ -244,16 +363,49 @@ class LogicalJobSpec:
             _require_text("parent_job_id", self.parent_job_id)
             if self.parent_job_id == self.job_id:
                 raise ValidationError("a job cannot be its own parent")
-        if self.kind is JobKind.VERIFY_PAIR and self.pair is None:
-            raise ValidationError("VERIFY_PAIR requires a pair")
-        if self.kind is not JobKind.VERIFY_PAIR and self.pair is not None:
-            raise ValidationError("only VERIFY_PAIR may carry a pair")
+        if self.kind is JobKind.VERIFY_PAIR:
+            if self.pair is None:
+                raise ValidationError("VERIFY_PAIR requires a pair")
+            if (
+                self.target_claim_id is not None
+                or self.target_chunk_version_id is not None
+            ):
+                raise ValidationError("VERIFY_PAIR must use pair, not target fields")
+        elif self.kind is JobKind.IMPACT_DISCOVERY:
+            if self.pair is not None or self.target_claim_id is not None:
+                raise ValidationError("IMPACT_DISCOVERY is chunk-scoped only")
+            if self.target_chunk_version_id is None:
+                raise ValidationError("IMPACT_DISCOVERY requires a chunk target")
+            _require_text("target_chunk_version_id", self.target_chunk_version_id)
+        else:
+            if self.pair is not None or self.target_chunk_version_id is not None:
+                raise ValidationError("FRONTIER_RETRIEVE is claim-scoped only")
+            if self.target_claim_id is None:
+                raise ValidationError("FRONTIER_RETRIEVE requires a claim target")
+            _require_text("target_claim_id", self.target_claim_id)
         expected_expandable = self.kind in {
             JobKind.IMPACT_DISCOVERY,
             JobKind.FRONTIER_RETRIEVE,
         }
         if self.expandable != expected_expandable:
             raise ValidationError("expandable flag conflicts with job kind")
+        claim_id = self.pair.claim_id if self.pair is not None else self.target_claim_id
+        chunk_id = (
+            self.pair.chunk_version_id
+            if self.pair is not None
+            else self.target_chunk_version_id
+        )
+        expected_job_id = self.derive_job_id(
+            event_id=self.event_id,
+            kind=self.kind,
+            candidate_policy_id=self.candidate_policy_id,
+            execution_spec_hash=self.execution_spec_hash,
+            parent_job_id=self.parent_job_id or "",
+            claim_id=claim_id or "",
+            chunk_version_id=chunk_id or "",
+        )
+        if self.job_id != expected_job_id:
+            raise ValidationError("job_id does not match persisted logical targets")
 
     @staticmethod
     def derive_job_id(

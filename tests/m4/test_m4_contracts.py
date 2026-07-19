@@ -8,6 +8,7 @@ from groundloop.m4.contracts import (
     AdmissionChannel,
     AdmittedPair,
     AffectedSets,
+    CandidatePolicyManifest,
     ChildClosure,
     FullPairAuditResult,
     JobCompletion,
@@ -17,6 +18,7 @@ from groundloop.m4.contracts import (
     LogicalJobSpec,
     PairJudgment,
     PairKey,
+    VectorIndexKind,
     stable_m4_digest,
 )
 
@@ -107,12 +109,120 @@ def test_verify_job_requires_pair_and_expandable_kind_is_frozen() -> None:
 
     with pytest.raises(ValidationError, match="requires a pair"):
         LogicalJobSpec(
-            job_id="job",
+            job_id=LogicalJobSpec.derive_job_id(
+                event_id="event",
+                kind=JobKind.VERIFY_PAIR,
+                candidate_policy_id="candidate-policy",
+                execution_spec_hash=HASH,
+            ),
             event_id="event",
             kind=JobKind.VERIFY_PAIR,
             candidate_policy_id="candidate-policy",
             payload_hash=HASH,
             execution_spec_hash=HASH,
+        )
+
+
+def test_expandable_job_targets_are_persisted_and_identity_checked() -> None:
+    discovery_id = LogicalJobSpec.derive_job_id(
+        event_id="event",
+        kind=JobKind.IMPACT_DISCOVERY,
+        candidate_policy_id="policy",
+        execution_spec_hash=HASH,
+        chunk_version_id="chunk",
+    )
+    discovery = LogicalJobSpec(
+        job_id=discovery_id,
+        event_id="event",
+        kind=JobKind.IMPACT_DISCOVERY,
+        candidate_policy_id="policy",
+        payload_hash=HASH,
+        execution_spec_hash=HASH,
+        target_chunk_version_id="chunk",
+        expandable=True,
+    )
+    assert discovery.target_chunk_version_id == "chunk"
+
+    frontier_id = LogicalJobSpec.derive_job_id(
+        event_id="event",
+        kind=JobKind.FRONTIER_RETRIEVE,
+        candidate_policy_id="policy",
+        execution_spec_hash=HASH,
+        claim_id="claim",
+    )
+    frontier = LogicalJobSpec(
+        job_id=frontier_id,
+        event_id="event",
+        kind=JobKind.FRONTIER_RETRIEVE,
+        candidate_policy_id="policy",
+        payload_hash=HASH,
+        execution_spec_hash=HASH,
+        target_claim_id="claim",
+        expandable=True,
+    )
+    assert frontier.target_claim_id == "claim"
+
+    with pytest.raises(ValidationError, match="job_id"):
+        LogicalJobSpec(
+            job_id=frontier_id,
+            event_id="event",
+            kind=JobKind.FRONTIER_RETRIEVE,
+            candidate_policy_id="policy",
+            payload_hash=HASH,
+            execution_spec_hash=HASH,
+            target_claim_id="different-claim",
+            expandable=True,
+        )
+
+
+def test_candidate_policy_hash_binds_index_and_registry_provenance() -> None:
+    policy = CandidatePolicyManifest.build(
+        policy_id="policy",
+        embedding_model_artifact_id="embedding",
+        claim_role_template_hash=HASH,
+        chunk_role_template_hash=HASH,
+        vector_method_version="reverse-bge-v1",
+        vector_index_kind=VectorIndexKind.EXACT,
+        vector_index_build_config_hash=HASH,
+        vector_search_config_hash=HASH,
+        lexical_method_version="lexical-v1",
+        lexical_config_hash=HASH,
+        lexical_postgres_version="16.14",
+        lexical_regconfig_identity="simple",
+        claim_registry_snapshot_id="registry-1",
+        claim_count=2,
+        fusion_version="rank-interleave-v1",
+        approximate_cap_per_inserted_chunk=10,
+        frontier_depth=4,
+        verifier_execution_spec_hash=HASH,
+        decision_policy_version="m3-policy-v1",
+    )
+    assert policy.policy_hash == policy.expected_policy_hash()
+
+    with pytest.raises(ValidationError, match="policy_hash"):
+        CandidatePolicyManifest(
+            policy_id=policy.policy_id,
+            policy_hash="b" * 64,
+            embedding_model_artifact_id=policy.embedding_model_artifact_id,
+            claim_role_template_hash=policy.claim_role_template_hash,
+            chunk_role_template_hash=policy.chunk_role_template_hash,
+            vector_method_version=policy.vector_method_version,
+            vector_index_kind=VectorIndexKind.HNSW,
+            vector_index_build_config_hash=policy.vector_index_build_config_hash,
+            vector_search_config_hash=policy.vector_search_config_hash,
+            lexical_method_version=policy.lexical_method_version,
+            lexical_config_hash=policy.lexical_config_hash,
+            lexical_postgres_version=policy.lexical_postgres_version,
+            lexical_regconfig_identity=policy.lexical_regconfig_identity,
+            claim_registry_snapshot_id=policy.claim_registry_snapshot_id,
+            claim_count=policy.claim_count,
+            fusion_version=policy.fusion_version,
+            approximate_cap_per_inserted_chunk=(
+                policy.approximate_cap_per_inserted_chunk
+            ),
+            frontier_depth=policy.frontier_depth,
+            verifier_execution_spec_hash=policy.verifier_execution_spec_hash,
+            decision_policy_version=policy.decision_policy_version,
         )
 
 
