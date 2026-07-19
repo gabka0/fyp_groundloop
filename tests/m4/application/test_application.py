@@ -147,10 +147,11 @@ class FakeStructural:
     retrieval_calls: int = 0
 
     def plan_exact_withdrawal(
-        self, deactivated_chunk_version_ids: tuple[str, ...]
+        self, event: DynamicEventPlan
     ) -> StructuralWithdrawal:
         self.exact_withdrawal_calls += 1
         self.world.operation_log.append("withdrawal")
+        deactivated_chunk_version_ids = event.deactivated_chunk_version_ids
         dependencies = tuple(
             ObservationDependency(observation.observation_id, pair)
             for pair, observation in self.world.published.items()

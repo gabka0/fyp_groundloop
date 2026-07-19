@@ -3,9 +3,10 @@
 This module owns no database transaction, retrieval implementation, or neural
 model.  It coordinates injected ports and makes the ordering constraints of
 the M4.1 vertical slice executable: exact withdrawal precedes discovery,
-expandable jobs close atomically with their complete child set, observations
-are applied before verifier-job completion, and publication is requested only
-after the runtime and all three equality surfaces say that sealing is safe.
+expandable jobs close atomically with their complete child set, observation
+archival/working-state installation/verifier completion share one transaction,
+and publication is requested only after the runtime and all three equality
+surfaces say that sealing is safe.
 """
 
 from __future__ import annotations
@@ -260,7 +261,7 @@ class StructuralMutationPort(Protocol):
     """Owns exact withdrawal and the atomic structural/open transaction."""
 
     def plan_exact_withdrawal(
-        self, deactivated_chunk_version_ids: tuple[str, ...]
+        self, event: DynamicEventPlan
     ) -> StructuralWithdrawal: ...
 
     def open_event(
@@ -367,9 +368,7 @@ class M4Application:
     execution_policy: ApplicationExecutionPolicy
 
     def run_event(self, event: DynamicEventPlan) -> EventRunResult:
-        withdrawal = self.structural.plan_exact_withdrawal(
-            event.deactivated_chunk_version_ids
-        )
+        withdrawal = self.structural.plan_exact_withdrawal(event)
         if withdrawal.plan.deactivated_chunk_ids != (
             event.deactivated_chunk_version_ids
         ):
