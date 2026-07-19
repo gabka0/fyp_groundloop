@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from psycopg import Connection
@@ -51,12 +51,14 @@ LineageProvider = Callable[[int, str], tuple[PairKey, ...]]
 
 @dataclass(slots=True)
 class PostgresHybridAdmissionPort:
-    """Run and durably archive the frozen M4 CORE admission policy.
+    """Compute the frozen M4 CORE admission policy outside a DB transaction.
 
     Approximate impact discovery is chunk-to-claim vector plus lexical fusion.
     Frontier repair is exact over the persisted reserve.  If the reserve cannot
     meet its frozen depth, ``fallback_satisfied`` is false; the application is
     forbidden to seal rather than silently treating an empty frontier as safe.
+    The coordinator persists the returned result atomically with parent/child
+    closure; this worker deliberately performs no result writes.
     """
 
     connection: Connection[Any]
@@ -85,8 +87,7 @@ class PostgresHybridAdmissionPort:
             result, hits = self._repair_frontier(epoch_id, root_job)
         else:
             raise ValidationError("admission accepts expandable root jobs only")
-        self._persist_result(result, hits)
-        return result
+        return replace(result, channel_hits=hits)
 
     def _chunk_draft(self, chunk_id: str) -> ChunkDraft:
         row = self.connection.execute(
@@ -297,168 +298,3 @@ class PostgresHybridAdmissionPort:
             admitted.pair.chunk_version_id,
             admitted.candidate_policy_id,
         )
-
-    def _persist_result(
-        self, result: DiscoveryResult, hits: tuple[ChannelHit, ...]
-    ) -> None:
-        with self.connection.transaction():
-            for hit in hits:
-                self.connection.execute(
-                    """
-                    INSERT INTO groundloop_impact_channel_hit (
-                        epoch_id, chunk_version_id, claim_id,
-                        candidate_policy_id, channel, rank, score,
-                        channel_artifact_hash
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT DO NOTHING
-                    """,
-                    (
-                        hit.epoch_id,
-                        hit.pair.chunk_version_id,
-                        hit.pair.claim_id,
-                        hit.candidate_policy_id,
-                        hit.channel.value,
-                        hit.rank,
-                        hit.score,
-                        hit.channel_artifact_hash,
-                    ),
-                )
-                stored_hit = self.connection.execute(
-                    """
-                    SELECT rank, score, channel_artifact_hash
-                    FROM groundloop_impact_channel_hit
-                    WHERE epoch_id = %s AND chunk_version_id = %s
-                      AND claim_id = %s AND candidate_policy_id = %s
-                      AND channel = %s
-                    """,
-                    (
-                        hit.epoch_id,
-                        hit.pair.chunk_version_id,
-                        hit.pair.claim_id,
-                        hit.candidate_policy_id,
-                        hit.channel.value,
-                    ),
-                ).fetchone()
-                expected_hit = (
-                    hit.rank,
-                    hit.score,
-                    hit.channel_artifact_hash,
-                )
-                if stored_hit is None or tuple(stored_hit) != expected_hit:
-                    raise EventConflictError(
-                        "channel-hit identity was reused with different content"
-                    )
-            for admitted in result.admitted_pairs:
-                admitted_id = self._admitted_id(admitted)
-                self.connection.execute(
-                    """
-                    INSERT INTO groundloop_admitted_pair (
-                        admitted_pair_id, epoch_id, chunk_version_id, claim_id,
-                        candidate_policy_id, fused_rank, reasons,
-                        mandatory_lineage
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (admitted_pair_id) DO NOTHING
-                    """,
-                    (
-                        admitted_id,
-                        admitted.epoch_id,
-                        admitted.pair.chunk_version_id,
-                        admitted.pair.claim_id,
-                        admitted.candidate_policy_id,
-                        admitted.fused_rank,
-                        [reason.value for reason in admitted.reasons],
-                        admitted.mandatory_lineage,
-                    ),
-                )
-                stored_pair = self.connection.execute(
-                    """
-                    SELECT fused_rank, reasons, mandatory_lineage
-                    FROM groundloop_admitted_pair
-                    WHERE admitted_pair_id = %s
-                    """,
-                    (admitted_id,),
-                ).fetchone()
-                expected_pair = (
-                    admitted.fused_rank,
-                    [reason.value for reason in admitted.reasons],
-                    admitted.mandatory_lineage,
-                )
-                if stored_pair is None or tuple(stored_pair) != expected_pair:
-                    raise EventConflictError(
-                        "admitted-pair identity was reused with different content"
-                    )
-                score = self._score_for_pair(admitted)
-                artifact_hash = stable_m4_digest(
-                    "m4-frontier-candidate-v1",
-                    admitted_id,
-                    format(score, ".17g"),
-                )
-                current = self.connection.execute(
-                    """
-                    SELECT frontier.valid_from_epoch
-                    FROM groundloop_m4_effective_candidate_frontier AS frontier
-                    WHERE frontier.epoch_id = %s AND frontier.claim_id = %s
-                      AND frontier.chunk_version_id = %s
-                      AND frontier.candidate_policy_id = %s
-                    """,
-                    (
-                        admitted.epoch_id,
-                        admitted.pair.claim_id,
-                        admitted.pair.chunk_version_id,
-                        admitted.candidate_policy_id,
-                    ),
-                ).fetchone()
-                if current is None or int(current[0]) != admitted.epoch_id:
-                    self.connection.execute(
-                        """
-                        INSERT INTO groundloop_candidate_frontier (
-                            claim_id, chunk_version_id, candidate_policy_id,
-                            frontier_state, rank, retrieval_score,
-                            candidate_artifact_hash, valid_from_epoch,
-                            valid_to_epoch
-                        ) VALUES (
-                            %s, %s, %s, 'queued', %s, %s, %s, %s, NULL
-                        )
-                        """,
-                        (
-                            admitted.pair.claim_id,
-                            admitted.pair.chunk_version_id,
-                            admitted.candidate_policy_id,
-                            admitted.fused_rank,
-                            score,
-                            artifact_hash,
-                            admitted.epoch_id,
-                        ),
-                    )
-                else:
-                    self.connection.execute(
-                        """
-                        UPDATE groundloop_candidate_frontier
-                        SET frontier_state = 'queued'
-                        WHERE claim_id = %s AND chunk_version_id = %s
-                          AND candidate_policy_id = %s
-                          AND valid_from_epoch = %s
-                        """,
-                        (
-                            admitted.pair.claim_id,
-                            admitted.pair.chunk_version_id,
-                            admitted.candidate_policy_id,
-                            current[0],
-                        ),
-                    )
-
-    def _score_for_pair(self, admitted: AdmittedPair) -> float:
-        row = self.connection.execute(
-            """
-            SELECT max(score) FROM groundloop_impact_channel_hit
-            WHERE epoch_id = %s AND chunk_version_id = %s AND claim_id = %s
-              AND candidate_policy_id = %s
-            """,
-            (
-                admitted.epoch_id,
-                admitted.pair.chunk_version_id,
-                admitted.pair.claim_id,
-                admitted.candidate_policy_id,
-            ),
-        ).fetchone()
-        return 0.0 if row is None or row[0] is None else float(row[0])

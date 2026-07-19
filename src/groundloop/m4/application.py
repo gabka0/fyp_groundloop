@@ -11,7 +11,7 @@ surfaces say that sealing is safe.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Protocol
 
@@ -19,6 +19,7 @@ from groundloop.domain import SemanticObservation, SubjectKind
 from groundloop.errors import GroundLoopError, ValidationError
 from groundloop.m4.contracts import (
     AdmittedPair,
+    ChannelHit,
     ChildClosure,
     CorpusUpdateIdentity,
     DiscoveryScope,
@@ -197,6 +198,7 @@ class DiscoveryResult:
     result_artifact_hash: str
     admitted_pairs: tuple[AdmittedPair, ...]
     fallback_satisfied: bool = True
+    channel_hits: tuple[ChannelHit, ...] = ()
 
     def __post_init__(self) -> None:
         _require_text("root_job_id", self.root_job_id)
@@ -206,6 +208,17 @@ class DiscoveryResult:
         pair_keys = tuple(admitted.pair for admitted in self.admitted_pairs)
         if len(set(pair_keys)) != len(pair_keys):
             raise ValidationError("one discovery result cannot repeat an admitted pair")
+        hit_keys = tuple(
+            (
+                hit.epoch_id,
+                hit.pair,
+                hit.candidate_policy_id,
+                hit.channel,
+            )
+            for hit in self.channel_hits
+        )
+        if len(set(hit_keys)) != len(hit_keys):
+            raise ValidationError("one discovery result cannot repeat a channel hit")
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,6 +335,7 @@ class RuntimeTransitionPort(Protocol):
         self,
         epoch_id: int,
         lease: JobLease,
+        discovery: DiscoveryResult,
         completion: JobCompletion,
         child_jobs: tuple[LogicalJobSpec, ...],
     ) -> None: ...
@@ -539,7 +553,11 @@ class M4Application:
                     child_closure=closure,
                 )
                 self.runtime.complete_expansion(
-                    opened.epoch_id, lease, completion, children
+                    opened.epoch_id,
+                    lease,
+                    replace(discovered, admitted_pairs=owned),
+                    completion,
+                    children,
                 )
 
             all_children = tuple(

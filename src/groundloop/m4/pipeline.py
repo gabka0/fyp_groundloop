@@ -58,6 +58,8 @@ from groundloop.m4.application import (
     StructuralWithdrawal,
 )
 from groundloop.m4.contracts import (
+    AdmittedPair,
+    ChannelHit,
     CorpusUpdateIdentity,
     DiscoveryScope,
     JobAttempt,
@@ -460,7 +462,7 @@ class PostgresM4VerificationExecutionWriter:
 
 @dataclass(slots=True)
 class PersistingAdmissionPort:
-    """Archive deterministic admitted pairs returned by an injected strategy."""
+    """Compatibility wrapper; persistence now belongs to expansion closure."""
 
     connection: Connection[Any]
     delegate: AdmissionDelegate
@@ -468,60 +470,7 @@ class PersistingAdmissionPort:
     def discover(
         self, epoch_id: int, root_job: LogicalJobSpec
     ) -> DiscoveryResult:
-        result = self.delegate.discover(epoch_id, root_job)
-        with self.connection.transaction():
-            for admitted in result.admitted_pairs:
-                admitted_id = stable_m4_digest(
-                    "m4-admitted-pair-v1",
-                    str(admitted.epoch_id),
-                    admitted.pair.claim_id,
-                    admitted.pair.chunk_version_id,
-                    admitted.candidate_policy_id,
-                )
-                self.connection.execute(
-                    """
-                    INSERT INTO groundloop_admitted_pair (
-                        admitted_pair_id, epoch_id, chunk_version_id, claim_id,
-                        candidate_policy_id, fused_rank, reasons,
-                        mandatory_lineage
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (admitted_pair_id) DO NOTHING
-                    """,
-                    (
-                        admitted_id,
-                        admitted.epoch_id,
-                        admitted.pair.chunk_version_id,
-                        admitted.pair.claim_id,
-                        admitted.candidate_policy_id,
-                        admitted.fused_rank,
-                        [reason.value for reason in admitted.reasons],
-                        admitted.mandatory_lineage,
-                    ),
-                )
-                row = self.connection.execute(
-                    """
-                    SELECT epoch_id, chunk_version_id, claim_id,
-                           candidate_policy_id, fused_rank, reasons,
-                           mandatory_lineage
-                    FROM groundloop_admitted_pair
-                    WHERE admitted_pair_id = %s
-                    """,
-                    (admitted_id,),
-                ).fetchone()
-                expected = (
-                    admitted.epoch_id,
-                    admitted.pair.chunk_version_id,
-                    admitted.pair.claim_id,
-                    admitted.candidate_policy_id,
-                    admitted.fused_rank,
-                    [reason.value for reason in admitted.reasons],
-                    admitted.mandatory_lineage,
-                )
-                if row is None or tuple(row) != expected:
-                    raise EventConflictError(
-                        "admitted-pair identity was reused with different content"
-                    )
-        return result
+        return self.delegate.discover(epoch_id, root_job)
 
 
 def _load_repository_snapshot(
@@ -1612,6 +1561,7 @@ class PostgresM4ApplicationPorts:
         self,
         epoch_id: int,
         lease: JobLease,
+        discovery: DiscoveryResult,
         completion: JobCompletion,
         child_jobs: tuple[LogicalJobSpec, ...],
     ) -> None:
@@ -1619,6 +1569,11 @@ class PostgresM4ApplicationPorts:
             lease, completion.job_id
         )
         with self.connection.transaction():
+            with self.connection.cursor() as cursor:
+                self._persist_discovery_result(
+                    cursor, epoch_id, completion.job_id, discovery
+                )
+            self._inject("expansion_discovery_persisted")
             epoch = self.runtime_store.read_epoch(epoch_id)
             transition = self.runtime_store.complete(
                 CompletionPlan(epoch_id, epoch.revision, completion, child_jobs),
@@ -1627,9 +1582,287 @@ class PostgresM4ApplicationPorts:
                 lease_token_hash=lease_token_hash,
                 lease_expected_revision=lease_revision,
             )
+            self._inject("expansion_runtime_completed")
             if not transition.replayed:
                 with self.connection.cursor() as cursor:
                     self._sync_evaluation(cursor, epoch_id)
+                self._inject("expansion_evaluation_synced")
+
+    @staticmethod
+    def _admitted_pair_id(admitted: AdmittedPair) -> str:
+        return stable_m4_digest(
+            "m4-admitted-pair-v1",
+            str(admitted.epoch_id),
+            admitted.pair.claim_id,
+            admitted.pair.chunk_version_id,
+            admitted.candidate_policy_id,
+        )
+
+    @staticmethod
+    def _channel_set_hash(hits: tuple[ChannelHit, ...]) -> str:
+        identities = tuple(
+            sorted(
+                stable_m4_digest(
+                    "m4-discovery-channel-v1",
+                    str(hit.epoch_id),
+                    hit.pair.claim_id,
+                    hit.pair.chunk_version_id,
+                    hit.candidate_policy_id,
+                    hit.channel.value,
+                    str(hit.rank),
+                    "" if hit.score is None else format(hit.score, ".17g"),
+                    hit.channel_artifact_hash,
+                )
+                for hit in hits
+            )
+        )
+        return stable_m4_digest("m4-discovery-channel-set-v1", *identities)
+
+    @classmethod
+    def _admitted_pair_set_hash(
+        cls, admitted_pairs: tuple[AdmittedPair, ...]
+    ) -> str:
+        identities = tuple(
+            sorted(cls._admitted_pair_id(item) for item in admitted_pairs)
+        )
+        return stable_m4_digest("m4-discovery-admitted-set-v1", *identities)
+
+    def _persist_discovery_result(
+        self,
+        cursor: Cursor[Any],
+        epoch_id: int,
+        root_job_id: str,
+        discovery: DiscoveryResult,
+    ) -> None:
+        if discovery.root_job_id != root_job_id:
+            raise EventConflictError("discovery result belongs to another root")
+        for hit in discovery.channel_hits:
+            self._persist_channel_hit(cursor, epoch_id, hit)
+        for admitted in discovery.admitted_pairs:
+            self._persist_admitted_pair(cursor, epoch_id, admitted, discovery)
+        channel_hash = self._channel_set_hash(discovery.channel_hits)
+        pair_hash = self._admitted_pair_set_hash(discovery.admitted_pairs)
+        cursor.execute(
+            """
+            INSERT INTO groundloop_m4_discovery_result (
+                root_job_id, epoch_id, result_artifact_id,
+                result_artifact_hash, fallback_satisfied,
+                channel_hit_count, admitted_pair_count,
+                channel_set_hash, admitted_pair_set_hash
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (root_job_id) DO NOTHING
+            """,
+            (
+                root_job_id,
+                epoch_id,
+                discovery.result_artifact_id,
+                discovery.result_artifact_hash,
+                discovery.fallback_satisfied,
+                len(discovery.channel_hits),
+                len(discovery.admitted_pairs),
+                channel_hash,
+                pair_hash,
+            ),
+        )
+        row = cursor.execute(
+            """
+            SELECT epoch_id, result_artifact_id, result_artifact_hash,
+                   fallback_satisfied, channel_hit_count,
+                   admitted_pair_count, channel_set_hash,
+                   admitted_pair_set_hash
+            FROM groundloop_m4_discovery_result WHERE root_job_id = %s
+            """,
+            (root_job_id,),
+        ).fetchone()
+        expected = (
+            epoch_id,
+            discovery.result_artifact_id,
+            discovery.result_artifact_hash,
+            discovery.fallback_satisfied,
+            len(discovery.channel_hits),
+            len(discovery.admitted_pairs),
+            channel_hash,
+            pair_hash,
+        )
+        actual = (
+            None
+            if row is None
+            else tuple(
+                str(value).strip() if index in {2, 6, 7} else value
+                for index, value in enumerate(row)
+            )
+        )
+        if actual != expected:
+            raise EventConflictError(
+                "discovery-result identity was reused with different content"
+            )
+
+    def _persist_channel_hit(
+        self, cursor: Cursor[Any], epoch_id: int, hit: ChannelHit
+    ) -> None:
+        if hit.epoch_id != epoch_id:
+            raise EventConflictError("channel hit belongs to another epoch")
+        cursor.execute(
+            """
+            INSERT INTO groundloop_impact_channel_hit (
+                epoch_id, chunk_version_id, claim_id,
+                candidate_policy_id, channel, rank, score,
+                channel_artifact_hash
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT DO NOTHING
+            """,
+            (
+                hit.epoch_id,
+                hit.pair.chunk_version_id,
+                hit.pair.claim_id,
+                hit.candidate_policy_id,
+                hit.channel.value,
+                hit.rank,
+                hit.score,
+                hit.channel_artifact_hash,
+            ),
+        )
+        row = cursor.execute(
+            """
+            SELECT rank, score, channel_artifact_hash
+            FROM groundloop_impact_channel_hit
+            WHERE epoch_id = %s AND chunk_version_id = %s
+              AND claim_id = %s AND candidate_policy_id = %s
+              AND channel = %s
+            """,
+            (
+                hit.epoch_id,
+                hit.pair.chunk_version_id,
+                hit.pair.claim_id,
+                hit.candidate_policy_id,
+                hit.channel.value,
+            ),
+        ).fetchone()
+        expected = (hit.rank, hit.score, hit.channel_artifact_hash)
+        actual = (
+            None
+            if row is None
+            else (
+                int(row[0]),
+                None if row[1] is None else float(row[1]),
+                str(row[2]).strip(),
+            )
+        )
+        if actual != expected:
+            raise EventConflictError(
+                "channel-hit identity was reused with different content"
+            )
+
+    def _persist_admitted_pair(
+        self,
+        cursor: Cursor[Any],
+        epoch_id: int,
+        admitted: AdmittedPair,
+        discovery: DiscoveryResult,
+    ) -> None:
+        if admitted.epoch_id != epoch_id:
+            raise EventConflictError("admitted pair belongs to another epoch")
+        admitted_id = self._admitted_pair_id(admitted)
+        cursor.execute(
+            """
+            INSERT INTO groundloop_admitted_pair (
+                admitted_pair_id, epoch_id, chunk_version_id, claim_id,
+                candidate_policy_id, fused_rank, reasons,
+                mandatory_lineage
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (admitted_pair_id) DO NOTHING
+            """,
+            (
+                admitted_id,
+                admitted.epoch_id,
+                admitted.pair.chunk_version_id,
+                admitted.pair.claim_id,
+                admitted.candidate_policy_id,
+                admitted.fused_rank,
+                [reason.value for reason in admitted.reasons],
+                admitted.mandatory_lineage,
+            ),
+        )
+        row = cursor.execute(
+            """
+            SELECT epoch_id, chunk_version_id, claim_id,
+                   candidate_policy_id, fused_rank, reasons,
+                   mandatory_lineage
+            FROM groundloop_admitted_pair WHERE admitted_pair_id = %s
+            """,
+            (admitted_id,),
+        ).fetchone()
+        expected = (
+            admitted.epoch_id,
+            admitted.pair.chunk_version_id,
+            admitted.pair.claim_id,
+            admitted.candidate_policy_id,
+            admitted.fused_rank,
+            [reason.value for reason in admitted.reasons],
+            admitted.mandatory_lineage,
+        )
+        if row is None or tuple(row) != expected:
+            raise EventConflictError(
+                "admitted-pair identity was reused with different content"
+            )
+        scores = tuple(
+            hit.score
+            for hit in discovery.channel_hits
+            if hit.pair == admitted.pair and hit.score is not None
+        )
+        score = max(scores, default=0.0)
+        artifact_hash = stable_m4_digest(
+            "m4-frontier-candidate-v1", admitted_id, format(score, ".17g")
+        )
+        current = cursor.execute(
+            """
+            SELECT frontier.valid_from_epoch
+            FROM groundloop_m4_effective_candidate_frontier AS frontier
+            WHERE frontier.epoch_id = %s AND frontier.claim_id = %s
+              AND frontier.chunk_version_id = %s
+              AND frontier.candidate_policy_id = %s
+            """,
+            (
+                admitted.epoch_id,
+                admitted.pair.claim_id,
+                admitted.pair.chunk_version_id,
+                admitted.candidate_policy_id,
+            ),
+        ).fetchone()
+        if current is None or int(current[0]) != admitted.epoch_id:
+            cursor.execute(
+                """
+                INSERT INTO groundloop_candidate_frontier (
+                    claim_id, chunk_version_id, candidate_policy_id,
+                    frontier_state, rank, retrieval_score,
+                    candidate_artifact_hash, valid_from_epoch,
+                    valid_to_epoch
+                ) VALUES (%s, %s, %s, 'queued', %s, %s, %s, %s, NULL)
+                """,
+                (
+                    admitted.pair.claim_id,
+                    admitted.pair.chunk_version_id,
+                    admitted.candidate_policy_id,
+                    admitted.fused_rank,
+                    score,
+                    artifact_hash,
+                    admitted.epoch_id,
+                ),
+            )
+        else:
+            cursor.execute(
+                """
+                UPDATE groundloop_candidate_frontier SET frontier_state = 'queued'
+                WHERE claim_id = %s AND chunk_version_id = %s
+                  AND candidate_policy_id = %s AND valid_from_epoch = %s
+                """,
+                (
+                    admitted.pair.claim_id,
+                    admitted.pair.chunk_version_id,
+                    admitted.candidate_policy_id,
+                    current[0],
+                ),
+            )
 
     def children_of(
         self, epoch_id: int, root_job_id: str

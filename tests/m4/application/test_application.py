@@ -310,9 +310,11 @@ class FakeRuntime:
         self,
         epoch_id: int,
         lease: JobLease,
+        discovery: DiscoveryResult,
         completion: JobCompletion,
         child_jobs: tuple[LogicalJobSpec, ...],
     ) -> None:
+        del discovery
         epoch = self.world.epoch(epoch_id)
         _validate_fake_lease(epoch, lease, completion.job_id)
         self.world.runtime_book = apply_completion(

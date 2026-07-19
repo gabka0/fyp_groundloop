@@ -243,12 +243,25 @@ class ScriptedAdmission:
             )
             for rank, pair in enumerate(pairs, start=1)
         )
+        hits = tuple(
+            ChannelHit(
+                epoch_id,
+                pair,
+                root_job.candidate_policy_id,
+                AdmissionChannel.VECTOR,
+                rank,
+                0.5,
+                _hash(f"scripted-hit:{root_job.job_id}:{pair}"),
+            )
+            for rank, pair in enumerate(pairs, start=1)
+        )
         result_hash = _hash(f"admission:{root_job.job_id}:{pairs}")
         return DiscoveryResult(
             root_job.job_id,
             f"admission:{root_job.job_id}",
             result_hash,
             admitted,
+            channel_hits=hits,
         )
 
 
@@ -681,6 +694,95 @@ def test_failed_event_preserves_publication_head_and_published_state(
         WHERE epoch.event_id = 'failed-insert'
         """
     ).fetchone() == ("fixture://doc-fail", "dynamic")
+
+
+@pytest.mark.parametrize(
+    "failure_point",
+    [
+        "expansion_discovery_persisted",
+        "expansion_runtime_completed",
+        "expansion_evaluation_synced",
+    ],
+)
+def test_discovery_result_and_child_closure_are_one_transaction(
+    m4_pipeline_connection: Connection[Any], failure_point: str
+) -> None:
+    base = _seed_b0(m4_pipeline_connection)
+    inserted_document = _inserted(
+        "doc-expansion", "dv-expansion", "chunk-expansion", "Nimbus is blue."
+    )
+
+    def inject(point: str) -> None:
+        if point == failure_point:
+            raise RuntimeError(f"injected:{point}")
+
+    ports = PostgresM4ApplicationPorts(
+        m4_pipeline_connection,
+        structural_payloads={
+            "expansion-failure": StructuralPayload(inserted=inserted_document)
+        },
+        failure_injector=inject,
+    )
+    ports.runtime_store.register_candidate_policy(_candidate_policy())
+    application = M4Application(
+        structural=ports,
+        runtime=ports,
+        admission=PersistingAdmissionPort(
+            m4_pipeline_connection,
+            ScriptedAdmission({"chunk-expansion": ("claim-1",)}),
+        ),
+        verifier=ScriptedVerifier({"chunk-expansion": "neutral"}),
+        observations=ports,
+        equality_gates=ports,
+        publication=ports,
+        execution_policy=ApplicationExecutionPolicy(
+            IMPACT_HASH, FRONTIER_HASH, VERIFIER_HASH
+        ),
+    )
+    event = _event(
+        "expansion-failure",
+        UpdateKind.INSERT,
+        base,
+        inserted=("chunk-expansion",),
+    )
+    with pytest.raises(RuntimeError, match=failure_point):
+        application.run_event(event)
+
+    epoch_id = m4_pipeline_connection.execute(
+        "SELECT epoch_id FROM groundloop_epoch WHERE event_id = %s",
+        (event.update.event_id,),
+    ).fetchone()
+    assert epoch_id is not None
+    assert m4_pipeline_connection.execute(
+        """
+        SELECT
+          (SELECT count(*) FROM groundloop_m4_discovery_result
+           WHERE epoch_id = %s),
+          (SELECT count(*) FROM groundloop_impact_channel_hit
+           WHERE epoch_id = %s),
+          (SELECT count(*) FROM groundloop_admitted_pair
+           WHERE epoch_id = %s),
+          (SELECT count(*) FROM groundloop_candidate_frontier
+           WHERE valid_from_epoch = %s),
+          (SELECT count(*) FROM groundloop_semantic_job
+           WHERE epoch_id = %s AND parent_job_id IS NOT NULL)
+        """,
+        (epoch_id[0],) * 5,
+    ).fetchone() == (0, 0, 0, 0, 0)
+    assert m4_pipeline_connection.execute(
+        """
+        SELECT job_state, child_closed FROM groundloop_semantic_job
+        WHERE epoch_id = %s AND parent_job_id IS NULL
+        """,
+        (epoch_id[0],),
+    ).fetchone() == ("running", False)
+    assert m4_pipeline_connection.execute(
+        """
+        SELECT closed_revision FROM groundloop_discovery_scope
+        WHERE epoch_id = %s
+        """,
+        (epoch_id[0],),
+    ).fetchone() == (None,)
 
 
 @pytest.mark.parametrize(
@@ -1215,6 +1317,56 @@ def test_frontier_promotion_closes_exact_published_predecessor(
         (base, result.epoch_id, "unverified"),
         (result.epoch_id, None, "verified_current"),
     ]
+
+
+def test_empty_discovery_has_a_durable_closed_result_header(
+    m4_pipeline_connection: Connection[Any],
+) -> None:
+    base = _seed_b0(m4_pipeline_connection)
+    inserted_document = _inserted(
+        "doc-empty", "dv-empty", "chunk-empty", "No candidate matches."
+    )
+    event = _event(
+        "empty-discovery",
+        UpdateKind.INSERT,
+        base,
+        inserted=("chunk-empty",),
+    )
+    ports = PostgresM4ApplicationPorts(
+        m4_pipeline_connection,
+        structural_payloads={
+            "empty-discovery": StructuralPayload(inserted=inserted_document)
+        },
+    )
+    ports.runtime_store.register_candidate_policy(_candidate_policy())
+    result = M4Application(
+        structural=ports,
+        runtime=ports,
+        admission=PersistingAdmissionPort(
+            m4_pipeline_connection, ScriptedAdmission({})
+        ),
+        verifier=ScriptedVerifier({}),
+        observations=ports,
+        equality_gates=ports,
+        publication=ports,
+        execution_policy=ApplicationExecutionPolicy(
+            IMPACT_HASH, FRONTIER_HASH, VERIFIER_HASH
+        ),
+    ).run_event(event)
+    assert result.state is EventRunState.SEALED
+    assert m4_pipeline_connection.execute(
+        """
+        SELECT result.fallback_satisfied, result.channel_hit_count,
+               result.admitted_pair_count, job.child_closed,
+               (SELECT count(*) FROM groundloop_semantic_job AS child
+                WHERE child.parent_job_id = job.job_id)
+        FROM groundloop_m4_discovery_result AS result
+        JOIN groundloop_semantic_job AS job
+          ON job.job_id = result.root_job_id
+        WHERE result.epoch_id = %s
+        """,
+        (result.epoch_id,),
+    ).fetchone() == (True, 0, 0, True, 0)
 
 
 def test_restart_after_one_verifier_completion_rebuilds_working_snapshot(
