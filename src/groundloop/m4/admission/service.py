@@ -181,12 +181,11 @@ class PostgresHybridAdmissionPort:
             SELECT claim_id, chunk_version_id, candidate_policy_id,
                    frontier_state, rank, retrieval_score,
                    candidate_artifact_hash
-            FROM groundloop_candidate_frontier
-            WHERE claim_id = %s AND candidate_policy_id = %s
-              AND valid_to_epoch IS NULL
+            FROM groundloop_m4_effective_candidate_frontier
+            WHERE epoch_id = %s AND claim_id = %s AND candidate_policy_id = %s
             ORDER BY rank, chunk_version_id
             """,
-            (claim_id, self.manifest.policy_id),
+            (epoch_id, claim_id, self.manifest.policy_id),
         ).fetchall()
         entries = tuple(
             FrontierEntry(
@@ -204,22 +203,26 @@ class PostgresHybridAdmissionPort:
             str(row[0])
             for row in self.connection.execute(
                 """
-                SELECT chunk_version_id FROM groundloop_chunk_version
-                WHERE valid_to_epoch IS NULL
-                """
+                SELECT chunk_version_id
+                FROM groundloop_m4_effective_chunk_version
+                WHERE epoch_id = %s
+                """,
+                (epoch_id,),
             ).fetchall()
         )
         current_rows = self.connection.execute(
             """
             SELECT currency.chunk_version_id
-            FROM groundloop_observation_currency AS currency
-            JOIN groundloop_chunk_version AS chunk USING (chunk_version_id)
+            FROM groundloop_m4_effective_observation_currency AS currency
+            JOIN groundloop_m4_effective_chunk_version AS chunk
+              ON chunk.epoch_id = currency.epoch_id
+             AND chunk.chunk_version_id = currency.chunk_version_id
             WHERE currency.subject_kind = 'claim'
               AND currency.subject_id = %s
-              AND chunk.valid_to_epoch IS NULL
+              AND currency.epoch_id = %s
             ORDER BY currency.chunk_version_id
             """,
-            (claim_id,),
+            (claim_id, epoch_id),
         ).fetchall()
         current = tuple(PairKey(claim_id, str(row[0])) for row in current_rows)
         plan = plan_frontier_refill(
@@ -392,17 +395,20 @@ class PostgresHybridAdmissionPort:
                 )
                 current = self.connection.execute(
                     """
-                    SELECT valid_from_epoch FROM groundloop_candidate_frontier
-                    WHERE claim_id = %s AND chunk_version_id = %s
-                      AND candidate_policy_id = %s AND valid_to_epoch IS NULL
+                    SELECT frontier.valid_from_epoch
+                    FROM groundloop_m4_effective_candidate_frontier AS frontier
+                    WHERE frontier.epoch_id = %s AND frontier.claim_id = %s
+                      AND frontier.chunk_version_id = %s
+                      AND frontier.candidate_policy_id = %s
                     """,
                     (
+                        admitted.epoch_id,
                         admitted.pair.claim_id,
                         admitted.pair.chunk_version_id,
                         admitted.candidate_policy_id,
                     ),
                 ).fetchone()
-                if current is None:
+                if current is None or int(current[0]) != admitted.epoch_id:
                     self.connection.execute(
                         """
                         INSERT INTO groundloop_candidate_frontier (
@@ -431,12 +437,13 @@ class PostgresHybridAdmissionPort:
                         SET frontier_state = 'queued'
                         WHERE claim_id = %s AND chunk_version_id = %s
                           AND candidate_policy_id = %s
-                          AND valid_to_epoch IS NULL
+                          AND valid_from_epoch = %s
                         """,
                         (
                             admitted.pair.claim_id,
                             admitted.pair.chunk_version_id,
                             admitted.candidate_policy_id,
+                            current[0],
                         ),
                     )
 

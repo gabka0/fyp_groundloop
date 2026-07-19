@@ -59,7 +59,7 @@ FRONTIER_HASH = _hash("m4-pipeline-frontier")
 VERIFIER_HASH = _hash("m4-pipeline-verifier")
 
 
-def _candidate_policy() -> CandidatePolicyManifest:
+def _candidate_policy(*, frontier_depth: int = 4) -> CandidatePolicyManifest:
     return CandidatePolicyManifest.build(
         policy_id="candidate-v1",
         embedding_model_artifact_id="embedder-v1",
@@ -77,7 +77,7 @@ def _candidate_policy() -> CandidatePolicyManifest:
         claim_count=1,
         fusion_version="rank-interleave-v1",
         approximate_cap_per_inserted_chunk=4,
-        frontier_depth=4,
+        frontier_depth=frontier_depth,
         verifier_execution_spec_hash=VERIFIER_HASH,
         decision_policy_version="decision-v1",
     )
@@ -461,6 +461,24 @@ def test_insert_delete_replace_replay_and_publication_are_exact(
         "SELECT epoch_id FROM groundloop_m4_publication_head"
     ).fetchone()
     assert head == (replaced.epoch_id,)
+    sealed_revision = m4_pipeline_connection.execute(
+        "SELECT revision FROM groundloop_epoch WHERE epoch_id = %s",
+        (replaced.epoch_id,),
+    ).fetchone()
+    assert sealed_revision is not None
+    assert m4_pipeline_connection.execute(
+        """
+        SELECT evaluation_state, confirmed_as_of_epoch,
+               open_required_job_count, discovery_scope_open,
+               updated_revision
+        FROM groundloop_object_evaluation
+        WHERE epoch_id = %s ORDER BY object_type
+        """,
+        (replaced.epoch_id,),
+    ).fetchall() == [
+        ("complete", replaced.epoch_id, 0, False, sealed_revision[0]),
+        ("complete", replaced.epoch_id, 0, False, sealed_revision[0]),
+    ]
     deltas = m4_pipeline_connection.execute(
         """
         SELECT event_id, object_type, old_status, new_status
@@ -527,6 +545,69 @@ def test_failed_event_preserves_publication_head_and_published_state(
     assert m4_pipeline_connection.execute(
         "SELECT observation_id FROM groundloop_observation_currency"
     ).fetchall() == [("observation-support",)]
+    assert m4_pipeline_connection.execute(
+        """
+        SELECT source_uri, authority_class FROM groundloop_document
+        WHERE document_id = 'doc-fail'
+        """
+    ).fetchone() == (None, "unclassified")
+
+    corrected_text = "corrected document metadata"
+    corrected = InsertedDocument(
+        DocumentVersion("dv-corrected", "doc-fail", _hash("corrected-content")),
+        (
+            ChunkVersion(
+                "chunk-corrected",
+                "dv-corrected",
+                0,
+                corrected_text,
+            ),
+        ),
+        source_uri="fixture://corrected",
+        authority_class="verified",
+    )
+    corrected_event = _event(
+        "corrected-insert",
+        UpdateKind.INSERT,
+        base,
+        inserted=("chunk-corrected",),
+    )
+    corrected_ports = PostgresM4ApplicationPorts(
+        m4_pipeline_connection,
+        structural_payloads={
+            "corrected-insert": StructuralPayload(inserted=corrected)
+        },
+    )
+    corrected_result = M4Application(
+        structural=corrected_ports,
+        runtime=corrected_ports,
+        admission=PersistingAdmissionPort(
+            m4_pipeline_connection,
+            ScriptedAdmission({"chunk-corrected": ("claim-1",)}),
+        ),
+        verifier=ScriptedVerifier({"chunk-corrected": "neutral"}),
+        observations=corrected_ports,
+        equality_gates=corrected_ports,
+        publication=corrected_ports,
+        execution_policy=ApplicationExecutionPolicy(
+            IMPACT_HASH, FRONTIER_HASH, VERIFIER_HASH
+        ),
+    ).run_event(corrected_event)
+    assert corrected_result.state is EventRunState.SEALED
+    assert m4_pipeline_connection.execute(
+        """
+        SELECT source_uri, authority_class FROM groundloop_document
+        WHERE document_id = 'doc-fail'
+        """
+    ).fetchone() == ("fixture://corrected", "verified")
+    assert m4_pipeline_connection.execute(
+        """
+        SELECT source_uri, authority_class
+        FROM groundloop_m4_document_metadata_overlay AS overlay
+        JOIN groundloop_epoch AS epoch USING (epoch_id)
+        WHERE epoch.event_id = 'failed-insert'
+        """
+    ).fetchone() == ("fixture://doc-fail", "dynamic")
 
 
 @pytest.mark.parametrize(
@@ -622,9 +703,11 @@ def test_verifier_microtransaction_rolls_back_every_logical_step(
 @pytest.mark.parametrize(
     "failure_point",
     [
+        "publication_structure_promoted",
         "publication_currency_promoted",
         "publication_states_written",
         "publication_head_advanced",
+        "publication_evaluation_promoted",
         "publication_store_seal_epoch_written",
     ],
 )
@@ -701,6 +784,25 @@ def test_publication_and_seal_roll_back_as_one_transaction(
         (epoch[0],),
     ).fetchone()
     assert working == ("conflicted",)
+    evaluation_rows = m4_pipeline_connection.execute(
+        """
+        SELECT evaluation_state, confirmed_as_of_epoch,
+               open_required_job_count, discovery_scope_open,
+               updated_revision
+        FROM groundloop_object_evaluation
+        WHERE epoch_id = %s ORDER BY object_type
+        """,
+        (epoch[0],),
+    ).fetchall()
+    epoch_revision = m4_pipeline_connection.execute(
+        "SELECT revision FROM groundloop_epoch WHERE epoch_id = %s",
+        (epoch[0],),
+    ).fetchone()
+    assert epoch_revision is not None
+    assert evaluation_rows == [
+        ("complete", base, 0, False, epoch_revision[0]),
+        ("complete", base, 0, False, epoch_revision[0]),
+    ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -857,3 +959,413 @@ def test_hybrid_admission_is_persisted_and_frontier_becomes_verified(
           AND valid_to_epoch IS NULL
         """
     ).fetchone() == ("verified_current",)
+
+
+def test_frontier_promotion_closes_exact_published_predecessor(
+    m4_pipeline_connection: Connection[Any],
+) -> None:
+    base = _seed_b0(m4_pipeline_connection)
+    reserve_text = "Nimbus has a reserve description."
+    m4_pipeline_connection.execute(
+        "INSERT INTO groundloop_document VALUES "
+        "('doc-reserve', 'fixture://reserve', 'test')"
+    )
+    m4_pipeline_connection.execute(
+        """
+        INSERT INTO groundloop_document_version VALUES (
+            'dv-reserve', 'doc-reserve', 'reserve-content', %s, NULL
+        )
+        """,
+        (base,),
+    )
+    m4_pipeline_connection.execute(
+        """
+        INSERT INTO groundloop_chunk_version VALUES (
+            'chunk-reserve', 'dv-reserve', 0, %s, %s,
+            'fixed-char-v1', %s, NULL
+        )
+        """,
+        (reserve_text, normalized_text_hash(reserve_text), base),
+    )
+    policy = _candidate_policy(frontier_depth=1)
+    ports = PostgresM4ApplicationPorts(
+        m4_pipeline_connection,
+        structural_payloads={"delete-for-refill": StructuralPayload(
+            deactivated_document_version_id="dv-support"
+        )},
+    )
+    ports.runtime_store.register_candidate_policy(policy)
+    m4_pipeline_connection.execute(
+        """
+        INSERT INTO groundloop_candidate_frontier VALUES (
+            'claim-1', 'chunk-reserve', 'candidate-v1', 'unverified',
+            1, 0.5, %s, %s, NULL
+        )
+        """,
+        (_hash("reserve-frontier"), base),
+    )
+    admission = PostgresHybridAdmissionPort(
+        m4_pipeline_connection,
+        policy,
+        _FakeEmbeddingService(),
+        _FakeVectorIndex(),
+        _FakeLexicalPolicy(),
+    )
+    event = _event(
+        "delete-for-refill",
+        UpdateKind.DELETE,
+        base,
+        deactivated=("chunk-support",),
+    )
+    result = M4Application(
+        structural=ports,
+        runtime=ports,
+        admission=admission,
+        verifier=ScriptedVerifier({"chunk-reserve": "neutral"}),
+        observations=ports,
+        equality_gates=ports,
+        publication=ports,
+        execution_policy=ApplicationExecutionPolicy(
+            IMPACT_HASH, FRONTIER_HASH, VERIFIER_HASH
+        ),
+    ).run_event(event)
+    assert result.state is EventRunState.SEALED
+    assert m4_pipeline_connection.execute(
+        """
+        SELECT valid_from_epoch, valid_to_epoch, frontier_state
+        FROM groundloop_candidate_frontier
+        WHERE claim_id = 'claim-1' AND chunk_version_id = 'chunk-reserve'
+          AND candidate_policy_id = 'candidate-v1'
+        ORDER BY valid_from_epoch
+        """
+    ).fetchall() == [
+        (base, result.epoch_id, "unverified"),
+        (result.epoch_id, None, "verified_current"),
+    ]
+
+
+def test_restart_after_one_verifier_completion_rebuilds_working_snapshot(
+    m4_pipeline_connection: Connection[Any],
+) -> None:
+    base = _seed_b0(m4_pipeline_connection)
+    inserted_document = InsertedDocument(
+        DocumentVersion("dv-restart", "doc-restart", _hash("restart-content")),
+        (
+            ChunkVersion("chunk-restart-a", "dv-restart", 0, "Nimbus is blue."),
+            ChunkVersion("chunk-restart-b", "dv-restart", 1, "Nimbus is round."),
+        ),
+        source_uri="fixture://restart",
+    )
+    payloads = {
+        "restart-insert": StructuralPayload(inserted=inserted_document)
+    }
+    event = _event(
+        "restart-insert",
+        UpdateKind.INSERT,
+        base,
+        inserted=("chunk-restart-a", "chunk-restart-b"),
+    )
+    first_ports = PostgresM4ApplicationPorts(
+        m4_pipeline_connection, structural_payloads=payloads
+    )
+    first_ports.runtime_store.register_candidate_policy(_candidate_policy())
+    admission_delegate = ScriptedAdmission(
+        {
+            "chunk-restart-a": ("claim-1",),
+            "chunk-restart-b": ("claim-1",),
+        }
+    )
+
+    @dataclass(slots=True)
+    class CrashOnSecondVerification:
+        delegate: ScriptedVerifier
+        calls: int = 0
+
+        def verify(
+            self, epoch_id: int, verifier_job: LogicalJobSpec
+        ) -> VerificationResult:
+            self.calls += 1
+            if self.calls == 2:
+                raise RuntimeError("simulated process crash")
+            return self.delegate.verify(epoch_id, verifier_job)
+
+    crashing = CrashOnSecondVerification(
+        ScriptedVerifier(
+            {"chunk-restart-a": "neutral", "chunk-restart-b": "neutral"}
+        )
+    )
+    first_application = M4Application(
+        structural=first_ports,
+        runtime=first_ports,
+        admission=PersistingAdmissionPort(
+            m4_pipeline_connection, admission_delegate
+        ),
+        verifier=crashing,
+        observations=first_ports,
+        equality_gates=first_ports,
+        publication=first_ports,
+        execution_policy=ApplicationExecutionPolicy(
+            IMPACT_HASH, FRONTIER_HASH, VERIFIER_HASH
+        ),
+    )
+    with pytest.raises(RuntimeError, match="simulated process crash"):
+        first_application.run_event(event)
+
+    epoch_row = m4_pipeline_connection.execute(
+        "SELECT epoch_id, semantic_status FROM groundloop_epoch "
+        "WHERE event_id = 'restart-insert'"
+    ).fetchone()
+    assert epoch_row is not None and epoch_row[1] == "pending"
+    assert m4_pipeline_connection.execute(
+        "SELECT count(*) FROM groundloop_semantic_observation "
+        "WHERE produced_epoch = %s",
+        (epoch_row[0],),
+    ).fetchone() == (1,)
+    assert m4_pipeline_connection.execute(
+        """
+        SELECT object_type, evaluation_state, open_required_job_count,
+               discovery_scope_open
+        FROM groundloop_object_evaluation
+        WHERE epoch_id = %s ORDER BY object_type
+        """,
+        (epoch_row[0],),
+    ).fetchall() == [
+        ("answer", "pending", 1, False),
+        ("claim", "pending", 1, False),
+    ]
+
+    restarted_ports = PostgresM4ApplicationPorts(
+        m4_pipeline_connection, structural_payloads=payloads
+    )
+    restarted_verifier = ScriptedVerifier(
+        {"chunk-restart-a": "neutral", "chunk-restart-b": "neutral"}
+    )
+    restarted = M4Application(
+        structural=restarted_ports,
+        runtime=restarted_ports,
+        admission=PersistingAdmissionPort(
+            m4_pipeline_connection, admission_delegate
+        ),
+        verifier=restarted_verifier,
+        observations=restarted_ports,
+        equality_gates=restarted_ports,
+        publication=restarted_ports,
+        execution_policy=ApplicationExecutionPolicy(
+            IMPACT_HASH, FRONTIER_HASH, VERIFIER_HASH
+        ),
+    ).run_event(event)
+
+    assert restarted.state is EventRunState.SEALED
+    assert restarted.discovery_call_count == 0
+    assert restarted.verifier_call_count == 1
+    assert restarted_verifier.calls == 1
+    assert m4_pipeline_connection.execute(
+        "SELECT count(*) FROM groundloop_semantic_observation "
+        "WHERE produced_epoch = %s",
+        (restarted.epoch_id,),
+    ).fetchone() == (2,)
+    assert _state(m4_pipeline_connection) == ("supported", "valid")
+
+
+def test_failed_replacement_overlay_cannot_poison_next_published_event(
+    m4_pipeline_connection: Connection[Any],
+) -> None:
+    base = _seed_b0(m4_pipeline_connection)
+
+    def replacement(version_id: str, chunk_id: str, text: str) -> InsertedDocument:
+        return InsertedDocument(
+            DocumentVersion(version_id, "doc-support", _hash(version_id)),
+            (ChunkVersion(chunk_id, version_id, 0, text),),
+            source_uri="fixture://support",
+            authority_class="test",
+        )
+
+    failed_document = replacement(
+        "dv-failed-replace", "chunk-failed-replace", "Nimbus is blue."
+    )
+    failed_payload = StructuralPayload(
+        inserted=failed_document,
+        deactivated_document_version_id="dv-support",
+    )
+    failed_event = _event(
+        "failed-replace-overlay",
+        UpdateKind.REPLACE,
+        base,
+        inserted=("chunk-failed-replace",),
+        deactivated=("chunk-support",),
+    )
+    failed_ports = PostgresM4ApplicationPorts(
+        m4_pipeline_connection,
+        structural_payloads={"failed-replace-overlay": failed_payload},
+    )
+    failed_ports.runtime_store.register_candidate_policy(_candidate_policy())
+
+    @dataclass(slots=True)
+    class ExternalFailure:
+        def discover(
+            self, epoch_id: int, root_job: LogicalJobSpec
+        ) -> DiscoveryResult:
+            del epoch_id, root_job
+            from groundloop.m4.application import ExternalWorkFailure
+
+            raise ExternalWorkFailure("failed replacement discovery")
+
+    failed = M4Application(
+        structural=failed_ports,
+        runtime=failed_ports,
+        admission=ExternalFailure(),
+        verifier=ScriptedVerifier({}),
+        observations=failed_ports,
+        equality_gates=failed_ports,
+        publication=failed_ports,
+        execution_policy=ApplicationExecutionPolicy(
+            IMPACT_HASH, FRONTIER_HASH, VERIFIER_HASH
+        ),
+    ).run_event(failed_event)
+    assert failed.state is EventRunState.FAILED
+    assert _state(m4_pipeline_connection) == ("supported", "valid")
+
+    successful_document = replacement(
+        "dv-success-replace",
+        "chunk-success-replace",
+        "Nimbus is not an atmospheric probe.",
+    )
+    successful_payload = StructuralPayload(
+        inserted=successful_document,
+        deactivated_document_version_id="dv-support",
+    )
+    successful_event = _event(
+        "successful-replace-overlay",
+        UpdateKind.REPLACE,
+        base,
+        inserted=("chunk-success-replace",),
+        deactivated=("chunk-support",),
+    )
+    successful_ports = PostgresM4ApplicationPorts(
+        m4_pipeline_connection,
+        structural_payloads={"successful-replace-overlay": successful_payload},
+    )
+    successful = M4Application(
+        structural=successful_ports,
+        runtime=successful_ports,
+        admission=PersistingAdmissionPort(
+            m4_pipeline_connection,
+            ScriptedAdmission({"chunk-success-replace": ("claim-1",)}),
+        ),
+        verifier=ScriptedVerifier({"chunk-success-replace": "refute"}),
+        observations=successful_ports,
+        equality_gates=successful_ports,
+        publication=successful_ports,
+        execution_policy=ApplicationExecutionPolicy(
+            IMPACT_HASH, FRONTIER_HASH, VERIFIER_HASH
+        ),
+    ).run_event(successful_event)
+
+    assert successful.state is EventRunState.SEALED
+    assert _state(m4_pipeline_connection) == ("refuted", "contradicted")
+    published_versions = m4_pipeline_connection.execute(
+        """
+        SELECT version.document_version_id
+        FROM groundloop_document_version AS version
+        JOIN groundloop_epoch AS creator
+          ON creator.epoch_id = version.valid_from_epoch
+         AND creator.semantic_status = 'sealed'
+        WHERE version.document_id = 'doc-support'
+          AND version.valid_from_epoch <= %s
+          AND (version.valid_to_epoch IS NULL OR %s < version.valid_to_epoch)
+        ORDER BY version.document_version_id
+        """,
+        (successful.epoch_id, successful.epoch_id),
+    ).fetchall()
+    assert published_versions == [("dv-success-replace",)]
+    assert m4_pipeline_connection.execute(
+        """
+        SELECT epoch.semantic_status, version.valid_to_epoch
+        FROM groundloop_document_version AS version
+        JOIN groundloop_epoch AS epoch
+          ON epoch.epoch_id = version.valid_from_epoch
+        WHERE version.document_version_id = 'dv-failed-replace'
+        """
+    ).fetchone() == ("failed", None)
+
+
+def test_historical_oracle_is_bound_to_claim_registry_snapshot(
+    m4_pipeline_connection: Connection[Any],
+) -> None:
+    base = _seed_b0(m4_pipeline_connection)
+    inserted_document = _inserted(
+        "doc-registry", "dv-registry", "chunk-registry", "Nimbus is blue."
+    )
+    event = _event(
+        "registry-insert",
+        UpdateKind.INSERT,
+        base,
+        inserted=("chunk-registry",),
+    )
+    ports = PostgresM4ApplicationPorts(
+        m4_pipeline_connection,
+        structural_payloads={
+            "registry-insert": StructuralPayload(inserted=inserted_document)
+        },
+    )
+    ports.runtime_store.register_candidate_policy(_candidate_policy())
+    result = M4Application(
+        structural=ports,
+        runtime=ports,
+        admission=PersistingAdmissionPort(
+            m4_pipeline_connection,
+            ScriptedAdmission({"chunk-registry": ("claim-1",)}),
+        ),
+        verifier=ScriptedVerifier({"chunk-registry": "neutral"}),
+        observations=ports,
+        equality_gates=ports,
+        publication=ports,
+        execution_policy=ApplicationExecutionPolicy(
+            IMPACT_HASH, FRONTIER_HASH, VERIFIER_HASH
+        ),
+    ).run_event(event)
+    assert result.state is EventRunState.SEALED
+    before = m4_pipeline_connection.execute(
+        """
+        SELECT claim_id, status FROM groundloop_m4_claim_state_oracle
+        WHERE epoch_id = %s ORDER BY claim_id
+        """,
+        (result.epoch_id,),
+    ).fetchall()
+
+    m4_pipeline_connection.execute(
+        "INSERT INTO groundloop_question VALUES ('question-later', 'Later?', %s)",
+        (result.epoch_id,),
+    )
+    m4_pipeline_connection.execute(
+        """
+        INSERT INTO groundloop_answer_version VALUES (
+            'answer-later', 'question-later', 'Later answer.',
+            'generator', 'v1', 'prompt-v1', %s
+        )
+        """,
+        (result.epoch_id,),
+    )
+    m4_pipeline_connection.execute(
+        """
+        INSERT INTO groundloop_claim VALUES (
+            'claim-later', 'answer-later', 'Later claim.',
+            'extractor', 'v1', 'prompt-v1', true
+        )
+        """
+    )
+    after = m4_pipeline_connection.execute(
+        """
+        SELECT claim_id, status FROM groundloop_m4_claim_state_oracle
+        WHERE epoch_id = %s ORDER BY claim_id
+        """,
+        (result.epoch_id,),
+    ).fetchall()
+    assert after == before == [("claim-1", "supported")]
+    assert m4_pipeline_connection.execute(
+        """
+        SELECT count(*) FROM groundloop_object_evaluation
+        WHERE epoch_id = %s
+        """,
+        (result.epoch_id,),
+    ).fetchone() == (2,)

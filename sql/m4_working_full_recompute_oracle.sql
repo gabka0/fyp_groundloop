@@ -28,19 +28,16 @@ SELECT
 FROM groundloop_m4_effective_observation_currency AS currency
 JOIN groundloop_semantic_observation AS observation
   ON observation.observation_id = currency.observation_id
-JOIN groundloop_chunk_version AS chunk
-  ON chunk.chunk_version_id = observation.chunk_version_id
+JOIN groundloop_m4_effective_chunk_version AS chunk
+  ON chunk.epoch_id = currency.epoch_id
+ AND chunk.chunk_version_id = observation.chunk_version_id
 JOIN groundloop_m4_update AS update_row
   ON update_row.epoch_id = currency.epoch_id
 JOIN groundloop_candidate_policy AS candidate
   ON candidate.candidate_policy_id = update_row.candidate_policy_id
 JOIN groundloop_decision_policy AS policy
   ON policy.policy_version = candidate.decision_policy_version
-WHERE chunk.valid_from_epoch <= currency.epoch_id
-  AND (
-      chunk.valid_to_epoch IS NULL
-      OR currency.epoch_id < chunk.valid_to_epoch
-  );
+;
 
 CREATE OR REPLACE VIEW groundloop_m4_claim_state_oracle AS
 WITH contributing AS (
@@ -51,7 +48,10 @@ WITH contributing AS (
 epoch_claim AS (
     SELECT update_row.epoch_id, claim.claim_id
     FROM groundloop_m4_update AS update_row
-    CROSS JOIN groundloop_claim AS claim
+    JOIN groundloop_m4_claim_registry_member AS member
+      ON member.claim_registry_snapshot_id = update_row.registry_snapshot_id
+    JOIN groundloop_claim AS claim
+      ON claim.claim_id = member.claim_id
 ),
 aggregated AS (
     SELECT
@@ -123,9 +123,12 @@ WITH aggregated AS (
             WHERE claim.required AND state.status = 'conflicted'
         )::integer AS conflicted_count
     FROM groundloop_m4_update AS update_row
-    CROSS JOIN groundloop_answer_version AS answer
+    JOIN groundloop_m4_claim_registry_member AS member
+      ON member.claim_registry_snapshot_id = update_row.registry_snapshot_id
     JOIN groundloop_claim AS claim
-      ON claim.answer_version_id = answer.answer_version_id
+      ON claim.claim_id = member.claim_id
+    JOIN groundloop_answer_version AS answer
+      ON answer.answer_version_id = claim.answer_version_id
     JOIN groundloop_m4_claim_state_oracle AS state
       ON state.epoch_id = update_row.epoch_id
      AND state.claim_id = claim.claim_id
@@ -148,4 +151,3 @@ SELECT
         ELSE 'unsupported'
     END AS status
 FROM aggregated;
-

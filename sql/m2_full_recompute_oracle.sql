@@ -33,6 +33,11 @@ JOIN groundloop_semantic_observation AS observation
   ON observation.observation_id = currency.observation_id
 JOIN groundloop_chunk_version AS chunk
   ON chunk.chunk_version_id = observation.chunk_version_id
+JOIN groundloop_document_version AS version
+  ON version.document_version_id = chunk.document_version_id
+JOIN groundloop_epoch AS creator
+  ON creator.epoch_id = version.valid_from_epoch
+ AND creator.semantic_status = 'sealed'
 CROSS JOIN current_policy AS policy
 WHERE chunk.valid_to_epoch IS NULL;
 

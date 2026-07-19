@@ -180,6 +180,29 @@ class StructuralPayload:
                 if self.inserted is None
                 else [chunk.text_hash for chunk in self.inserted.chunks]
             ),
+            "inserted_chunks": (
+                []
+                if self.inserted is None
+                else [
+                    {
+                        "chunk_version_id": chunk.chunk_version_id,
+                        "document_version_id": chunk.document_version_id,
+                        "chunk_index": chunk.chunk_index,
+                        "text": chunk.text,
+                        "text_hash": chunk.text_hash,
+                    }
+                    for chunk in self.inserted.chunks
+                ]
+            ),
+            "source_uri": (
+                None if self.inserted is None else self.inserted.source_uri
+            ),
+            "authority_class": (
+                None if self.inserted is None else self.inserted.authority_class
+            ),
+            "chunker_version": (
+                None if self.inserted is None else self.inserted.chunker_version
+            ),
             "chunker_artifact_id": (
                 None
                 if self.inserted is None
@@ -503,10 +526,13 @@ class PersistingAdmissionPort:
         return result
 
 
-def _load_published_repository(
-    connection: Connection[Any], epoch_id: int
+def _load_repository_snapshot(
+    connection: Connection[Any],
+    published_epoch_id: int,
+    *,
+    working_epoch_id: int | None,
 ) -> tuple[InMemoryRepository, IncrementalMaintenanceEngine]:
-    """Rebuild process-local IVM state after startup, never during an event."""
+    """Rebuild a published or one-event working snapshot after startup."""
     repository = InMemoryRepository()
     repository.advance_epoch()
     question_rows = connection.execute(
@@ -514,6 +540,17 @@ def _load_published_repository(
     ).fetchall()
     for question_id, text in question_rows:
         repository.register_question(Question(str(question_id), str(text)))
+
+    registry_epoch_id = (
+        published_epoch_id if working_epoch_id is None else working_epoch_id
+    )
+    registry_row = connection.execute(
+        """
+        SELECT registry_snapshot_id FROM groundloop_m4_update
+        WHERE epoch_id = %s
+        """,
+        (registry_epoch_id,),
+    ).fetchone()
 
     answer_rows = connection.execute(
         """
@@ -523,13 +560,27 @@ def _load_published_repository(
         """
     ).fetchall()
     claims_by_answer: dict[str, list[Claim]] = {}
-    claim_rows = connection.execute(
-        """
-        SELECT claim_id, answer_version_id, text, extractor_model_id,
-               extractor_model_version, extractor_prompt_version, required
-        FROM groundloop_claim ORDER BY answer_version_id, claim_id
-        """
-    ).fetchall()
+    if registry_row is None:
+        claim_rows = connection.execute(
+            """
+            SELECT claim_id, answer_version_id, text, extractor_model_id,
+                   extractor_model_version, extractor_prompt_version, required
+            FROM groundloop_claim ORDER BY answer_version_id, claim_id
+            """
+        ).fetchall()
+    else:
+        claim_rows = connection.execute(
+            """
+            SELECT claim.claim_id, claim.answer_version_id, claim.text,
+                   claim.extractor_model_id, claim.extractor_model_version,
+                   claim.extractor_prompt_version, claim.required
+            FROM groundloop_m4_claim_registry_member AS member
+            JOIN groundloop_claim AS claim USING (claim_id)
+            WHERE member.claim_registry_snapshot_id = %s
+            ORDER BY claim.answer_version_id, claim.claim_id
+            """,
+            (str(registry_row[0]),),
+        ).fetchall()
     for row in claim_rows:
         claims_by_answer.setdefault(str(row[1]), []).append(
             Claim(
@@ -547,8 +598,11 @@ def _load_published_repository(
             str(row[2]),
             ModelStamp(str(row[3]), str(row[4]), str(row[5])),
         )
+        answer_claims = tuple(claims_by_answer.get(answer.answer_version_id, ()))
+        if not answer_claims:
+            continue
         repository.register_answer(
-            answer, tuple(claims_by_answer.get(answer.answer_version_id, ()))
+            answer, answer_claims
         )
 
     policy_row = connection.execute(
@@ -560,7 +614,7 @@ def _load_published_repository(
           AND (valid_to_epoch IS NULL OR %s < valid_to_epoch)
         ORDER BY valid_from_epoch DESC LIMIT 1
         """,
-        (epoch_id, epoch_id),
+        (published_epoch_id, published_epoch_id),
     ).fetchone()
     if policy_row is None:
         raise ValidationError("published state has no active decision policy")
@@ -574,29 +628,53 @@ def _load_published_repository(
         repository.current_epoch,
     )
 
-    version_rows = connection.execute(
-        """
-        SELECT document_version_id, document_id, content_hash
-        FROM groundloop_document_version
-        WHERE valid_from_epoch <= %s
-          AND (valid_to_epoch IS NULL OR %s < valid_to_epoch)
-        ORDER BY document_version_id
-        """,
-        (epoch_id, epoch_id),
-    ).fetchall()
+    if working_epoch_id is None:
+        version_rows = connection.execute(
+            """
+            SELECT document_version_id, document_id, content_hash
+            FROM groundloop_document_version AS version
+            JOIN groundloop_epoch AS creator
+              ON creator.epoch_id = version.valid_from_epoch
+             AND creator.semantic_status = 'sealed'
+            WHERE valid_from_epoch <= %s
+              AND (valid_to_epoch IS NULL OR %s < valid_to_epoch)
+            ORDER BY document_version_id
+            """,
+            (published_epoch_id, published_epoch_id),
+        ).fetchall()
+    else:
+        version_rows = connection.execute(
+            """
+            SELECT document_version_id, document_id, content_hash
+            FROM groundloop_m4_effective_document_version
+            WHERE epoch_id = %s ORDER BY document_version_id
+            """,
+            (working_epoch_id,),
+        ).fetchall()
     for version_row in version_rows:
         version_id = str(version_row[0])
-        chunk_rows = connection.execute(
-            """
-            SELECT chunk_version_id, chunk_index, text, text_hash
-            FROM groundloop_chunk_version
-            WHERE document_version_id = %s
-              AND valid_from_epoch <= %s
-              AND (valid_to_epoch IS NULL OR %s < valid_to_epoch)
-            ORDER BY chunk_version_id
-            """,
-            (version_id, epoch_id, epoch_id),
-        ).fetchall()
+        if working_epoch_id is None:
+            chunk_rows = connection.execute(
+                """
+                SELECT chunk_version_id, chunk_index, text, text_hash
+                FROM groundloop_chunk_version
+                WHERE document_version_id = %s
+                  AND valid_from_epoch <= %s
+                  AND (valid_to_epoch IS NULL OR %s < valid_to_epoch)
+                ORDER BY chunk_version_id
+                """,
+                (version_id, published_epoch_id, published_epoch_id),
+            ).fetchall()
+        else:
+            chunk_rows = connection.execute(
+                """
+                SELECT chunk_version_id, chunk_index, text, text_hash
+                FROM groundloop_m4_effective_chunk_version
+                WHERE epoch_id = %s AND document_version_id = %s
+                ORDER BY chunk_version_id
+                """,
+                (working_epoch_id, version_id),
+            ).fetchall()
         version = DocumentVersion(version_id, str(version_row[1]), str(version_row[2]))
         chunks = tuple(
             ChunkVersion(
@@ -612,20 +690,41 @@ def _load_published_repository(
             version, chunks, repository.current_epoch
         )
 
-    observation_rows = connection.execute(
-        """
-        SELECT observation.observation_id, observation.subject_kind,
-               observation.subject_id, observation.chunk_version_id,
-               observation.task_type, observation.support_score,
-               observation.refute_score, observation.neutral_score,
-               observation.model_id, observation.model_version,
-               observation.prompt_version, observation.input_hash
-        FROM groundloop_observation_currency AS currency
-        JOIN groundloop_semantic_observation AS observation
-          ON observation.observation_id = currency.observation_id
-        ORDER BY observation.observation_id
-        """
-    ).fetchall()
+    if working_epoch_id is None:
+        observation_rows = connection.execute(
+            """
+            SELECT observation.observation_id, observation.subject_kind,
+                   observation.subject_id, observation.chunk_version_id,
+                   observation.task_type, observation.support_score,
+                   observation.refute_score, observation.neutral_score,
+                   observation.model_id, observation.model_version,
+                   observation.prompt_version, observation.input_hash
+            FROM groundloop_observation_currency AS currency
+            JOIN groundloop_semantic_observation AS observation
+              ON observation.observation_id = currency.observation_id
+            ORDER BY observation.observation_id
+            """
+        ).fetchall()
+    else:
+        observation_rows = connection.execute(
+            """
+            SELECT observation.observation_id, observation.subject_kind,
+                   observation.subject_id, observation.chunk_version_id,
+                   observation.task_type, observation.support_score,
+                   observation.refute_score, observation.neutral_score,
+                   observation.model_id, observation.model_version,
+                   observation.prompt_version, observation.input_hash
+            FROM groundloop_m4_effective_observation_currency AS currency
+            JOIN groundloop_semantic_observation AS observation
+              ON observation.observation_id = currency.observation_id
+            JOIN groundloop_m4_effective_chunk_version AS chunk
+              ON chunk.epoch_id = currency.epoch_id
+             AND chunk.chunk_version_id = currency.chunk_version_id
+            WHERE currency.epoch_id = %s
+            ORDER BY observation.observation_id
+            """,
+            (working_epoch_id,),
+        ).fetchall()
     for row in observation_rows:
         repository.register_observation(
             SemanticObservation(
@@ -643,6 +742,24 @@ def _load_published_repository(
         )
     engine = IncrementalMaintenanceEngine.from_repository(repository)
     return repository, engine
+
+
+def _load_published_repository(
+    connection: Connection[Any], epoch_id: int
+) -> tuple[InMemoryRepository, IncrementalMaintenanceEngine]:
+    """Rebuild process-local strict state after startup, never during an event."""
+    return _load_repository_snapshot(
+        connection, epoch_id, working_epoch_id=None
+    )
+
+
+def _load_working_repository(
+    connection: Connection[Any], epoch_id: int, published_epoch_id: int
+) -> tuple[InMemoryRepository, IncrementalMaintenanceEngine]:
+    """Rebuild one pending event from its durable structural/semantic overlay."""
+    return _load_repository_snapshot(
+        connection, published_epoch_id, working_epoch_id=epoch_id
+    )
 
 
 def bootstrap_m4_publication(
@@ -828,12 +945,20 @@ class PostgresM4ApplicationPorts:
             """
             SELECT claim_id, chunk_version_id, candidate_policy_id,
                    candidate_artifact_hash
-            FROM groundloop_candidate_frontier
-            WHERE valid_to_epoch IS NULL
+            FROM groundloop_candidate_frontier AS frontier
+            JOIN groundloop_epoch AS creator
+              ON creator.epoch_id = frontier.valid_from_epoch
+             AND creator.semantic_status = 'sealed'
+            WHERE valid_from_epoch <= %s
+              AND (valid_to_epoch IS NULL OR %s < valid_to_epoch)
               AND chunk_version_id = ANY(%s)
             ORDER BY chunk_version_id, claim_id, candidate_policy_id
             """,
-            (list(deactivated_chunk_version_ids),),
+            (
+                event.update.previous_published_epoch_id,
+                event.update.previous_published_epoch_id,
+                list(deactivated_chunk_version_ids),
+            ),
         ).fetchall()
         observations = tuple(
             ObservationDependency(
@@ -863,9 +988,36 @@ class PostgresM4ApplicationPorts:
     def _validate_payload(
         self, event: DynamicEventPlan, payload: StructuralPayload
     ) -> None:
+        existing_epoch = self.connection.execute(
+            """
+            SELECT update_row.epoch_id
+            FROM groundloop_m4_update AS update_row
+            JOIN groundloop_epoch AS epoch USING (epoch_id)
+            WHERE epoch.event_id = %s
+            """,
+            (event.update.event_id,),
+        ).fetchone()
+        if existing_epoch is None:
+            registered_rows = self.connection.execute(
+                "SELECT claim_id FROM groundloop_claim ORDER BY claim_id"
+            ).fetchall()
+        else:
+            registered_rows = self.connection.execute(
+                """
+                SELECT claim_id FROM groundloop_m4_claim_registry_member
+                WHERE claim_registry_snapshot_id = %s
+                ORDER BY member_ordinal
+                """,
+                (event.claim_registry_snapshot_id,),
+            ).fetchall()
+        registered = tuple(str(row[0]) for row in registered_rows)
+        if event.registered_claim_ids != registered:
+            raise EventConflictError(
+                "event claim registry differs from the current registered claims"
+            )
         if payload.inserted_chunk_ids != event.inserted_chunk_version_ids:
             raise EventConflictError("structural payload inserted chunks differ")
-        expected_old = self._deactivated_chunk_ids(payload)
+        expected_old = self._deactivated_chunk_ids(event, payload)
         if expected_old != event.deactivated_chunk_version_ids:
             raise EventConflictError("structural payload deactivated chunks differ")
         if event.update.update_kind is UpdateKind.INSERT and (
@@ -884,16 +1036,32 @@ class PostgresM4ApplicationPorts:
         ):
             raise ValidationError("REPLACE structural payload has the wrong shape")
 
-    def _deactivated_chunk_ids(self, payload: StructuralPayload) -> tuple[str, ...]:
+    def _deactivated_chunk_ids(
+        self, event: DynamicEventPlan, payload: StructuralPayload
+    ) -> tuple[str, ...]:
         if payload.deactivated_document_version_id is None:
             return ()
         rows = self.connection.execute(
             """
-            SELECT chunk_version_id FROM groundloop_chunk_version
-            WHERE document_version_id = %s AND valid_to_epoch IS NULL
+            SELECT chunk.chunk_version_id
+            FROM groundloop_chunk_version AS chunk
+            JOIN groundloop_document_version AS version
+              ON version.document_version_id = chunk.document_version_id
+            JOIN groundloop_epoch AS creator
+              ON creator.epoch_id = version.valid_from_epoch
+             AND creator.semantic_status = 'sealed'
+            WHERE chunk.document_version_id = %s
+              AND chunk.valid_from_epoch <= %s
+              AND (
+                  chunk.valid_to_epoch IS NULL OR %s < chunk.valid_to_epoch
+              )
             ORDER BY chunk_version_id
             """,
-            (payload.deactivated_document_version_id,),
+            (
+                payload.deactivated_document_version_id,
+                event.update.previous_published_epoch_id,
+                event.update.previous_published_epoch_id,
+            ),
         ).fetchall()
         return tuple(str(row[0]) for row in rows)
 
@@ -965,6 +1133,7 @@ class PostgresM4ApplicationPorts:
             (event.update.event_id,),
         ).fetchone()
         if existing is not None:
+            self._validate_payload(event, payload)
             opened = self.runtime_store.open_epoch(
                 event.update,
                 root_jobs,
@@ -974,6 +1143,27 @@ class PostgresM4ApplicationPorts:
                 event_manifest=payload.manifest,
             )
             sealed = str(existing[1]) == "sealed"
+            if not sealed and str(existing[1]) != "failed":
+                previous_epoch = event.update.previous_published_epoch_id
+                if previous_epoch is None:
+                    raise ValidationError(
+                        "M4 working replay requires a previous published epoch"
+                    )
+                working_repository, working_engine = _load_working_repository(
+                    self.connection,
+                    opened.epoch.epoch_id,
+                    previous_epoch,
+                )
+                with self.connection.cursor() as cursor:
+                    self._assert_grounding_equality(
+                        cursor,
+                        opened.epoch.epoch_id,
+                        working_repository,
+                        working_engine,
+                    )
+                self._working_repository = working_repository
+                self._working_engine = working_engine
+                self._active_epoch_id = opened.epoch.epoch_id
             return OpenEventReceipt(
                 opened.epoch.epoch_id,
                 replayed=True,
@@ -991,12 +1181,19 @@ class PostgresM4ApplicationPorts:
         staged_repository, staged_engine = self._stage_structural(event, payload)
 
         def structural_action(cursor: Cursor[Any], epoch_id: int) -> None:
+            self._write_claim_registry_members(cursor, event)
             self._write_structural_rows(cursor, epoch_id, payload)
             self._write_withdrawal_overlay(cursor, epoch_id, withdrawal)
             self._persist_working_states(
                 cursor, epoch_id, 1, staged_engine, causative_digest=None
             )
-            self._write_initial_evaluation(cursor, epoch_id, event, withdrawal)
+            self._write_initial_evaluation(
+                cursor,
+                epoch_id,
+                event,
+                root_jobs,
+                discovery_scopes,
+            )
             self._assert_grounding_equality(
                 cursor, epoch_id, staged_repository, staged_engine
             )
@@ -1015,47 +1212,134 @@ class PostgresM4ApplicationPorts:
         self._fallback_blocked.clear()
         return OpenEventReceipt(opened.epoch.epoch_id, False, False)
 
+    def _write_claim_registry_members(
+        self, cursor: Cursor[Any], event: DynamicEventPlan
+    ) -> None:
+        policy_row = cursor.execute(
+            """
+            SELECT claim_registry_snapshot_id, claim_count
+            FROM groundloop_candidate_policy
+            WHERE candidate_policy_id = %s
+            """,
+            (event.update.candidate_policy_id,),
+        ).fetchone()
+        expected = tuple(enumerate(event.registered_claim_ids))
+        if policy_row is None or str(policy_row[0]) != event.claim_registry_snapshot_id:
+            raise EventConflictError("candidate policy registry identity changed")
+        if int(policy_row[1]) != len(expected):
+            raise EventConflictError("candidate policy claim count changed")
+        for ordinal, claim_id in expected:
+            cursor.execute(
+                """
+                INSERT INTO groundloop_m4_claim_registry_member (
+                    claim_registry_snapshot_id, claim_id, member_ordinal
+                ) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING
+                """,
+                (event.claim_registry_snapshot_id, claim_id, ordinal),
+            )
+        stored = tuple(
+            (int(row[0]), str(row[1]))
+            for row in cursor.execute(
+                """
+                SELECT member_ordinal, claim_id
+                FROM groundloop_m4_claim_registry_member
+                WHERE claim_registry_snapshot_id = %s
+                ORDER BY member_ordinal
+                """,
+                (event.claim_registry_snapshot_id,),
+            ).fetchall()
+        )
+        if stored != expected:
+            raise EventConflictError("claim registry snapshot content changed")
+
     def _write_structural_rows(
         self, cursor: Cursor[Any], epoch_id: int, payload: StructuralPayload
     ) -> None:
         old_id = payload.deactivated_document_version_id
         if old_id is not None:
-            changed = cursor.execute(
+            active = cursor.execute(
                 """
-                UPDATE groundloop_document_version SET valid_to_epoch = %s
-                WHERE document_version_id = %s AND valid_to_epoch IS NULL
+                SELECT 1 FROM groundloop_document_version AS version
+                JOIN groundloop_m4_update AS update_row ON update_row.epoch_id = %s
+                JOIN groundloop_epoch AS creator
+                  ON creator.epoch_id = version.valid_from_epoch
+                 AND creator.semantic_status = 'sealed'
+                WHERE version.document_version_id = %s
+                  AND version.valid_from_epoch <=
+                      update_row.previous_published_epoch_id
+                  AND (
+                      version.valid_to_epoch IS NULL
+                      OR update_row.previous_published_epoch_id <
+                         version.valid_to_epoch
+                  )
                 """,
                 (epoch_id, old_id),
-            ).rowcount
-            if changed != 1:
+            ).fetchone()
+            if active is None:
                 raise InvalidEventError("deactivated document version is not active")
             cursor.execute(
                 """
-                UPDATE groundloop_chunk_version SET valid_to_epoch = %s
-                WHERE document_version_id = %s AND valid_to_epoch IS NULL
-                """,
-                (epoch_id, old_id),
-            )
-            cursor.execute(
-                """
-                UPDATE groundloop_candidate_frontier SET valid_to_epoch = %s,
-                    frontier_state = 'inactive'
-                WHERE chunk_version_id IN (
-                    SELECT chunk_version_id FROM groundloop_chunk_version
-                    WHERE document_version_id = %s
-                ) AND valid_to_epoch IS NULL
+                INSERT INTO groundloop_m4_structural_deactivation (
+                    epoch_id, document_version_id
+                ) VALUES (%s, %s)
                 """,
                 (epoch_id, old_id),
             )
         inserted = payload.inserted
         if inserted is None:
             return
+        previous_row = cursor.execute(
+            """
+            SELECT previous_published_epoch_id FROM groundloop_m4_update
+            WHERE epoch_id = %s
+            """,
+            (epoch_id,),
+        ).fetchone()
+        if previous_row is None or previous_row[0] is None:
+            raise ValidationError("M4 insertion has no published structural base")
+        prior_versions = cursor.execute(
+            """
+            SELECT version.document_version_id
+            FROM groundloop_document_version AS version
+            JOIN groundloop_epoch AS creator
+              ON creator.epoch_id = version.valid_from_epoch
+             AND creator.semantic_status = 'sealed'
+            WHERE version.document_id = %s
+              AND version.valid_from_epoch <= %s
+              AND (version.valid_to_epoch IS NULL OR %s < version.valid_to_epoch)
+            ORDER BY version.document_version_id
+            """,
+            (
+                inserted.version.document_id,
+                int(previous_row[0]),
+                int(previous_row[0]),
+            ),
+        ).fetchall()
+        expected_prior = (
+            ()
+            if payload.deactivated_document_version_id is None
+            else ((payload.deactivated_document_version_id,),)
+        )
+        if tuple(prior_versions) != expected_prior:
+            raise InvalidEventError(
+                "inserted document identity has an undeclared published version"
+            )
         cursor.execute(
             """
             INSERT INTO groundloop_document(document_id, source_uri, authority_class)
-            VALUES (%s, %s, %s) ON CONFLICT (document_id) DO NOTHING
+            VALUES (%s, NULL, 'unclassified')
+            ON CONFLICT (document_id) DO NOTHING
+            """,
+            (inserted.version.document_id,),
+        )
+        cursor.execute(
+            """
+            INSERT INTO groundloop_m4_document_metadata_overlay (
+                epoch_id, document_id, source_uri, authority_class
+            ) VALUES (%s, %s, %s, %s)
             """,
             (
+                epoch_id,
                 inserted.version.document_id,
                 inserted.source_uri,
                 inserted.authority_class,
@@ -1139,17 +1423,31 @@ class PostgresM4ApplicationPorts:
         cursor: Cursor[Any],
         epoch_id: int,
         event: DynamicEventPlan,
-        withdrawal: StructuralWithdrawal,
+        root_jobs: tuple[LogicalJobSpec, ...],
+        discovery_scopes: tuple[DiscoveryScope, ...],
     ) -> None:
-        pending = set(withdrawal.fallback_claim_ids)
-        if event.inserted_chunk_version_ids:
-            pending.update(event.registered_claim_ids)
         head = event.update.previous_published_epoch_id
         claim_rows = cursor.execute(
-            "SELECT claim_id FROM groundloop_claim ORDER BY claim_id"
+            """
+            SELECT claim_id FROM groundloop_m4_claim_registry_member
+            WHERE claim_registry_snapshot_id = %s ORDER BY member_ordinal
+            """,
+            (event.claim_registry_snapshot_id,),
         ).fetchall()
+        pending: set[str] = set()
+        open_jobs_by_claim: dict[str, int] = {}
+        scope_by_claim: dict[str, bool] = {}
         for (claim_id,) in claim_rows:
-            state = "pending" if str(claim_id) in pending else "complete"
+            claim = str(claim_id)
+            open_count = sum(
+                1 for job in root_jobs if job.target_claim_id == claim
+            )
+            scope_open = any(scope.contains(claim) for scope in discovery_scopes)
+            state = "pending" if open_count or scope_open else "complete"
+            if state == "pending":
+                pending.add(claim)
+            open_jobs_by_claim[claim] = open_count
+            scope_by_claim[claim] = scope_open
             cursor.execute(
                 """
                 INSERT INTO groundloop_object_evaluation VALUES
@@ -1159,26 +1457,35 @@ class PostgresM4ApplicationPorts:
                     epoch_id,
                     claim_id,
                     state,
-                    head if state == "pending" else epoch_id,
-                    1 if state == "pending" else 0,
-                    state == "pending" and bool(event.inserted_chunk_version_ids),
+                    head,
+                    open_count,
+                    scope_open,
                 ),
             )
         answer_rows = cursor.execute(
-            "SELECT answer_version_id FROM groundloop_answer_version ORDER BY 1"
+            """
+            SELECT DISTINCT claim.answer_version_id
+            FROM groundloop_m4_claim_registry_member AS member
+            JOIN groundloop_claim AS claim USING (claim_id)
+            WHERE member.claim_registry_snapshot_id = %s
+            ORDER BY claim.answer_version_id
+            """,
+            (event.claim_registry_snapshot_id,),
         ).fetchall()
         for (answer_id,) in answer_rows:
-            answer_pending = cursor.execute(
+            required_rows = cursor.execute(
                 """
-                SELECT EXISTS (
-                    SELECT 1 FROM groundloop_claim
-                    WHERE answer_version_id = %s AND required
-                      AND claim_id = ANY(%s)
-                )
+                SELECT claim_id FROM groundloop_claim
+                WHERE answer_version_id = %s AND required
+                  AND claim_id = ANY(%s)
+                ORDER BY claim_id
                 """,
-                (answer_id, list(pending)),
-            ).fetchone()
-            is_pending = bool(answer_pending and answer_pending[0])
+                (answer_id, list(event.registered_claim_ids)),
+            ).fetchall()
+            required = tuple(str(row[0]) for row in required_rows)
+            open_count = sum(open_jobs_by_claim[claim_id] for claim_id in required)
+            scope_open = any(scope_by_claim[claim_id] for claim_id in required)
+            is_pending = any(claim_id in pending for claim_id in required)
             cursor.execute(
                 """
                 INSERT INTO groundloop_object_evaluation VALUES
@@ -1188,21 +1495,41 @@ class PostgresM4ApplicationPorts:
                     epoch_id,
                     answer_id,
                     "pending" if is_pending else "complete",
-                    head if is_pending else epoch_id,
-                    1 if is_pending else 0,
-                    is_pending and bool(event.inserted_chunk_version_ids),
+                    head,
+                    open_count,
+                    scope_open,
                 ),
             )
 
     def chunk_is_active(self, chunk_version_id: str) -> bool:
+        epoch_id = self._active_epoch_id
+        if epoch_id is None:
+            epoch_id = self._publication_head()
+            row = self.connection.execute(
+                """
+                SELECT 1 FROM groundloop_chunk_version AS chunk
+                JOIN groundloop_document_version AS version
+                  ON version.document_version_id = chunk.document_version_id
+                JOIN groundloop_epoch AS creator
+                  ON creator.epoch_id = version.valid_from_epoch
+                 AND creator.semantic_status = 'sealed'
+                WHERE chunk_version_id = %s
+                  AND chunk.valid_from_epoch <= %s
+                  AND (
+                      chunk.valid_to_epoch IS NULL OR %s < chunk.valid_to_epoch
+                  )
+                """,
+                (chunk_version_id, epoch_id, epoch_id),
+            ).fetchone()
+            return row is not None
         row = self.connection.execute(
             """
-            SELECT valid_to_epoch IS NULL FROM groundloop_chunk_version
-            WHERE chunk_version_id = %s
+            SELECT 1 FROM groundloop_m4_effective_chunk_version
+            WHERE epoch_id = %s AND chunk_version_id = %s
             """,
-            (chunk_version_id,),
+            (epoch_id, chunk_version_id),
         ).fetchone()
-        return row is not None and bool(row[0])
+        return row is not None
 
     def pending_claim_ids(self, epoch_id: int) -> tuple[str, ...]:
         epoch = self.runtime_store.read_epoch(epoch_id)
@@ -1364,13 +1691,14 @@ class PostgresM4ApplicationPorts:
                     SET frontier_state = %s
                     WHERE claim_id = %s AND chunk_version_id = %s
                       AND candidate_policy_id = %s
-                      AND valid_to_epoch IS NULL
+                      AND valid_from_epoch = %s
                     """,
                     (
                         "verified_current" if make_effective else "inactive",
                         verifier_job.pair.claim_id,
                         verifier_job.pair.chunk_version_id,
                         verifier_job.candidate_policy_id,
+                        epoch_id,
                     ),
                 )
             if self._verification_writer is not None:
@@ -1509,13 +1837,18 @@ class PostgresM4ApplicationPorts:
         )
 
     def _active_chunk_ids(self) -> frozenset[str]:
+        epoch_id = self._active_epoch_id
+        if epoch_id is None:
+            raise InvalidEventError("no active M4 working epoch")
         return frozenset(
             str(row[0])
             for row in self.connection.execute(
                 """
-                SELECT chunk_version_id FROM groundloop_chunk_version
-                WHERE valid_to_epoch IS NULL
-                """
+                SELECT chunk_version_id
+                FROM groundloop_m4_effective_chunk_version
+                WHERE epoch_id = %s
+                """,
+                (epoch_id,),
             ).fetchall()
         )
 
@@ -1668,7 +2001,15 @@ class PostgresM4ApplicationPorts:
         epoch = self.runtime_store.read_epoch(epoch_id)
         head = self._publication_head()
         claims = cursor.execute(
-            "SELECT claim_id, answer_version_id, required FROM groundloop_claim"
+            """
+            SELECT claim.claim_id, claim.answer_version_id, claim.required
+            FROM groundloop_m4_update AS update_row
+            JOIN groundloop_m4_claim_registry_member AS member
+              ON member.claim_registry_snapshot_id = update_row.registry_snapshot_id
+            JOIN groundloop_claim AS claim USING (claim_id)
+            WHERE update_row.epoch_id = %s ORDER BY member.member_ordinal
+            """,
+            (epoch_id,),
         ).fetchall()
         by_answer: dict[str, list[str]] = {}
         for claim_id, answer_id, required in claims:
@@ -1703,22 +2044,37 @@ class PostgresM4ApplicationPorts:
                     epoch_id,
                     claim_id,
                     state.value,
-                    epoch_id if state.value == "complete" else head,
+                    head,
                     open_count,
                     scope_open,
                     epoch.revision,
                 ),
             )
         answer_rows = cursor.execute(
-            "SELECT answer_version_id FROM groundloop_answer_version ORDER BY 1"
+            """
+            SELECT DISTINCT claim.answer_version_id
+            FROM groundloop_m4_update AS update_row
+            JOIN groundloop_m4_claim_registry_member AS member
+              ON member.claim_registry_snapshot_id = update_row.registry_snapshot_id
+            JOIN groundloop_claim AS claim USING (claim_id)
+            WHERE update_row.epoch_id = %s ORDER BY claim.answer_version_id
+            """,
+            (epoch_id,),
         ).fetchall()
         for (answer_id,) in answer_rows:
             required = tuple(sorted(by_answer.get(str(answer_id), ())))
             state = answer_evaluation_state(epoch, required)
             open_count = sum(
                 1
-                for claim_id in required
-                if claim_evaluation_state(epoch, claim_id).value != "complete"
+                for job in epoch.jobs
+                if job.open
+                and (
+                    (
+                        job.spec.pair is not None
+                        and job.spec.pair.claim_id in required
+                    )
+                    or job.spec.target_claim_id in required
+                )
             )
             scope_open = any(
                 not scope.closed
@@ -1740,7 +2096,7 @@ class PostgresM4ApplicationPorts:
                     epoch_id,
                     answer_id,
                     state.value,
-                    epoch_id if state.value == "complete" else head,
+                    head,
                     open_count,
                     scope_open,
                     epoch.revision,
@@ -1878,33 +2234,124 @@ class PostgresM4ApplicationPorts:
             raise ValidationError("coordination surface is not complete")
 
     def check_evaluation(self, epoch_id: int) -> None:
+        with self.connection.cursor() as cursor:
+            self._assert_evaluation_surface(cursor, epoch_id, require_complete=True)
+
+    def _assert_evaluation_surface(
+        self,
+        cursor: Cursor[Any],
+        epoch_id: int,
+        *,
+        require_complete: bool,
+    ) -> None:
         epoch = self.runtime_store.read_epoch(epoch_id)
-        expected: dict[tuple[str, str], str] = {}
-        claim_rows = self.connection.execute(
-            "SELECT claim_id, answer_version_id, required FROM groundloop_claim"
+        head = self._publication_head()
+        expected: dict[tuple[str, str], tuple[str, int, int, bool, int]] = {}
+        claim_rows = cursor.execute(
+            """
+            SELECT claim.claim_id, claim.answer_version_id, claim.required
+            FROM groundloop_m4_update AS update_row
+            JOIN groundloop_m4_claim_registry_member AS member
+              ON member.claim_registry_snapshot_id = update_row.registry_snapshot_id
+            JOIN groundloop_claim AS claim USING (claim_id)
+            WHERE update_row.epoch_id = %s ORDER BY member.member_ordinal
+            """,
+            (epoch_id,),
         ).fetchall()
         by_answer: dict[str, list[str]] = {}
         for claim_id, answer_id, required in claim_rows:
             claim = str(claim_id)
-            expected[("claim", claim)] = claim_evaluation_state(epoch, claim).value
+            state = claim_evaluation_state(epoch, claim).value
+            open_count = sum(
+                1
+                for job in epoch.jobs
+                if job.open
+                and (
+                    (job.spec.pair is not None and job.spec.pair.claim_id == claim)
+                    or job.spec.target_claim_id == claim
+                )
+            )
+            scope_open = any(
+                not scope.closed and scope.contains(claim)
+                for scope in epoch.discovery_scopes
+            )
+            expected[("claim", claim)] = (
+                state,
+                head,
+                open_count,
+                scope_open,
+                epoch.revision,
+            )
             if bool(required):
                 by_answer.setdefault(str(answer_id), []).append(claim)
-        for answer_id, claims in by_answer.items():
-            expected[("answer", answer_id)] = answer_evaluation_state(
-                epoch, tuple(sorted(claims))
-            ).value
+        answer_rows = cursor.execute(
+            """
+            SELECT DISTINCT claim.answer_version_id
+            FROM groundloop_m4_update AS update_row
+            JOIN groundloop_m4_claim_registry_member AS member
+              ON member.claim_registry_snapshot_id = update_row.registry_snapshot_id
+            JOIN groundloop_claim AS claim USING (claim_id)
+            WHERE update_row.epoch_id = %s ORDER BY claim.answer_version_id
+            """,
+            (epoch_id,),
+        ).fetchall()
+        for (raw_answer_id,) in answer_rows:
+            answer_id = str(raw_answer_id)
+            claims = tuple(sorted(by_answer.get(answer_id, ())))
+            state = answer_evaluation_state(epoch, claims).value
+            open_count = sum(
+                1
+                for job in epoch.jobs
+                if job.open
+                and (
+                    (
+                        job.spec.pair is not None
+                        and job.spec.pair.claim_id in claims
+                    )
+                    or job.spec.target_claim_id in claims
+                )
+            )
+            scope_open = any(
+                not scope.closed
+                and any(scope.contains(claim_id) for claim_id in claims)
+                for scope in epoch.discovery_scopes
+            )
+            expected[("answer", answer_id)] = (
+                state,
+                head,
+                open_count,
+                scope_open,
+                epoch.revision,
+            )
         actual = {
-            (str(row[0]), str(row[1])): str(row[2])
-            for row in self.connection.execute(
+            (str(row[0]), str(row[1])): (
+                str(row[2]),
+                int(row[3]),
+                int(row[4]),
+                bool(row[5]),
+                int(row[6]),
+            )
+            for row in cursor.execute(
                 """
-                SELECT object_type, object_id, evaluation_state
+                SELECT object_type, object_id, evaluation_state,
+                       confirmed_as_of_epoch, open_required_job_count,
+                       discovery_scope_open, updated_revision
                 FROM groundloop_object_evaluation WHERE epoch_id = %s
+                FOR SHARE
                 """,
                 (epoch_id,),
             ).fetchall()
         }
-        if actual != expected or any(value != "complete" for value in actual.values()):
+        if actual != expected:
             raise ValidationError("persisted evaluation surface differs from runtime")
+        if require_complete and any(
+            value[0] != "complete"
+            or value[2] != 0
+            or value[3]
+            or value[4] != epoch.revision
+            for value in actual.values()
+        ):
+            raise ValidationError("evaluation surface is not sealable")
 
     def request_seal(
         self,
@@ -1917,12 +2364,17 @@ class PostgresM4ApplicationPorts:
             raise EventConflictError("publication update differs from runtime epoch")
 
         def publish(cursor: Cursor[Any], published_epoch_id: int) -> None:
+            self._assert_evaluation_surface(
+                cursor, published_epoch_id, require_complete=True
+            )
             self._assert_grounding_equality(
                 cursor,
                 published_epoch_id,
                 self._working_repository,
                 self._working_engine,
             )
+            self._promote_structural_overlay(cursor, published_epoch_id)
+            self._inject("publication_structure_promoted")
             self._promote_observation_currency(cursor, published_epoch_id)
             self._inject("publication_currency_promoted")
             self._publish_grounding_states(
@@ -1939,6 +2391,10 @@ class PostgresM4ApplicationPorts:
                 (published_epoch_id,),
             )
             self._inject("publication_head_advanced")
+            self._promote_evaluation_surface(
+                cursor, published_epoch_id, expected_revision + 1
+            )
+            self._inject("publication_evaluation_promoted")
 
         self.runtime_store.seal_epoch(
             epoch_id,
@@ -1948,11 +2404,234 @@ class PostgresM4ApplicationPorts:
                 lambda point: self._inject(f"publication_store_{point}")
             ),
         )
+        self._assert_sealed_evaluation(epoch_id, expected_revision + 1)
         self._published_repository = deepcopy(self._working_repository)
         self._published_engine = deepcopy(self._working_engine)
         self._active_epoch_id = None
         publication_id = stable_m4_digest("m4-publication-v1", str(epoch_id))
         return PublicationReceipt(epoch_id, publication_id)
+
+    def _promote_evaluation_surface(
+        self, cursor: Cursor[Any], epoch_id: int, final_revision: int
+    ) -> None:
+        changed = cursor.execute(
+            """
+            UPDATE groundloop_object_evaluation
+            SET confirmed_as_of_epoch = %s, updated_revision = %s
+            WHERE epoch_id = %s AND evaluation_state = 'complete'
+              AND open_required_job_count = 0
+              AND NOT discovery_scope_open
+            """,
+            (epoch_id, final_revision, epoch_id),
+        ).rowcount
+        total = cursor.execute(
+            """
+            SELECT count(*) FROM groundloop_object_evaluation
+            WHERE epoch_id = %s
+            """,
+            (epoch_id,),
+        ).fetchone()
+        if total is None or changed != int(total[0]):
+            raise ValidationError(
+                "seal could not promote the complete evaluation surface"
+            )
+
+    def _assert_sealed_evaluation(
+        self, epoch_id: int, final_revision: int
+    ) -> None:
+        rows = self.connection.execute(
+            """
+            SELECT evaluation_state, confirmed_as_of_epoch,
+                   open_required_job_count, discovery_scope_open,
+                   updated_revision
+            FROM groundloop_object_evaluation WHERE epoch_id = %s
+            """,
+            (epoch_id,),
+        ).fetchall()
+        if not rows or any(
+            (
+                str(row[0]),
+                int(row[1]),
+                int(row[2]),
+                bool(row[3]),
+                int(row[4]),
+            )
+            != ("complete", epoch_id, 0, False, final_revision)
+            for row in rows
+        ):
+            raise ValidationError("sealed evaluation surface differs from runtime")
+
+    def _promote_structural_overlay(
+        self, cursor: Cursor[Any], epoch_id: int
+    ) -> None:
+        self._promote_document_metadata(cursor, epoch_id)
+        previous_row = cursor.execute(
+            """
+            SELECT previous_published_epoch_id FROM groundloop_m4_update
+            WHERE epoch_id = %s
+            """,
+            (epoch_id,),
+        ).fetchone()
+        if previous_row is None or previous_row[0] is None:
+            raise ValidationError("M4 structural promotion has no published base")
+        previous_epoch = int(previous_row[0])
+        ambiguous = cursor.execute(
+            """
+            SELECT current.claim_id, current.chunk_version_id,
+                   current.candidate_policy_id, count(*)
+            FROM groundloop_candidate_frontier AS current
+            JOIN groundloop_candidate_frontier AS predecessor
+              ON predecessor.claim_id = current.claim_id
+             AND predecessor.chunk_version_id = current.chunk_version_id
+             AND predecessor.candidate_policy_id = current.candidate_policy_id
+             AND predecessor.valid_from_epoch <= %s
+             AND (
+                 predecessor.valid_to_epoch IS NULL
+                 OR %s < predecessor.valid_to_epoch
+             )
+            JOIN groundloop_epoch AS creator
+              ON creator.epoch_id = predecessor.valid_from_epoch
+             AND creator.semantic_status = 'sealed'
+            WHERE current.valid_from_epoch = %s
+            GROUP BY current.claim_id, current.chunk_version_id,
+                     current.candidate_policy_id
+            HAVING count(*) > 1
+            LIMIT 1
+            """,
+            (previous_epoch, previous_epoch, epoch_id),
+        ).fetchone()
+        if ambiguous is not None:
+            raise EventConflictError(
+                "frontier key has multiple published predecessors"
+            )
+        cursor.execute(
+            """
+            UPDATE groundloop_candidate_frontier AS predecessor
+            SET valid_to_epoch = %s
+            FROM groundloop_candidate_frontier AS current,
+                 groundloop_epoch AS creator
+            WHERE current.valid_from_epoch = %s
+              AND predecessor.claim_id = current.claim_id
+              AND predecessor.chunk_version_id = current.chunk_version_id
+              AND predecessor.candidate_policy_id = current.candidate_policy_id
+              AND predecessor.valid_from_epoch <= %s
+              AND predecessor.valid_from_epoch <> %s
+              AND (
+                  predecessor.valid_to_epoch IS NULL
+                  OR %s < predecessor.valid_to_epoch
+              )
+              AND creator.epoch_id = predecessor.valid_from_epoch
+              AND creator.semantic_status = 'sealed'
+            """,
+            (epoch_id, epoch_id, previous_epoch, epoch_id, previous_epoch),
+        )
+        old_rows = cursor.execute(
+            """
+            SELECT document_version_id
+            FROM groundloop_m4_structural_deactivation
+            WHERE epoch_id = %s ORDER BY document_version_id
+            """,
+            (epoch_id,),
+        ).fetchall()
+        for (document_version_id,) in old_rows:
+            changed = cursor.execute(
+                """
+                UPDATE groundloop_document_version SET valid_to_epoch = %s
+                WHERE document_version_id = %s
+                  AND valid_from_epoch <= %s
+                  AND (valid_to_epoch IS NULL OR %s < valid_to_epoch)
+                """,
+                (
+                    epoch_id,
+                    document_version_id,
+                    previous_epoch,
+                    previous_epoch,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise EventConflictError(
+                    "published document version changed before structural promotion"
+                )
+            cursor.execute(
+                """
+                UPDATE groundloop_chunk_version SET valid_to_epoch = %s
+                WHERE document_version_id = %s
+                  AND valid_from_epoch <= %s
+                  AND (valid_to_epoch IS NULL OR %s < valid_to_epoch)
+                """,
+                (
+                    epoch_id,
+                    document_version_id,
+                    previous_epoch,
+                    previous_epoch,
+                ),
+            )
+            cursor.execute(
+                """
+                UPDATE groundloop_candidate_frontier AS frontier
+                SET valid_to_epoch = %s
+                FROM groundloop_chunk_version AS chunk,
+                     groundloop_epoch AS creator
+                WHERE chunk.document_version_id = %s
+                  AND frontier.chunk_version_id = chunk.chunk_version_id
+                  AND creator.epoch_id = frontier.valid_from_epoch
+                  AND creator.semantic_status = 'sealed'
+                  AND frontier.valid_from_epoch <= %s
+                  AND (
+                      frontier.valid_to_epoch IS NULL
+                      OR %s < frontier.valid_to_epoch
+                  )
+                """,
+                (epoch_id, document_version_id, previous_epoch, previous_epoch),
+            )
+
+    def _promote_document_metadata(
+        self, cursor: Cursor[Any], epoch_id: int
+    ) -> None:
+        rows = cursor.execute(
+            """
+            SELECT overlay.document_id, overlay.source_uri,
+                   overlay.authority_class,
+                   EXISTS (
+                       SELECT 1 FROM groundloop_document_version AS version
+                       JOIN groundloop_epoch AS creator
+                         ON creator.epoch_id = version.valid_from_epoch
+                        AND creator.semantic_status = 'sealed'
+                       WHERE version.document_id = overlay.document_id
+                   ) AS has_published_version
+            FROM groundloop_m4_document_metadata_overlay AS overlay
+            WHERE overlay.epoch_id = %s ORDER BY overlay.document_id
+            """,
+            (epoch_id,),
+        ).fetchall()
+        for document_id, source_uri, authority_class, has_published in rows:
+            if bool(has_published):
+                stored = cursor.execute(
+                    """
+                    SELECT source_uri, authority_class FROM groundloop_document
+                    WHERE document_id = %s
+                    """,
+                    (document_id,),
+                ).fetchone()
+                if stored is None or tuple(stored) != (source_uri, authority_class):
+                    raise EventConflictError(
+                        "published document metadata differs from replacement"
+                    )
+                continue
+            changed = cursor.execute(
+                """
+                UPDATE groundloop_document
+                SET source_uri = %s, authority_class = %s
+                WHERE document_id = %s
+                  AND source_uri IS NULL
+                  AND authority_class = 'unclassified'
+                """,
+                (source_uri, authority_class, document_id),
+            ).rowcount
+            if changed != 1:
+                raise EventConflictError(
+                    "unpublished document placeholder changed before sealing"
+                )
 
     def _promote_observation_currency(
         self, cursor: Cursor[Any], epoch_id: int
