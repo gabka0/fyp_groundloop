@@ -1488,7 +1488,16 @@ class PostgresM4ApplicationPorts:
         claim_ids = tuple(
             str(row[0])
             for row in self.connection.execute(
-                "SELECT claim_id FROM groundloop_claim ORDER BY claim_id"
+                """
+                SELECT member.claim_id
+                FROM groundloop_m4_update AS update_row
+                JOIN groundloop_m4_claim_registry_member AS member
+                  ON member.claim_registry_snapshot_id =
+                     update_row.registry_snapshot_id
+                WHERE update_row.epoch_id = %s
+                ORDER BY member.member_ordinal
+                """,
+                (epoch_id,),
             ).fetchall()
         )
         return tuple(

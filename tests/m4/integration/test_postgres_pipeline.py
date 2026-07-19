@@ -35,6 +35,7 @@ from groundloop.m4.contracts import (
     CandidatePolicyManifest,
     ChannelHit,
     CorpusUpdateIdentity,
+    DiscoveryScope,
     JobCompletion,
     JobKind,
     JobState,
@@ -783,6 +784,67 @@ def test_discovery_result_and_child_closure_are_one_transaction(
         """,
         (epoch_id[0],),
     ).fetchone() == (None,)
+
+
+def test_structural_open_surface_c_is_exact_before_any_attempt(
+    m4_pipeline_connection: Connection[Any],
+) -> None:
+    base = _seed_b0(m4_pipeline_connection)
+    inserted_document = _inserted(
+        "doc-open", "dv-open", "chunk-open", "Nimbus is blue."
+    )
+    event = _event(
+        "surface-c-open",
+        UpdateKind.INSERT,
+        base,
+        inserted=("chunk-open",),
+    )
+    ports = PostgresM4ApplicationPorts(
+        m4_pipeline_connection,
+        structural_payloads={
+            "surface-c-open": StructuralPayload(inserted=inserted_document)
+        },
+    )
+    ports.runtime_store.register_candidate_policy(_candidate_policy())
+    application = M4Application(
+        structural=ports,
+        runtime=ports,
+        admission=PersistingAdmissionPort(
+            m4_pipeline_connection, ScriptedAdmission({})
+        ),
+        verifier=ScriptedVerifier({}),
+        observations=ports,
+        equality_gates=ports,
+        publication=ports,
+        execution_policy=ApplicationExecutionPolicy(
+            IMPACT_HASH, FRONTIER_HASH, VERIFIER_HASH
+        ),
+    )
+    withdrawal = ports.plan_exact_withdrawal(event)
+    roots = application._root_jobs(event, withdrawal.fallback_claim_ids)
+    scopes = tuple(
+        DiscoveryScope(
+            root.job_id,
+            event.claim_registry_snapshot_id,
+            event.registered_claim_ids,
+        )
+        for root in roots
+        if root.kind is JobKind.IMPACT_DISCOVERY
+    )
+    opened = ports.open_event(event, withdrawal, roots, scopes)
+    assert not opened.replayed
+    assert m4_pipeline_connection.execute(
+        """
+        SELECT object_type, evaluation_state, confirmed_as_of_epoch,
+               open_required_job_count, discovery_scope_open, updated_revision
+        FROM groundloop_object_evaluation
+        WHERE epoch_id = %s ORDER BY object_type
+        """,
+        (opened.epoch_id,),
+    ).fetchall() == [
+        ("answer", "pending", base, 0, True, 1),
+        ("claim", "pending", base, 0, True, 1),
+    ]
 
 
 @pytest.mark.parametrize(
