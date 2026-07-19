@@ -88,6 +88,20 @@ global stored-edge count; dense deletion correctly remains linear in its
 output. No ANN, lexical retrieval, embedding, or model call exists on this
 path.
 
+### Wave 2 empirical falsification gate
+
+The test-only independent scan visits every stored observation and candidate
+edge and compares its exact withdrawal sets with the indexed planner. Sixty
+seeded insert/delete/replace-shaped cases plus explicit edge cases exercise
+the equality. Counters assert, rather than infer from wall time, that indexed
+logical work is exactly `P_minus + W`.
+
+One fixed skewed case deletes a cold chunk from 12,001 stored edges and records
+2 indexed operations versus 12,002 full-scan operations. Its paired dense case
+deletes the hot chunk and records 10,001 operations on both paths. The second
+case is essential: the indexed method is output-sensitive, but it has no
+sublinear worst-case guarantee when one deleted key owns the full edge set.
+
 ## Frontier repair accounting
 
 For one claim, let `N` be the number of persisted frontier entries, `F` the

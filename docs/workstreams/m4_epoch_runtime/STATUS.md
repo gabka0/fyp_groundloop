@@ -2,8 +2,31 @@
 
 ## Current state
 
-Wave 1 pure runtime implementation is complete on top of replacement contract
-baseline `a1059ff63883fa388def0e39986fa4b8393ef709`.
+Wave 2 exact-withdrawal empirical gate is complete on integrated main baseline
+`b3623feb36f719ef8715e6011e92c1a865530d7d`.
+
+Wave 2 code/test commit:
+
+```text
+7b955a60889044cbba290df9be604f9af9d1d4d3
+```
+
+Wave 2 adds:
+
+- an independent naive full dependency-scan oracle under tests only;
+- deterministic operation counters for indexed probes/enumeration and global
+  full-scan work;
+- 60 seeded insert/delete/replace-shaped differential cases;
+- explicit duplicate-pair, duplicate-ID, empty, absent/inactive, cold-skew and
+  dense-hot cases;
+- an exact executable assertion that indexed logical work equals
+  `|D| + |E_obs(D)| + |E_cand(D)|`;
+- a dense-fanout counterexample preventing a false universal sublinear claim.
+
+Wave 1 pure runtime remains integrated and unchanged apart from the derived
+indexed operation-count property.
+
+## Wave 1 implementation
 
 Implemented in owned paths:
 
@@ -28,18 +51,27 @@ Implemented in owned paths:
 Focused lane result:
 
 ```text
-pytest tests/m4/runtime: 21 passed
+pytest tests/m4/runtime: 86 passed
 ruff owned source/tests: all checks passed
-mypy --strict owned source: no issues in 4 source files
+mypy --strict runtime source plus test oracle: no issues in 5 source files
 ```
 
 Repository regression result before final documentation-only changes:
 
 ```text
-pytest: 199 passed, 18 skipped
+pytest: 309 passed, 22 skipped
 ```
 
-## Deliberately not implemented in Wave 1
+Deterministic counter checks include:
+
+```text
+cold skew: indexed 2 operations; full scan 12,002 operations
+dense hot: indexed 10,001 operations; full scan 10,001 operations
+```
+
+These are logical operation counts, not wall-clock benchmark claims.
+
+## Deliberately not implemented
 
 - PostgreSQL tables, migrations, triggers or transaction adapter;
 - working/published structured-state mutation;

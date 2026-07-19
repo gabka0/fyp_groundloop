@@ -16,7 +16,31 @@ Read `AGENTS.md`, `docs/technical_design.md`,
 `docs/m4_implementation_plan.md`, and
 `docs/m4_multiagent_execution_plan.md` completely before acting.
 
-## First task: audit only
+## Current task: Wave 2 exact-withdrawal empirical gate
+
+The audit barrier and Wave 1 pure runtime are complete and integrated. The
+current independent task is to preserve the exact indexed withdrawal path and
+test it against a deliberately naive full dependency scan used only by tests
+and measurement.
+
+Required evidence:
+
+- deterministic seeded differential cases for insert-, delete- and
+  replacement-shaped deactivation sets;
+- duplicate dependency, empty deletion, no-dependency/inactive chunk and
+  highly skewed fanout cases;
+- separate counters for requested chunks, indexed observation/candidate edge
+  visits, and globally scanned observation/candidate edges;
+- an executable check of
+  `Theta(|D| + |E_obs(D)| + |E_cand(D)|)` logical indexed work;
+- an explicit dense-fanout case showing that indexed withdrawal is not
+  sublinear in the worst case.
+
+The full-scan oracle must remain under `tests/m4/runtime/**` and must not
+import selective admission or semantic-oracle implementations. Do not use
+wall-clock microbenchmarks as complexity evidence.
+
+## Historical first task: audit only
 
 Do not implement code in the first turn. Inspect the M1–M3 epoch,
 repository, event, incremental and PostgreSQL implementations. Write only:
@@ -35,7 +59,7 @@ Use P0/P1/P2 findings with file:line evidence, exact contract corrections and
 falsifying tests. Commit the audit and stop for the coordinator's contract
 freeze. Do not change implementation during the audit barrier.
 
-## Implementation ownership after coordinator release
+## Wave 1 implementation ownership after coordinator release
 
 - `src/groundloop/m4/runtime/**`
 - `tests/m4/runtime/**`
@@ -68,4 +92,3 @@ docs/workstreams/m4_epoch_runtime/contract_requests/
 
 Do not merge. Commit only owned changes, run lane gates, write `STATUS.md` and
 `HANDOFF.md`, and report exact commit hashes and command results.
-

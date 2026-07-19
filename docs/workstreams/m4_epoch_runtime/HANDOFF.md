@@ -1,8 +1,50 @@
-# M4 Epoch/Runtime Wave 1 Handoff
+# M4 Epoch/Runtime Handoff
+
+## Wave 2 exact-withdrawal empirical gate
+
+Code/test commit:
+
+```text
+7b955a60889044cbba290df9be604f9af9d1d4d3
+```
+
+The production planner now exposes `WithdrawalPlan.indexed_operation_count`,
+defined as chunk-index lookups plus enumerated observation and candidate
+edges. It performs no new work and exists to make the claimed bound directly
+testable.
+
+`tests/m4/runtime/withdrawal_reference.py` is an intentionally naive,
+independent full dependency-scan oracle and deterministic measurement helper.
+It is not exported from `groundloop.m4.runtime` and must not be called by the
+pipeline. It scans every stored observation and candidate edge, validates
+immutable edge-ID uniqueness, and records global scan and matched-edge counts.
+
+The differential gate proves set equality between indexed and full-scan
+outputs over:
+
+- 60 seeded insert/delete/replace-shaped cases;
+- multiple distinct dependencies for one pair;
+- duplicate immutable dependency IDs;
+- empty and absent/inactive deactivation sets;
+- cold deletion under highly skewed fanout;
+- deletion of the dense hot key.
+
+The event-work assertion is exact under the logical hash-index model:
+
+```text
+indexed operations = |D| + |E_obs(D)| + |E_cand(D)|
+```
+
+The skew test records 2 indexed operations versus 12,002 full-scan operations
+for a cold deletion. The dense test records 10,001 operations for both paths.
+Consequently the evidence supports output sensitivity, not a sublinear
+worst-case claim. These are deterministic logical counts and say nothing about
+latency or PostgreSQL query-plan quality.
 
 ## Baseline and ownership
 
-- Contract baseline: `a1059ff63883fa388def0e39986fa4b8393ef709`
+- Integrated Wave 2 baseline: `b3623feb36f719ef8715e6011e92c1a865530d7d`
+- Original contract baseline: `a1059ff63883fa388def0e39986fa4b8393ef709`
 - Branch: `workstream/m4-epoch-runtime`
 - All changes are confined to the lane-owned source, tests and workstream docs.
 
@@ -64,7 +106,9 @@ container itself:
 ```bash
 .venv/bin/pytest tests/m4/runtime
 .venv/bin/ruff check src/groundloop/m4/runtime tests/m4/runtime
-.venv/bin/mypy --strict src/groundloop/m4/runtime
-python3 -m compileall -q src/groundloop/m4/runtime
+.venv/bin/mypy --strict src/groundloop/m4/runtime \
+  tests/m4/runtime/withdrawal_reference.py
+python3 -m compileall -q src/groundloop/m4/runtime \
+  tests/m4/runtime/withdrawal_reference.py
 .venv/bin/pytest
 ```
