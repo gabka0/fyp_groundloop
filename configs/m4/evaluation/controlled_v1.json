@@ -1,0 +1,52 @@
+{
+  "schema_version": "m4-controlled-evaluation-config-v1",
+  "config_id": "m4-controlled-policy-study-v1",
+  "workload_builder_id": "build_controlled_dynamic_workload_v1",
+  "split": "test",
+  "verifier_model_artifact_id": "controlled-table-verifier-v1",
+  "verifier_execution_spec_hash": "59215bde1b4077af39a777df0cbfc1e5d9309708054b57ae297a2d7662a7d88e",
+  "decision_policy_id": "controlled-decision-v1",
+  "oracle_policy_id": "controlled-full-pair-v1",
+  "oracle_policy_hash": "dddfd058fc18ddc84010709b5476b072f671a5dddc060a5c89e9a5e15339bee0",
+  "policies": [
+    {
+      "policy_id": "lexical-only-l1",
+      "kind": "lexical_only",
+      "approximate_budget_per_inserted_chunk": 1,
+      "frontier_budget_per_inserted_chunk": 0
+    },
+    {
+      "policy_id": "union-l1",
+      "kind": "vector_lexical_union",
+      "approximate_budget_per_inserted_chunk": 1,
+      "frontier_budget_per_inserted_chunk": 0
+    },
+    {
+      "policy_id": "union-lineage-frontier-l1-f1",
+      "kind": "union_lineage_frontier",
+      "approximate_budget_per_inserted_chunk": 1,
+      "frontier_budget_per_inserted_chunk": 1
+    },
+    {
+      "policy_id": "union-lineage-l1",
+      "kind": "union_lineage",
+      "approximate_budget_per_inserted_chunk": 1,
+      "frontier_budget_per_inserted_chunk": 0
+    },
+    {
+      "policy_id": "vector-only-l1",
+      "kind": "vector_only",
+      "approximate_budget_per_inserted_chunk": 1,
+      "frontier_budget_per_inserted_chunk": 0
+    }
+  ],
+  "bootstrap": {
+    "config_id": "m4-history-bootstrap-v1",
+    "seed": 20260719,
+    "replicate_count": 10000,
+    "confidence_level": 0.95,
+    "minimum_cluster_count": 2,
+    "interval_method": "percentile-v1",
+    "estimand": "macro-history-pooled-ratio-difference-v1"
+  }
+}
