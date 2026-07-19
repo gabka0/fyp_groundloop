@@ -26,6 +26,7 @@ order:
 20. `docs/m4_design_freeze.md` (authoritative M4 contracts)
 21. `docs/m4_implementation_plan.md` (phasing; freeze overrides its proposal)
 22. `docs/m4_multiagent_execution_plan.md` (ownership and contract barriers)
+23. `docs/m4_implementation_status.md` (implemented evidence and next gate)
 
 `docs/initial_technical_design.md` (v0.1) is superseded and retained for audit
 only. The M0.5 design freeze and M1.1 amendments are complete; frozen decisions
@@ -94,3 +95,8 @@ M4 uses three path-exclusive lanes. Agents must follow
 `docs/m4_multiagent_execution_plan.md` and their lane prompt. No lane may cross
 the audit or contract barrier, edit coordinator-owned contracts, or work in
 another lane's paths.
+
+M4 deterministic Wave 1 is integrated. It is not M4 completion: read
+`docs/m4_implementation_status.md` before proposing work or making performance
+claims. The current parallel wave is lane-local; shared PostgreSQL persistence,
+pipeline, CLI, end-to-end tests and merges remain coordinator-owned.

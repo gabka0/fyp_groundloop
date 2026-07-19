@@ -154,9 +154,12 @@ Exit criteria:
 
 ## M4 — Selective Semantic Maintenance
 
-Status: active. Three-lane audit and corrected contract freeze completed on
-2026-07-19; implementation begins from the tagged M4 contract baseline. See
-`docs/m4_design_freeze.md` and `docs/m4_multiagent_execution_plan.md`.
+Status: active. Three-lane audit, corrected contract freeze, migration 003 and
+deterministic Wave 1 were integrated on 2026-07-19. Wave 2 lane-local evidence
+and the coordinator-owned M4.1 end-to-end vertical slice are next. M4 CORE is
+not complete. See `docs/m4_design_freeze.md`,
+`docs/m4_multiagent_execution_plan.md` and
+`docs/m4_implementation_status.md`.
 
 Deliverables:
 

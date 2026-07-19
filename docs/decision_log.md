@@ -1,5 +1,29 @@
 # GroundLoop Decision Log
 
+## 2026-07-19 — M4 Deterministic Wave 1 Integrated; Performance Claims Deferred
+
+Decision status: implementation foundation accepted; M4 CORE remains active.
+
+The corrected M4 contracts, migration 003, pure dynamic epoch/job runtime,
+exact withdrawal/frontier planners, deterministic admission reference,
+independent semantic oracles and provenance-safe evaluation mechanics are now
+integrated. The live repository gate passes 266 collected tests, Ruff, strict
+mypy over 78 source files, compileall, the M2 PostgreSQL three-oracle validator
+and dependency checking.
+
+This is not evidence of end-to-end verifier-call savings. The PostgreSQL M4
+repository adapter, coordinator pipeline/CLI, production admission adapters,
+real-model dynamic history and recall/work experiment remain outstanding.
+Therefore no M4 latency, recall or savings claim is accepted at this point.
+
+The next parallel wave is path-exclusive: runtime proves randomized
+withdrawal behavior under skew, admission implements live PostgreSQL
+lexical/pgvector boundaries, and evaluation implements controlled history
+workloads and paired reports. The coordinator alone implements shared
+persistence and the deterministic insert/delete/replacement vertical slice.
+
+Evidence: `docs/m4_implementation_status.md` and the three M4 lane handoffs.
+
 ## 2026-07-19 — M4 Dynamic Impact Contracts Frozen After Three-Lane Audit
 
 Decision status: accepted for M4 CORE implementation.

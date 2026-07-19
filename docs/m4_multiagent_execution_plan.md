@@ -1,7 +1,7 @@
 # GroundLoop M4 Multi-Agent Execution Plan
 
-Status: active coordinator plan; audit barrier complete, contract baseline
-pending final validation/tag
+Status: active coordinator plan; audit/contract barriers and deterministic
+Wave 1 complete, path-exclusive Wave 2 active
 
 Date: 2026-07-19
 
@@ -22,6 +22,11 @@ Execution has two barriers:
 No lane may cross the contract barrier on its own. This prevents three agents
 from independently inventing incompatible job states, policy identities,
 affected-set definitions, or persistence schemas.
+
+The contract barrier closed at tag `m4-contract-baseline-2026-07-19`.
+Deterministic Wave 1 was integrated at
+`b3623feb36f719ef8715e6011e92c1a865530d7d`. Current evidence and remaining
+gates are recorded in `docs/m4_implementation_status.md`.
 
 ## 2. Worktrees and branches
 
@@ -179,6 +184,18 @@ downloads.
 Epoch/runtime supplies SQL fragments and index expectations. Admission adds
 pinned pgvector/BGE adapters. Oracles add bounded full-pair/full-refresh
 runners. Each PostgreSQL test uses a unique schema and cleans it.
+
+Current path-exclusive assignments are narrower to preserve independence:
+
+- epoch/runtime: randomized indexed-withdrawal versus naive-scan differential
+  evidence under skew;
+- impact admission: live PostgreSQL lexical-v1 and exact/approximate pgvector
+  adapter boundaries, without model download or training;
+- oracles/evaluation: controlled history workloads, history-safe split
+  manifests and machine-readable paired reports.
+
+The coordinator develops M4 persistence and the deterministic end-to-end
+vertical slice concurrently. No lane edits coordinator integration files.
 
 ### Wave 3 — coordinator integration
 
