@@ -466,6 +466,37 @@ def _m4_real_smoke(args: argparse.Namespace) -> int:
     return 0
 
 
+def _m4_real_history(args: argparse.Namespace) -> int:
+    from groundloop.m4.real_dynamic_history import (
+        M4RealDynamicHistoryConfig,
+        run_m4_real_dynamic_history,
+        write_dynamic_history_manifest,
+    )
+
+    result = run_m4_real_dynamic_history(
+        M4RealDynamicHistoryConfig(
+            database_url=_database_url(args.database_url),
+            repo_root=Path(args.repo_root).resolve(),
+            artifact_root=Path(args.artifact_root).resolve(),
+            model_config_path=(
+                None
+                if args.model_config is None
+                else Path(args.model_config).resolve()
+            ),
+            lexical_config_path=(
+                None
+                if args.lexical_config is None
+                else Path(args.lexical_config).resolve()
+            ),
+            keep_schema=bool(args.keep_schema),
+        )
+    )
+    if args.output is not None:
+        write_dynamic_history_manifest(result, Path(args.output))
+    print(result.to_json(), end="")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="groundloop")
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -523,6 +554,26 @@ def build_parser() -> argparse.ArgumentParser:
     smoke.add_argument("--output", type=Path)
     smoke.add_argument("--keep-schema", action="store_true")
     smoke.set_defaults(handler=_m4_real_smoke)
+
+    history = subcommands.add_parser(
+        "m4-real-history",
+        help=(
+            "run measured real-model M4 insert/delete/replace events, "
+            "dual-oracle audits, and exact replays"
+        ),
+    )
+    history.add_argument("--database-url")
+    history.add_argument("--repo-root", type=Path, default=Path.cwd())
+    history.add_argument(
+        "--artifact-root",
+        type=Path,
+        default=Path(os.environ.get("GROUNDLOOP_M3_ARTIFACT_ROOT", Path.cwd())),
+    )
+    history.add_argument("--model-config", type=Path)
+    history.add_argument("--lexical-config", type=Path)
+    history.add_argument("--output", type=Path)
+    history.add_argument("--keep-schema", action="store_true")
+    history.set_defaults(handler=_m4_real_history)
     return parser
 
 

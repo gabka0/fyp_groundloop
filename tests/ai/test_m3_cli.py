@@ -49,6 +49,10 @@ def test_cli_exposes_m4_execution_commands(tmp_path: Path) -> None:
     smoke = parser.parse_args(
         ("m4-real-smoke", "--output", str(tmp_path / "smoke.json"))
     )
+    history = parser.parse_args(
+        ("m4-real-history", "--output", str(tmp_path / "history.json"))
+    )
 
     assert controlled.command == "m4-controlled-eval"
     assert smoke.command == "m4-real-smoke"
+    assert history.command == "m4-real-history"
