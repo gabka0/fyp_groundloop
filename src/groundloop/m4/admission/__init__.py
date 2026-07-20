@@ -1,6 +1,12 @@
 """Deterministic M4 impact-admission CORE."""
 
 from groundloop.m4.admission.fake import DeterministicFakeApproximateIndex
+from groundloop.m4.admission.fresh import (
+    FreshFrontierCandidate,
+    FreshFrontierRetrieval,
+    FreshFrontierRetriever,
+    PostgresExactFreshFrontierRetriever,
+)
 from groundloop.m4.admission.fusion import (
     AdmissionAccounting,
     AdmissionResult,
@@ -62,6 +68,9 @@ __all__ = [
     "DeterministicFakeLexicalBackend",
     "ExactReverseVectorIndex",
     "ExactPgvectorConfig",
+    "FreshFrontierCandidate",
+    "FreshFrontierRetrieval",
+    "FreshFrontierRetriever",
     "HnswPgvectorBuildConfig",
     "HnswPgvectorSearchConfig",
     "LexicalRawHit",
@@ -71,6 +80,7 @@ __all__ = [
     "PreparedLexicalQuery",
     "PhysicalHnswIndex",
     "PostgresAdmissionServerIdentity",
+    "PostgresExactFreshFrontierRetriever",
     "PostgresExactReverseVectorIndex",
     "PostgresHnswReverseVectorIndex",
     "PostgresLexicalSearchBackend",

@@ -433,3 +433,18 @@ def test_retrieval_rejects_unregistered_policy_content(
             manifest=drifted,
             limit=2,
         )
+
+
+def test_retrieval_rejects_an_ambient_transaction(
+    fresh_connection: Connection[tuple[Any, ...]],
+) -> None:
+    manifest, epoch_id = _seed_world(fresh_connection)
+    retriever = PostgresExactFreshFrontierRetriever(fresh_connection)
+    with fresh_connection.transaction():
+        with pytest.raises(ValidationError, match="outside an active transaction"):
+            retriever.retrieve(
+                epoch_id=epoch_id,
+                claim_id=CLAIM_ID,
+                manifest=manifest,
+                limit=2,
+            )

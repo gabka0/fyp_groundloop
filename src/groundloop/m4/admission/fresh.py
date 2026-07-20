@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from psycopg import Connection
+from psycopg.pq import TransactionStatus
 
 from groundloop.errors import EventConflictError, ValidationError
 from groundloop.m4.contracts import (
@@ -179,6 +180,10 @@ class PostgresExactFreshFrontierRetriever:
         _require_text("fresh frontier claim_id", claim_id)
         if limit <= 0:
             raise ValidationError("fresh frontier limit must be positive")
+        if self.connection.info.transaction_status is not TransactionStatus.IDLE:
+            raise ValidationError(
+                "fresh frontier retrieval must start outside an active transaction"
+            )
         excluded = tuple(sorted(set(excluded_chunk_ids)))
         if any(not chunk_id.strip() for chunk_id in excluded):
             raise ValidationError("excluded chunk IDs must be non-empty")

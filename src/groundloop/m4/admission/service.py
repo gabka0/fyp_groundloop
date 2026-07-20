@@ -10,6 +10,7 @@ from psycopg import Connection
 
 from groundloop.ai.contracts import ChunkDraft
 from groundloop.errors import EventConflictError, ValidationError
+from groundloop.m4.admission.fresh import FreshFrontierRetriever
 from groundloop.m4.admission.fusion import (
     fuse_admission_channels,
     lineage_channel_hits,
@@ -54,9 +55,10 @@ class PostgresHybridAdmissionPort:
     """Compute the frozen M4 CORE admission policy outside a DB transaction.
 
     Approximate impact discovery is chunk-to-claim vector plus lexical fusion.
-    Frontier repair is exact over the persisted reserve.  If the reserve cannot
-    meet its frozen depth, ``fallback_satisfied`` is false; the application is
-    forbidden to seal rather than silently treating an empty frontier as safe.
+    Frontier repair first uses the persisted reserve.  If the reserve cannot
+    meet its frozen depth, an injected exact fresh retriever must establish
+    complete active-chunk artifact coverage.  A complete empty result is a
+    valid fallback; an unavailable or incomplete retrieval blocks sealing.
     The coordinator persists the returned result atomically with parent/child
     closure; this worker deliberately performs no result writes.
     """
@@ -66,6 +68,7 @@ class PostgresHybridAdmissionPort:
     embeddings: ChunkEmbeddingService
     vector_index: ApproximateReverseVectorIndex
     lexical_policy: LexicalV1Policy
+    fresh_frontier_retriever: FreshFrontierRetriever | None = None
     lineage_provider: LineageProvider | None = None
     frontier_score_floor: float = -1.0
 
@@ -235,7 +238,7 @@ class PostgresHybridAdmissionPort:
             target_depth=self.manifest.frontier_depth,
             retrieval_score_floor=self.frontier_score_floor,
         )
-        hits = tuple(
+        reserve_hits = tuple(
             ChannelHit(
                 epoch_id,
                 pair,
@@ -257,6 +260,61 @@ class PostgresHybridAdmissionPort:
             )
             for rank, pair in enumerate(plan.verifier_pairs, start=1)
         )
+        fresh_hash = "fresh-not-required"
+        fresh_hits: tuple[ChannelHit, ...] = ()
+        fallback_satisfied = not plan.fresh_retrieval_required
+        if plan.fresh_retrieval_required:
+            if self.fresh_frontier_retriever is None:
+                fresh_hash = "fresh-retriever-unavailable"
+            else:
+                excluded = tuple(
+                    sorted(
+                        {
+                            pair.chunk_version_id
+                            for pair in (
+                                *plan.current_pairs,
+                                *plan.already_queued_pairs,
+                                *plan.selected_reserve_pairs,
+                            )
+                        }
+                    )
+                )
+                fresh = self.fresh_frontier_retriever.retrieve(
+                    epoch_id=epoch_id,
+                    claim_id=claim_id,
+                    manifest=self.manifest,
+                    excluded_chunk_ids=excluded,
+                    limit=plan.remaining_deficit,
+                )
+                fresh_hash = fresh.artifact_hash
+                fallback_satisfied = fresh.complete
+                fresh_hits = tuple(
+                    ChannelHit(
+                        epoch_id,
+                        candidate.pair,
+                        self.manifest.policy_id,
+                        AdmissionChannel.FRONTIER,
+                        rank,
+                        candidate.score,
+                        stable_m4_digest(
+                            "m4-fresh-frontier-channel-hit-v1",
+                            root_job.job_id,
+                            fresh.artifact_hash,
+                            candidate.pair.claim_id,
+                            candidate.pair.chunk_version_id,
+                            str(candidate.rank),
+                            candidate.distance.hex(),
+                            candidate.score.hex(),
+                            candidate.chunk_artifact_id,
+                            candidate.chunk_input_hash,
+                            candidate.chunk_vector_hash,
+                        ),
+                    )
+                    for rank, candidate in enumerate(
+                        fresh.candidates, start=len(reserve_hits) + 1
+                    )
+                )
+        hits = reserve_hits + fresh_hits
         admitted = tuple(
             AdmittedPair(
                 epoch_id,
@@ -272,11 +330,8 @@ class PostgresHybridAdmissionPort:
             "m4-frontier-discovery-result-v1",
             root_job.job_id,
             *(hit.channel_artifact_hash for hit in hits),
-            (
-                "fallback-required"
-                if plan.fresh_retrieval_required
-                else "reserve-complete"
-            ),
+            fresh_hash,
+            "fallback-satisfied" if fallback_satisfied else "fallback-blocked",
         )
         return (
             DiscoveryResult(
@@ -284,7 +339,7 @@ class PostgresHybridAdmissionPort:
                 f"m4-frontier:{artifact_hash}",
                 artifact_hash,
                 admitted,
-                fallback_satisfied=not plan.fresh_retrieval_required,
+                fallback_satisfied=fallback_satisfied,
             ),
             hits,
         )

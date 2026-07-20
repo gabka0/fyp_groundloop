@@ -17,6 +17,7 @@ from groundloop.domain import (
     normalized_text_hash,
 )
 from groundloop.errors import EventConflictError
+from groundloop.m4.admission.fresh import PostgresExactFreshFrontierRetriever
 from groundloop.m4.admission.service import PostgresHybridAdmissionPort
 from groundloop.m4.admission.vector import ChunkRoleVector, ReverseVectorSearch
 from groundloop.m4.application import (
@@ -57,6 +58,12 @@ from groundloop.postgres import record_epoch
 
 def _hash(value: str) -> str:
     return stable_m4_digest(value)
+
+
+def _unit_vector_literal(axis: int = 0) -> str:
+    values = [0.0] * 384
+    values[axis] = 1.0
+    return "[" + ",".join(format(value, ".17g") for value in values) + "]"
 
 
 IMPACT_HASH = _hash("m4-pipeline-impact")
@@ -1379,6 +1386,228 @@ def test_frontier_promotion_closes_exact_published_predecessor(
         (base, result.epoch_id, "unverified"),
         (result.epoch_id, None, "verified_current"),
     ]
+
+
+def test_empty_reserve_uses_exact_fresh_frontier_and_seals(
+    m4_committed_pipeline_connection: Connection[Any],
+) -> None:
+    m4_pipeline_connection = m4_committed_pipeline_connection
+    with m4_pipeline_connection.transaction():
+        base = _seed_b0(m4_pipeline_connection)
+    alternative_text = "Nimbus has an alternative neutral description."
+    m4_pipeline_connection.execute(
+        "INSERT INTO groundloop_document VALUES "
+        "('doc-fresh-alternative', 'fixture://fresh-alternative', 'test')"
+    )
+    m4_pipeline_connection.execute(
+        """
+        INSERT INTO groundloop_document_version VALUES (
+            'dv-fresh-alternative', 'doc-fresh-alternative',
+            'fresh-alternative-content', %s, NULL
+        )
+        """,
+        (base,),
+    )
+    m4_pipeline_connection.execute(
+        """
+        INSERT INTO groundloop_chunk_version VALUES (
+            'chunk-fresh-alternative', 'dv-fresh-alternative', 0, %s, %s,
+            'fixed-char-v1', %s, NULL
+        )
+        """,
+        (
+            alternative_text,
+            normalized_text_hash(alternative_text),
+            base,
+        ),
+    )
+    policy = _candidate_policy(frontier_depth=1)
+    for subject_id, role, claim_id, chunk_id, role_hash in (
+        (
+            "claim-1",
+            "claim_query",
+            "claim-1",
+            None,
+            policy.claim_role_template_hash,
+        ),
+        (
+            "chunk-fresh-alternative",
+            "chunk_passage",
+            None,
+            "chunk-fresh-alternative",
+            policy.chunk_role_template_hash,
+        ),
+    ):
+        m4_pipeline_connection.execute(
+            """
+            INSERT INTO groundloop_m4_role_embedding_artifact (
+                artifact_id, subject_id, embedding_role, claim_id,
+                chunk_version_id, model_artifact_id, model_id,
+                model_revision, tokenizer_revision, role_template_hash,
+                input_hash, vector_hash, adapter_spec_hash, token_count,
+                max_tokens, truncated, embedding
+            ) VALUES (
+                %s, %s, %s, %s, %s, 'embedder-v1', 'embedder', 'v1', 'v1',
+                %s, %s, %s, %s, 5, 512, false, %s::vector
+            )
+            """,
+            (
+                _hash(f"fresh-artifact:{subject_id}:{role}"),
+                subject_id,
+                role,
+                claim_id,
+                chunk_id,
+                role_hash,
+                _hash(f"fresh-input:{subject_id}:{role}"),
+                _hash(f"fresh-vector:{subject_id}:{role}"),
+                _hash("fresh-adapter-v1"),
+                _unit_vector_literal(),
+            ),
+        )
+    ports = PostgresM4ApplicationPorts(
+        m4_pipeline_connection,
+        structural_payloads={
+            "delete-for-fresh-refill": StructuralPayload(
+                deactivated_document_version_id="dv-support"
+            )
+        },
+    )
+    ports.runtime_store.register_candidate_policy(policy)
+    admission = PostgresHybridAdmissionPort(
+        m4_pipeline_connection,
+        policy,
+        _FakeEmbeddingService(),
+        _FakeVectorIndex(),
+        _FakeLexicalPolicy(),
+        fresh_frontier_retriever=PostgresExactFreshFrontierRetriever(
+            m4_pipeline_connection
+        ),
+    )
+    result = M4Application(
+        structural=ports,
+        runtime=ports,
+        admission=admission,
+        verifier=ScriptedVerifier({"chunk-fresh-alternative": "neutral"}),
+        observations=ports,
+        equality_gates=ports,
+        publication=ports,
+        execution_policy=ApplicationExecutionPolicy(
+            IMPACT_HASH, FRONTIER_HASH, VERIFIER_HASH
+        ),
+    ).run_event(
+        _event(
+            "delete-for-fresh-refill",
+            UpdateKind.DELETE,
+            base,
+            deactivated=("chunk-support",),
+        )
+    )
+    assert result.state is EventRunState.SEALED
+    assert result.verifier_call_count == 1
+    assert m4_pipeline_connection.execute(
+        """
+        SELECT fallback_satisfied, admitted_pair_count
+        FROM groundloop_m4_discovery_result
+        WHERE epoch_id = %s
+        """,
+        (result.epoch_id,),
+    ).fetchone() == (True, 1)
+    assert m4_pipeline_connection.execute(
+        """
+        SELECT channel, chunk_version_id, claim_id
+        FROM groundloop_impact_channel_hit
+        WHERE epoch_id = %s
+        """,
+        (result.epoch_id,),
+    ).fetchone() == ("frontier", "chunk-fresh-alternative", "claim-1")
+    assert m4_pipeline_connection.execute(
+        """
+        SELECT frontier_state
+        FROM groundloop_candidate_frontier
+        WHERE valid_from_epoch = %s AND claim_id = 'claim-1'
+          AND chunk_version_id = 'chunk-fresh-alternative'
+        """,
+        (result.epoch_id,),
+    ).fetchone() == ("verified_current",)
+
+
+def test_exact_fresh_frontier_can_close_complete_empty_corpus(
+    m4_committed_pipeline_connection: Connection[Any],
+) -> None:
+    connection = m4_committed_pipeline_connection
+    with connection.transaction():
+        base = _seed_b0(connection)
+    policy = _candidate_policy(frontier_depth=1)
+    connection.execute(
+        """
+        INSERT INTO groundloop_m4_role_embedding_artifact (
+            artifact_id, subject_id, embedding_role, claim_id,
+            chunk_version_id, model_artifact_id, model_id,
+            model_revision, tokenizer_revision, role_template_hash,
+            input_hash, vector_hash, adapter_spec_hash, token_count,
+            max_tokens, truncated, embedding
+        ) VALUES (
+            %s, 'claim-1', 'claim_query', 'claim-1', NULL,
+            'embedder-v1', 'embedder', 'v1', 'v1', %s, %s, %s, %s,
+            5, 512, false, %s::vector
+        )
+        """,
+        (
+            _hash("empty-fresh-claim-artifact"),
+            policy.claim_role_template_hash,
+            _hash("empty-fresh-claim-input"),
+            _hash("empty-fresh-claim-vector"),
+            _hash("empty-fresh-adapter-v1"),
+            _unit_vector_literal(),
+        ),
+    )
+    ports = PostgresM4ApplicationPorts(
+        connection,
+        structural_payloads={
+            "delete-to-empty-corpus": StructuralPayload(
+                deactivated_document_version_id="dv-support"
+            )
+        },
+    )
+    ports.runtime_store.register_candidate_policy(policy)
+    admission = PostgresHybridAdmissionPort(
+        connection,
+        policy,
+        _FakeEmbeddingService(),
+        _FakeVectorIndex(),
+        _FakeLexicalPolicy(),
+        fresh_frontier_retriever=PostgresExactFreshFrontierRetriever(connection),
+    )
+    result = M4Application(
+        structural=ports,
+        runtime=ports,
+        admission=admission,
+        verifier=ScriptedVerifier({}),
+        observations=ports,
+        equality_gates=ports,
+        publication=ports,
+        execution_policy=ApplicationExecutionPolicy(
+            IMPACT_HASH, FRONTIER_HASH, VERIFIER_HASH
+        ),
+    ).run_event(
+        _event(
+            "delete-to-empty-corpus",
+            UpdateKind.DELETE,
+            base,
+            deactivated=("chunk-support",),
+        )
+    )
+    assert result.state is EventRunState.SEALED
+    assert result.verifier_call_count == 0
+    assert _state(connection) == ("unsupported", "unsupported")
+    assert connection.execute(
+        """
+        SELECT fallback_satisfied, admitted_pair_count
+        FROM groundloop_m4_discovery_result
+        WHERE epoch_id = %s
+        """,
+        (result.epoch_id,),
+    ).fetchone() == (True, 0)
 
 
 def test_empty_discovery_has_a_durable_closed_result_header(
