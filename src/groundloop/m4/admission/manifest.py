@@ -9,9 +9,9 @@ from groundloop.m4.admission.lexical import LexicalV1Config
 from groundloop.m4.contracts import (
     CandidatePolicyManifest,
     VectorIndexKind,
+    sha256_text,
     stable_m4_digest,
 )
-from groundloop.m4.models.contracts import sha256_text
 
 
 def hash_config_pairs(namespace: str, values: Sequence[tuple[str, str]]) -> str:

@@ -28,6 +28,11 @@ def stable_m4_digest(*parts: str) -> str:
     return digest.hexdigest()
 
 
+def sha256_text(value: str) -> str:
+    """Hash one UTF-8 text value with ordinary SHA-256 semantics."""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
 def _require_text(name: str, value: str) -> None:
     if not value.strip():
         raise ValidationError(f"{name} must be non-empty")

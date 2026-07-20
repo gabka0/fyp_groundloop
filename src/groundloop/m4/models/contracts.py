@@ -7,7 +7,6 @@ predictions exact.
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -32,6 +31,7 @@ from groundloop.m4.contracts import (
     JudgmentSourceKind,
     PairJudgment,
     PairKey,
+    sha256_text,
     stable_m4_digest,
 )
 from groundloop.policy import decide
@@ -41,10 +41,6 @@ CLAIM_ROLE_TEMPLATE = (
 )
 CHUNK_ROLE_TEMPLATE = "{text}"
 VERIFIER_ROLE_TEMPLATE = "premise={evidence}\nhypothesis={claim}"
-
-
-def sha256_text(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def vector_sha256(vector: tuple[float, ...]) -> str:
