@@ -695,6 +695,12 @@ def _string_tuple(value: object, *, field: str) -> tuple[str, ...]:
     return result
 
 
+def _stored_integer(value: object, *, field: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise EventAuditPersistenceError(f"{field} must be a nonnegative integer")
+    return value
+
+
 def _object(value: object, *, field: str) -> dict[str, object]:
     if not isinstance(value, dict):
         raise EventAuditPersistenceError(f"{field} must be a JSON object")
@@ -807,6 +813,23 @@ def _stored_outcome(
         config_hash,
         status,
         raw_manifest,
+        typed_epoch_id,
+        typed_event_id,
+        typed_input_hash,
+        typed_result_hash,
+        typed_audit_manifest_id,
+        typed_refresh_manifest_id,
+        typed_expected_pair_count,
+        typed_positive_pair_count,
+        typed_missed_positive_pair_count,
+        typed_deliberate_miss_count,
+        typed_selective_verifier_pair_count,
+        typed_exhaustive_judgment_count,
+        typed_refresh_judgment_count,
+        typed_exhaustive_claim_mismatch_count,
+        typed_exhaustive_answer_mismatch_count,
+        typed_refresh_claim_mismatch_count,
+        typed_refresh_answer_mismatch_count,
     ) = row
     expected_run_id = _evaluation_run_id(spec)
     expected_columns = (
@@ -857,6 +880,107 @@ def _stored_outcome(
     expected_pair_count = full_pair.get("expected_pair_count")
     if not isinstance(expected_pair_count, int) or expected_pair_count < 0:
         raise EventAuditPersistenceError("expected_pair_count is invalid")
+    missed_pairs = _pair_tuple(
+        result["missed_positive_pairs"], field="missed_positive_pairs"
+    )
+    deliberate_pairs = _pair_tuple(
+        result["detected_deliberate_miss_pairs"],
+        field="detected_deliberate_miss_pairs",
+    )
+    audit_judgments = full_pair.get("judgments")
+    refresh_judgments = refresh.get("judgments")
+    if not isinstance(audit_judgments, list) or not isinstance(
+        refresh_judgments, list
+    ):
+        raise EventAuditPersistenceError("stored judgment arrays are invalid")
+    exhaustive_claim_mismatches = _string_tuple(
+        exhaustive_comparison["status_claim_ids"],
+        field="selective_exhaustive.status_claim_ids",
+    )
+    exhaustive_answer_mismatches = _string_tuple(
+        exhaustive_comparison["answer_status_ids"],
+        field="selective_exhaustive.answer_status_ids",
+    )
+    refresh_claim_mismatches = _string_tuple(
+        refresh_comparison["status_claim_ids"],
+        field="selective_refresh.status_claim_ids",
+    )
+    refresh_answer_mismatches = _string_tuple(
+        refresh_comparison["answer_status_ids"],
+        field="selective_refresh.answer_status_ids",
+    )
+    typed_identity = (
+        _stored_integer(typed_epoch_id, field="typed.epoch_id"),
+        str(typed_event_id),
+        str(typed_input_hash).strip(),
+        str(typed_result_hash).strip(),
+        str(typed_audit_manifest_id),
+        str(typed_refresh_manifest_id),
+        _stored_integer(
+            typed_expected_pair_count, field="typed.expected_pair_count"
+        ),
+        _stored_integer(
+            typed_positive_pair_count, field="typed.positive_pair_count"
+        ),
+        _stored_integer(
+            typed_missed_positive_pair_count,
+            field="typed.missed_positive_pair_count",
+        ),
+        _stored_integer(
+            typed_deliberate_miss_count, field="typed.deliberate_miss_count"
+        ),
+        _stored_integer(
+            typed_selective_verifier_pair_count,
+            field="typed.selective_verifier_pair_count",
+        ),
+        _stored_integer(
+            typed_exhaustive_judgment_count,
+            field="typed.exhaustive_judgment_count",
+        ),
+        _stored_integer(
+            typed_refresh_judgment_count,
+            field="typed.refresh_judgment_count",
+        ),
+        _stored_integer(
+            typed_exhaustive_claim_mismatch_count,
+            field="typed.exhaustive_claim_mismatch_count",
+        ),
+        _stored_integer(
+            typed_exhaustive_answer_mismatch_count,
+            field="typed.exhaustive_answer_mismatch_count",
+        ),
+        _stored_integer(
+            typed_refresh_claim_mismatch_count,
+            field="typed.refresh_claim_mismatch_count",
+        ),
+        _stored_integer(
+            typed_refresh_answer_mismatch_count,
+            field="typed.refresh_answer_mismatch_count",
+        ),
+    )
+    expected_typed_identity = (
+        event.epoch_id,
+        event.event_id,
+        str(manifest["input_hash"]),
+        str(manifest["result_hash"]),
+        str(full_pair["manifest_id"]),
+        str(refresh["manifest_id"]),
+        expected_pair_count,
+        len(positive_pairs),
+        len(missed_pairs),
+        len(deliberate_pairs),
+        len(spec.selective_admitted_pairs),
+        len(audit_judgments),
+        len(refresh_judgments),
+        len(exhaustive_claim_mismatches),
+        len(exhaustive_answer_mismatches),
+        len(refresh_claim_mismatches),
+        len(refresh_answer_mismatches),
+    )
+    if typed_identity != expected_typed_identity:
+        raise EventAuditPersistenceError(
+            "typed event-audit projection differs from its manifest"
+        )
     return PersistedEventAudit(
         evaluation_run_id=expected_run_id,
         event_id=event.event_id,
@@ -901,10 +1025,25 @@ def _select_row(
 ) -> tuple[object, ...] | None:
     return connection.execute(
         """
-        SELECT evaluation_run_id, treatment_manifest_id, baseline_manifest_id,
-               corpus_snapshot_hash, split_id, config_hash, status, manifest
-        FROM groundloop_impact_evaluation_run
-        WHERE evaluation_run_id = %s
+        SELECT generic.evaluation_run_id, generic.treatment_manifest_id,
+               generic.baseline_manifest_id, generic.corpus_snapshot_hash,
+               generic.split_id, generic.config_hash, generic.status,
+               generic.manifest, typed.epoch_id, typed.event_id,
+               typed.input_hash, typed.result_hash, typed.audit_manifest_id,
+               typed.refresh_manifest_id, typed.expected_pair_count,
+               typed.positive_pair_count, typed.missed_positive_pair_count,
+               typed.deliberate_miss_count,
+               typed.selective_verifier_pair_count,
+               typed.exhaustive_judgment_count,
+               typed.refresh_judgment_count,
+               typed.exhaustive_claim_mismatch_count,
+               typed.exhaustive_answer_mismatch_count,
+               typed.refresh_claim_mismatch_count,
+               typed.refresh_answer_mismatch_count
+        FROM groundloop_impact_evaluation_run AS generic
+        JOIN groundloop_m4_event_audit_run AS typed
+          USING (evaluation_run_id)
+        WHERE generic.evaluation_run_id = %s
         """,
         (evaluation_run_id,),
     ).fetchone()
@@ -1035,6 +1174,72 @@ def run_and_persist_event_audit(
                 Jsonb(manifest),
             ),
         ).fetchone()
+        result_payload = _object(manifest["result"], field="result")
+        full_pair_payload = _object(
+            result_payload["full_pair_audit"], field="full_pair_audit"
+        )
+        refresh_payload = _object(
+            result_payload["snapshot_refresh"], field="snapshot_refresh"
+        )
+        comparisons = _object(
+            result_payload["selective_comparisons"],
+            field="selective_comparisons",
+        )
+        exhaustive_comparison = _object(
+            comparisons["versus_exhaustive"], field="versus_exhaustive"
+        )
+        refresh_comparison = _object(
+            comparisons["versus_snapshot_refresh"],
+            field="versus_snapshot_refresh",
+        )
+        exhaustive_claim_mismatches = _string_tuple(
+            exhaustive_comparison["status_claim_ids"],
+            field="selective_exhaustive.status_claim_ids",
+        )
+        exhaustive_answer_mismatches = _string_tuple(
+            exhaustive_comparison["answer_status_ids"],
+            field="selective_exhaustive.answer_status_ids",
+        )
+        refresh_claim_mismatches = _string_tuple(
+            refresh_comparison["status_claim_ids"],
+            field="selective_refresh.status_claim_ids",
+        )
+        refresh_answer_mismatches = _string_tuple(
+            refresh_comparison["answer_status_ids"],
+            field="selective_refresh.answer_status_ids",
+        )
+        connection.execute(
+            """
+            INSERT INTO groundloop_m4_event_audit_run VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s
+            ) ON CONFLICT (evaluation_run_id) DO NOTHING
+            """,
+            (
+                evaluation_run_id,
+                event.epoch_id,
+                event.event_id,
+                spec.treatment_manifest_id,
+                spec.split_id,
+                _config_hash(spec),
+                manifest["input_hash"],
+                manifest["result_hash"],
+                full_pair_payload["manifest_id"],
+                refresh_payload["manifest_id"],
+                full_pair_payload["expected_pair_count"],
+                len(audit_result.positive_pairs),
+                len(missed_positive_pairs),
+                len(detected_deliberate_miss_pairs),
+                len(spec.selective_admitted_pairs),
+                len(audit_result.judgments),
+                len(refresh.judgments),
+                len(exhaustive_claim_mismatches),
+                len(exhaustive_answer_mismatches),
+                len(refresh_claim_mismatches),
+                len(refresh_answer_mismatches),
+            ),
+        )
         stored = _select_row(connection, evaluation_run_id)
         if stored is None:
             raise EventAuditPersistenceError("event-audit insert disappeared")

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from psycopg import Connection
+from psycopg import Connection, errors
 from psycopg.types.json import Jsonb
 
 from groundloop.domain import VerificationLabel
@@ -20,7 +20,6 @@ from groundloop.m4.contracts import (
 from groundloop.m4.event_audit import (
     EventAuditConflictError,
     EventAuditDisposition,
-    EventAuditPersistenceError,
     EventAuditSpec,
     run_and_persist_event_audit,
 )
@@ -320,6 +319,28 @@ def test_persists_sealed_event_link_and_detects_deliberate_miss(
         result.epoch_id,
         result.baseline_manifest_id,
     )
+    typed = event_audit_connection.execute(
+        """
+        SELECT epoch_id, event_id, input_hash, result_hash,
+               expected_pair_count, positive_pair_count,
+               missed_positive_pair_count, deliberate_miss_count,
+               selective_verifier_pair_count, exhaustive_judgment_count
+        FROM groundloop_m4_event_audit_run WHERE evaluation_run_id = %s
+        """,
+        (result.evaluation_run_id,),
+    ).fetchone()
+    assert typed == (
+        result.epoch_id,
+        "event-insert",
+        result.input_hash,
+        result.result_hash,
+        2,
+        1,
+        1,
+        1,
+        1,
+        2,
+    )
 
 
 def test_exact_replay_is_read_only_and_skips_both_judges(
@@ -371,7 +392,7 @@ def test_same_logical_run_rejects_changed_frozen_input(
         )
 
 
-def test_replay_rejects_corrupted_persisted_result(
+def test_completed_event_audit_is_database_immutable(
     event_audit_connection: Connection[Any],
 ) -> None:
     _seed_sealed_m4_event(event_audit_connection)
@@ -382,25 +403,18 @@ def test_replay_rejects_corrupted_persisted_result(
         audit_judge=audit_judge,
         refresh_judge=refresh_judge,
     )
-    event_audit_connection.execute(
-        """
-        UPDATE groundloop_impact_evaluation_run
-        SET manifest = jsonb_set(
-            manifest,
-            '{result,full_pair_audit,expected_pair_count}',
-            '999'::jsonb
-        )
-        WHERE evaluation_run_id = %s
-        """,
-        (created.evaluation_run_id,),
-    )
-
-    with pytest.raises(EventAuditPersistenceError, match="manifest hash mismatch"):
-        run_and_persist_event_audit(
-            event_audit_connection,
-            spec=spec,
-            audit_judge=_ExplodingJudge(),
-            refresh_judge=_ExplodingJudge(),
+    with pytest.raises(errors.RaiseException, match="envelope is immutable"):
+        event_audit_connection.execute(
+            """
+            UPDATE groundloop_impact_evaluation_run
+            SET manifest = jsonb_set(
+                manifest,
+                '{result,full_pair_audit,expected_pair_count}',
+                '999'::jsonb
+            )
+            WHERE evaluation_run_id = %s
+            """,
+            (created.evaluation_run_id,),
         )
 
 
