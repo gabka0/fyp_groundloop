@@ -593,6 +593,10 @@ the full VitaminC distribution. Also report an unstratified pooled-page
 bootstrap as a sensitivity surface; it is not the pre-registered promotion
 interval.
 
+Reuse the literal seed `20260720` on every model, metric and clustering-unit
+surface. Do not derive hidden per-model, per-training-seed or per-dataset seed
+offsets; the artifact must record the same seed that the sampler actually uses.
+
 The production terminal path must reject any other seed or resample count.
 Reduced-count overrides are permitted only in an explicitly synthetic,
 non-scientific test path that cannot emit a promotion verdict.
