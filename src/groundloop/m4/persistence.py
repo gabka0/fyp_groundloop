@@ -72,6 +72,60 @@ class OpenEpochResult:
     replayed: bool
 
 
+@dataclass(frozen=True, slots=True)
+class PointEpochHeader:
+    """Constant-size M4 epoch projection used by measured coordination."""
+
+    epoch_id: int
+    event_id: str
+    revision: int
+    state: RuntimeEpochState
+    open_job_count: int
+    open_scope_count: int
+    failure_reason: str | None
+
+    @property
+    def seal_ready(self) -> bool:
+        """Whether coordination, excluding publication, permits a seal."""
+        return (
+            self.state is RuntimeEpochState.SEMANTIC_COMPLETE
+            and self.open_job_count == 0
+            and self.open_scope_count == 0
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PointAttemptRecord:
+    """Latest persisted attempt for one logical job."""
+
+    attempt: JobAttempt
+    state: str
+    lease_expires_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class PointJobRecord:
+    """Constant-size logical-job projection, excluding its child collection."""
+
+    spec: LogicalJobSpec
+    state: JobState
+    child_closed: bool
+    child_set_hash: str | None
+    completion_digest: str | None
+    result_artifact_id: str | None
+    result_artifact_hash: str | None
+    latest_attempt: PointAttemptRecord | None
+
+
+@dataclass(frozen=True, slots=True)
+class PointMutationResult:
+    """Result of a measured point/CAS mutation."""
+
+    header: PointEpochHeader
+    job: PointJobRecord | None
+    replayed: bool
+
+
 def _json_value(value: object) -> object:
     if isinstance(value, Enum):
         return value.value
@@ -200,6 +254,95 @@ class PostgresM4RuntimeStore:
             return
         expected_epoch = self._epoch(expected, epoch_id)
         self._assert_equal(expected_epoch, self.read_epoch(epoch_id))
+
+    def register_claim_registry_snapshot(
+        self, snapshot_id: str, claim_ids: tuple[str, ...]
+    ) -> bool:
+        """Materialize one immutable registry as an explicit ``O(C)`` build.
+
+        Exact replay validates the header and complete ordered membership.  A
+        measured event can subsequently bind the registry by its constant-size
+        header instead of serializing the claim tuple in each discovery scope.
+        """
+        if not snapshot_id.strip():
+            raise ValidationError("claim registry snapshot ID must be non-empty")
+        if claim_ids != tuple(sorted(set(claim_ids))):
+            raise ValidationError("claim registry claim IDs must be sorted and unique")
+        if any(not claim_id.strip() for claim_id in claim_ids):
+            raise ValidationError("claim registry claim IDs must be non-empty")
+        claim_set_hash = stable_m4_digest(
+            "m4-claim-registry-snapshot-v1", *claim_ids
+        )
+        with self._connection.transaction():
+            inserted = self._connection.execute(
+                """
+                INSERT INTO groundloop_m4_claim_registry_snapshot (
+                    claim_registry_snapshot_id, claim_count, claim_set_hash
+                ) VALUES (%s, %s, %s)
+                ON CONFLICT (claim_registry_snapshot_id) DO NOTHING
+                RETURNING claim_registry_snapshot_id
+                """,
+                (snapshot_id, len(claim_ids), claim_set_hash),
+            ).fetchone()
+            header = self._connection.execute(
+                """
+                SELECT claim_count, claim_set_hash
+                FROM groundloop_m4_claim_registry_snapshot
+                WHERE claim_registry_snapshot_id = %s
+                FOR UPDATE
+                """,
+                (snapshot_id,),
+            ).fetchone()
+            assert header is not None
+            if (int(header[0]), _strip(header[1])) != (
+                len(claim_ids),
+                claim_set_hash,
+            ):
+                raise EventConflictError(
+                    "claim registry snapshot ID was reused with different content"
+                )
+            if inserted is not None:
+                known = tuple(
+                    str(row[0])
+                    for row in self._connection.execute(
+                        """
+                        SELECT claim_id FROM groundloop_claim
+                        WHERE claim_id = ANY(%s)
+                        ORDER BY claim_id
+                        """,
+                        (list(claim_ids),),
+                    ).fetchall()
+                )
+                if known != claim_ids:
+                    raise InvalidEventError(
+                        "claim registry names an unknown registered claim"
+                    )
+                for ordinal, claim_id in enumerate(claim_ids):
+                    self._connection.execute(
+                        """
+                        INSERT INTO groundloop_m4_claim_registry_member (
+                            claim_registry_snapshot_id, claim_id, member_ordinal
+                        ) VALUES (%s, %s, %s)
+                        """,
+                        (snapshot_id, claim_id, ordinal),
+                    )
+            stored = tuple(
+                str(row[0])
+                for row in self._connection.execute(
+                    """
+                    SELECT claim_id
+                    FROM groundloop_m4_claim_registry_member
+                    WHERE claim_registry_snapshot_id = %s
+                    ORDER BY member_ordinal
+                    """,
+                    (snapshot_id,),
+                ).fetchall()
+            )
+            if stored != claim_ids:
+                raise EventConflictError(
+                    "claim registry snapshot membership differs from its header"
+                )
+        return inserted is not None
 
     def register_candidate_policy(self, manifest: CandidatePolicyManifest) -> bool:
         """Register one immutable policy; exact replay is a no-op."""
@@ -578,6 +721,498 @@ class PostgresM4RuntimeStore:
             last_sealed_epoch_id=max(sealed) if sealed else None,
         )
 
+    def read_epoch_header_point(
+        self, epoch_id: int, *, for_update: bool = False
+    ) -> PointEpochHeader:
+        """Read only the epoch header and exact open-work counters.
+
+        This measured-mode API deliberately does not construct a
+        :class:`RuntimeEpoch` or :class:`RuntimeBook`.  The counter columns and
+        their maintenance triggers are defined by the M4.7 migration contract.
+        """
+        suffix = " FOR UPDATE OF e, u" if for_update else ""
+        row = self._connection.execute(
+            """
+            SELECT e.epoch_id, e.event_id, e.revision, e.semantic_status,
+                   e.open_job_count, e.open_scope_count, u.manifest
+            FROM groundloop_epoch AS e
+            JOIN groundloop_m4_update AS u USING (epoch_id)
+            WHERE e.epoch_id = %s
+            """
+            + suffix,
+            (epoch_id,),
+        ).fetchone()
+        if row is None:
+            raise InvalidEventError(f"unknown M4 epoch_id: {epoch_id}")
+        metadata = _runtime_metadata(row[6])
+        failure_value = metadata.get("failure_reason")
+        failure_reason = str(failure_value) if failure_value is not None else None
+        return PointEpochHeader(
+            epoch_id=int(row[0]),
+            event_id=str(row[1]),
+            revision=int(row[2]),
+            state=self._runtime_state(str(row[3])),
+            open_job_count=int(row[4]),
+            open_scope_count=int(row[5]),
+            failure_reason=failure_reason,
+        )
+
+    def read_job_point(
+        self, epoch_id: int, job_id: str, *, for_update: bool = False
+    ) -> PointJobRecord:
+        """Read one logical job and only its latest attempt."""
+        suffix = " FOR UPDATE OF job" if for_update else ""
+        row = self._connection.execute(
+            """
+            SELECT epoch.event_id,
+                   job.job_id, job.parent_job_id, job.job_kind,
+                   job.candidate_policy_id, job.payload_hash,
+                   job.execution_spec_hash, job.claim_id,
+                   job.chunk_version_id, job.expandable, job.job_state,
+                   job.child_closed, job.child_set_hash,
+                   job.completion_digest, job.result_artifact_id,
+                   job.result_artifact_hash
+            FROM groundloop_semantic_job AS job
+            JOIN groundloop_epoch AS epoch ON epoch.epoch_id = job.epoch_id
+            WHERE job.epoch_id = %s AND job.job_id = %s
+            """
+            + suffix,
+            (epoch_id, job_id),
+        ).fetchone()
+        if row is None:
+            raise InvalidEventError(f"unknown job_id in epoch: {job_id}")
+        latest = self._read_latest_attempt_point(job_id, for_update=for_update)
+        return self._point_job_from_row(row, latest)
+
+    def read_children_point(
+        self, epoch_id: int, parent_job_id: str
+    ) -> tuple[LogicalJobSpec, ...]:
+        """Read the exact, indexed child set for one closed parent."""
+        rows = self._connection.execute(
+            """
+            SELECT epoch.event_id,
+                   child.job_id, child.parent_job_id, child.job_kind,
+                   child.candidate_policy_id, child.payload_hash,
+                   child.execution_spec_hash, child.claim_id,
+                   child.chunk_version_id, child.expandable
+            FROM groundloop_semantic_job_dependency AS edge
+            JOIN groundloop_semantic_job AS child
+              ON child.job_id = edge.child_job_id
+             AND child.epoch_id = edge.epoch_id
+            JOIN groundloop_epoch AS epoch ON epoch.epoch_id = edge.epoch_id
+            WHERE edge.epoch_id = %s AND edge.parent_job_id = %s
+            ORDER BY edge.child_job_id
+            """,
+            (epoch_id, parent_job_id),
+        ).fetchall()
+        return tuple(self._point_spec_from_row(row) for row in rows)
+
+    def start_attempt_point(
+        self,
+        epoch_id: int,
+        expected_revision: int,
+        attempt: JobAttempt,
+        *,
+        lease_expires_at: datetime | None = None,
+    ) -> PointMutationResult:
+        """Acquire one job lease with an epoch-revision compare-and-swap."""
+        expiry = lease_expires_at or datetime.now(UTC) + timedelta(minutes=5)
+        with self._connection.transaction():
+            header = self.read_epoch_header_point(epoch_id, for_update=True)
+            job = self.read_job_point(epoch_id, attempt.job_id, for_update=True)
+            existing = self._connection.execute(
+                """
+                SELECT job_id, execution_spec_hash, attempt_ordinal,
+                       lease_token_hash
+                FROM groundloop_semantic_job_attempt
+                WHERE attempt_id = %s
+                """,
+                (attempt.attempt_id,),
+            ).fetchone()
+            if existing is not None:
+                stored = JobAttempt(
+                    attempt_id=attempt.attempt_id,
+                    job_id=str(existing[0]),
+                    execution_spec_hash=_strip(existing[1]),
+                    attempt_ordinal=int(existing[2]),
+                    lease_token_hash=_strip(existing[3]),
+                )
+                if stored == attempt:
+                    return PointMutationResult(header, job, replayed=True)
+                raise EventConflictError(
+                    "attempt_id was reused with different content"
+                )
+            if expiry <= datetime.now(UTC):
+                raise ValidationError("attempt lease must expire in the future")
+            self._require_point_revision(header, expected_revision)
+            if header.state in {
+                RuntimeEpochState.FAILED,
+                RuntimeEpochState.SEALED,
+            }:
+                raise InvalidEventError(
+                    "failed or sealed epochs start no new attempts"
+                )
+            if job.state not in {JobState.DECLARED, JobState.RETRYABLE_FAILED}:
+                raise InvalidEventError("job is not eligible to start an attempt")
+            if attempt.execution_spec_hash != job.spec.execution_spec_hash:
+                raise EventConflictError(
+                    "attempt execution identity differs from job"
+                )
+            expected_ordinal = (
+                1
+                if job.latest_attempt is None
+                else job.latest_attempt.attempt.attempt_ordinal + 1
+            )
+            if attempt.attempt_ordinal != expected_ordinal:
+                raise InvalidEventError("attempt ordinal is not the next ordinal")
+            self._connection.execute(
+                """
+                INSERT INTO groundloop_semantic_job_attempt (
+                    attempt_id, job_id, execution_spec_hash, attempt_ordinal,
+                    lease_token_hash, attempt_state, lease_expires_at
+                ) VALUES (%s, %s, %s, %s, %s, 'leased', %s)
+                """,
+                (
+                    attempt.attempt_id,
+                    attempt.job_id,
+                    attempt.execution_spec_hash,
+                    attempt.attempt_ordinal,
+                    attempt.lease_token_hash,
+                    expiry,
+                ),
+            )
+            changed = self._connection.execute(
+                """
+                UPDATE groundloop_semantic_job SET job_state = 'running'
+                WHERE epoch_id = %s AND job_id = %s
+                  AND job_state IN ('declared', 'retryable_failed')
+                """,
+                (epoch_id, attempt.job_id),
+            ).rowcount
+            if changed != 1:
+                raise EventConflictError("job changed before attempt acquisition")
+            next_header = self._advance_point_epoch(header, expected_revision)
+            return PointMutationResult(
+                next_header,
+                self.read_job_point(epoch_id, attempt.job_id),
+                replayed=False,
+            )
+
+    def mark_retryable_failure_point(
+        self,
+        epoch_id: int,
+        expected_revision: int,
+        job_id: str,
+        attempt_id: str,
+    ) -> PointMutationResult:
+        """Fail only the named latest attempt while retaining the logical job."""
+        with self._connection.transaction():
+            header = self.read_epoch_header_point(epoch_id, for_update=True)
+            job = self.read_job_point(epoch_id, job_id, for_update=True)
+            latest = job.latest_attempt
+            if job.state is JobState.RETRYABLE_FAILED:
+                if latest is not None and latest.attempt.attempt_id == attempt_id:
+                    return PointMutationResult(header, job, replayed=True)
+                raise EventConflictError("failure does not name the failed attempt")
+            self._require_point_revision(header, expected_revision)
+            if header.state in {
+                RuntimeEpochState.FAILED,
+                RuntimeEpochState.SEALED,
+            }:
+                raise InvalidEventError("epoch cannot accept a retryable failure")
+            if job.state is not JobState.RUNNING or latest is None:
+                raise InvalidEventError("only a running job can fail retryably")
+            if latest.attempt.attempt_id != attempt_id:
+                raise EventConflictError("failure does not name the active attempt")
+            attempt_rows = self._connection.execute(
+                """
+                UPDATE groundloop_semantic_job_attempt
+                SET attempt_state = 'failed', finished_at = now()
+                WHERE attempt_id = %s AND job_id = %s
+                  AND attempt_state = 'leased'
+                """,
+                (attempt_id, job_id),
+            ).rowcount
+            if attempt_rows != 1:
+                raise EventConflictError("attempt changed before retryable failure")
+            job_rows = self._connection.execute(
+                """
+                UPDATE groundloop_semantic_job SET job_state = 'retryable_failed'
+                WHERE epoch_id = %s AND job_id = %s AND job_state = 'running'
+                """,
+                (epoch_id, job_id),
+            ).rowcount
+            if job_rows != 1:
+                raise EventConflictError("job changed before retryable failure")
+            next_header = self._advance_point_epoch(header, expected_revision)
+            return PointMutationResult(
+                next_header,
+                self.read_job_point(epoch_id, job_id),
+                replayed=False,
+            )
+
+    def complete_point(
+        self,
+        plan: CompletionPlan,
+        *,
+        attempt_id: str,
+        lease_token_hash: str,
+        lease_expected_revision: int,
+        failure_injector: FailureInjector | None = None,
+    ) -> PointMutationResult:
+        """Complete one job without materializing its epoch or runtime history."""
+        epoch_id = plan.expected_epoch_id
+        job_id = plan.completion.job_id
+        with self._connection.transaction():
+            header = self.read_epoch_header_point(epoch_id, for_update=True)
+            job = self.read_job_point(epoch_id, job_id, for_update=True)
+            self._validate_point_lease(
+                header,
+                job,
+                attempt_id=attempt_id,
+                lease_token_hash=lease_token_hash,
+                lease_expected_revision=lease_expected_revision,
+            )
+            if job.state in {
+                JobState.COMPLETED_ACTIVE,
+                JobState.COMPLETED_INACTIVE,
+            }:
+                children = self.read_children_point(epoch_id, job_id)
+                if self._point_completion_is_replay(job, plan, children):
+                    if (
+                        job.latest_attempt is None
+                        or job.latest_attempt.state != "completed"
+                    ):
+                        raise EventConflictError(
+                            "completed job lacks a completed latest attempt"
+                        )
+                    return PointMutationResult(header, job, replayed=True)
+                raise EventConflictError(
+                    "job already completed with different content"
+                )
+            self._require_point_revision(header, plan.expected_revision)
+            if job.state is not JobState.RUNNING:
+                raise InvalidEventError("only a running job can complete")
+            latest = job.latest_attempt
+            if latest is None or latest.state != "leased":
+                raise EventConflictError("completion attempt is not leased")
+            target_active = self._point_target_is_active(header, job.spec)
+            self._validate_point_completion(
+                header,
+                job.spec,
+                plan,
+                target_active=target_active,
+            )
+            collisions = (
+                self._connection.execute(
+                    """
+                    SELECT job_id FROM groundloop_semantic_job
+                    WHERE job_id = ANY(%s)
+                    ORDER BY job_id
+                    """,
+                    ([child.job_id for child in plan.child_jobs],),
+                ).fetchall()
+                if plan.child_jobs
+                else ()
+            )
+            if collisions:
+                raise EventConflictError("completion would redeclare a child job")
+            completed_revision = header.revision + 1
+            for child in plan.child_jobs:
+                self._insert_job(epoch_id, child, created_revision=completed_revision)
+                self._connection.execute(
+                    """
+                    INSERT INTO groundloop_semantic_job_dependency
+                        (epoch_id, parent_job_id, child_job_id)
+                    VALUES (%s, %s, %s)
+                    """,
+                    (epoch_id, job_id, child.job_id),
+                )
+            if failure_injector is not None:
+                failure_injector("point_completion_children_written")
+            closure = plan.completion.child_closure
+            parent_rows = self._connection.execute(
+                """
+                UPDATE groundloop_semantic_job
+                SET job_state = %s, child_closed = %s, child_set_hash = %s,
+                    completion_digest = %s, result_artifact_id = %s,
+                    result_artifact_hash = %s, completed_revision = %s,
+                    completed_at = now()
+                WHERE job_id = %s AND epoch_id = %s AND job_state = 'running'
+                """,
+                (
+                    plan.completion.terminal_state.value,
+                    closure is not None,
+                    None if closure is None else closure.child_set_hash,
+                    plan.completion.completion_digest,
+                    plan.completion.result_artifact_id,
+                    plan.completion.result_artifact_hash,
+                    completed_revision,
+                    job_id,
+                    epoch_id,
+                ),
+            ).rowcount
+            if parent_rows != 1:
+                raise EventConflictError("completion job changed before commit")
+            attempt_rows = self._connection.execute(
+                """
+                UPDATE groundloop_semantic_job_attempt
+                SET attempt_state = 'completed', finished_at = now()
+                WHERE attempt_id = %s AND job_id = %s
+                  AND lease_token_hash = %s AND attempt_state = 'leased'
+                """,
+                (attempt_id, job_id, lease_token_hash),
+            ).rowcount
+            if attempt_rows != 1:
+                raise EventConflictError("completion lease changed before commit")
+            if job.spec.kind is JobKind.IMPACT_DISCOVERY:
+                scope_rows = self._connection.execute(
+                    """
+                    UPDATE groundloop_discovery_scope
+                    SET closed_revision = %s
+                    WHERE root_job_id = %s AND epoch_id = %s
+                      AND closed_revision IS NULL
+                    """,
+                    (completed_revision, job_id, epoch_id),
+                ).rowcount
+                if scope_rows != 1:
+                    raise EventConflictError(
+                        "impact-discovery scope changed before completion"
+                    )
+            if failure_injector is not None:
+                failure_injector("point_completion_parent_written")
+            next_header = self._advance_point_epoch(header, plan.expected_revision)
+            return PointMutationResult(
+                next_header,
+                self.read_job_point(epoch_id, job_id),
+                replayed=False,
+            )
+
+    def fail_epoch_point(
+        self,
+        epoch_id: int,
+        expected_revision: int,
+        reason: str,
+        *,
+        failure_injector: FailureInjector | None = None,
+    ) -> PointMutationResult:
+        """Fail one epoch through its header CAS without reading its jobs."""
+        if not reason.strip():
+            raise ValidationError("epoch failure reason must be non-empty")
+        with self._connection.transaction():
+            header = self.read_epoch_header_point(epoch_id, for_update=True)
+            if header.state is RuntimeEpochState.FAILED:
+                if header.failure_reason == reason:
+                    return PointMutationResult(header, None, replayed=True)
+                raise EventConflictError(
+                    "failed epoch already records another reason"
+                )
+            if header.state is RuntimeEpochState.SEALED:
+                raise InvalidEventError("sealed epoch cannot fail")
+            self._require_point_revision(header, expected_revision)
+            self._connection.execute(
+                """
+                UPDATE groundloop_m4_update
+                SET manifest = jsonb_set(
+                    manifest,
+                    ARRAY[%s, 'failure_reason'],
+                    to_jsonb(%s::text),
+                    true
+                )
+                WHERE epoch_id = %s
+                """,
+                (_RUNTIME_MANIFEST_KEY, reason, epoch_id),
+            )
+            if failure_injector is not None:
+                failure_injector("point_failure_reason_written")
+            row = self._connection.execute(
+                """
+                UPDATE groundloop_epoch
+                SET revision = revision + 1,
+                    structural_status = 'failed', semantic_status = 'failed',
+                    evaluation_state = 'failed', publication_mode = 'provisional',
+                    sealed_at = NULL
+                WHERE epoch_id = %s AND revision = %s
+                RETURNING revision, open_job_count, open_scope_count
+                """,
+                (epoch_id, expected_revision),
+            ).fetchone()
+            if row is None:
+                raise EventConflictError("stale epoch revision")
+            return PointMutationResult(
+                replace(
+                    header,
+                    revision=int(row[0]),
+                    state=RuntimeEpochState.FAILED,
+                    open_job_count=int(row[1]),
+                    open_scope_count=int(row[2]),
+                    failure_reason=reason,
+                ),
+                None,
+                replayed=False,
+            )
+
+    def seal_epoch_point(
+        self,
+        epoch_id: int,
+        expected_revision: int,
+        *,
+        publication_action: PublicationAction,
+        failure_injector: FailureInjector | None = None,
+    ) -> PointMutationResult:
+        """Seal using exact counters rather than scanning all jobs/scopes."""
+        with self._connection.transaction():
+            header = self.read_epoch_header_point(epoch_id, for_update=True)
+            if header.state is RuntimeEpochState.SEALED:
+                return PointMutationResult(header, None, replayed=True)
+            self._require_point_revision(header, expected_revision)
+            if not header.seal_ready:
+                raise InvalidEventError("SQL coordination surface is not sealable")
+            if failure_injector is not None:
+                failure_injector("point_seal_checked")
+            with self._connection.cursor() as transaction_cursor:
+                publication_action(transaction_cursor, epoch_id)
+            head = self._connection.execute(
+                """
+                SELECT epoch_id FROM groundloop_m4_publication_head
+                WHERE singleton
+                """
+            ).fetchone()
+            if head is None or int(head[0]) != epoch_id:
+                raise ValidationError(
+                    "publication action did not advance the M4 publication head"
+                )
+            if failure_injector is not None:
+                failure_injector("point_seal_publication_written")
+            row = self._connection.execute(
+                """
+                UPDATE groundloop_epoch
+                SET revision = revision + 1, structural_status = 'committed',
+                    semantic_status = 'sealed', evaluation_state = 'complete',
+                    publication_mode = 'strict', sealed_at = now()
+                WHERE epoch_id = %s AND revision = %s
+                  AND semantic_status = 'complete'
+                  AND open_job_count = 0 AND open_scope_count = 0
+                RETURNING revision, open_job_count, open_scope_count
+                """,
+                (epoch_id, expected_revision),
+            ).fetchone()
+            if row is None:
+                raise EventConflictError("epoch changed before seal")
+            if failure_injector is not None:
+                failure_injector("point_seal_epoch_written")
+            return PointMutationResult(
+                replace(
+                    header,
+                    revision=int(row[0]),
+                    state=RuntimeEpochState.SEALED,
+                    open_job_count=int(row[1]),
+                    open_scope_count=int(row[2]),
+                ),
+                None,
+                replayed=False,
+            )
+
     def start_attempt(
         self,
         epoch_id: int,
@@ -931,6 +1566,287 @@ class PostgresM4RuntimeStore:
             self._assert_transition(expected.book, epoch_id)
         return expected
 
+    def _read_latest_attempt_point(
+        self, job_id: str, *, for_update: bool
+    ) -> PointAttemptRecord | None:
+        suffix = " FOR UPDATE" if for_update else ""
+        row = self._connection.execute(
+            """
+            SELECT attempt_id, execution_spec_hash, attempt_ordinal,
+                   lease_token_hash, attempt_state, lease_expires_at
+            FROM groundloop_semantic_job_attempt
+            WHERE job_id = %s
+            ORDER BY attempt_ordinal DESC
+            LIMIT 1
+            """
+            + suffix,
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        expiry = row[5]
+        if not isinstance(expiry, datetime):
+            raise ValidationError("stored attempt expiry is not a timestamp")
+        return PointAttemptRecord(
+            attempt=JobAttempt(
+                attempt_id=str(row[0]),
+                job_id=job_id,
+                execution_spec_hash=_strip(row[1]),
+                attempt_ordinal=int(row[2]),
+                lease_token_hash=_strip(row[3]),
+            ),
+            state=str(row[4]),
+            lease_expires_at=expiry,
+        )
+
+    @staticmethod
+    def _point_spec_from_row(row: tuple[object, ...]) -> LogicalJobSpec:
+        kind = JobKind(str(row[3]))
+        claim_id = None if row[7] is None else str(row[7])
+        chunk_id = None if row[8] is None else str(row[8])
+        return LogicalJobSpec(
+            job_id=str(row[1]),
+            event_id=str(row[0]),
+            kind=kind,
+            candidate_policy_id=str(row[4]),
+            payload_hash=_strip(row[5]),
+            execution_spec_hash=_strip(row[6]),
+            parent_job_id=None if row[2] is None else str(row[2]),
+            pair=(
+                PairKey(claim_id, chunk_id)
+                if kind is JobKind.VERIFY_PAIR
+                and claim_id is not None
+                and chunk_id is not None
+                else None
+            ),
+            target_claim_id=(
+                claim_id if kind is JobKind.FRONTIER_RETRIEVE else None
+            ),
+            target_chunk_version_id=(
+                chunk_id if kind is JobKind.IMPACT_DISCOVERY else None
+            ),
+            expandable=bool(row[9]),
+        )
+
+    @classmethod
+    def _point_job_from_row(
+        cls,
+        row: tuple[object, ...],
+        latest: PointAttemptRecord | None,
+    ) -> PointJobRecord:
+        return PointJobRecord(
+            spec=cls._point_spec_from_row(row[:10]),
+            state=JobState(str(row[10])),
+            child_closed=bool(row[11]),
+            child_set_hash=None if row[12] is None else _strip(row[12]),
+            completion_digest=None if row[13] is None else _strip(row[13]),
+            result_artifact_id=None if row[14] is None else str(row[14]),
+            result_artifact_hash=None if row[15] is None else _strip(row[15]),
+            latest_attempt=latest,
+        )
+
+    @staticmethod
+    def _require_point_revision(
+        header: PointEpochHeader, expected_revision: int
+    ) -> None:
+        if expected_revision <= 0:
+            raise ValidationError("expected epoch revision must be positive")
+        if header.revision != expected_revision:
+            raise EventConflictError("stale epoch revision")
+
+    @staticmethod
+    def _validate_point_lease(
+        header: PointEpochHeader,
+        job: PointJobRecord,
+        *,
+        attempt_id: str,
+        lease_token_hash: str,
+        lease_expected_revision: int,
+    ) -> None:
+        if not attempt_id.strip():
+            raise ValidationError("completion attempt_id must be non-empty")
+        if len(lease_token_hash) != 64:
+            raise ValidationError("completion lease token must be a SHA-256 digest")
+        if lease_expected_revision <= 0:
+            raise ValidationError("completion lease revision must be positive")
+        if lease_expected_revision > header.revision:
+            raise EventConflictError("completion lease names a future epoch revision")
+        latest = job.latest_attempt
+        if latest is None:
+            raise InvalidEventError("completion job has no leased attempt")
+        if latest.attempt.attempt_id != attempt_id:
+            raise EventConflictError("completion result belongs to a stale attempt")
+        if latest.attempt.lease_token_hash != lease_token_hash:
+            raise EventConflictError("completion lease token differs from the attempt")
+        if latest.attempt.execution_spec_hash != job.spec.execution_spec_hash:
+            raise EventConflictError("completion attempt execution identity differs")
+
+    @staticmethod
+    def _point_completion_is_replay(
+        job: PointJobRecord,
+        plan: CompletionPlan,
+        children: tuple[LogicalJobSpec, ...],
+    ) -> bool:
+        completion = plan.completion
+        closure = completion.child_closure
+        return (
+            completion.job_id == job.spec.job_id
+            and completion.payload_hash == job.spec.payload_hash
+            and completion.execution_spec_hash == job.spec.execution_spec_hash
+            and completion.terminal_state is job.state
+            and completion.completion_digest == job.completion_digest
+            and completion.result_artifact_id == job.result_artifact_id
+            and completion.result_artifact_hash == job.result_artifact_hash
+            and (closure is not None) == job.child_closed
+            and (None if closure is None else closure.child_set_hash)
+            == job.child_set_hash
+            and children == plan.child_jobs
+        )
+
+    def _point_target_is_active(
+        self, header: PointEpochHeader, spec: LogicalJobSpec
+    ) -> bool:
+        if header.state is RuntimeEpochState.FAILED:
+            return False
+        target_chunk_id = (
+            spec.pair.chunk_version_id
+            if spec.pair is not None
+            else spec.target_chunk_version_id
+        )
+        if target_chunk_id is None:
+            return True
+        row = self._connection.execute(
+            """
+            SELECT 1 FROM groundloop_m4_effective_chunk_version
+            WHERE epoch_id = %s AND chunk_version_id = %s
+            """,
+            (header.epoch_id, target_chunk_id),
+        ).fetchone()
+        return row is not None
+
+    @staticmethod
+    def _validate_point_completion(
+        header: PointEpochHeader,
+        spec: LogicalJobSpec,
+        plan: CompletionPlan,
+        *,
+        target_active: bool,
+    ) -> None:
+        completion = plan.completion
+        if completion.job_id != spec.job_id:
+            raise EventConflictError("completion belongs to another job")
+        if completion.payload_hash != spec.payload_hash:
+            raise EventConflictError("completion payload differs from job payload")
+        if completion.execution_spec_hash != spec.execution_spec_hash:
+            raise EventConflictError(
+                "completion execution identity differs from job"
+            )
+        expected_state = (
+            JobState.COMPLETED_ACTIVE
+            if target_active
+            else JobState.COMPLETED_INACTIVE
+        )
+        if completion.terminal_state is not expected_state:
+            raise InvalidEventError(
+                "completion state disagrees with target activity"
+            )
+        closure = completion.child_closure
+        child_ids = tuple(child.job_id for child in plan.child_jobs)
+        if not spec.expandable:
+            if closure is not None or plan.child_jobs:
+                raise ValidationError(
+                    "non-expandable completion cannot declare children"
+                )
+        else:
+            if closure is None:
+                raise ValidationError(
+                    "expandable completion requires explicit child closure"
+                )
+            if closure.child_job_ids != child_ids:
+                raise EventConflictError(
+                    "child closure and declared child set differ"
+                )
+            expected_closure_digest = stable_m4_digest(
+                "m4-expandable-completion-v1",
+                spec.job_id,
+                completion.result_artifact_hash,
+                closure.child_set_hash,
+            )
+            if closure.completion_digest != expected_closure_digest:
+                raise EventConflictError("child closure is bound to another result")
+            if completion.terminal_state is JobState.COMPLETED_INACTIVE and (
+                plan.child_jobs
+            ):
+                raise InvalidEventError(
+                    "inactive expandable target cannot create children"
+                )
+        for child in plan.child_jobs:
+            if child.kind is not JobKind.VERIFY_PAIR or child.pair is None:
+                raise ValidationError("expansion children must be VERIFY_PAIR jobs")
+            if child.parent_job_id != spec.job_id:
+                raise ValidationError("child names the wrong parent")
+            if child.event_id != header.event_id:
+                raise ValidationError("child event differs from parent epoch")
+            if child.candidate_policy_id != spec.candidate_policy_id:
+                raise ValidationError("child policy differs from parent policy")
+            if spec.kind is JobKind.IMPACT_DISCOVERY:
+                if child.pair.chunk_version_id != spec.target_chunk_version_id:
+                    raise ValidationError(
+                        "impact-discovery child escaped chunk scope"
+                    )
+            elif spec.kind is JobKind.FRONTIER_RETRIEVE:
+                if child.pair.claim_id != spec.target_claim_id:
+                    raise ValidationError("frontier child escaped claim scope")
+        if header.state is RuntimeEpochState.SEALED:
+            raise InvalidEventError("sealed epoch cannot accept completion")
+        if header.state is RuntimeEpochState.FAILED:
+            if completion.terminal_state is not JobState.COMPLETED_INACTIVE:
+                raise InvalidEventError(
+                    "failed epoch accepts only late inactive completion"
+                )
+            if plan.child_jobs:
+                raise InvalidEventError("failed epoch cannot expand late work")
+
+    def _advance_point_epoch(
+        self, header: PointEpochHeader, expected_revision: int
+    ) -> PointEpochHeader:
+        row = self._connection.execute(
+            """
+            UPDATE groundloop_epoch
+            SET revision = revision + 1,
+                structural_status = CASE
+                    WHEN semantic_status = 'failed' THEN 'failed'
+                    ELSE 'committed'
+                END,
+                semantic_status = CASE
+                    WHEN semantic_status = 'failed' THEN 'failed'
+                    WHEN open_job_count = 0 AND open_scope_count = 0
+                        THEN 'complete'
+                    ELSE 'pending'
+                END,
+                evaluation_state = CASE
+                    WHEN semantic_status = 'failed' THEN 'failed'
+                    WHEN open_job_count = 0 AND open_scope_count = 0
+                        THEN 'complete'
+                    ELSE 'pending'
+                END,
+                publication_mode = 'provisional', sealed_at = NULL
+            WHERE epoch_id = %s AND revision = %s
+            RETURNING revision, semantic_status,
+                      open_job_count, open_scope_count
+            """,
+            (header.epoch_id, expected_revision),
+        ).fetchone()
+        if row is None:
+            raise EventConflictError("stale epoch revision")
+        return replace(
+            header,
+            revision=int(row[0]),
+            state=self._runtime_state(str(row[1])),
+            open_job_count=int(row[2]),
+            open_scope_count=int(row[3]),
+        )
+
     def _validate_open_declaration(
         self,
         update: CorpusUpdateIdentity,
@@ -955,10 +1871,9 @@ class PostgresM4RuntimeStore:
         }
         if {scope.root_job_id for scope in scopes} != impact_roots:
             raise ValidationError("each impact root requires exactly one scope")
-        snapshot = (
-            None
-            if self._audit_transitions
-            else self._connection.execute(
+        snapshot = None
+        if not self._audit_transitions:
+            snapshot = self._connection.execute(
                 """
                 SELECT claim_count, claim_set_hash
                 FROM groundloop_m4_claim_registry_snapshot
@@ -966,7 +1881,16 @@ class PostgresM4RuntimeStore:
                 """,
                 (registry_snapshot_id,),
             ).fetchone()
-        )
+            if snapshot is None and any(
+                not scope.registered_claim_ids for scope in scopes
+            ):
+                raise InvalidEventError(
+                    "compact measured scope requires a prebuilt claim registry snapshot"
+                )
+            if snapshot is not None and int(snapshot[0]) != policy.claim_count:
+                raise EventConflictError(
+                    "candidate policy claim count differs from registry snapshot"
+                )
         registered = (
             tuple(
                 str(row[0])
@@ -986,7 +1910,7 @@ class PostgresM4RuntimeStore:
                 raise ValidationError(
                     "all-claims scope must equal the registered claim snapshot"
                 )
-            if snapshot is not None and (
+            if snapshot is not None and scope.registered_claim_ids and (
                 len(scope.registered_claim_ids),
                 stable_m4_digest(
                     "m4-claim-registry-snapshot-v1",
