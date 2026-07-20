@@ -466,7 +466,10 @@ variants are ineligible, apply the same no-selection outcome.
 
 Write `selection.json` containing all development metrics, checkpoint hashes,
 the exact rule above and the selected variant **before** any candidate is run
-on VitaminC test, M3 test or corrected M4.10.
+on VitaminC test, M3 test or corrected M4.10. The selection must also bind the
+hash of the complete immutable development report, including mandatory V1 and
+A1 ablation metrics; terminal validation must reject a missing or changed
+report even though those ablations are not terminal candidates.
 
 ## 9. Calibration
 
@@ -495,6 +498,13 @@ calibration artifact identity must additionally include:
 - example/group/case counts;
 - temperature, NLL before/after by domain and combined; and
 - method/version identifier.
+
+Bind the exact clean repository commit and calibrator implementation-file hash
+used to produce each artifact. Before terminal scoring, the independent
+evaluation path must reconstruct the bound development rows and rerun the
+frozen objective, search, NLL surfaces and acceptance rule, rejecting any
+semantic mismatch. A self-consistent calibration JSON is not sufficient
+evidence by itself.
 
 Accept the new temperature only if combined development NLL decreases and
 neither domain NLL increases by more than 0.01. Otherwise deploy the
@@ -552,7 +562,8 @@ contradiction failure.
 
 ### 10.3 Confidence intervals
 
-Use 1,000 seeded 95% percentile bootstrap resamples and preserve dependence:
+Use exactly 1,000 95% percentile bootstrap resamples with seed `20260720` and
+preserve dependence:
 
 - primary VitaminC intervals resample Wikipedia pages and include all cases and
   transitions from the sampled page;
@@ -560,6 +571,10 @@ Use 1,000 seeded 95% percentile bootstrap resamples and preserve dependence:
 - M3 intervals resample complete `claim_group_id`s; and
 - baseline-candidate deltas use a paired bootstrap with the same sampled units
   for both models.
+
+The production terminal path must reject any other seed or resample count.
+Reduced-count overrides are permitted only in an explicitly synthetic,
+non-scientific test path that cannot emit a promotion verdict.
 
 The frozen M4.13 terminal reserve has one case per normalized page, so page and
 case point estimates and intervals should coincide. Still emit both labeled
@@ -712,6 +727,8 @@ The top-level result manifest must bind:
   trainer-implementation hash, and its per-file dependency hashes;
 - the exact clean repository commit used by evaluation, the canonical
   evaluator-implementation hash, and its per-file dependency hashes;
+- the exact clean repository commit and implementation hash used by
+  calibration, plus the evaluator's independent calibration-replay verdict;
 - primary paper DOI/Anthology ID and source URLs;
 - source repository, hosting commit, archive/member/license hashes;
 - exact row/case/page sampling manifests and split-intersection audit;
