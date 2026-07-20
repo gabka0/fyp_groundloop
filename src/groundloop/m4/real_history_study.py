@@ -19,7 +19,7 @@ import math
 import subprocess
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn, cast
@@ -28,9 +28,11 @@ import psycopg
 from psycopg import Connection
 from psycopg.types.json import Jsonb
 
-from groundloop.ai.contracts import ChunkDraft
+from groundloop.ai.contracts import AtomicClaim, ChunkDraft, VerificationResult
+from groundloop.ai.verification.adapter import PinnedMiniLMVerifier
 from groundloop.domain import AnswerState, ClaimState, normalized_text_hash
 from groundloop.errors import ValidationError
+from groundloop.m4.admission.fusion import fuse_admission_channels
 from groundloop.m4.admission.lexical import (
     LexicalRegistrySnapshot,
     LexicalV1Policy,
@@ -46,6 +48,7 @@ from groundloop.m4.admission.vector import ExactReverseVectorIndex
 from groundloop.m4.artifacts import PostgresM4ArtifactRegistry
 from groundloop.m4.contracts import (
     CandidatePolicyManifest,
+    ChannelHit,
     PairJudgment,
     PairKey,
     SnapshotRefreshResult,
@@ -86,6 +89,7 @@ from groundloop.m4.models.contracts import (
     RoleEmbeddingProvenance,
 )
 from groundloop.m4.models.embedding import ClaimEmbeddingInput
+from groundloop.m4.models.verification import M4CalibratedVerifierAdapter
 from groundloop.m4.oracles.grounding import recompute_grounding_states
 from groundloop.m4.oracles.refresh import (
     RefreshChunk,
@@ -96,8 +100,8 @@ from groundloop.m4.oracles.testing import DeterministicJudgmentTable
 from groundloop.m4.persistence import PostgresM4RuntimeStore
 from groundloop.m4.smoke import _create_schema, _drop_schema, _psycopg_url
 
-_SCHEMA_VERSION = "groundloop-m4-real-git-histories-v1"
-_RESULT_SCHEMA = "groundloop-m4-real-history-study-result-v1"
+_SCHEMA_VERSION = "groundloop-m4-real-git-histories-v2"
+_RESULT_SCHEMA = "groundloop-m4-real-history-study-result-v2"
 _CHUNKER_ID = "git-inclusive-line-range-v1"
 _HEX = frozenset("0123456789abcdef")
 
@@ -217,12 +221,14 @@ class FrozenClaim:
     claim_id: str
     text: str
     required: bool
+    claim_family_id: str
     prior_citation_extraction_ids: tuple[str, ...]
     construction_note: str
 
     def __post_init__(self) -> None:
         _require_text("claim_id", self.claim_id)
         _require_text("claim text", self.text)
+        _require_text("claim_family_id", self.claim_family_id)
         _require_text("construction_note", self.construction_note)
         if self.prior_citation_extraction_ids != tuple(
             sorted(set(self.prior_citation_extraction_ids))
@@ -454,6 +460,9 @@ def load_real_git_study_definition(path: Path) -> RealGitStudyDefinition:
                     claim_id=_text(item.get("claim_id"), "claim_id"),
                     text=_text(item.get("text"), "claim text"),
                     required=_boolean(item.get("required"), "required"),
+                    claim_family_id=_text(
+                        item.get("claim_family_id"), "claim_family_id"
+                    ),
                     prior_citation_extraction_ids=citations,
                     construction_note=_text(
                         item.get("construction_note"), "construction_note"
@@ -1162,6 +1171,37 @@ def _lineage_pairs(history: VerifiedGitHistory) -> tuple[PairKey, ...]:
     )
 
 
+def _history_component_ids(history: VerifiedGitHistory) -> tuple[str, ...]:
+    normalized_contents = {
+        normalized_text_hash(claim.text) for claim in history.spec.claims
+    }
+    for excerpt in history.excerpts:
+        normalized_contents.add(normalized_text_hash(excerpt.child_text))
+        if excerpt.parent_text is not None:
+            normalized_contents.add(normalized_text_hash(excerpt.parent_text))
+    return tuple(
+        sorted(
+            {
+                f"repo:{history.spec.repository_url}",
+                f"path:{history.spec.repository_url}:{history.spec.path}",
+                f"commit:{history.spec.repository_url}:{history.spec.commit}",
+                (
+                    "document-lineage:"
+                    f"{history.spec.repository_url}:{history.spec.path}"
+                ),
+                *(
+                    f"claim-family:{claim.claim_family_id}"
+                    for claim in history.spec.claims
+                ),
+                *(
+                    f"normalized-content:{content_hash}"
+                    for content_hash in normalized_contents
+                ),
+            }
+        )
+    )
+
+
 def _policies(definition: RealGitStudyDefinition) -> tuple[PolicySpec, ...]:
     details = {
         AblationKind.EXHAUSTIVE_REFRESH: "independent_snapshot_refresh_k",
@@ -1192,23 +1232,190 @@ def _policies(definition: RealGitStudyDefinition) -> tuple[PolicySpec, ...]:
     )
 
 
-def _treatment_work(
+def _fused_approximate_pairs(
     *,
-    pair_count: int,
-    input_tokens: int,
+    manifest: CandidatePolicyManifest,
+    inserted_chunk_ids: tuple[str, ...],
+    vector_hits: tuple[ChannelHit, ...],
+    lexical_hits: tuple[ChannelHit, ...],
+) -> tuple[PairKey, ...]:
+    fused = fuse_admission_channels(
+        inserted_chunk_ids=inserted_chunk_ids,
+        manifest=manifest,
+        vector_hits=vector_hits,
+        lexical_hits=lexical_hits,
+    )
+    return tuple(sorted(item.pair for item in fused.admitted_pairs))
+
+
+class _MeasuredVerifierBackend:
+    """Count and time real MiniLM batch calls without changing model semantics."""
+
+    def __init__(self, delegate: PinnedMiniLMVerifier) -> None:
+        self._delegate = delegate
+        self.model_artifact = delegate.model_artifact
+        self.prompt_artifact = delegate.prompt_artifact
+        self.calibration_version = delegate.calibration_version
+        self.temperature = delegate.temperature
+        self.max_length = delegate.max_length
+        self.call_count = 0
+        self.attempted_pair_count = 0
+        self.completed_pair_count = 0
+        self.batch_latencies_ms: list[float] = []
+
+    def verify_batch(
+        self, pairs: Sequence[tuple[AtomicClaim, ChunkDraft]]
+    ) -> tuple[VerificationResult, ...]:
+        self.call_count += 1
+        self.attempted_pair_count += len(pairs)
+        started = time.perf_counter_ns()
+        results = self._delegate.verify_batch(pairs)
+        self.batch_latencies_ms.append(
+            (time.perf_counter_ns() - started) / 1_000_000.0
+        )
+        self.completed_pair_count += len(results)
+        return results
+
+
+@dataclass(frozen=True, slots=True)
+class _ExecutedTreatment:
+    artifacts: tuple[PairVerificationArtifact, ...]
+    work: VerifierMeasurement
+    verifier_latency_ms: float
+    batch_latencies_ms: tuple[float, ...]
+
+
+def _assert_same_operational_judgment(
+    actual: PairVerificationArtifact,
+    expected: PairVerificationArtifact,
+) -> None:
+    actual_result = actual.result
+    expected_result = expected.result
+    exact_actual = (
+        actual.pair,
+        actual.pair_input_hash,
+        actual.execution_spec_hash,
+        actual.decision_policy_version,
+        actual.decision_policy_hash,
+        actual.operational_label,
+        actual_result.claim_id,
+        actual_result.chunk_version_id,
+        actual_result.candidate_id,
+        actual_result.model_artifact_id,
+        actual_result.prompt_artifact_id,
+        actual_result.calibration_version,
+        actual_result.temperature,
+        actual_result.input_hash,
+    )
+    exact_expected = (
+        expected.pair,
+        expected.pair_input_hash,
+        expected.execution_spec_hash,
+        expected.decision_policy_version,
+        expected.decision_policy_hash,
+        expected.operational_label,
+        expected_result.claim_id,
+        expected_result.chunk_version_id,
+        expected_result.candidate_id,
+        expected_result.model_artifact_id,
+        expected_result.prompt_artifact_id,
+        expected_result.calibration_version,
+        expected_result.temperature,
+        expected_result.input_hash,
+    )
+    if exact_actual != exact_expected:
+        raise ValidationError(
+            "treatment verifier operational identity or label differs from the "
+            "frozen exhaustive table"
+        )
+    actual_values = (
+        actual_result.scores.support,
+        actual_result.scores.refute,
+        actual_result.scores.neutral,
+        *(actual_result.raw_logits or ()),
+    )
+    expected_values = (
+        expected_result.scores.support,
+        expected_result.scores.refute,
+        expected_result.scores.neutral,
+        *(expected_result.raw_logits or ()),
+    )
+    if len(actual_values) != len(expected_values) or any(
+        not math.isclose(actual_value, expected_value, rel_tol=1e-6, abs_tol=1e-6)
+        for actual_value, expected_value in zip(
+            actual_values, expected_values, strict=True
+        )
+    ):
+        raise ValidationError(
+            "treatment verifier scores differ materially from the frozen "
+            "exhaustive table"
+        )
+
+
+def _build_treatment_verifier_backend(
+    config: PinnedM3ReuseConfig,
+    bundle: PinnedM3AdapterBundle,
+) -> PinnedMiniLMVerifier:
+    checkpoint = bundle.availability.verifier_checkpoint
+    if checkpoint is None:
+        raise ValidationError("treatment verifier checkpoint is unavailable")
+    return PinnedMiniLMVerifier(
+        model_path=str(checkpoint),
+        model_revision=config.verifier_revision,
+        temperature=config.calibration_temperature,
+        max_length=config.verifier_max_length,
+        batch_size=config.verifier_batch_size,
+        local_files_only=True,
+        artifact_sha256=config.verifier_checkpoint_tree_sha256,
+        logical_model_id=config.verifier_logical_model_id,
+        calibration_version=config.calibration_version,
+    )
+
+
+def _execute_treatment(
+    *,
+    backend: PinnedMiniLMVerifier,
+    bundle: PinnedM3AdapterBundle,
+    inputs: tuple[PairVerificationInput, ...],
+    expected_artifacts: tuple[PairVerificationArtifact, ...],
+    token_counts: Mapping[PairKey, int],
     batch_size: int,
-) -> VerifierMeasurement:
-    return VerifierMeasurement(
-        attempted_pair_count=pair_count,
-        completed_pair_count=pair_count,
-        failed_pair_count=0,
-        timeout_pair_count=0,
-        call_count=math.ceil(pair_count / batch_size) if pair_count else 0,
-        input_tokens=input_tokens,
-        output_tokens=None,
-        retrieval_latency_ms=None,
-        verifier_latency_ms=None,
-        end_to_end_latency_ms=None,
+) -> _ExecutedTreatment:
+    measured_backend = _MeasuredVerifierBackend(backend)
+    verifier = M4CalibratedVerifierAdapter(
+        measured_backend,
+        bundle.verifier.spec,
+        batch_size=batch_size,
+    )
+    started = time.perf_counter_ns()
+    artifacts = verifier.verify_pairs(inputs)
+    verifier_latency_ms = (time.perf_counter_ns() - started) / 1_000_000.0
+    if len(artifacts) != len(expected_artifacts):
+        raise ValidationError("treatment verifier returned the wrong artifact count")
+    for artifact, expected in zip(artifacts, expected_artifacts, strict=True):
+        _assert_same_operational_judgment(artifact, expected)
+    if (
+        measured_backend.attempted_pair_count != len(inputs)
+        or measured_backend.completed_pair_count != len(inputs)
+        or measured_backend.call_count != len(measured_backend.batch_latencies_ms)
+    ):
+        raise ValidationError("treatment verifier measurement is incomplete")
+    return _ExecutedTreatment(
+        artifacts=artifacts,
+        work=VerifierMeasurement(
+            attempted_pair_count=measured_backend.attempted_pair_count,
+            completed_pair_count=measured_backend.completed_pair_count,
+            failed_pair_count=0,
+            timeout_pair_count=0,
+            call_count=measured_backend.call_count,
+            input_tokens=sum(token_counts[item.pair] for item in inputs),
+            output_tokens=None,
+            retrieval_latency_ms=None,
+            verifier_latency_ms=None,
+            end_to_end_latency_ms=None,
+        ),
+        verifier_latency_ms=verifier_latency_ms,
+        batch_latencies_ms=tuple(measured_backend.batch_latencies_ms),
     )
 
 
@@ -1488,8 +1695,10 @@ def run_real_history_study(
     histories = verify_git_histories(definition, config.source_roots)
     model_config = PinnedM3ReuseConfig.load(config.resolved_model_config_path)
     bundle = build_pinned_m3_adapters(model_config, artifact_root=config.artifact_root)
+    treatment_backend = _build_treatment_verifier_backend(model_config, bundle)
     output = config.output_directory
     output.mkdir(parents=True, exist_ok=True)
+    (output / "failures_timeouts.jsonl").unlink(missing_ok=True)
 
     policies = _policies(definition)
     policy_by_kind = {policy.kind: policy for policy in policies}
@@ -1503,9 +1712,10 @@ def run_real_history_study(
     admission_rows: list[Mapping[str, object]] = []
     event_rows: list[Mapping[str, object]] = []
     timing_rows: list[Mapping[str, object]] = []
-    failure_rows: list[Mapping[str, object]] = []
     actual_oracle_pair_executions = 0
     actual_oracle_batch_executions = 0
+    actual_treatment_pair_executions = 0
+    actual_treatment_batch_executions = 0
 
     for history in histories:
         claim_inputs = tuple(
@@ -1551,7 +1761,7 @@ def run_real_history_study(
             artifact.to_pair_judgment(split_id=definition.split_id)
             for artifact in artifacts
         )
-        judgment_by_pair = {judgment.pair: judgment for judgment in judgments}
+        artifact_by_pair = {artifact.pair: artifact for artifact in artifacts}
         input_by_pair = {item.pair: item for item in pair_inputs}
         artifact_rows.extend(
             _artifact_payload(
@@ -1565,36 +1775,7 @@ def run_real_history_study(
         exact_index = ExactReverseVectorIndex(
             tuple(artifact.vector for artifact in claim_artifacts)
         )
-        started = time.perf_counter_ns()
-        vector_searches = tuple(
-            exact_index.search(
-                epoch_id=1,
-                candidate_policy_id=f"m4-10-vector:{history.spec.history_id}",
-                chunk=chunk.vector,
-                limit=definition.admission.vector_depth,
-            )
-            for chunk in chunk_artifacts
-        )
-        vector_hits = tuple(hit for search in vector_searches for hit in search.hits)
-        vector_latency_ms = (time.perf_counter_ns() - started) / 1_000_000.0
-        vector_pairs = tuple(sorted({hit.pair for hit in vector_hits}))
         event_id = f"m4-10-event:{history.spec.history_id}:{history.spec.commit[:12]}"
-        admission_query_rows.extend(
-            {
-                "history_id": history.spec.history_id,
-                "event_id": event_id,
-                "channel": "vector",
-                "chunk_version_id": chunk.vector.chunk_version_id,
-                "query_artifact_hash": search.query_artifact_hash,
-                "chunk_input_hash": chunk.vector.input_hash,
-                "requested_limit": definition.admission.vector_depth,
-                "returned_count": len(search.hits),
-                "indexed_claim_count": exact_index.claim_count,
-                "index_kind": "exact",
-                "score_semantics": "dot_l2_normalized_bge_role_vectors",
-            }
-            for chunk, search in zip(chunk_artifacts, vector_searches, strict=True)
-        )
 
         schema_name = f"groundloop_m4_10_real_{uuid.uuid4().hex}"
         admin = psycopg.connect(_psycopg_url(config.database_url), autocommit=True)
@@ -1607,6 +1788,44 @@ def run_real_history_study(
                 bundle=bundle,
                 server=server,
                 repo_root=config.repo_root,
+            )
+            started = time.perf_counter_ns()
+            vector_searches = tuple(
+                exact_index.search(
+                    epoch_id=1,
+                    candidate_policy_id=manifest.policy_id,
+                    chunk=chunk.vector,
+                    limit=definition.admission.vector_depth,
+                )
+                for chunk in chunk_artifacts
+            )
+            vector_hits = tuple(
+                hit for search in vector_searches for hit in search.hits
+            )
+            vector_latency_ms = (time.perf_counter_ns() - started) / 1_000_000.0
+            vector_pairs = tuple(sorted({hit.pair for hit in vector_hits}))
+            admission_query_rows.extend(
+                {
+                    "history_id": history.spec.history_id,
+                    "event_id": event_id,
+                    "channel": "vector",
+                    "chunk_version_id": chunk.vector.chunk_version_id,
+                    "query_artifact_hash": search.query_artifact_hash,
+                    "chunk_input_hash": chunk.vector.input_hash,
+                    "requested_limit": definition.admission.vector_depth,
+                    "returned_count": len(search.hits),
+                    "indexed_claim_count": exact_index.claim_count,
+                    "policy_id": manifest.policy_id,
+                    "policy_hash": manifest.policy_hash,
+                    "claim_registry_snapshot_id": (
+                        manifest.claim_registry_snapshot_id
+                    ),
+                    "index_kind": "exact",
+                    "score_semantics": "dot_l2_normalized_bge_role_vectors",
+                }
+                for chunk, search in zip(
+                    chunk_artifacts, vector_searches, strict=True
+                )
             )
             # Seeding the audit envelope needs the selected union state. Lexical
             # retrieval needs the same persisted claim registry, so seed base
@@ -1710,6 +1929,11 @@ def run_real_history_study(
                     "chunk_version_id": hit.pair.chunk_version_id,
                     "rank": hit.rank,
                     "score": hit.score,
+                    "policy_id": hit.candidate_policy_id,
+                    "policy_hash": manifest.policy_hash,
+                    "claim_registry_snapshot_id": (
+                        manifest.claim_registry_snapshot_id
+                    ),
                     "channel_artifact_hash": hit.channel_artifact_hash,
                     "query_artifact_hash": lexical_queries[
                         hit.pair.chunk_version_id
@@ -1743,6 +1967,9 @@ def run_real_history_study(
                 "chunk_version_id": hit.pair.chunk_version_id,
                 "rank": hit.rank,
                 "score": hit.score,
+                "policy_id": hit.candidate_policy_id,
+                "policy_hash": manifest.policy_hash,
+                "claim_registry_snapshot_id": manifest.claim_registry_snapshot_id,
                 "channel_artifact_hash": hit.channel_artifact_hash,
                 "query_artifact_hash": vector_query_by_chunk[hit.pair.chunk_version_id],
                 "score_semantics": "dot_l2_normalized_bge_role_vectors",
@@ -1750,7 +1977,14 @@ def run_real_history_study(
             for hit in vector_hits
         )
 
-        union_pairs = tuple(sorted(set(vector_pairs) | set(lexical_pairs)))
+        union_pairs = _fused_approximate_pairs(
+            manifest=manifest,
+            inserted_chunk_ids=tuple(
+                sorted(draft.chunk_version_id for draft in drafts)
+            ),
+            vector_hits=vector_hits,
+            lexical_hits=lexical_hits,
+        )
         lineage_pairs = tuple(sorted(set(union_pairs) | set(_lineage_pairs(history))))
         # M3-imported claims have no invented reserve. In this fixture every
         # withdrawn explicit citation is immediately covered by mandatory
@@ -1766,20 +2000,24 @@ def run_real_history_study(
         try:
             _create_schema(audit_connection, schema_name)
             server = PostgresAdmissionServerIdentity.inspect(audit_connection)
-            manifest = _policy_manifest(
+            audit_manifest = _policy_manifest(
                 history=history,
                 definition=definition,
                 bundle=bundle,
                 server=server,
                 repo_root=config.repo_root,
             )
+            if audit_manifest != manifest:
+                raise ValidationError(
+                    "candidate policy changed between admission and persisted audit"
+                )
             persisted, refresh, oracle, raw_event = _persist_oracle_event(
                 audit_connection,
                 definition=definition,
                 history=history,
                 model_config=model_config,
                 bundle=bundle,
-                manifest=manifest,
+                manifest=audit_manifest,
                 drafts=drafts,
                 refresh_claims=refresh_claims,
                 judgments=judgments,
@@ -1804,13 +2042,47 @@ def run_real_history_study(
             AblationKind.FRONTIER: frontier_pairs,
             AblationKind.FRESH_FALLBACK: fresh_pairs,
         }
+        treatment_timing_details: list[Mapping[str, object]] = []
         for kind in AblationKind:
             pairs = tuple(sorted(pair_sets[kind]))
-            selected_judgments = tuple(judgment_by_pair[pair] for pair in pairs)
+            execution = _execute_treatment(
+                backend=treatment_backend,
+                bundle=bundle,
+                inputs=tuple(input_by_pair[pair] for pair in pairs),
+                expected_artifacts=tuple(artifact_by_pair[pair] for pair in pairs),
+                token_counts=token_counts,
+                batch_size=model_config.verifier_batch_size,
+            )
+            selected_judgments = tuple(
+                artifact.to_pair_judgment(split_id=definition.split_id)
+                for artifact in execution.artifacts
+            )
             projected = _status_projection(
                 oracle, _states(history, drafts, selected_judgments)
             )
             policy = policy_by_kind[kind]
+            actual_treatment_pair_executions += execution.work.completed_pair_count
+            actual_treatment_batch_executions += execution.work.call_count
+            treatment_timing_details.append(
+                {
+                    "policy_id": policy.policy_id,
+                    "event_id": oracle.event_id,
+                    "attempted_pair_count": execution.work.attempted_pair_count,
+                    "completed_pair_count": execution.work.completed_pair_count,
+                    "batch_call_count": execution.work.call_count,
+                    "verifier_latency_ms": execution.verifier_latency_ms,
+                    "batch_latencies_ms": list(execution.batch_latencies_ms),
+                    "artifact_ids": [
+                        artifact.artifact_id for artifact in execution.artifacts
+                    ],
+                    "raw_output_hashes": [
+                        artifact.result.raw_output_hash
+                        for artifact in execution.artifacts
+                    ],
+                    "timeout_deadline_enforced": False,
+                    "timeout_outcome_count": 0,
+                }
+            )
             treatments.append(
                 TreatmentEvent(
                     policy_id=policy.policy_id,
@@ -1824,11 +2096,7 @@ def run_real_history_study(
                     admitted_pairs=pairs,
                     claim_post_statuses=projected[0],
                     answer_post_statuses=projected[1],
-                    work=_treatment_work(
-                        pair_count=len(pairs),
-                        input_tokens=sum(token_counts[pair] for pair in pairs),
-                        batch_size=model_config.verifier_batch_size,
-                    ),
+                    work=execution.work,
                 )
             )
         source_rows.append(
@@ -1865,6 +2133,7 @@ def run_real_history_study(
                         "claim_id": claim.claim_id,
                         "text_sha256": sha256_text(claim.text),
                         "required": claim.required,
+                        "claim_family_id": claim.claim_family_id,
                         "prior_citation_extraction_ids": list(
                             claim.prior_citation_extraction_ids
                         ),
@@ -1890,14 +2159,18 @@ def run_real_history_study(
                 "vector_ranking_latency_ms": vector_latency_ms,
                 "postgres_lexical_latency_ms": lexical_latency_ms,
                 "oracle_verifier_latency_ms": oracle_verifier_ms,
+                "treatment_verifier_executions": treatment_timing_details,
                 "classifier_output_tokens": None,
                 "classifier_output_tokens_null_reason": (
                     "three-way classifier emits logits and does not generate tokens"
                 ),
-                "counterfactual_treatment_verifier_latency_ms": None,
-                "counterfactual_treatment_latency_null_reason": (
-                    "pair judgments were executed once and reused across treatments; "
-                    "counterfactual batched latency was not re-executed"
+                "treatment_work_latency_location": (
+                    "run-varying per-treatment and per-batch latencies are stored in "
+                    "this timing sidecar, outside deterministic empirical manifests"
+                ),
+                "timeout_policy": (
+                    "no deadline was enforced; zero denotes observed timeout outcomes, "
+                    "not a deadline-qualified timeout rate"
                 ),
                 "first_history_includes_lazy_model_load": (
                     history.spec.history_id == histories[0].spec.history_id
@@ -1909,15 +2182,7 @@ def run_real_history_study(
         HistoryAssignment(
             history_id=history.spec.history_id,
             split_id=definition.split_id,
-            component_ids=tuple(
-                sorted(
-                    (
-                        f"repo:{history.spec.repository_url}",
-                        f"path:{history.spec.repository_url}:{history.spec.path}",
-                        f"commit:{history.spec.repository_url}:{history.spec.commit}",
-                    )
-                )
-            ),
+            component_ids=_history_component_ids(history),
         )
         for history in histories
     )
@@ -1991,7 +2256,6 @@ def run_real_history_study(
     runtime_source_rows_tuple = tuple(
         sorted(runtime_source_rows, key=lambda row: str(row["history_id"]))
     )
-    failures_tuple = tuple(failure_rows)
     file_hashes = {
         "source_manifest.json": _write_json(
             output / "source_manifest.json", source_rows_tuple
@@ -2011,9 +2275,6 @@ def run_real_history_study(
         "persisted_event_rows.jsonl": _write_jsonl(
             output / "persisted_event_rows.jsonl", event_rows_tuple
         ),
-        "failures_timeouts.jsonl": _write_jsonl(
-            output / "failures_timeouts.jsonl", failures_tuple
-        ),
         "timings.json": _write_json(output / "timings.json", timing_rows_tuple),
         "runtime_sources.json": _write_json(
             output / "runtime_sources.json", runtime_source_rows_tuple
@@ -2031,13 +2292,16 @@ def run_real_history_study(
         "admission_queries_sha256": file_hashes["admission_queries.jsonl"],
         "admission_channel_hits_sha256": file_hashes["admission_channel_hits.jsonl"],
         "persisted_event_rows_sha256": file_hashes["persisted_event_rows.jsonl"],
-        "failures_timeouts_sha256": file_hashes["failures_timeouts.jsonl"],
         "history_count": len(histories),
         "source_repository_count": len({h.spec.repository_url for h in histories}),
         "event_count": len(oracle_events),
         "treatment_count": len(treatments),
         "actual_oracle_model_pair_executions": actual_oracle_pair_executions,
         "actual_oracle_model_batch_executions": actual_oracle_batch_executions,
+        "actual_treatment_model_pair_executions": actual_treatment_pair_executions,
+        "actual_treatment_model_batch_executions": actual_treatment_batch_executions,
+        "treatment_verifier_measurement_kind": "observed_real_execution",
+        "timeout_deadline_enforced": False,
         "embedding_artifact_count": len(embedding_rows_tuple),
         "admission_query_count": len(admission_query_rows_tuple),
         "admission_zero_hit_query_count": sum(
@@ -2046,8 +2310,6 @@ def run_real_history_study(
         "admission_channel_hit_count": len(admission_rows_tuple),
         "persisted_event_audit_count": len(event_rows),
         "persisted_event_audit_exact_replay_count": len(event_rows),
-        "failure_count": len(failure_rows),
-        "timeout_count": 0,
         "model_identity": {
             "embedding_model_id": model_config.embedding_model_id,
             "embedding_revision": model_config.embedding_revision,
@@ -2066,6 +2328,12 @@ def run_real_history_study(
             "model_accuracy_claimed": False,
             "statistically_reliable_confidence_interval_claimed": False,
             "independence_claimed": False,
+            "cross_split_leakage_claimed": False,
+            "split_note": (
+                "Claim-family and exact normalized-content components are declared, "
+                "but this pilot has one test split, so cross-split validation is "
+                "vacuous until development/train histories are added."
+            ),
             "cluster_bootstrap_note": (
                 "Three repository clusters are too few for reliable uncertainty claims."
             ),

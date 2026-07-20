@@ -1,5 +1,5 @@
 {
-  "schema_version": "groundloop-m4-real-git-histories-v1",
+  "schema_version": "groundloop-m4-real-git-histories-v2",
   "study_id": "m4-10-naturally-versioned-doc-pilot-v1",
   "split_id": "test",
   "annotation_protocol": {
@@ -53,6 +53,7 @@
           "claim_id": "claim-bustub-development-ubuntu-22",
           "text": "BusTub recommends Ubuntu 22.04 for development.",
           "required": true,
+          "claim_family_id": "bustub-ubuntu-platform-guidance",
           "prior_citation_extraction_ids": ["build-platform-paragraph"],
           "construction_note": "Old-version claim expected to be contradicted by the child excerpt."
         },
@@ -60,6 +61,7 @@
           "claim_id": "claim-bustub-grading-ubuntu-22",
           "text": "The BusTub grading environment runs Ubuntu 22.04.",
           "required": true,
+          "claim_family_id": "bustub-ubuntu-platform-guidance",
           "prior_citation_extraction_ids": [],
           "construction_note": "Old-version claim expected to be contradicted by the child excerpt."
         },
@@ -67,6 +69,7 @@
           "claim_id": "claim-bustub-wsl-unsupported",
           "text": "BusTub does not support WSL.",
           "required": false,
+          "claim_family_id": "bustub-wsl-support",
           "prior_citation_extraction_ids": [],
           "construction_note": "Stable claim retained in both versions."
         }
@@ -104,6 +107,7 @@
           "claim_id": "claim-dynagox-is-hardware-tee",
           "text": "The Secure CROWN ProtectedOramStore prototype is a hardware TEE implementation.",
           "required": true,
+          "claim_family_id": "dynagox-protected-oram-implementation-boundary",
           "prior_citation_extraction_ids": [],
           "construction_note": "Inserted documentation explicitly negates this claim."
         },
@@ -111,6 +115,7 @@
           "claim_id": "claim-dynagox-buckets-protected",
           "text": "External ORAM bucket blobs are encrypted, authenticated, and replay-checked.",
           "required": true,
+          "claim_family_id": "dynagox-protected-oram-bucket-protection",
           "prior_citation_extraction_ids": [],
           "construction_note": "Inserted documentation explicitly states this claim."
         },
@@ -118,6 +123,7 @@
           "claim_id": "claim-dynagox-direct-maps-visible",
           "text": "Direct keyed maps are excluded from the protected path because they expose the access pattern.",
           "required": false,
+          "claim_family_id": "dynagox-protected-oram-access-pattern-boundary",
           "prior_citation_extraction_ids": [],
           "construction_note": "Inserted documentation explicitly states this claim."
         }
@@ -165,6 +171,7 @@
           "claim_id": "claim-mp-spdz-fixed-16-16",
           "text": "In binary circuits, MP-SPDZ sfix uses 16/16-bit precision by default.",
           "required": true,
+          "claim_family_id": "mp-spdz-sfix-precision",
           "prior_citation_extraction_ids": ["binary-fixed-point"],
           "construction_note": "Old-version claim expected to be contradicted by the child excerpt."
         },
@@ -172,6 +179,7 @@
           "claim_id": "claim-mp-spdz-sbitint-type",
           "text": "MP-SPDZ uses sbitint.get_type(n) to obtain a type for n-bit arithmetic.",
           "required": true,
+          "claim_family_id": "mp-spdz-binary-integer-api",
           "prior_citation_extraction_ids": [],
           "construction_note": "Old-version claim expected to be contradicted by the child excerpt."
         },
@@ -179,6 +187,7 @@
           "claim_id": "claim-mp-spdz-boost-1-81",
           "text": "MP-SPDZ tested Boost.Asio and Boost.Thread against Boost 1.81.",
           "required": false,
+          "claim_family_id": "mp-spdz-boost-compatibility",
           "prior_citation_extraction_ids": ["dependency-versions"],
           "construction_note": "Old-version claim expected to be contradicted by the child excerpt."
         },
@@ -186,6 +195,7 @@
           "claim_id": "claim-mp-spdz-set-precision",
           "text": "MP-SPDZ lets users change the default sfix precision with sfix.set_precision.",
           "required": false,
+          "claim_family_id": "mp-spdz-sfix-precision",
           "prior_citation_extraction_ids": [],
           "construction_note": "Stable claim retained in both versions."
         }

@@ -1,8 +1,8 @@
 # M4.10 naturally-versioned real-history study handoff
 
-Status: implemented and executed on 2026-07-20
+Status: implemented, adversarially corrected and re-executed on 2026-07-20
 
-Base commit: `dd829396707447bfd349db93a316121f7a5a3c2f`
+Audit-fix base commit: `fe8b4b6`
 
 Owned paths only:
 
@@ -27,6 +27,15 @@ The implementation now proves that the real-study path can:
    integrated `groundloop.m4.empirical_eval` contract; and
 6. emit deterministic structural outputs separately from run-varying timing.
 
+The post-audit implementation uses the canonical `rank-interleave-v1` fusion
+operator and enforces the per-inserted-chunk cap `L=1`. Every vector and
+lexical query/hit carries the exact candidate-policy ID and hash registered in
+PostgreSQL. Each treatment independently executes its selected pairs through a
+cache-empty MiniLM adapter; returned operational labels and numerically
+equivalent scores must agree with the exhaustive table before treatment status
+is derived. Pair, batch and input-token fields are therefore observed work,
+not counterfactual estimates.
+
 It cannot support a model-quality, statistically reliable, or general
 selective-maintenance conclusion. There are only three repository clusters,
 ten fixture-author claims, four changed/inserted excerpts, fourteen exhaustive
@@ -46,6 +55,13 @@ SHA-256, Git blob OIDs, whole-file SHA-256 values, inclusive line ranges and
 excerpt SHA-256 values. Runtime checkout paths are written only to
 `runtime_sources.json`; they are not used as source identity or included in the
 deterministic structural hash.
+
+Every claim now declares a semantic claim-family component. The adapter also
+derives exact normalized-content components for claims and parent/child
+excerpts, alongside repository, path, commit and document-lineage components.
+This makes future component-level split checks meaningful, but this pilot has
+only one `test` split. Its present cross-split leakage check is consequently
+vacuous and no leakage-isolation result is claimed.
 
 Claims are manually curated benchmark inputs. The config says explicitly that
 there was no independent annotator or adjudication. The model's exhaustive
@@ -107,15 +123,19 @@ No output bundle is committed. The run writes:
 - actual vector/lexical hit scores, ranks and query hashes;
 - raw model input/output JSONL with hashes and untruncated input-token counts;
 - raw persisted event-audit rows;
-- explicit failures/timeouts JSONL;
-- timing and runtime-source JSON; and
+- run-varying oracle, retrieval, per-treatment and per-batch timing, including
+  treatment artifact identities;
+- runtime-source JSON; and
 - a top-level result manifest.
 
 Classifier output-token fields are null with a reason because a three-way
-classifier emits logits, not generated tokens. Counterfactual per-treatment
-verifier latency is null because the exhaustive pair judgments are executed
-once and reused; the actual oracle model and retrieval component timings are
-reported separately.
+classifier emits logits, not generated tokens. Treatment latency remains null
+inside the deterministic empirical manifest and is recorded instead in
+`timings.json`. No timeout deadline is enforced. Zero timeout outcomes mean
+that every attempted pair completed in these runs; they are not a
+deadline-qualified timeout measurement. The runner does not emit an
+always-empty failure/timeout file: an execution exception terminates the run
+without a completed result bundle.
 
 ## Exact executed result
 
@@ -123,33 +143,35 @@ Two complete runs produced the same deterministic hashes and different timing
 hashes:
 
 - structural hash:
-  `8d79324b8c3ecccefa42c42e811ccaf3fcde72a20633d324a03ccd88f7b20bef`
+  `92d7586c78f40ae447d97f703a51caf4dbdefc76ee911cde298dc841e1a5144d`
 - study manifest hash:
-  `324c3249df09351331a13458418b1c8730f4df0b75fd37aaea1ad663e92b1921`
+  `c2f009ea381d5ddff6295375d88efeece56c9fb4dbf7d3b0e1222df25af60438`
 - report hash:
-  `ba46b39dabf26978d5190789ebca5503c59ba0df1da20356fc10f14ee400004b`
+  `71a52641b90ad908c6122f1750ac7724def08aee02d013393d24a04c2b44fd3e`
 - empirical bundle hash:
-  `948d8219380e3c37159f0c1a59806de84e2515a2e57327e82f010291d99e99fc`
+  `02229805627c4a2412be3257244e613bf4fd8c79e6a737b69b7b73777a6c66c6`
 - run A timing hash:
-  `3c7e0f2a38cd2f86c6421c9b22efcb618d1fc4d32fcc8bde2287c0a5da8d726f`
+  `917b4c4befdad7c8d3307d47de9cc8d90bb3becbb97d64d226583c5c0dd473d7`
 - run B timing hash:
-  `6f8b093590ff1b03da4cea787f2390b4403149fa6c3e640a92870a8ee257bd66`
+  `6bad8881e68329b6beede94ab9d3f83d327e91c0568ecbcd598770e0cb543ef1`
 
 Both runs had:
 
 - 3 histories, 3 events and 21 aligned treatment rows;
 - 14 actual exhaustive model pair executions in 3 model batches;
+- 39 additional actual treatment model pair executions in 20 model batches;
 - 14 embedding artifacts with pinned input and vector hashes;
 - 8 executed admission queries (4 exact-vector and 4 PostgreSQL lexical),
   including 2 explicitly recorded zero-hit lexical queries;
 - 6 finite-scored channel hits (4 vector and 2 lexical);
 - 3 created plus 3 exact-replayed persisted event audits;
-- zero execution failures and zero timeouts; and
+- all 39 attempted treatment pairs completed, with no timeout outcome and no
+  enforced timeout deadline; and
 - 13 byte-identical deterministic files across the two runs, including source,
   embedding, query, hit, verifier, persisted-audit, empirical JSON and
   empirical CSV outputs.
 
-Counterfactual verifier work and model-relative positive-pair recall:
+Observed per-treatment verifier work and model-relative positive-pair recall:
 
 | Treatment | Pairs | Batches/calls | Positive recall |
 |---|---:|---:|---:|
@@ -164,6 +186,31 @@ Counterfactual verifier work and model-relative positive-pair recall:
 The non-exhaustive policies also captured 0/1 answer-status effects. These
 figures are descriptive outputs for this fixture, not estimates of population
 performance.
+
+## Adversarial audit corrections
+
+The initial M4.10 implementation was not accepted unchanged. The audit found
+and this revision closes three material defects:
+
+1. UNION had been computed as an uncapped set union despite advertising
+   rank-interleaving at `L=1`. It now calls the canonical fusion operator. The
+   present aggregate result happens not to change because both lexical hits
+   overlap vector hits; a deterministic disjoint-channel regression proves
+   that vector rank 1 wins and only one pair is admitted.
+2. Vector artifacts had used an ad hoc `m4-10-vector:*` identity rather than
+   the registered candidate policy. Vector search, query rows, hit rows,
+   fusion and persisted audit now use one exact `m4-10-policy:*` ID/hash, and a
+   second PostgreSQL schema must reconstruct an identical manifest.
+3. Treatment work had been inferred from pair counts after reusing the oracle
+   table. Every treatment now performs real inference. The run requires exact
+   pair/input/model/prompt/calibration/policy/label identity and score/logit
+   agreement within `1e-6` before constructing statuses. The tolerance covers
+   observed CPU batch-shape variation on the order of `1e-8`; it does not
+   permit a label change.
+
+The study-seeded publication limitation remains. Published claim and answer
+rows are not a second coordinator-produced end-to-end history and are not
+claimed to reconstruct semantic observations from those seeded rows alone.
 
 ## Negative results and implications
 
@@ -194,13 +241,13 @@ one-event histories do not exercise a retained active reserve.
 source /home/kassym/Desktop/groundloop/.env
 pytest -o addopts='' -q tests/m4/real_history_study \
   tests/m4/empirical_eval tests/m4/event_audit tests/m4/oracles
-    43 passed, 1 skipped (real-history model/PG gate is opt-in)
+    44 passed, 1 skipped (real-history model/PG gate is opt-in)
 
 GROUNDLOOP_RUN_REAL_HISTORY_STUDY=1 \
 GROUNDLOOP_ARTIFACT_ROOT=/home/kassym/Desktop/groundloop \
 TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 \
 pytest -o addopts='' -q tests/m4/real_history_study
-    4 passed
+    5 passed
 
 ruff check src/groundloop/m4/real_history_study.py \
   experiments/m4_real_history_study tests/m4/real_history_study
