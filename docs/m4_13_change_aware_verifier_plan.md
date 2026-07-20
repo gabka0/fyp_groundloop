@@ -577,12 +577,21 @@ contradiction failure.
 Use exactly 1,000 95% percentile bootstrap resamples with seed `20260720` and
 preserve dependence:
 
-- primary VitaminC intervals resample Wikipedia pages and include all cases and
-  transitions from the sampled page;
-- case-level intervals resample complete `case_id`s as a sensitivity analysis;
+- primary VitaminC intervals use a stratified cluster bootstrap: independently
+  resample Wikipedia pages with replacement inside SUPPORT-REFUTE and
+  SUPPORT-NEUTRAL, preserving the frozen 64/64 stratum counts, then include all
+  cases and transitions from each sampled page;
+- case-level intervals apply the same within-stratum procedure to complete
+  `case_id`s as a sensitivity analysis;
 - M3 intervals resample complete `claim_group_id`s; and
 - baseline-candidate deltas use a paired bootstrap with the same sampled units
   for both models.
+
+The stratified page bootstrap is primary because the terminal reserve is an
+equal-size, label-stratified diagnostic design rather than a random sample of
+the full VitaminC distribution. Also report an unstratified pooled-page
+bootstrap as a sensitivity surface; it is not the pre-registered promotion
+interval.
 
 The production terminal path must reject any other seed or resample count.
 Reduced-count overrides are permitted only in an explicitly synthetic,
@@ -602,19 +611,26 @@ Report exact per-pair decisions and counts.
 
 After `selection.json` and all calibration artifacts are sealed:
 
-1. Verify the persisted M4.12 predictions and semantic-result hashes without
+1. Before opening or materializing any terminal-reserve path, validate the
+   complete sealed development bundle, immutable report, selected model set,
+   every completed training run and checkpoint, every calibration through
+   independent semantic replay, exact M4.12 provenance, and the clean
+   evaluator repository/implementation identity. A failure in any prerequisite
+   must leave terminal data unopened. Enforce this in the terminal core, not
+   only in a CLI wrapper that callers can bypass.
+2. Verify the persisted M4.12 predictions and semantic-result hashes without
    running an adapted checkpoint on the consumed diagnostic. This is a
    provenance regression, not a terminal comparison.
-2. Unlock the terminal reserve identified by
+3. Unlock the terminal reserve identified by
    `3dcfcba0b809e3bcfcf2f9c036c4946f484d706faa61eec8c3fa489fbcb11dc5`.
-3. Score V0 and the selected variant's three seeds on exactly those 512 reserve
+4. Score V0 and the selected variant's three seeds on exactly those 512 reserve
    endpoints. V0 and each candidate must use the same row order, tokenizer
    truncation contract and metric implementation.
-4. Evaluate V0 and the same candidate checkpoints once on the original M3
+5. Evaluate V0 and the same candidate checkpoints once on the original M3
    public test.
-5. Evaluate V0 and the predesignated candidate primary seed once on the
+6. Evaluate V0 and the predesignated candidate primary seed once on the
    corrected, hash-bound M4.10 Git pilot with the frozen GroundLoop policy.
-6. Write raw logits/probabilities before computing summaries, then derive all
+7. Write raw logits/probabilities before computing summaries, then derive all
    metrics from those immutable rows.
 
 Training and development commands must not accept a test path. The terminal
@@ -625,6 +641,11 @@ only by its exact frozen tree digest. Exact rerun of the same
 checkpoint/configuration is allowed for reproducibility; introducing a new
 checkpoint after terminal metrics creates a new milestone and requires a new
 held-out reserve.
+
+Publish terminal logits, metrics, bootstraps and the result manifest as one
+failure-atomic staged bundle. An existing completed bundle is immutable: an
+exact invocation may validate and replay it, while any collision must fail
+before writing or reopening the reserve.
 
 The Git pilot remains a transfer diagnostic unless its expected labels are
 independently annotated and adjudicated. Fixture-author construction notes are
@@ -685,10 +706,14 @@ M4.12's consumed metrics set the pre-training absolute floors only. They are
 never substituted for V0's predictions on the new reserve and never enter a
 paired candidate delta.
 
-If the point thresholds pass but the primary paired interval includes zero,
-classify the result as **engineering-positive but statistically inconclusive**;
-do not make it the headline model-improvement claim. If the VitaminC gate passes
-but the M3 forgetting guard fails, do not promote the checkpoint.
+Classify the result as **engineering-positive but statistically inconclusive**
+only if every required point threshold passes, including the `+0.10`
+joint-correct delta in G4, and the remaining failure is that a required primary
+paired interval includes zero. A point-threshold failure is **no-go**, even if
+its interval excludes zero in a favorable direction. Do not make a
+statistically inconclusive result the headline model-improvement claim. If the
+VitaminC gate passes but the M3 forgetting guard fails, do not promote the
+checkpoint.
 
 ### 12.3 Git transfer diagnostic
 
