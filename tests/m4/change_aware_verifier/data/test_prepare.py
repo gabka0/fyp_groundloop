@@ -5,9 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
-
-from groundloop.errors import ValidationError
-from training.m4_13_verifier.prepare import (
+from m4_13_verifier.prepare import (
     DataConfig,
     EligibleCase,
     VitaminCRow,
@@ -20,6 +18,8 @@ from training.m4_13_verifier.prepare import (
     validate_atomic_case,
     validate_terminal_prerequisites,
 )
+
+from groundloop.errors import ValidationError
 
 
 def _row(

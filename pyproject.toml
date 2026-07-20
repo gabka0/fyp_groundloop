@@ -46,7 +46,7 @@ packages = ["src/groundloop"]
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
-pythonpath = ["src", "tests", "experiments/streams"]
+pythonpath = ["src", "tests", "experiments/streams", "training"]
 
 [tool.ruff]
 line-length = 88

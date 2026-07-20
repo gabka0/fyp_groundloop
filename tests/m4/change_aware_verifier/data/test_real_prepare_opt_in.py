@@ -5,8 +5,7 @@ import os
 from pathlib import Path
 
 import pytest
-
-from training.m4_13_verifier.prepare import prepare
+from m4_13_verifier.prepare import prepare
 
 
 @pytest.mark.skipif(
