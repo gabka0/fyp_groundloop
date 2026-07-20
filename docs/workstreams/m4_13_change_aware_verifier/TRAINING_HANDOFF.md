@@ -69,7 +69,11 @@ concatenated in stable order, and all 3,022 rows occur exactly once in the
 mixed epoch. The two source batch streams are merged with integer arithmetic,
 not floating-point or nondeterministic sampling. Every run has 890
 microbatches, gradient accumulation 4 and 223 optimizer steps. The batch
-manifest marks repeated control rows explicitly.
+manifest marks repeated control rows explicitly. Each microbatch loss is
+divided by the actual number of microbatches in its optimizer group: 4 for the
+first 222 groups and 2 for the final partial group. The divisor is part of the
+optimizer schedule identity, preventing the last step from being silently
+half-scaled or reinterpreted.
 
 For each seed, V2 and V3 independently materialize and compare the same batch
 order hash, class weights, optimizer boundaries and complete schedule hash
@@ -83,9 +87,9 @@ real schedule identities are:
 
 | Seed | V2/V3 batch order | Optimizer schedule | Complete schedule |
 |---:|---|---|---|
-| 20260720 | `5af9e12db06c49816c2241f44473ff22a0e8e354aec273b6dcda8b8b00fb21b7` | `c3435e897dc18605a021a2b92116fffdc409a21403b8030680acd289526519df` | `e72933a24a02b24d7b25d7244dafc97139d4c329d4544797d4f771ef9a7ef2f2` |
-| 20260721 | `a5796597ca7b90994db8c770117258399feafca2f0d918d99663f201e68006eb` | `c3435e897dc18605a021a2b92116fffdc409a21403b8030680acd289526519df` | `8a5a3559b46ec5f0cc5f93405da3bb851ee25a28368425ac254ae26e4dc117b5` |
-| 20260722 | `00691999e027a0e5f2ac3a2648cceb9c7db34a8c3fe58951b174bb7f73184759` | `c3435e897dc18605a021a2b92116fffdc409a21403b8030680acd289526519df` | `87cc71a2fbb0867c52766d3e322258b22ab20d1cbc49f004c81747541347b131` |
+| 20260720 | `5af9e12db06c49816c2241f44473ff22a0e8e354aec273b6dcda8b8b00fb21b7` | `4137d4849d84f8a2ed962e6e4715cd8eab4765c463c02c1ce9acab9f66e37c9c` | `559fffe4713cf3bc6de5e2503a74f11813bbdd7323de6d9dcfdd0d7298798071` |
+| 20260721 | `a5796597ca7b90994db8c770117258399feafca2f0d918d99663f201e68006eb` | `4137d4849d84f8a2ed962e6e4715cd8eab4765c463c02c1ce9acab9f66e37c9c` | `959ba3e4bae8697865ab73293510ce0e0f6bb46744a8b2bfd466685132bf92cd` |
+| 20260722 | `00691999e027a0e5f2ac3a2648cceb9c7db34a8c3fe58951b174bb7f73184759` | `4137d4849d84f8a2ed962e6e4715cd8eab4765c463c02c1ce9acab9f66e37c9c` | `7aec74b35c09f02d6242695929773b2881ad201eddbdd4657ab99ac69a23b3f2` |
 
 These are schedule identities, not training measurements or quality results.
 
@@ -97,6 +101,11 @@ and `terminal_paths_exposed=false`. A recursive guard permits terminal counts
 and hashes but rejects terminal path, row ID, case ID, page, label, claim or
 evidence content. The train and calibration call signatures expose no test or
 terminal path parameter.
+
+This is an application-interface leakage guard, not an operating-system
+sandbox: Lane A's artifact root physically has evaluator-owned `sealed/` and
+`prepared/test_m3.jsonl` siblings. Lane B never resolves or reads them, but a
+separately compromised process with the same filesystem permissions could.
 
 Each completed external run directory contains:
 
@@ -138,10 +147,16 @@ substitution from passing calibration.
 The sealed selection schema is `groundloop-m4-13-selection-v1`. Calibration
 requires `sealed=true`, the development-selected V2 or V3 variant, primary
 seed 20260720, and a unique checkpoint allow-list entry containing exact
-variant, seed, checkpoint-tree digest and checkpoint-identity-file digest. It
-binds the hash of the entire selection file, so Lane C's additional
-development-only and rule-verdict fields are covered without creating a
-second selection format.
+variant, seed, checkpoint-tree digest, checkpoint-identity-file digest,
+development-logits file digest and development-source-alignment digest. The
+calibrator independently hashes the supplied logits and reconstructs Lane C's
+alignment hash from the hash-bound prepared files. Therefore a logits file or
+source set substituted after selection fails closed. It also binds the hash of
+the entire selection file, so Lane C's additional development-only and
+rule-verdict fields are covered without creating a second selection format.
+On the final Lane A data root, Lane B and Lane C independently reconstructed
+the same source-alignment identity:
+`5ef17da9a02a03d9746b2578bbf48d4f1bb3c920f2f627902aa484cd2782b1ac`.
 
 Calibration output schema is
 `groundloop-m4-13-group-balanced-temperature-v1`. The objective gives M3 and
@@ -195,7 +210,7 @@ No real model training was run. Fixture-sized validation completed:
 
 ```text
 pytest -q tests/m4/change_aware_verifier/training
-  21 passed
+  24 passed
 
 ruff check training/m4_13_verifier \
   tests/m4/change_aware_verifier/training

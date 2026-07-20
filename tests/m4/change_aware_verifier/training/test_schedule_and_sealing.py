@@ -106,6 +106,7 @@ def test_v2_v3_have_identical_rows_batches_weights_and_optimizer_schedule() -> N
     assert v2.optimizer_schedule_sha256 == v3.optimizer_schedule_sha256
     assert v2.schedule_sha256 == v3.schedule_sha256
     assert v2.base_order_class_weights == v3.base_order_class_weights
+    assert [batch.accumulation_divisor for batch in v2.batches] == [4, 4, 4, 4]
     assert {batch.domain for batch in v2.batches} == {"vitaminc", "m3"}
     assert {
         row.example.row_id
@@ -122,14 +123,14 @@ def test_v1_and_a1_cycle_only_at_prebuilt_source_batch_boundaries() -> None:
         m3=m3,
         variant=TrainingVariant.V1_REPLAY_ONLY,
         seed=20260720,
-        target_microbatches=5,
+        target_microbatches=6,
     )
     no_replay = build_training_schedule(
         vitaminc=vitamin,
         m3=m3,
         variant=TrainingVariant.A1_MARGIN_NO_REPLAY,
         seed=20260720,
-        target_microbatches=5,
+        target_microbatches=6,
     )
     assert {batch.domain for batch in replay.batches} == {"m3"}
     assert {batch.domain for batch in no_replay.batches} == {"vitaminc"}
@@ -141,6 +142,14 @@ def test_v1_and_a1_cycle_only_at_prebuilt_source_batch_boundaries() -> None:
         len(batch.rows) == 8 and len(batch.transitions) == 4
         for batch in no_replay.batches
     )
+    assert [batch.accumulation_divisor for batch in replay.batches] == [
+        4,
+        4,
+        4,
+        4,
+        2,
+        2,
+    ]
 
 
 def test_frozen_checkpoint_requires_exact_tree_weights_and_label_order(

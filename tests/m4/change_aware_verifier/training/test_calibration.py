@@ -10,13 +10,17 @@ from m4_13_verifier.calibrate import (
     CALIBRATION_SCHEMA,
     CalibrationFailureStage,
     DevelopmentLogit,
+    _development_source_alignment_sha256,
     _selection_allows,
     _validate_development_identities,
     _write_calibration_atomically,
+    calibrate_selected_checkpoint,
     fit_group_balanced_temperature,
     group_balanced_nll,
 )
+from m4_13_verifier.train import seal_training_run
 
+from groundloop.ai.verification.artifacts import file_sha256
 from groundloop.errors import ValidationError
 
 
@@ -87,7 +91,12 @@ def test_golden_temperature_is_deterministic_and_obeys_domain_gate() -> None:
     assert first.nll_candidate.vitaminc <= first.nll_before.vitaminc + 0.01
 
 
-def test_selection_must_uniquely_allow_exact_selected_checkpoint() -> None:
+def test_selection_must_uniquely_allow_exact_selected_checkpoint(
+    tmp_path: Path,
+) -> None:
+    logits = tmp_path / "development" / "candidate.jsonl"
+    logits.parent.mkdir()
+    logits.write_text("fixture\n", encoding="utf-8")
     selection = {
         "schema_version": "groundloop-m4-13-selection-v1",
         "sealed": True,
@@ -98,7 +107,10 @@ def test_selection_must_uniquely_allow_exact_selected_checkpoint() -> None:
                 "variant": "V3-margin-mix",
                 "seed": 20260720,
                 "checkpoint_tree_sha256": "c" * 64,
-                "checkpoint_identity_sha256": "i" * 64,
+                "checkpoint_identity_sha256": "b" * 64,
+                "development_logits_path": "development/candidate.jsonl",
+                "development_logits_sha256": "d" * 64,
+                "source_alignment_sha256": "e" * 64,
             }
         ],
     }
@@ -107,7 +119,11 @@ def test_selection_must_uniquely_allow_exact_selected_checkpoint() -> None:
         variant="V3-margin-mix",
         seed=20260720,
         checkpoint_tree_sha256="c" * 64,
-        checkpoint_identity_sha256="i" * 64,
+        checkpoint_identity_sha256="b" * 64,
+        selection_directory=tmp_path,
+        development_logits_path=logits,
+        development_logits_sha256="d" * 64,
+        source_alignment_sha256="e" * 64,
     )
     selection["selected_variant"] = "V2-ce-mix"
     with pytest.raises(ValidationError, match="not selected"):
@@ -116,7 +132,52 @@ def test_selection_must_uniquely_allow_exact_selected_checkpoint() -> None:
             variant="V3-margin-mix",
             seed=20260720,
             checkpoint_tree_sha256="c" * 64,
-            checkpoint_identity_sha256="i" * 64,
+            checkpoint_identity_sha256="b" * 64,
+            selection_directory=tmp_path,
+            development_logits_path=logits,
+            development_logits_sha256="d" * 64,
+            source_alignment_sha256="e" * 64,
+        )
+
+
+@pytest.mark.parametrize(
+    ("actual_logits", "actual_alignment"),
+    (("f" * 64, "e" * 64), ("d" * 64, "f" * 64)),
+)
+def test_selection_rejects_post_selection_logit_or_source_substitution(
+    tmp_path: Path, actual_logits: str, actual_alignment: str
+) -> None:
+    logits = tmp_path / "development" / "candidate.jsonl"
+    logits.parent.mkdir()
+    logits.write_text("fixture\n", encoding="utf-8")
+    selection = {
+        "schema_version": "groundloop-m4-13-selection-v1",
+        "sealed": True,
+        "selected_variant": "V3-margin-mix",
+        "primary_seed": 20260720,
+        "candidate_checkpoints": [
+            {
+                "variant": "V3-margin-mix",
+                "seed": 20260720,
+                "checkpoint_tree_sha256": "c" * 64,
+                "checkpoint_identity_sha256": "b" * 64,
+                "development_logits_path": "development/candidate.jsonl",
+                "development_logits_sha256": "d" * 64,
+                "source_alignment_sha256": "e" * 64,
+            }
+        ],
+    }
+    with pytest.raises(ValidationError, match="not uniquely allow-listed"):
+        _selection_allows(
+            selection,
+            variant="V3-margin-mix",
+            seed=20260720,
+            checkpoint_tree_sha256="c" * 64,
+            checkpoint_identity_sha256="b" * 64,
+            selection_directory=tmp_path,
+            development_logits_path=logits,
+            development_logits_sha256=actual_logits,
+            source_alignment_sha256=actual_alignment,
         )
 
 
@@ -239,3 +300,200 @@ def test_development_identity_check_rejects_same_count_substitution(
     )
     with pytest.raises(ValidationError, match="exactly match"):
         _validate_development_identities(substituted, prepared)
+
+
+def test_calibrate_selected_checkpoint_seals_real_schema_end_to_end(
+    tmp_path: Path,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    prepared = artifact_root / "prepared"
+    prepared.mkdir(parents=True)
+    config_path = tmp_path / "config.json"
+
+    vitamin_claim = "Vitamin claim"
+    vitamin_evidence = "Vitamin evidence"
+    vitamin_row = {
+        "schema_version": "groundloop-m4-13-vitaminc-row-v1",
+        "split": "development",
+        "stratum": "support_refute",
+        "unique_id": "case-1_1",
+        "case_id": "case-1",
+        "normalized_page_sha256": "1" * 64,
+        "label": "support",
+        "claim": vitamin_claim,
+        "evidence": vitamin_evidence,
+        "claim_sha256": hashlib.sha256(vitamin_claim.encode()).hexdigest(),
+        "evidence_sha256": hashlib.sha256(vitamin_evidence.encode()).hexdigest(),
+    }
+    m3_claim = "M3 claim"
+    m3_evidence = "M3 evidence"
+    m3_row = {
+        "split": "development",
+        "example_id": "m3-1",
+        "claim_group_id": "group-1",
+        "label": "neutral",
+        "claim": m3_claim,
+        "evidence": m3_evidence,
+    }
+    (prepared / "development_vitaminc.jsonl").write_text(
+        json.dumps(vitamin_row) + "\n", encoding="utf-8"
+    )
+    (prepared / "development_m3.jsonl").write_text(
+        json.dumps(m3_row) + "\n", encoding="utf-8"
+    )
+    for name in (
+        "train_vitaminc.jsonl",
+        "train_vitaminc_manifest.json",
+        "train_m3_replay.jsonl",
+        "development_vitaminc_manifest.json",
+    ):
+        (prepared / name).write_text(f"fixture:{name}\n", encoding="utf-8")
+
+    config = {
+        "schema_version": "groundloop-m4-change-aware-data-config-v1",
+        "dataset": {
+            "samples": {
+                "development": {
+                    "rows": 1,
+                    "cases": 1,
+                    "manifest_sha256": file_sha256(
+                        prepared / "development_vitaminc_manifest.json"
+                    ),
+                }
+            }
+        },
+        "m3": {
+            "development": {
+                "rows": 1,
+                "claim_groups": 1,
+                "sha256": file_sha256(prepared / "development_m3.jsonl"),
+            }
+        },
+    }
+    config_path.write_text(json.dumps(config) + "\n", encoding="utf-8")
+    artifact_names = (
+        "train_vitaminc.jsonl",
+        "train_vitaminc_manifest.json",
+        "train_m3_replay.jsonl",
+        "development_vitaminc.jsonl",
+        "development_vitaminc_manifest.json",
+        "development_m3.jsonl",
+    )
+    dataset_manifest = {
+        "schema_version": "groundloop-m4-13-dataset-manifest-v1",
+        "config_sha256": file_sha256(config_path),
+        "label_mapping": {
+            "SUPPORTS": {"stored": "support", "base_logit_index": 1},
+            "REFUTES": {"stored": "refute", "base_logit_index": 0},
+            "NOT ENOUGH INFO": {"stored": "neutral", "base_logit_index": 2},
+            "base_logit_order": ["contradiction", "entailment", "neutral"],
+            "stored_probability_order": ["support", "refute", "neutral"],
+        },
+        "sealed_terminal_reference": {"rows": 2},
+        "training_surface": {
+            "accepts_test_path": False,
+            "terminal_paths_exposed": False,
+            "vitaminc_row_schema": "groundloop-m4-13-vitaminc-row-v1",
+            "artifacts": {
+                name: file_sha256(prepared / name) for name in artifact_names
+            },
+        },
+    }
+    dataset_manifest_path = prepared / "dataset_manifest.json"
+    dataset_manifest_path.write_text(
+        json.dumps(dataset_manifest) + "\n", encoding="utf-8"
+    )
+
+    run_directory = artifact_root / "runs" / "V3-margin-mix" / "20260720"
+
+    def checkpoint_writer(path: Path) -> None:
+        path.mkdir()
+        (path / "model.safetensors").write_bytes(b"candidate")
+
+    completed = seal_training_run(
+        run_directory=run_directory,
+        invocation_sha256="a" * 64,
+        training_manifest={"variant": "V3-margin-mix", "seed": 20260720},
+        schedule_manifest={"schema_version": "fixture-schedule"},
+        runtime_manifest={"schema_version": "fixture-runtime"},
+        checkpoint_writer=checkpoint_writer,
+    )
+    checkpoint_tree = str(completed.checkpoint_identity["checkpoint_tree_sha256"])
+    checkpoint_identity_sha256 = file_sha256(run_directory / "checkpoint_identity.json")
+
+    development = artifact_root / "development" / "candidate.jsonl"
+    development.parent.mkdir()
+    development_rows = (
+        {
+            "schema_version": "groundloop-m4-13-development-logit-v1",
+            "split": "development",
+            "domain": "vitaminc",
+            "row_id": "case-1_1",
+            "group_id": "case-1",
+            "label": "support",
+            "claim_sha256": vitamin_row["claim_sha256"],
+            "evidence_sha256": vitamin_row["evidence_sha256"],
+            "base_logit_order": ["contradiction", "entailment", "neutral"],
+            "logits": [0.0, 2.0, 0.0],
+            "checkpoint_tree_sha256": checkpoint_tree,
+            "variant": "V3-margin-mix",
+            "seed": 20260720,
+        },
+        {
+            "schema_version": "groundloop-m4-13-development-logit-v1",
+            "split": "development",
+            "domain": "m3",
+            "row_id": "m3-1",
+            "group_id": "group-1",
+            "label": "neutral",
+            "claim_sha256": hashlib.sha256(m3_claim.encode()).hexdigest(),
+            "evidence_sha256": hashlib.sha256(m3_evidence.encode()).hexdigest(),
+            "base_logit_order": ["contradiction", "entailment", "neutral"],
+            "logits": [0.0, 0.0, 2.0],
+            "checkpoint_tree_sha256": checkpoint_tree,
+            "variant": "V3-margin-mix",
+            "seed": 20260720,
+        },
+    )
+    development.write_text(
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in development_rows),
+        encoding="utf-8",
+    )
+    alignment = _development_source_alignment_sha256(
+        prepared=prepared, dataset_manifest_path=dataset_manifest_path
+    )
+    selection_path = artifact_root / "selection.json"
+    selection_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "groundloop-m4-13-selection-v1",
+                "sealed": True,
+                "selected_variant": "V3-margin-mix",
+                "primary_seed": 20260720,
+                "candidate_checkpoints": [
+                    {
+                        "variant": "V3-margin-mix",
+                        "seed": 20260720,
+                        "checkpoint_tree_sha256": checkpoint_tree,
+                        "checkpoint_identity_sha256": checkpoint_identity_sha256,
+                        "development_logits_path": "development/candidate.jsonl",
+                        "development_logits_sha256": file_sha256(development),
+                        "source_alignment_sha256": alignment,
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    result = calibrate_selected_checkpoint(
+        artifact_root=artifact_root,
+        config_path=config_path,
+        run_directory=run_directory,
+        selection_path=selection_path,
+        development_logits_path=development,
+    )
+    assert result["schema_version"] == CALIBRATION_SCHEMA
+    assert result["status"] == "complete"
+    assert result["development_logits_sha256"] == file_sha256(development)
+    assert result["source_alignment_sha256"] == alignment

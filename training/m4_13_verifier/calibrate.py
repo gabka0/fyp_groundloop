@@ -262,6 +262,10 @@ def _selection_allows(
     seed: int,
     checkpoint_tree_sha256: str,
     checkpoint_identity_sha256: str,
+    selection_directory: Path,
+    development_logits_path: Path,
+    development_logits_sha256: str,
+    source_alignment_sha256: str,
 ) -> None:
     if _string(selection, "schema_version") != SELECTION_SCHEMA:
         raise ValidationError("unsupported M4.13 selection schema")
@@ -277,16 +281,90 @@ def _selection_allows(
     matching = []
     for item in candidates:
         candidate = _mapping(item, "selection checkpoint")
+        candidate_tree_sha256 = _sha256_field(candidate, "checkpoint_tree_sha256")
+        candidate_identity_sha256 = _sha256_field(
+            candidate, "checkpoint_identity_sha256"
+        )
+        candidate_logits_sha256 = _sha256_field(candidate, "development_logits_sha256")
+        candidate_alignment_sha256 = _sha256_field(candidate, "source_alignment_sha256")
+        relative_logits = Path(_string(candidate, "development_logits_path"))
+        if relative_logits.is_absolute():
+            raise ValidationError("selection development-logits path must be relative")
+        selected_logits = (selection_directory / relative_logits).resolve()
+        selection_root = selection_directory.resolve()
+        if selection_root not in selected_logits.parents:
+            raise ValidationError("selection development-logits path escapes its root")
         if (
             candidate.get("variant") == variant
             and candidate.get("seed") == seed
-            and candidate.get("checkpoint_tree_sha256") == checkpoint_tree_sha256
-            and candidate.get("checkpoint_identity_sha256")
-            == checkpoint_identity_sha256
+            and candidate_tree_sha256 == checkpoint_tree_sha256
+            and candidate_identity_sha256 == checkpoint_identity_sha256
+            and selected_logits == development_logits_path.resolve()
+            and candidate_logits_sha256 == development_logits_sha256
+            and candidate_alignment_sha256 == source_alignment_sha256
         ):
             matching.append(candidate)
     if len(matching) != 1:
         raise ValidationError("checkpoint is not uniquely allow-listed by selection")
+
+
+def _development_source_alignment_sha256(
+    *, prepared: Path, dataset_manifest_path: Path
+) -> str:
+    """Reconstruct Lane C's exact development-source alignment identity."""
+    rows: list[dict[str, object]] = []
+    for value in _load_jsonl(
+        prepared / "development_vitaminc.jsonl", "VitaminC development JSONL"
+    ):
+        row_id = _string(value, "unique_id")
+        case_id = _string(value, "case_id")
+        try:
+            suffix = int(row_id.rsplit("_", 1)[1])
+        except (IndexError, ValueError) as error:
+            raise ValidationError(
+                "VitaminC development row has invalid suffix"
+            ) from error
+        rows.append(
+            {
+                "fixture": "vitaminc_development",
+                "row_id": row_id,
+                "page_id": _sha256_field(value, "normalized_page_sha256"),
+                "case_id": case_id,
+                "claim_group_id": None,
+                "transition_id": (f"{case_id}:transition-{1 if suffix <= 2 else 2}"),
+                "stratum": _string(value, "stratum"),
+                "label": normalize_stored_label(_string(value, "label")),
+                "claim_sha256": _sha256_field(value, "claim_sha256"),
+                "evidence_sha256": _sha256_field(value, "evidence_sha256"),
+            }
+        )
+    for value in _load_jsonl(prepared / "development_m3.jsonl", "M3 development JSONL"):
+        claim = _string(value, "claim")
+        evidence = _string(value, "evidence")
+        rows.append(
+            {
+                "fixture": "m3_development",
+                "row_id": _string(value, "example_id"),
+                "page_id": None,
+                "case_id": None,
+                "claim_group_id": _string(value, "claim_group_id"),
+                "transition_id": None,
+                "stratum": None,
+                "label": normalize_stored_label(_string(value, "label")),
+                "claim_sha256": hashlib.sha256(claim.encode()).hexdigest(),
+                "evidence_sha256": hashlib.sha256(evidence.encode()).hexdigest(),
+            }
+        )
+    return _canonical_sha256(
+        {
+            "dataset_manifest_sha256": file_sha256(dataset_manifest_path),
+            "vitaminc_manifest_sha256": file_sha256(
+                prepared / "development_vitaminc_manifest.json"
+            ),
+            "m3_development_sha256": file_sha256(prepared / "development_m3.jsonl"),
+            "rows": rows,
+        }
+    )
 
 
 def _validate_development_dimensions(
@@ -423,13 +501,6 @@ def calibrate_selected_checkpoint(
     checkpoint_identity_path = run_directory / "checkpoint_identity.json"
     checkpoint_identity_sha256 = file_sha256(checkpoint_identity_path)
     selection = _load_json(selection_path, "sealed selection")
-    _selection_allows(
-        selection,
-        variant=variant,
-        seed=seed,
-        checkpoint_tree_sha256=checkpoint_tree,
-        checkpoint_identity_sha256=checkpoint_identity_sha256,
-    )
     config = _load_json(config_path, "M4.13 configuration")
     if _string(config, "schema_version") != CONFIG_SCHEMA:
         raise ValidationError("unsupported M4.13 configuration schema")
@@ -451,6 +522,21 @@ def calibrate_selected_checkpoint(
         raise ValidationError("development logits belong to another checkpoint")
     _validate_development_dimensions(rows, config)
     _validate_development_identities(rows, prepared)
+    logits_sha256 = file_sha256(development_logits_path)
+    source_alignment_sha256 = _development_source_alignment_sha256(
+        prepared=prepared, dataset_manifest_path=dataset_manifest_path
+    )
+    _selection_allows(
+        selection,
+        variant=variant,
+        seed=seed,
+        checkpoint_tree_sha256=checkpoint_tree,
+        checkpoint_identity_sha256=checkpoint_identity_sha256,
+        selection_directory=selection_path.parent,
+        development_logits_path=development_logits_path,
+        development_logits_sha256=logits_sha256,
+        source_alignment_sha256=source_alignment_sha256,
+    )
     fit = fit_group_balanced_temperature(rows)
     m3 = _mapping(config.get("m3"), "M3 configuration")
     m3_development = _mapping(m3.get("development"), "M3 development identity")
@@ -458,7 +544,6 @@ def calibrate_selected_checkpoint(
     samples = _mapping(dataset.get("samples"), "dataset samples")
     vitamin = _mapping(samples.get("development"), "VitaminC development sample")
     selection_sha256 = file_sha256(selection_path)
-    logits_sha256 = file_sha256(development_logits_path)
     invocation_payload = {
         "schema_version": "groundloop-m4-13-calibration-invocation-v1",
         "selection_sha256": selection_sha256,
@@ -471,6 +556,7 @@ def calibrate_selected_checkpoint(
         "m3_development_jsonl_sha256": _string(m3_development, "sha256"),
         "vitaminc_development_manifest_sha256": _string(vitamin, "manifest_sha256"),
         "development_logits_sha256": logits_sha256,
+        "source_alignment_sha256": source_alignment_sha256,
         "method": CALIBRATION_METHOD,
         "group_weighting": {
             "domain_weights": {"m3": 0.5, "vitaminc": 0.5},
@@ -517,11 +603,13 @@ def calibrate_selected_checkpoint(
     }
     calibration_version = f"temperature-m4-13-v1:{_canonical_sha256(semantic)}"
     payload = {
+        **semantic,
+        # Seal fields follow the nested invocation payload so its own
+        # schema_version cannot overwrite the artifact schema.
         "schema_version": CALIBRATION_SCHEMA,
         "status": "complete",
         "invocation_sha256": invocation_sha256,
         "calibration_version": calibration_version,
-        **semantic,
     }
     return _write_calibration_atomically(
         run_directory / "calibration.json",

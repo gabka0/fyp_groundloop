@@ -140,6 +140,7 @@ class ScheduledBatch:
     rows: tuple[ScheduledRow, ...]
     transitions: tuple[tuple[int, int], ...]
     optimizer_step: int
+    accumulation_divisor: int
     closes_optimizer_step: bool
 
 
@@ -613,6 +614,7 @@ def _batch_identity(batch: ScheduledBatch) -> dict[str, object]:
         "batch_index": batch.batch_index,
         "domain": batch.domain,
         "optimizer_step": batch.optimizer_step,
+        "accumulation_divisor": batch.accumulation_divisor,
         "closes_optimizer_step": batch.closes_optimizer_step,
         "transitions": [list(pair) for pair in batch.transitions],
         "rows": [
@@ -670,6 +672,9 @@ def build_training_schedule(
             if len(rows) != 8:
                 raise ValidationError("VitaminC microbatch must contain two full cases")
             transitions = ((0, 1), (2, 3), (4, 5), (6, 7))
+        optimizer_step = batch_index // accumulation
+        group_start = optimizer_step * accumulation
+        accumulation_divisor = min(accumulation, len(raw) - group_start)
         closes = (batch_index + 1) % accumulation == 0 or batch_index + 1 == len(raw)
         batches.append(
             ScheduledBatch(
@@ -677,7 +682,8 @@ def build_training_schedule(
                 domain,
                 tuple(ScheduledRow(row, repeat_index) for row in rows),
                 transitions,
-                batch_index // accumulation,
+                optimizer_step,
+                accumulation_divisor,
                 closes,
             )
         )
@@ -703,7 +709,12 @@ def build_training_schedule(
         for batch in batches
     ]
     optimizer_payload = [
-        [batch.batch_index, batch.optimizer_step, batch.closes_optimizer_step]
+        [
+            batch.batch_index,
+            batch.optimizer_step,
+            batch.accumulation_divisor,
+            batch.closes_optimizer_step,
+        ]
         for batch in batches
     ]
     batch_hash = _canonical_sha256(batch_payload)
@@ -1111,7 +1122,7 @@ def train_variant(
             margin=FROZEN_HYPERPARAMETERS.paired_margin,
             paired_weight=FROZEN_HYPERPARAMETERS.paired_weight,
         )
-        (loss.total / FROZEN_HYPERPARAMETERS.gradient_accumulation_steps).backward()
+        (loss.total / batch.accumulation_divisor).backward()
         loss_sum += float(loss.total.detach())
         endpoint_sum += float(loss.endpoint.detach())
         paired_sum += float(loss.paired.detach())
