@@ -22,13 +22,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from groundloop.ai.verification.data import (  # type: ignore[import-untyped]
-    normalize_pair_text,
-)
-from groundloop.errors import ValidationError  # type: ignore[import-untyped]
-from groundloop.m4.public_ai_gate import (  # type: ignore[import-untyped]
-    semantic_result_hash,
-)
+from groundloop.ai.verification.data import normalize_pair_text
+from groundloop.errors import ValidationError
+from groundloop.m4.public_ai_gate import semantic_result_hash
 
 _HEX = frozenset("0123456789abcdef")
 _SOURCE_TO_STORED = {
