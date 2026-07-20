@@ -381,6 +381,10 @@ A1 are mandatory ablations, not deployment candidates.
 - Mixed epoch: 512 VitaminC microbatches and 378 M3 microbatches, merged by a
   deterministic proportional schedule; 890 microbatches and 223 optimizer
   steps after accumulation.
+- Divide every accumulated loss by the actual number of microbatches in its
+  optimizer group. The first 222 groups have size four and the final group has
+  size two; the final group is therefore divided by two, not four. Bind these
+  per-step divisors into the optimizer-schedule identity.
 
 Compute inverse-frequency class weights from the exact materialized mixed
 epoch in base-logit order and record them. V2 and V3 must have byte-identical
@@ -454,6 +458,12 @@ Select between V2 and V3 using only development data:
    Seeds 20260721 and 20260722 estimate replication sensitivity; never choose
    the best test seed.
 
+Only a variant that passes every forgetting guard is eligible. If V2 is
+ineligible and V3 passes the guards but does not satisfy the Section 12.1
+paired-term usefulness rule, seal `selection.json` with no eligible selection
+and stop before terminal access. Never fall back to a known-unsafe V2. If both
+variants are ineligible, apply the same no-selection outcome.
+
 Write `selection.json` containing all development metrics, checkpoint hashes,
 the exact rule above and the selected variant **before** any candidate is run
 on VitaminC test, M3 test or corrected M4.10.
@@ -494,6 +504,13 @@ GroundLoop's threshold-derived operational labels.
 
 Report uncalibrated, old-M3-temperature and newly calibrated results as a
 calibration ablation. Never choose among them on terminal test.
+
+All endpoint and GroundLoop-policy calibration surfaces must identify the
+temperature used. Transition `flip_detected`, `joint_correct`, and
+`bidirectional_margin` comparisons use one common uncalibrated surface,
+`T=1`, for every model. In particular, do not compare bidirectional margins
+computed under different fitted temperatures; that would confound model
+adaptation with calibration.
 
 ## 10. Metrics and uncertainty
 
@@ -601,6 +618,10 @@ identical budget:
 Otherwise select V2 and report that the paired term did not justify its added
 complexity.
 
+The sentence above applies only when V2 itself passes every Section 8
+forgetting guard. If V2 is unsafe and V3 is not useful by all three criteria,
+there is no eligible M4.13 selection and terminal evaluation remains locked.
+
 ### 12.2 Default-model go gate
 
 Promote the development-selected variant as the new experimental GroundLoop
@@ -687,7 +708,10 @@ artifacts/m4_13_change_aware_verifier/
 
 The top-level result manifest must bind:
 
-- repository commit and dirty-state flag;
+- the exact clean repository commit used by training, the canonical aggregate
+  trainer-implementation hash, and its per-file dependency hashes;
+- the exact clean repository commit used by evaluation, the canonical
+  evaluator-implementation hash, and its per-file dependency hashes;
 - primary paper DOI/Anthology ID and source URLs;
 - source repository, hosting commit, archive/member/license hashes;
 - exact row/case/page sampling manifests and split-intersection audit;
@@ -695,7 +719,8 @@ The top-level result manifest must bind:
 - M4.12 configuration, deterministic semantic result, consumed-sample and
   prediction-logit hashes, explicitly labeled adaptation-start only;
 - M4.13 terminal-reserve seed, canonical manifest hash and normalized-page
-  exclusion digest;
+  exclusion digest, plus the sealed reserve file hash and proof that its raw
+  row order equals the canonical manifest order;
 - corrected M4.10 configuration/source/model/result hashes;
 - variant, seeds, batch order hash, loss formula, hyperparameters and optimizer
   step count;
