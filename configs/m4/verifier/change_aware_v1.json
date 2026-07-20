@@ -1,0 +1,112 @@
+{
+  "schema_version": "groundloop-m4-change-aware-data-config-v1",
+  "selection_seed": 20260720,
+  "terminal_reserve_seed": 20260721,
+  "source": {
+    "repository": "https://github.com/TalSchuster/VitaminC.git",
+    "revision": "eb532922b88b199df68ed26afeb58dca5501b52f",
+    "readme_sha256": "8b1512acf12fa4d7e7ed152e7ce4d7077479f4f7d910fbf47c132c173589870e",
+    "data_license_sha256": "153a128e86c7d0e978243c8c8994dbb5fba9081a36f8d380cd1f5994699e369e",
+    "code_license_sha256": "15670a797ea5bdffa4c9fcfaa1514a3646ca6cfb54364ac505bfadb1a2e6e49a"
+  },
+  "dataset": {
+    "archive_url": "https://raw.githubusercontent.com/TalSchuster/talschuster.github.io/152c9639f1e33ca295d0776b618c17884088f72f/static/vitaminc.zip",
+    "hosting_repository_revision": "152c9639f1e33ca295d0776b618c17884088f72f",
+    "archive_sha256": "49d82dc1690cbee420d18e2c26f687a7937710bb211845d2571430dfd4dc0337",
+    "train_sha256": "446163d81ec9b654d2514e8ba5b8f2e4bd8938342e34c98e7660fe05a8a3ca39",
+    "development_sha256": "a3258bc959754c84bade150d3bf447fd9c91a529d93bb676f034fdafda5f26e5",
+    "test_sha256": "7f799e076dec184e31533d46704fef2022d08ef68a0db2c44f138d2b4e552f36",
+    "embedded_license_sha256": "e5727854e203fc66d725caa6d8e97e541f64a906d1d15d19e63f32bb52134dd1",
+    "embedded_readme_sha256": "aecc6e74b43865b1c8a3c9e044a296644badbf4ffd81adbb6d0ffc80a26256cd",
+    "dimensions": {
+      "train": {"rows": 370653, "cases": 112426, "raw_pages": 22198, "normalized_pages": 22195},
+      "development": {"rows": 63054, "cases": 18836, "raw_pages": 2975, "normalized_pages": 2975},
+      "test": {"rows": 55197, "cases": 16487, "raw_pages": 3068, "normalized_pages": 3068}
+    },
+    "normalized_page_intersections": {
+      "train_development": 18,
+      "train_test": 22,
+      "development_test": 2,
+      "all_three": 1,
+      "unique_quarantined": 40,
+      "quarantine_sha256": "0d2dd3fbe64fb6759cdbac9c4bdae68529fffdaf0370d703310a28166e7b54da"
+    },
+    "revision_type": "real",
+    "strata_order": ["support_refute", "support_neutral"],
+    "candidate_case_counts_after_quarantine": {
+      "train": {"support_refute": 35346, "support_neutral": 7416},
+      "development": {"support_refute": 5945, "support_neutral": 1416}
+    },
+    "samples": {
+      "train": {
+        "cases_per_stratum": 512,
+        "cases": 1024,
+        "rows": 4096,
+        "pages": 1024,
+        "support": 2048,
+        "refute": 1024,
+        "neutral": 1024,
+        "manifest_sha256": "d51ca3366328fd623148d3d9f0c01844aca73212831fef563d4839cf43238c2d"
+      },
+      "development": {
+        "cases_per_stratum": 128,
+        "cases": 256,
+        "rows": 1024,
+        "pages": 256,
+        "support": 512,
+        "refute": 256,
+        "neutral": 256,
+        "manifest_sha256": "527e727273af7b7721509c625b721a489da88503fc994b7bca05215eb93580df"
+      }
+    },
+    "terminal_reserve": {
+      "cases_per_stratum": 64,
+      "cases": 128,
+      "rows": 512,
+      "pages": 128,
+      "support": 256,
+      "refute": 128,
+      "neutral": 128,
+      "candidate_case_counts_after_exclusions": {"support_refute": 3310, "support_neutral": 626},
+      "consumed_page_digest_sha256": "e30667393d90c1ce0a81bb83d26121c91dd0e5a00efcc0e2b914e8edecb694b9",
+      "reserve_page_digest_sha256": "9f517ee86edf807b86924aa0cc98b64047633bde519f04bf95b89165b90b4a9a",
+      "manifest_sha256": "3dcfcba0b809e3bcfcf2f9c036c4946f484d706faa61eec8c3fa489fbcb11dc5"
+    }
+  },
+  "m3": {
+    "prepared_manifest_sha256": "1d1ef303a8a7d5b560b6e3a558573953d52a02aa227a96aff5b90f18b14aec7c",
+    "train": {"sha256": "1b76ed557b43955980e57a0f049666496335b649caa6e406c2e7b0245e7e3f4e", "rows": 3022, "claim_groups": 2067},
+    "development": {"sha256": "a9cd74df8df6e6f7a825ee446d222adc87a7bcf61c9394f45efaacc1cb479882", "rows": 987, "claim_groups": 649},
+    "test": {"sha256": "3ccd2c761bed3101f65dadd75a597afd831d3d95041113c2f0236b968cec6a2f", "rows": 358, "claim_groups": 358, "support": 111, "refute": 0, "neutral": 247},
+    "checkpoint_tree_sha256": "81870b683cec57eff82665103fcff3a35f45b9c9be0e18b53dcd40f485bfa4cf",
+    "weights_sha256": "81c49c30048dcbcc9fb2895b56622f702b4aa9894e7d055f28bb520c09f74e3e",
+    "base_model_id": "cross-encoder/nli-MiniLM2-L6-H768",
+    "base_model_revision": "b95119ce93d3e065de6214e38cd4a97b0f2f2c6d",
+    "calibration_file_sha256": "d0ec9d23ded61fbcfaccc550e0486ce89845685abb4f27a0ca20e22d4934b873",
+    "calibration_version": "temperature-v1:6ae200db8d75477da143bd6d8d6c8927cfdfdbd8995932bbc1c59ce67e090727",
+    "temperature": 1.1037657679769346
+  },
+  "m4_12_consumed_diagnostic": {
+    "config_file_sha256": "d69b9abacc2e550006ab0fe71c2478e8bfbb089439195a2d83f08413352fac9e",
+    "config_canonical_semantic_sha256": "b4f06f0f2d21c531f7cfa99a32e6d932863015549dfe3613816719e4a4bf0398",
+    "sample_manifest_sha256": "214885784d13912ce603cc30eaed5904fbb588e493405767d66bbb3a490787d6",
+    "semantic_result_sha256": "017fd20fb810652725846e214c884114c5afdc06cb009206e4bdaf899f9ecef7",
+    "predictions_sha256": "0cd315438ff94d54923b8fdefc16ac1c20d9f9dc385ae2963251c31e04c4bc0e",
+    "rows": 512,
+    "cases": 128,
+    "pages": 128,
+    "role": "adaptation-start provenance regression only; never model selection or terminal evaluation"
+  },
+  "corrected_m4_10": {
+    "status": "resolved",
+    "config_schema_version": "groundloop-m4-real-git-histories-v2",
+    "config_sha256": "6818e8611ff0790a289a61bf9712cf29927617c9d0b5c1c6c312169f4030c483",
+    "source_manifest_sha256": "c5bf4c45e43b6df308b5bc86abb5da007464c2ae006103a8727e26a42883542d",
+    "model_identity_sha256": "0bab4b0cdd4f3e1ff84c372be93c500e6b96f9a05775339f106c1b3537113647",
+    "raw_oracle_artifacts_sha256": "83ed945ffe51690d96f9074353a869f54c179455237a24748513897a07fedaf8",
+    "structural_result_sha256": "92d7586c78f40ae447d97f703a51caf4dbdefc76ee911cde298dc841e1a5144d",
+    "study_manifest_sha256": "c2f009ea381d5ddff6295375d88efeece56c9fb4dbf7d3b0e1222df25af60438",
+    "report_sha256": "71a52641b90ad908c6122f1750ac7724def08aee02d013393d24a04c2b44fd3e",
+    "empirical_bundle_sha256": "02229805627c4a2412be3257244e613bf4fd8c79e6a737b69b7b73777a6c66c6"
+  }
+}
