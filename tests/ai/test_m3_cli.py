@@ -39,3 +39,16 @@ def test_cli_exposes_database_and_static_registration_commands() -> None:
     assert initialize.command == "db-init"
     assert register.command == "m3-register"
     assert register.backend == "deterministic"
+
+
+def test_cli_exposes_m4_execution_commands(tmp_path: Path) -> None:
+    parser = build_parser()
+    controlled = parser.parse_args(
+        ("m4-controlled-eval", "--output-dir", str(tmp_path / "report"))
+    )
+    smoke = parser.parse_args(
+        ("m4-real-smoke", "--output", str(tmp_path / "smoke.json"))
+    )
+
+    assert controlled.command == "m4-controlled-eval"
+    assert smoke.command == "m4-real-smoke"

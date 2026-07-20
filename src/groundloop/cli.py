@@ -422,6 +422,50 @@ def _m3_register(args: argparse.Namespace) -> int:
     return 0
 
 
+def _m4_controlled_eval(args: argparse.Namespace) -> int:
+    from groundloop.m4.experiments.__main__ import main as run_controlled_eval
+
+    return run_controlled_eval(
+        (
+            "--config",
+            str(args.config),
+            "--output-dir",
+            str(args.output_dir),
+        )
+    )
+
+
+def _m4_real_smoke(args: argparse.Namespace) -> int:
+    from groundloop.m4.smoke import (
+        M4RealPostgresSmokeConfig,
+        run_m4_real_postgres_smoke,
+        write_smoke_manifest,
+    )
+
+    result = run_m4_real_postgres_smoke(
+        M4RealPostgresSmokeConfig(
+            database_url=_database_url(args.database_url),
+            repo_root=Path(args.repo_root).resolve(),
+            artifact_root=Path(args.artifact_root).resolve(),
+            model_config_path=(
+                None
+                if args.model_config is None
+                else Path(args.model_config).resolve()
+            ),
+            lexical_config_path=(
+                None
+                if args.lexical_config is None
+                else Path(args.lexical_config).resolve()
+            ),
+            keep_schema=bool(args.keep_schema),
+        )
+    )
+    if args.output is not None:
+        write_smoke_manifest(result, Path(args.output))
+    print(result.to_json(), end="")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="groundloop")
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -450,6 +494,35 @@ def build_parser() -> argparse.ArgumentParser:
         "--output", type=Path, default=Path("artifacts/m3-last-run.json")
     )
     register.set_defaults(handler=_m3_register)
+
+    controlled = subcommands.add_parser(
+        "m4-controlled-eval",
+        help="run the frozen deterministic M4 evaluation fixture",
+    )
+    controlled.add_argument(
+        "--config",
+        type=Path,
+        default=Path("configs/m4/evaluation/controlled_v1.json"),
+    )
+    controlled.add_argument("--output-dir", type=Path, required=True)
+    controlled.set_defaults(handler=_m4_controlled_eval)
+
+    smoke = subcommands.add_parser(
+        "m4-real-smoke",
+        help="run one real-model M4 insert and exact replay",
+    )
+    smoke.add_argument("--database-url")
+    smoke.add_argument("--repo-root", type=Path, default=Path.cwd())
+    smoke.add_argument(
+        "--artifact-root",
+        type=Path,
+        default=Path(os.environ.get("GROUNDLOOP_M3_ARTIFACT_ROOT", Path.cwd())),
+    )
+    smoke.add_argument("--model-config", type=Path)
+    smoke.add_argument("--lexical-config", type=Path)
+    smoke.add_argument("--output", type=Path)
+    smoke.add_argument("--keep-schema", action="store_true")
+    smoke.set_defaults(handler=_m4_real_smoke)
     return parser
 
 
