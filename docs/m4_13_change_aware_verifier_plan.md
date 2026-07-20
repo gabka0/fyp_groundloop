@@ -745,12 +745,24 @@ evaluate five obsolete **concept groups** over these six exact claim IDs:
 
 An obsolete concept group counts as REFUTE only when every claim ID in that
 group is REFUTE. Require at least four of five groups to be REFUTE, no obsolete
-claim ID to be SUPPORT, and no more than one regression across the exact stable
-IDs `claim-bustub-wsl-unsupported` and `claim-mp-spdz-set-precision`. Report the
-inserted-positive IDs `claim-dynagox-buckets-protected` and
+claim ID to be SUPPORT, and no more than one negative warning across the exact
+stable IDs `claim-bustub-wsl-unsupported` and `claim-mp-spdz-set-precision`.
+Report the inserted-positive IDs `claim-dynagox-buckets-protected` and
 `claim-dynagox-direct-maps-visible` separately; they are not stable claims.
 Without independent labels, emit all per-ID decisions and these grouped counts
 as a transfer diagnostic only, with no go/no-go effect.
+
+The corrected, hash-bound M4.10 transfer surface contains exactly 14
+**new-version** claim/excerpt pairs; it does not contain the old-version pairs
+needed to measure temporal regression. Derive each new-version claim state from
+its frozen-policy pair labels using the GroundLoop truth table over distinct
+evidence: SUPPORTED for support witnesses only, REFUTED for refute witnesses
+only, CONFLICTED for both, and UNSUPPORTED for neither. A concept is REFUTED
+only when every member claim state is REFUTED. “No obsolete SUPPORT” means no
+obsolete member may be SUPPORTED or CONFLICTED. A stable-ID negative warning
+means its new-version state is REFUTED or CONFLICTED; report UNSUPPORTED
+separately. Do not call this a measured regression and do not collapse multiple
+pair decisions by majority vote.
 
 Failure is a valid M4.13 result. Do not tune against terminal errors and rerun
 the same test under the M4.13 name.
