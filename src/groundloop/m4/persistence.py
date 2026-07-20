@@ -635,19 +635,18 @@ class PostgresM4RuntimeStore:
                 FOR SHARE
                 """
             ).fetchone()
-            last_sealed = self._connection.execute(
-                """
-                SELECT max(epoch_id) FROM groundloop_epoch
-                WHERE semantic_status = 'sealed'
-                """
-            ).fetchone()
-            actual_previous = (
-                publication_head[0]
-                if publication_head is not None
-                else None
-                if last_sealed is None
-                else last_sealed[0]
-            )
+            if publication_head is not None:
+                actual_previous = publication_head[0]
+            else:
+                last_sealed = self._connection.execute(
+                    """
+                    SELECT max(epoch_id) FROM groundloop_epoch
+                    WHERE semantic_status = 'sealed'
+                    """
+                ).fetchone()
+                actual_previous = (
+                    None if last_sealed is None else last_sealed[0]
+                )
             if actual_previous != update.previous_published_epoch_id:
                 raise InvalidEventError("update does not name the last sealed epoch")
             row = self._connection.execute(

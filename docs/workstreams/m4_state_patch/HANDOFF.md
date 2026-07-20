@@ -85,22 +85,23 @@ and its affected-claim work. Patch space is `O(q + S_A + A + B)`. These are
 affected-key bounds, not constant-time guarantees: one high-degree claim or a
 large document withdrawal can still be large.
 
-The in-memory `_ScoreRangeIndex` is deliberately **not logarithmic for point
-updates**. It uses sorted Python lists. Each score-entry lookup is logarithmic,
-but insertion/removal shifts `O(E)` elements in the worst case, so applying
-`q` observation changes is `O(qE)` worst case for this component. Every
-observation changes two entries. `MaintenanceStats` exposes:
+The coordinator subsequently replaced the sorted Python lists with a
+deterministic AVL set. Point insertion, removal, and membership are now
+worst-case `O(log E)`, and threshold candidate discovery is
+`O(log E + m)`. Every observation changes two entries. `MaintenanceStats`
+retains the compatibility names below, but `shift_work` now counts AVL
+node/rotation work rather than list shifts:
 
 - `score_index_point_updates`;
 - `score_index_entries_before`;
 - exact observed `score_index_shift_work`; and
 - `score_index_shift_upper_bound`.
 
-This prevents the coordinator from reporting an affected-key or logarithmic
-end-to-end bound for this Python implementation. PostgreSQL's indexed path is
-a different physical implementation and requires its own measured and proved
-cost statement. This change establishes a transaction mechanism; it does not
-establish an asymptotic improvement over prior work.
+The AVL replacement removes the former `O(qE)` list-shift term. It does not
+make the end-to-end update logarithmic: copying and serializing a touched
+claim's complete witness payload remains output-sensitive, and PostgreSQL's
+indexed path requires its own measured and proved cost statement. This change
+does not establish an asymptotic improvement over prior work.
 
 Atomicity here means exception rollback in one Python execution context. The
 engine has no reader lock, so this API alone does not provide isolation from

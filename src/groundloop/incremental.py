@@ -12,7 +12,6 @@ M2 currently covers the direct-witness CORE. Evidence groups arrive in M5.
 from __future__ import annotations
 
 import heapq
-from bisect import bisect_left
 from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
@@ -50,7 +49,12 @@ class ClaimCertificate:
 
 @dataclass(frozen=True, slots=True)
 class MaintenanceStats:
-    """Inspectable work performed for the most recent committed event."""
+    """Inspectable work performed for the most recent committed event.
+
+    ``score_index_shift_*`` retains its original public name for compatibility,
+    but after M4.7 it counts AVL node/rotation work and its conservative
+    logarithmic upper bound; no Python-list shifting remains.
+    """
 
     active_observations_added: int = 0
     active_observations_removed: int = 0
@@ -98,7 +102,15 @@ class _MutableStats:
             score_index_shift_work=self.score_index_shift_work,
             score_index_shift_upper_bound=(
                 self.score_index_point_updates
-                * (self.score_index_entries_before + self.active_observations_added)
+                * (
+                    4
+                    * (
+                        self.score_index_entries_before
+                        + self.active_observations_added
+                        + 1
+                    ).bit_length()
+                    + 4
+                )
             ),
         )
 
@@ -247,74 +259,196 @@ class IncrementalStatePatch:
         return tuple(change.key for change in self.answer_state_changes)
 
 
+_ScoreKey = tuple[float, str]
+
+
 @dataclass(slots=True)
-class _ScoreRangeIndex:
-    """Active-observation threshold index.
+class _AVLNode:
+    key: _ScoreKey
+    left: _AVLNode | None = None
+    right: _AVLNode | None = None
+    height: int = 1
 
-    Python's sorted lists make point insertion/removal O(E); threshold range
-    discovery is O(log E + m). PostgreSQL M2 uses B-tree indexes for both
-    updates and range scans. This transparent prototype is sufficient to prove
-    candidate correctness and measure m without pretending to be the final
-    physical structure.
-    """
 
-    support_entries: list[tuple[float, str]] = field(default_factory=list)
-    refute_entries: list[tuple[float, str]] = field(default_factory=list)
+@dataclass(slots=True)
+class _AVLSet:
+    """Deterministic AVL set with worst-case logarithmic point updates."""
 
-    def add(self, observation: SemanticObservation) -> int:
-        support = (observation.support_score, observation.observation_id)
-        refute = (observation.refute_score, observation.observation_id)
-        support_position = bisect_left(self.support_entries, support)
-        refute_position = bisect_left(self.refute_entries, refute)
-        support_shifts = len(self.support_entries) - support_position
-        refute_shifts = len(self.refute_entries) - refute_position
-        self.support_entries.insert(support_position, support)
-        self.refute_entries.insert(refute_position, refute)
-        return support_shifts + refute_shifts
+    root: _AVLNode | None = None
+    size: int = 0
 
-    def remove(self, observation: SemanticObservation) -> int:
-        return self._remove_entry(
-            self.support_entries,
-            (observation.support_score, observation.observation_id),
-        ) + self._remove_entry(
-            self.refute_entries,
-            (observation.refute_score, observation.observation_id),
-        )
+    def __len__(self) -> int:
+        return self.size
 
     @staticmethod
-    def _remove_entry(
-        entries: list[tuple[float, str]], target: tuple[float, str]
-    ) -> int:
-        position = bisect_left(entries, target)
-        if position >= len(entries) or entries[position] != target:
-            raise AssertionError(f"score-index entry missing: {target}")
-        shifts = len(entries) - position - 1
-        entries.pop(position)
-        return shifts
+    def _height(node: _AVLNode | None) -> int:
+        return 0 if node is None else node.height
+
+    @classmethod
+    def _refresh(cls, node: _AVLNode) -> None:
+        node.height = 1 + max(cls._height(node.left), cls._height(node.right))
+
+    @classmethod
+    def _rotate_left(cls, node: _AVLNode) -> _AVLNode:
+        pivot = node.right
+        assert pivot is not None
+        node.right = pivot.left
+        pivot.left = node
+        cls._refresh(node)
+        cls._refresh(pivot)
+        return pivot
+
+    @classmethod
+    def _rotate_right(cls, node: _AVLNode) -> _AVLNode:
+        pivot = node.left
+        assert pivot is not None
+        node.left = pivot.right
+        pivot.right = node
+        cls._refresh(node)
+        cls._refresh(pivot)
+        return pivot
+
+    @classmethod
+    def _rebalance(cls, node: _AVLNode) -> tuple[_AVLNode, int]:
+        cls._refresh(node)
+        balance = cls._height(node.left) - cls._height(node.right)
+        rotations = 0
+        if balance > 1:
+            assert node.left is not None
+            if cls._height(node.left.left) < cls._height(node.left.right):
+                node.left = cls._rotate_left(node.left)
+                rotations += 1
+            return cls._rotate_right(node), rotations + 1
+        if balance < -1:
+            assert node.right is not None
+            if cls._height(node.right.right) < cls._height(node.right.left):
+                node.right = cls._rotate_right(node.right)
+                rotations += 1
+            return cls._rotate_left(node), rotations + 1
+        return node, rotations
+
+    @classmethod
+    def _insert(
+        cls, node: _AVLNode | None, key: _ScoreKey
+    ) -> tuple[_AVLNode, int]:
+        if node is None:
+            return _AVLNode(key), 1
+        if key == node.key:
+            raise AssertionError(f"duplicate score-index entry: {key}")
+        if key < node.key:
+            node.left, work = cls._insert(node.left, key)
+        else:
+            node.right, work = cls._insert(node.right, key)
+        node, rotations = cls._rebalance(node)
+        return node, work + rotations + 1
+
+    def add(self, key: _ScoreKey) -> int:
+        self.root, work = self._insert(self.root, key)
+        self.size += 1
+        return work
+
+    @classmethod
+    def _delete(
+        cls, node: _AVLNode | None, key: _ScoreKey
+    ) -> tuple[_AVLNode | None, int]:
+        if node is None:
+            raise AssertionError(f"score-index entry missing: {key}")
+        work = 1
+        if key < node.key:
+            node.left, child_work = cls._delete(node.left, key)
+            work += child_work
+        elif key > node.key:
+            node.right, child_work = cls._delete(node.right, key)
+            work += child_work
+        elif node.left is None:
+            return node.right, work
+        elif node.right is None:
+            return node.left, work
+        else:
+            successor = node.right
+            while successor.left is not None:
+                successor = successor.left
+                work += 1
+            node.key = successor.key
+            node.right, child_work = cls._delete(node.right, successor.key)
+            work += child_work
+        node, rotations = cls._rebalance(node)
+        return node, work + rotations
+
+    def remove(self, key: _ScoreKey) -> int:
+        self.root, work = self._delete(self.root, key)
+        self.size -= 1
+        return work
+
+    def contains(self, key: _ScoreKey) -> bool:
+        node = self.root
+        while node is not None:
+            if key == node.key:
+                return True
+            node = node.left if key < node.key else node.right
+        return False
+
+    def ids_in_score_range(self, lower: float, upper: float) -> set[str]:
+        result: set[str] = set()
+        lower_key = (lower, "")
+        upper_key = (upper, "")
+
+        def visit(node: _AVLNode | None) -> None:
+            if node is None:
+                return
+            if node.key >= lower_key:
+                visit(node.left)
+            if lower_key <= node.key < upper_key:
+                _, observation_id = node.key
+                result.add(observation_id)
+            if node.key < upper_key:
+                visit(node.right)
+
+        visit(self.root)
+        return result
+
+
+@dataclass(slots=True)
+class _ScoreRangeIndex:
+    """AVL-backed active-observation threshold index.
+
+    Point insertion, deletion, and membership are worst-case ``O(log E)``;
+    threshold discovery is ``O(log E + m)`` for ``m`` returned candidates.
+    """
+
+    support_entries: _AVLSet = field(default_factory=_AVLSet)
+    refute_entries: _AVLSet = field(default_factory=_AVLSet)
+
+    def add(self, observation: SemanticObservation) -> int:
+        return self.support_entries.add(
+            (observation.support_score, observation.observation_id)
+        ) + self.refute_entries.add(
+            (observation.refute_score, observation.observation_id)
+        )
+
+    def remove(self, observation: SemanticObservation) -> int:
+        return self.support_entries.remove(
+            (observation.support_score, observation.observation_id)
+        ) + self.refute_entries.remove(
+            (observation.refute_score, observation.observation_id)
+        )
 
     def contains(self, observation: SemanticObservation) -> bool:
         """Return whether both score entries for ``observation`` are present."""
-        support = (observation.support_score, observation.observation_id)
-        refute = (observation.refute_score, observation.observation_id)
-        support_position = bisect_left(self.support_entries, support)
-        refute_position = bisect_left(self.refute_entries, refute)
-        return (
-            support_position < len(self.support_entries)
-            and self.support_entries[support_position] == support
-            and refute_position < len(self.refute_entries)
-            and self.refute_entries[refute_position] == refute
+        return self.support_entries.contains(
+            (observation.support_score, observation.observation_id)
+        ) and self.refute_entries.contains(
+            (observation.refute_score, observation.observation_id)
         )
 
     @staticmethod
     def _range_ids(
-        entries: list[tuple[float, str]], old: float, new: float
+        entries: _AVLSet, old: float, new: float
     ) -> set[str]:
         if old == new:
             return set()
         lower, upper = sorted((old, new))
-        start = bisect_left(entries, (lower, ""))
-        stop = bisect_left(entries, (upper, ""))
-        return {observation_id for _, observation_id in entries[start:stop]}
+        return entries.ids_in_score_range(lower, upper)
 
     def policy_candidates(self, old: DecisionPolicy, new: DecisionPolicy) -> set[str]:
         if old.tie_rule_version != new.tie_rule_version:
