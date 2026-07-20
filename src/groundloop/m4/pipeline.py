@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Protocol
 
 from psycopg import Connection, Cursor
@@ -107,6 +108,13 @@ def _certificate_digest(claim_id: str, state: ClaimState) -> str:
         if state.refuting_observation_ids
         else "",
     )
+
+
+class M4ExecutionMode(StrEnum):
+    """Choose inline differential auditing or physically measured execution."""
+
+    AUDIT = "audit"
+    MEASURED = "measured"
 
 
 @dataclass(frozen=True, slots=True)
@@ -805,10 +813,14 @@ class PostgresM4ApplicationPorts:
         structural_payloads: Mapping[str, StructuralPayload],
         verification_provenance_writer: VerificationProvenanceWriter | None = None,
         failure_injector: Callable[[str], None] | None = None,
+        execution_mode: M4ExecutionMode = M4ExecutionMode.AUDIT,
     ) -> None:
         _require_autocommit(connection)
         self.connection = connection
-        self.runtime_store = PostgresM4RuntimeStore(connection)
+        self.execution_mode = execution_mode
+        self.runtime_store = PostgresM4RuntimeStore(
+            connection, audit_transitions=not self._measured
+        )
         self._payloads = dict(structural_payloads)
         self._verification_writer = verification_provenance_writer
         self._failure_injector = failure_injector
@@ -820,6 +832,57 @@ class PostgresM4ApplicationPorts:
         self._working_repository = deepcopy(self._published_repository)
         self._working_engine = deepcopy(self._published_engine)
         self._active_epoch_id: int | None = None
+
+    @property
+    def _measured(self) -> bool:
+        return self.execution_mode is M4ExecutionMode.MEASURED
+
+    def _register_execution_accounting(
+        self, cursor: Cursor[Any], epoch_id: int
+    ) -> None:
+        cursor.execute(
+            """
+            INSERT INTO groundloop_m4_execution_accounting (
+                epoch_id, execution_mode
+            ) VALUES (%s, %s) ON CONFLICT (epoch_id) DO NOTHING
+            """,
+            (epoch_id, self.execution_mode.value),
+        )
+        row = cursor.execute(
+            """
+            SELECT execution_mode FROM groundloop_m4_execution_accounting
+            WHERE epoch_id = %s
+            """,
+            (epoch_id,),
+        ).fetchone()
+        if row is None or str(row[0]) != self.execution_mode.value:
+            raise EventConflictError(
+                "M4 event replay changed the physical execution mode"
+            )
+
+    @staticmethod
+    def _account(
+        cursor: Cursor[Any], epoch_id: int, column: str, amount: int = 1
+    ) -> None:
+        allowed = {
+            "inline_grounding_oracle_calls",
+            "working_claim_rows_written",
+            "working_answer_rows_written",
+            "evaluation_default_rows_written",
+            "evaluation_override_rows_written",
+            "active_chunk_rows_examined",
+            "published_claim_versions_written",
+            "published_answer_versions_written",
+        }
+        if column not in allowed or amount < 0:
+            raise ValidationError("invalid M4 execution-accounting update")
+        cursor.execute(
+            f"""
+            UPDATE groundloop_m4_execution_accounting
+            SET {column} = {column} + %s WHERE epoch_id = %s
+            """,
+            (amount, epoch_id),
+        )
 
     def _inject(self, point: str) -> None:
         if self._failure_injector is not None:
@@ -944,20 +1007,49 @@ class PostgresM4ApplicationPorts:
             """,
             (event.update.event_id,),
         ).fetchone()
-        if existing_epoch is None:
-            registered_rows = self.connection.execute(
-                "SELECT claim_id FROM groundloop_claim ORDER BY claim_id"
-            ).fetchall()
-        else:
-            registered_rows = self.connection.execute(
+        snapshot = (
+            self.connection.execute(
                 """
-                SELECT claim_id FROM groundloop_m4_claim_registry_member
+                SELECT claim_count, claim_set_hash
+                FROM groundloop_m4_claim_registry_snapshot
                 WHERE claim_registry_snapshot_id = %s
-                ORDER BY member_ordinal
                 """,
                 (event.claim_registry_snapshot_id,),
-            ).fetchall()
-        registered = tuple(str(row[0]) for row in registered_rows)
+            ).fetchone()
+            if self._measured
+            else None
+        )
+        if snapshot is not None:
+            expected_hash = stable_m4_digest(
+                "m4-claim-registry-snapshot-v1", *event.registered_claim_ids
+            )
+            if (int(snapshot[0]), str(snapshot[1]).strip()) != (
+                len(event.registered_claim_ids),
+                expected_hash,
+            ):
+                raise EventConflictError(
+                    "event claim registry differs from its frozen snapshot"
+                )
+            registered = event.registered_claim_ids
+        elif existing_epoch is None:
+            registered = tuple(
+                str(row[0])
+                for row in self.connection.execute(
+                    "SELECT claim_id FROM groundloop_claim ORDER BY claim_id"
+                ).fetchall()
+            )
+        else:
+            registered = tuple(
+                str(row[0])
+                for row in self.connection.execute(
+                    """
+                    SELECT claim_id FROM groundloop_m4_claim_registry_member
+                    WHERE claim_registry_snapshot_id = %s
+                    ORDER BY member_ordinal
+                    """,
+                    (event.claim_registry_snapshot_id,),
+                ).fetchall()
+            )
         if event.registered_claim_ids != registered:
             raise EventConflictError(
                 "event claim registry differs from the current registered claims"
@@ -1011,6 +1103,22 @@ class PostgresM4ApplicationPorts:
             ),
         ).fetchall()
         return tuple(str(row[0]) for row in rows)
+
+    def _answer_ids_for_claims(
+        self, claim_ids: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        if not claim_ids:
+            return ()
+        return tuple(
+            str(row[0])
+            for row in self.connection.execute(
+                """
+                SELECT DISTINCT answer_version_id FROM groundloop_claim
+                WHERE claim_id = ANY(%s) ORDER BY answer_version_id
+                """,
+                (list(claim_ids),),
+            ).fetchall()
+        )
 
     def _stage_structural(
         self, event: DynamicEventPlan, payload: StructuralPayload
@@ -1081,6 +1189,8 @@ class PostgresM4ApplicationPorts:
         ).fetchone()
         if existing is not None:
             self._validate_payload(event, payload)
+            with self.connection.cursor() as cursor:
+                self._register_execution_accounting(cursor, int(existing[0]))
             opened = self.runtime_store.open_epoch(
                 event.update,
                 root_jobs,
@@ -1102,13 +1212,14 @@ class PostgresM4ApplicationPorts:
                     opened.epoch.epoch_id,
                     previous_epoch,
                 )
-                with self.connection.cursor() as cursor:
-                    self._assert_grounding_equality(
-                        cursor,
-                        opened.epoch.epoch_id,
-                        working_repository,
-                        working_engine,
-                    )
+                if not self._measured:
+                    with self.connection.cursor() as cursor:
+                        self._assert_grounding_equality(
+                            cursor,
+                            opened.epoch.epoch_id,
+                            working_repository,
+                            working_engine,
+                        )
                 self._working_repository = working_repository
                 self._working_engine = working_engine
                 self._active_epoch_id = opened.epoch.epoch_id
@@ -1129,24 +1240,38 @@ class PostgresM4ApplicationPorts:
         if withdrawal.plan.deactivated_chunk_ids != event.deactivated_chunk_version_ids:
             raise EventConflictError("withdrawal and event deactivation differ")
         staged_repository, staged_engine = self._stage_structural(event, payload)
+        touched_claim_ids = withdrawal.plan.affected_claim_ids
+        touched_answer_ids = self._answer_ids_for_claims(touched_claim_ids)
 
         def structural_action(cursor: Cursor[Any], epoch_id: int) -> None:
+            self._register_execution_accounting(cursor, epoch_id)
             self._write_claim_registry_members(cursor, event)
             self._write_structural_rows(cursor, epoch_id, payload)
             self._write_withdrawal_overlay(cursor, epoch_id, withdrawal)
             self._persist_working_states(
-                cursor, epoch_id, 1, staged_engine, causative_digest=None
-            )
-            self._write_initial_evaluation(
                 cursor,
                 epoch_id,
-                event,
-                root_jobs,
-                discovery_scopes,
+                1,
+                staged_engine,
+                causative_digest=None,
+                claim_ids=(touched_claim_ids if self._measured else None),
+                answer_ids=(touched_answer_ids if self._measured else None),
             )
-            self._assert_grounding_equality(
-                cursor, epoch_id, staged_repository, staged_engine
-            )
+            if self._measured:
+                self._write_initial_compact_evaluation(
+                    cursor, epoch_id, event, root_jobs, discovery_scopes
+                )
+            else:
+                self._write_initial_evaluation(
+                    cursor,
+                    epoch_id,
+                    event,
+                    root_jobs,
+                    discovery_scopes,
+                )
+                self._assert_grounding_equality(
+                    cursor, epoch_id, staged_repository, staged_engine
+                )
 
         opened = self.runtime_store.open_epoch(
             event.update,
@@ -1178,29 +1303,71 @@ class PostgresM4ApplicationPorts:
             raise EventConflictError("candidate policy registry identity changed")
         if int(policy_row[1]) != len(expected):
             raise EventConflictError("candidate policy claim count changed")
-        for ordinal, claim_id in expected:
-            cursor.execute(
+        snapshot_hash = stable_m4_digest(
+            "m4-claim-registry-snapshot-v1", *event.registered_claim_ids
+        )
+        cursor.execute(
+            """
+            INSERT INTO groundloop_m4_claim_registry_snapshot VALUES (
+                %s, %s, %s, now()
+            ) ON CONFLICT DO NOTHING
+            """,
+            (
+                event.claim_registry_snapshot_id,
+                len(expected),
+                snapshot_hash,
+            ),
+        )
+        snapshot = cursor.execute(
+            """
+            SELECT claim_count, claim_set_hash
+            FROM groundloop_m4_claim_registry_snapshot
+            WHERE claim_registry_snapshot_id = %s
+            """,
+            (event.claim_registry_snapshot_id,),
+        ).fetchone()
+        if snapshot is None or (int(snapshot[0]), str(snapshot[1]).strip()) != (
+            len(expected),
+            snapshot_hash,
+        ):
+            raise EventConflictError("claim registry snapshot content changed")
+        stored_count_row = cursor.execute(
                 """
-                INSERT INTO groundloop_m4_claim_registry_member (
-                    claim_registry_snapshot_id, claim_id, member_ordinal
-                ) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING
-                """,
-                (event.claim_registry_snapshot_id, claim_id, ordinal),
-            )
-        stored = tuple(
-            (int(row[0]), str(row[1]))
-            for row in cursor.execute(
-                """
-                SELECT member_ordinal, claim_id
+                SELECT count(*)
                 FROM groundloop_m4_claim_registry_member
                 WHERE claim_registry_snapshot_id = %s
-                ORDER BY member_ordinal
                 """,
                 (event.claim_registry_snapshot_id,),
-            ).fetchall()
-        )
-        if stored != expected:
-            raise EventConflictError("claim registry snapshot content changed")
+            ).fetchone()
+        assert stored_count_row is not None
+        stored_count = int(stored_count_row[0])
+        if stored_count == 0:
+            for ordinal, claim_id in expected:
+                cursor.execute(
+                    """
+                    INSERT INTO groundloop_m4_claim_registry_member (
+                        claim_registry_snapshot_id, claim_id, member_ordinal
+                    ) VALUES (%s, %s, %s)
+                    """,
+                    (event.claim_registry_snapshot_id, claim_id, ordinal),
+                )
+        elif stored_count != len(expected):
+            raise EventConflictError("claim registry membership is incomplete")
+        if not self._measured:
+            stored = tuple(
+                (int(row[0]), str(row[1]))
+                for row in cursor.execute(
+                    """
+                    SELECT member_ordinal, claim_id
+                    FROM groundloop_m4_claim_registry_member
+                    WHERE claim_registry_snapshot_id = %s
+                    ORDER BY member_ordinal
+                    """,
+                    (event.claim_registry_snapshot_id,),
+                ).fetchall()
+            )
+            if stored != expected:
+                raise EventConflictError("claim registry snapshot content changed")
 
     def _write_structural_rows(
         self, cursor: Cursor[Any], epoch_id: int, payload: StructuralPayload
@@ -1451,6 +1618,126 @@ class PostgresM4ApplicationPorts:
                 ),
             )
 
+    def _write_initial_compact_evaluation(
+        self,
+        cursor: Cursor[Any],
+        epoch_id: int,
+        event: DynamicEventPlan,
+        root_jobs: tuple[LogicalJobSpec, ...],
+        discovery_scopes: tuple[DiscoveryScope, ...],
+    ) -> None:
+        self._write_compact_evaluation(
+            cursor,
+            epoch_id=epoch_id,
+            revision=1,
+            confirmed_as_of_epoch=event.update.previous_published_epoch_id,
+            open_jobs=root_jobs,
+            discovery_scope_open=bool(discovery_scopes),
+            failed=False,
+        )
+
+    def _write_compact_evaluation(
+        self,
+        cursor: Cursor[Any],
+        *,
+        epoch_id: int,
+        revision: int,
+        confirmed_as_of_epoch: int | None,
+        open_jobs: tuple[LogicalJobSpec, ...],
+        discovery_scope_open: bool,
+        failed: bool,
+    ) -> None:
+        default_state = (
+            "failed" if failed else "pending" if discovery_scope_open else "complete"
+        )
+        cursor.execute(
+            """
+            INSERT INTO groundloop_m4_evaluation_default VALUES (
+                %s, %s, %s, %s, %s
+            ) ON CONFLICT (epoch_id) DO UPDATE SET
+                evaluation_state = EXCLUDED.evaluation_state,
+                confirmed_as_of_epoch = EXCLUDED.confirmed_as_of_epoch,
+                discovery_scope_open = EXCLUDED.discovery_scope_open,
+                updated_revision = EXCLUDED.updated_revision
+            """,
+            (
+                epoch_id,
+                default_state,
+                confirmed_as_of_epoch,
+                discovery_scope_open,
+                revision,
+            ),
+        )
+        self._account(cursor, epoch_id, "evaluation_default_rows_written")
+        cursor.execute(
+            "DELETE FROM groundloop_object_evaluation WHERE epoch_id = %s",
+            (epoch_id,),
+        )
+        if failed:
+            return
+        open_by_claim: dict[str, int] = {}
+        for job in open_jobs:
+            claim_id = (
+                job.pair.claim_id if job.pair is not None else job.target_claim_id
+            )
+            if claim_id is not None:
+                open_by_claim[claim_id] = open_by_claim.get(claim_id, 0) + 1
+        if not open_by_claim:
+            return
+        answer_by_claim = {
+            str(row[0]): str(row[1])
+            for row in cursor.execute(
+                """
+                SELECT claim_id, answer_version_id FROM groundloop_claim
+                WHERE claim_id = ANY(%s)
+                """,
+                (list(sorted(open_by_claim)),),
+            ).fetchall()
+        }
+        for claim_id, open_count in sorted(open_by_claim.items()):
+            cursor.execute(
+                """
+                INSERT INTO groundloop_object_evaluation VALUES (
+                    %s, 'claim', %s, 'pending', %s, %s, %s, %s
+                )
+                """,
+                (
+                    epoch_id,
+                    claim_id,
+                    confirmed_as_of_epoch,
+                    open_count,
+                    discovery_scope_open,
+                    revision,
+                ),
+            )
+        answer_counts: dict[str, int] = {}
+        for claim_id, open_count in open_by_claim.items():
+            answer_id = answer_by_claim.get(claim_id)
+            if answer_id is not None:
+                answer_counts[answer_id] = answer_counts.get(answer_id, 0) + open_count
+        for answer_id, open_count in sorted(answer_counts.items()):
+            cursor.execute(
+                """
+                INSERT INTO groundloop_object_evaluation VALUES (
+                    %s, 'answer', %s, 'pending', %s, %s, %s, %s
+                )
+                """,
+                (
+                    epoch_id,
+                    answer_id,
+                    confirmed_as_of_epoch,
+                    open_count,
+                    discovery_scope_open,
+                    revision,
+                ),
+            )
+        self._account(
+            cursor,
+            epoch_id,
+            "evaluation_override_rows_written",
+            len(open_by_claim) + len(answer_counts),
+        )
+
     def chunk_is_active(self, chunk_version_id: str) -> bool:
         epoch_id = self._active_epoch_id
         if epoch_id is None:
@@ -1481,6 +1768,11 @@ class PostgresM4ApplicationPorts:
             """,
             (epoch_id, chunk_version_id),
         ).fetchone()
+        if self._measured:
+            with self.connection.cursor() as cursor:
+                self._account(
+                    cursor, epoch_id, "active_chunk_rows_examined", 1
+                )
         return row is not None
 
     def pending_claim_ids(self, epoch_id: int) -> tuple[str, ...]:
@@ -1584,9 +1876,24 @@ class PostgresM4ApplicationPorts:
                 )
             self._inject("expansion_discovery_persisted")
             epoch = self.runtime_store.read_epoch(epoch_id)
+            completed_job = next(
+                job for job in epoch.jobs if job.spec.job_id == completion.job_id
+            )
+            relevant_chunks = tuple(
+                chunk_id
+                for chunk_id in (
+                    completed_job.spec.target_chunk_version_id,
+                    completed_job.spec.pair.chunk_version_id
+                    if completed_job.spec.pair is not None
+                    else None,
+                )
+                if chunk_id is not None
+            )
             transition = self.runtime_store.complete(
                 CompletionPlan(epoch_id, epoch.revision, completion, child_jobs),
-                active_chunk_ids=self._active_chunk_ids(epoch_id),
+                active_chunk_ids=self._active_chunk_ids(
+                    epoch_id, relevant_chunks if self._measured else None
+                ),
                 attempt_id=attempt_id,
                 lease_token_hash=lease_token_hash,
                 lease_expected_revision=lease_revision,
@@ -1975,7 +2282,14 @@ class PostgresM4ApplicationPorts:
             epoch = self.runtime_store.read_epoch(epoch_id)
             transition = self.runtime_store.complete(
                 CompletionPlan(epoch_id, epoch.revision, completion),
-                active_chunk_ids=self._active_chunk_ids(epoch_id),
+                active_chunk_ids=self._active_chunk_ids(
+                    epoch_id,
+                    (
+                        (verifier_job.pair.chunk_version_id,)
+                        if self._measured and verifier_job.pair is not None
+                        else None
+                    ),
+                ),
                 attempt_id=attempt_id,
                 lease_token_hash=lease_token_hash,
                 lease_expected_revision=lease_revision,
@@ -2026,16 +2340,24 @@ class PostgresM4ApplicationPorts:
                 )
                 self._inject("verifier_overlay_written")
                 with self.connection.cursor() as cursor:
+                    touched_claim_ids = (observation.subject_id,)
                     self._persist_working_states(
                         cursor,
                         epoch_id,
                         completed_epoch.revision,
                         staged_engine,
                         causative_digest=completion.completion_digest,
+                        claim_ids=(touched_claim_ids if self._measured else None),
+                        answer_ids=(
+                            self._answer_ids_for_claims(touched_claim_ids)
+                            if self._measured
+                            else None
+                        ),
                     )
-                    self._assert_grounding_equality(
-                        cursor, epoch_id, staged_repository, staged_engine
-                    )
+                    if not self._measured:
+                        self._assert_grounding_equality(
+                            cursor, epoch_id, staged_repository, staged_engine
+                        )
                 self._inject("verifier_state_written")
             if not replayed:
                 with self.connection.cursor() as cursor:
@@ -2205,12 +2527,13 @@ class PostgresM4ApplicationPorts:
             raise EventConflictError(
                 "replayed verifier completion differs from its working delta"
             )
-        self._assert_grounding_equality(
-            cursor,
-            epoch_id,
-            self._working_repository,
-            self._working_engine,
-        )
+        if not self._measured:
+            self._assert_grounding_equality(
+                cursor,
+                epoch_id,
+                self._working_repository,
+                self._working_engine,
+            )
 
     def _insert_working_observation_delta(
         self, epoch_id: int, revision: int, observation: SemanticObservation
@@ -2250,15 +2573,23 @@ class PostgresM4ApplicationPorts:
             ),
         )
 
-    def _active_chunk_ids(self, epoch_id: int) -> frozenset[str]:
+    def _active_chunk_ids(
+        self,
+        epoch_id: int,
+        relevant_chunk_ids: tuple[str, ...] | None = None,
+    ) -> frozenset[str]:
         state = self.runtime_store.read_epoch(epoch_id).state
         if state is RuntimeEpochState.FAILED:
             return frozenset()
         if state is not RuntimeEpochState.SEALED and self._active_epoch_id != epoch_id:
             raise InvalidEventError("completion does not target the working epoch")
-        return frozenset(
-            str(row[0])
-            for row in self.connection.execute(
+        canonical = (
+            None
+            if relevant_chunk_ids is None
+            else tuple(sorted(set(relevant_chunk_ids)))
+        )
+        if canonical is None:
+            rows = self.connection.execute(
                 """
                 SELECT chunk_version_id
                 FROM groundloop_m4_effective_chunk_version
@@ -2266,7 +2597,23 @@ class PostgresM4ApplicationPorts:
                 """,
                 (epoch_id,),
             ).fetchall()
-        )
+        else:
+            rows = self.connection.execute(
+                """
+                SELECT chunk_version_id
+                FROM groundloop_m4_effective_chunk_version
+                WHERE epoch_id = %s AND chunk_version_id = ANY(%s)
+                """,
+                (epoch_id, list(canonical)),
+            ).fetchall()
+        with self.connection.cursor() as cursor:
+            self._account(
+                cursor,
+                epoch_id,
+                "active_chunk_rows_examined",
+                len(rows) if canonical is None else len(canonical),
+            )
+        return frozenset(str(row[0]) for row in rows)
 
     def _persist_working_states(
         self,
@@ -2276,49 +2623,45 @@ class PostgresM4ApplicationPorts:
         engine: IncrementalMaintenanceEngine,
         *,
         causative_digest: str | None,
+        claim_ids: tuple[str, ...] | None = None,
+        answer_ids: tuple[str, ...] | None = None,
     ) -> None:
+        selected_claim_ids = (
+            tuple(sorted(engine.claim_states))
+            if claim_ids is None
+            else tuple(sorted(set(claim_ids)))
+        )
+        selected_answer_ids = (
+            tuple(sorted(engine.answer_states))
+            if answer_ids is None
+            else tuple(sorted(set(answer_ids)))
+        )
         old_claims = {
             str(row[0]): str(row[1])
             for row in cursor.execute(
                 """
-                SELECT claim_id, status FROM groundloop_m4_working_claim_state
-                WHERE epoch_id = %s
+                SELECT claim_id, status
+                FROM groundloop_m4_effective_working_claim_state
+                WHERE epoch_id = %s AND claim_id = ANY(%s)
                 """,
-                (epoch_id,),
+                (epoch_id, list(selected_claim_ids)),
             ).fetchall()
         }
-        if not old_claims:
-            old_claims = {
-                str(row[0]): str(row[1])
-                for row in cursor.execute(
-                    """
-                    SELECT claim_id, status FROM groundloop_published_claim_state
-                    WHERE valid_to_epoch IS NULL
-                    """
-                ).fetchall()
-            }
         old_answers = {
             str(row[0]): str(row[1])
             for row in cursor.execute(
                 """
                 SELECT answer_version_id, status
-                FROM groundloop_m4_working_answer_state WHERE epoch_id = %s
+                FROM groundloop_m4_effective_working_answer_state
+                WHERE epoch_id = %s AND answer_version_id = ANY(%s)
                 """,
-                (epoch_id,),
+                (epoch_id, list(selected_answer_ids)),
             ).fetchall()
         }
-        if not old_answers:
-            old_answers = {
-                str(row[0]): str(row[1])
-                for row in cursor.execute(
-                    """
-                    SELECT answer_version_id, status
-                    FROM groundloop_published_answer_state
-                    WHERE valid_to_epoch IS NULL
-                    """
-                ).fetchall()
-            }
-        for claim_state in engine.claim_states.values():
+        for claim_id in selected_claim_ids:
+            claim_state = engine.claim_states.get(claim_id)
+            if claim_state is None:
+                raise ValidationError("working claim selection is outside the engine")
             cursor.execute(
                 """
                 INSERT INTO groundloop_m4_working_claim_state VALUES (
@@ -2367,7 +2710,10 @@ class PostgresM4ApplicationPorts:
                         causative_digest,
                     ),
                 )
-        for answer_state in engine.answer_states.values():
+        for answer_id in selected_answer_ids:
+            answer_state = engine.answer_states.get(answer_id)
+            if answer_state is None:
+                raise ValidationError("working answer selection is outside the engine")
             cursor.execute(
                 """
                 INSERT INTO groundloop_m4_working_answer_state VALUES (
@@ -2412,9 +2758,34 @@ class PostgresM4ApplicationPorts:
                         causative_digest,
                     ),
                 )
+        self._account(
+            cursor,
+            epoch_id,
+            "working_claim_rows_written",
+            len(selected_claim_ids),
+        )
+        self._account(
+            cursor,
+            epoch_id,
+            "working_answer_rows_written",
+            len(selected_answer_ids),
+        )
 
     def _sync_evaluation(self, cursor: Cursor[Any], epoch_id: int) -> None:
         epoch = self.runtime_store.read_epoch(epoch_id)
+        if self._measured:
+            self._write_compact_evaluation(
+                cursor,
+                epoch_id=epoch_id,
+                revision=epoch.revision,
+                confirmed_as_of_epoch=self._publication_head(),
+                open_jobs=tuple(job.spec for job in epoch.jobs if job.open),
+                discovery_scope_open=any(
+                    not scope.closed for scope in epoch.discovery_scopes
+                ),
+                failed=epoch.state is RuntimeEpochState.FAILED,
+            )
+            return
         head = self._publication_head()
         claims = cursor.execute(
             """
@@ -2577,7 +2948,7 @@ class PostgresM4ApplicationPorts:
             SELECT claim_id, support_count, refute_count, best_support_score,
                    best_refute_score, supporting_observation_ids,
                    refuting_observation_ids, status
-            FROM groundloop_m4_working_claim_state
+            FROM groundloop_m4_effective_working_claim_state
             WHERE epoch_id = %s ORDER BY claim_id
             """,
             (epoch_id,),
@@ -2598,7 +2969,7 @@ class PostgresM4ApplicationPorts:
             """
             SELECT answer_version_id, required_claim_count, supported_count,
                    unsupported_count, refuted_count, conflicted_count, status
-            FROM groundloop_m4_working_answer_state
+            FROM groundloop_m4_effective_working_answer_state
             WHERE epoch_id = %s ORDER BY answer_version_id
             """,
             (epoch_id,),
@@ -2621,7 +2992,11 @@ class PostgresM4ApplicationPorts:
         epoch_id: int,
         repository: InMemoryRepository,
         engine: IncrementalMaintenanceEngine,
+        *,
+        count_inline: bool = True,
     ) -> None:
+        if count_inline:
+            self._account(cursor, epoch_id, "inline_grounding_oracle_calls")
         engine.validate_certificates()
         reference = compute_all_states(repository)
         sql_oracle = self._read_sql_oracle(cursor, epoch_id)
@@ -2633,6 +3008,10 @@ class PostgresM4ApplicationPorts:
             )
 
     def check_grounding(self, epoch_id: int) -> None:
+        if self._measured:
+            if self._active_epoch_id != epoch_id:
+                raise InvalidEventError("grounding check does not target working state")
+            return
         with self.connection.cursor() as cursor:
             self._assert_grounding_equality(
                 cursor,
@@ -2641,17 +3020,137 @@ class PostgresM4ApplicationPorts:
                 self._working_engine,
             )
 
+    def audit_grounding_exactness(self, epoch_id: int) -> None:
+        """Run all exact grounding oracles outside the measured event path."""
+        with self.connection.cursor() as cursor:
+            self._assert_grounding_equality(
+                cursor,
+                epoch_id,
+                self._working_repository,
+                self._working_engine,
+                count_inline=False,
+            )
+
     def check_coordination(self, epoch_id: int) -> None:
         epoch = self.runtime_store.read_epoch(epoch_id)
-        book = self.runtime_store.read_book()
-        if not any(item == epoch for item in book.epochs):
-            raise ValidationError("runtime book omits the requested epoch")
+        if not self._measured:
+            book = self.runtime_store.read_book()
+            if not any(item == epoch for item in book.epochs):
+                raise ValidationError("runtime book omits the requested epoch")
         if epoch.state is not RuntimeEpochState.SEMANTIC_COMPLETE:
             raise ValidationError("coordination surface is not complete")
 
     def check_evaluation(self, epoch_id: int) -> None:
         with self.connection.cursor() as cursor:
-            self._assert_evaluation_surface(cursor, epoch_id, require_complete=True)
+            if self._measured:
+                self._assert_compact_evaluation(
+                    cursor, epoch_id, require_complete=True
+                )
+            else:
+                self._assert_evaluation_surface(
+                    cursor, epoch_id, require_complete=True
+                )
+
+    def _assert_compact_evaluation(
+        self,
+        cursor: Cursor[Any],
+        epoch_id: int,
+        *,
+        require_complete: bool,
+    ) -> None:
+        epoch = self.runtime_store.read_epoch(epoch_id)
+        scope_open = any(not scope.closed for scope in epoch.discovery_scopes)
+        failed = epoch.state is RuntimeEpochState.FAILED
+        default_state = "failed" if failed else "pending" if scope_open else "complete"
+        default = cursor.execute(
+            """
+            SELECT evaluation_state, confirmed_as_of_epoch,
+                   discovery_scope_open, updated_revision
+            FROM groundloop_m4_evaluation_default WHERE epoch_id = %s
+            FOR SHARE
+            """,
+            (epoch_id,),
+        ).fetchone()
+        expected_default = (
+            default_state,
+            self._publication_head(),
+            scope_open,
+            epoch.revision,
+        )
+        if default is None or tuple(default) != expected_default:
+            raise ValidationError("compact evaluation default differs from runtime")
+        open_by_claim: dict[str, int] = {}
+        if not failed:
+            for job in epoch.jobs:
+                if not job.open:
+                    continue
+                claim_id = (
+                    job.spec.pair.claim_id
+                    if job.spec.pair is not None
+                    else job.spec.target_claim_id
+                )
+                if claim_id is not None:
+                    open_by_claim[claim_id] = open_by_claim.get(claim_id, 0) + 1
+        answer_by_claim = (
+            {}
+            if not open_by_claim
+            else {
+                str(row[0]): str(row[1])
+                for row in cursor.execute(
+                    """
+                    SELECT claim_id, answer_version_id FROM groundloop_claim
+                    WHERE claim_id = ANY(%s)
+                    """,
+                    (list(sorted(open_by_claim)),),
+                ).fetchall()
+            }
+        )
+        expected_overrides: dict[tuple[str, str], tuple[str, int, int, bool, int]] = {}
+        answer_counts: dict[str, int] = {}
+        for claim_id, count in open_by_claim.items():
+            expected_overrides[("claim", claim_id)] = (
+                "pending",
+                self._publication_head(),
+                count,
+                scope_open,
+                epoch.revision,
+            )
+            answer_id = answer_by_claim.get(claim_id)
+            if answer_id is not None:
+                answer_counts[answer_id] = answer_counts.get(answer_id, 0) + count
+        for answer_id, count in answer_counts.items():
+            expected_overrides[("answer", answer_id)] = (
+                "pending",
+                self._publication_head(),
+                count,
+                scope_open,
+                epoch.revision,
+            )
+        actual_overrides = {
+            (str(row[0]), str(row[1])): (
+                str(row[2]),
+                int(row[3]),
+                int(row[4]),
+                bool(row[5]),
+                int(row[6]),
+            )
+            for row in cursor.execute(
+                """
+                SELECT object_type, object_id, evaluation_state,
+                       confirmed_as_of_epoch, open_required_job_count,
+                       discovery_scope_open, updated_revision
+                FROM groundloop_object_evaluation WHERE epoch_id = %s
+                FOR SHARE
+                """,
+                (epoch_id,),
+            ).fetchall()
+        }
+        if actual_overrides != expected_overrides:
+            raise ValidationError("compact evaluation overrides differ from runtime")
+        if require_complete and (
+            default_state != "complete" or expected_overrides
+        ):
+            raise ValidationError("compact evaluation surface is not sealable")
 
     def _assert_evaluation_surface(
         self,
@@ -2780,15 +3279,20 @@ class PostgresM4ApplicationPorts:
             raise EventConflictError("publication update differs from runtime epoch")
 
         def publish(cursor: Cursor[Any], published_epoch_id: int) -> None:
-            self._assert_evaluation_surface(
-                cursor, published_epoch_id, require_complete=True
-            )
-            self._assert_grounding_equality(
-                cursor,
-                published_epoch_id,
-                self._working_repository,
-                self._working_engine,
-            )
+            if self._measured:
+                self._assert_compact_evaluation(
+                    cursor, published_epoch_id, require_complete=True
+                )
+            else:
+                self._assert_evaluation_surface(
+                    cursor, published_epoch_id, require_complete=True
+                )
+                self._assert_grounding_equality(
+                    cursor,
+                    published_epoch_id,
+                    self._working_repository,
+                    self._working_engine,
+                )
             self._promote_structural_overlay(cursor, published_epoch_id)
             self._inject("publication_structure_promoted")
             self._promote_observation_currency(cursor, published_epoch_id)
@@ -2830,6 +3334,21 @@ class PostgresM4ApplicationPorts:
     def _promote_evaluation_surface(
         self, cursor: Cursor[Any], epoch_id: int, final_revision: int
     ) -> None:
+        if self._measured:
+            changed = cursor.execute(
+                """
+                UPDATE groundloop_m4_evaluation_default
+                SET confirmed_as_of_epoch = %s, updated_revision = %s
+                WHERE epoch_id = %s AND evaluation_state = 'complete'
+                  AND NOT discovery_scope_open
+                """,
+                (epoch_id, final_revision, epoch_id),
+            ).rowcount
+            if changed != 1:
+                raise ValidationError(
+                    "seal could not promote the compact evaluation default"
+                )
+            return
         changed = cursor.execute(
             """
             UPDATE groundloop_object_evaluation
@@ -2855,6 +3374,28 @@ class PostgresM4ApplicationPorts:
     def _assert_sealed_evaluation(
         self, epoch_id: int, final_revision: int
     ) -> None:
+        if self._measured:
+            row = self.connection.execute(
+                """
+                SELECT evaluation_state, confirmed_as_of_epoch,
+                       discovery_scope_open, updated_revision,
+                       (SELECT count(*) FROM groundloop_object_evaluation
+                        WHERE epoch_id = %s)
+                FROM groundloop_m4_evaluation_default WHERE epoch_id = %s
+                """,
+                (epoch_id, epoch_id),
+            ).fetchone()
+            if row is None or tuple(row) != (
+                "complete",
+                epoch_id,
+                False,
+                final_revision,
+                0,
+            ):
+                raise ValidationError(
+                    "sealed compact evaluation surface differs from runtime"
+                )
+            return
         rows = self.connection.execute(
             """
             SELECT evaluation_state, confirmed_as_of_epoch,
@@ -3107,13 +3648,43 @@ class PostgresM4ApplicationPorts:
         revision: int,
         update: CorpusUpdateIdentity,
     ) -> None:
+        claim_ids = (
+            tuple(sorted(self._working_engine.claim_states))
+            if not self._measured
+            else tuple(
+                str(row[0])
+                for row in cursor.execute(
+                    """
+                    SELECT claim_id FROM groundloop_m4_working_claim_state
+                    WHERE epoch_id = %s ORDER BY claim_id
+                    """,
+                    (epoch_id,),
+                ).fetchall()
+            )
+        )
+        answer_ids = (
+            tuple(sorted(self._working_engine.answer_states))
+            if not self._measured
+            else tuple(
+                str(row[0])
+                for row in cursor.execute(
+                    """
+                    SELECT answer_version_id
+                    FROM groundloop_m4_working_answer_state
+                    WHERE epoch_id = %s ORDER BY answer_version_id
+                    """,
+                    (epoch_id,),
+                ).fetchall()
+            )
+        )
         old_claims = {
             str(row[0]): str(row[1])
             for row in cursor.execute(
                 """
                 SELECT claim_id, status FROM groundloop_published_claim_state
-                WHERE valid_to_epoch IS NULL
-                """
+                WHERE valid_to_epoch IS NULL AND claim_id = ANY(%s)
+                """,
+                (list(claim_ids),),
             ).fetchall()
         }
         old_answers = {
@@ -3122,25 +3693,27 @@ class PostgresM4ApplicationPorts:
                 """
                 SELECT answer_version_id, status
                 FROM groundloop_published_answer_state
-                WHERE valid_to_epoch IS NULL
-                """
+                WHERE valid_to_epoch IS NULL AND answer_version_id = ANY(%s)
+                """,
+                (list(answer_ids),),
             ).fetchall()
         }
         cursor.execute(
             """
             UPDATE groundloop_published_claim_state SET valid_to_epoch = %s
-            WHERE valid_to_epoch IS NULL
+            WHERE valid_to_epoch IS NULL AND claim_id = ANY(%s)
             """,
-            (epoch_id,),
+            (epoch_id, list(claim_ids)),
         )
         cursor.execute(
             """
             UPDATE groundloop_published_answer_state SET valid_to_epoch = %s
-            WHERE valid_to_epoch IS NULL
+            WHERE valid_to_epoch IS NULL AND answer_version_id = ANY(%s)
             """,
-            (epoch_id,),
+            (epoch_id, list(answer_ids)),
         )
-        for claim_state in self._working_engine.claim_states.values():
+        for claim_id in claim_ids:
+            claim_state = self._working_engine.claim_states[claim_id]
             digest = _certificate_digest(claim_state.claim_id, claim_state)
             cursor.execute(
                 """
@@ -3223,7 +3796,8 @@ class PostgresM4ApplicationPorts:
                     old,
                     claim_state.status.value,
                 )
-        for answer_state in self._working_engine.answer_states.values():
+        for answer_id in answer_ids:
+            answer_state = self._working_engine.answer_states[answer_id]
             cursor.execute(
                 """
                 INSERT INTO groundloop_published_answer_state VALUES (
@@ -3279,6 +3853,18 @@ class PostgresM4ApplicationPorts:
                     old,
                     answer_state.status.value,
                 )
+        self._account(
+            cursor,
+            epoch_id,
+            "published_claim_versions_written",
+            len(claim_ids),
+        )
+        self._account(
+            cursor,
+            epoch_id,
+            "published_answer_versions_written",
+            len(answer_ids),
+        )
 
     @staticmethod
     def _insert_public_delta(

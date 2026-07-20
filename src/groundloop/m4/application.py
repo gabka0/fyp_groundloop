@@ -416,6 +416,7 @@ class M4Application:
     equality_gates: EqualityGatePort
     publication: PublicationPort
     execution_policy: ApplicationExecutionPolicy
+    audit_transition_surfaces: bool | None = None
 
     def run_event(self, event: DynamicEventPlan) -> EventRunResult:
         withdrawal = self.structural.plan_exact_withdrawal(event)
@@ -460,7 +461,14 @@ class M4Application:
                 failure_reason=opened.failure_reason,
             )
 
-        self._validate_initial_pending(opened.epoch_id, event, withdrawal)
+        audit_transitions = self.audit_transition_surfaces
+        if audit_transitions is None:
+            audit_transitions = (
+                getattr(self.equality_gates, "execution_mode", "audit")
+                != "measured"
+            )
+        if audit_transitions:
+            self._validate_initial_pending(opened.epoch_id, event, withdrawal)
         discovery_calls = 0
         verifier_calls = 0
         observation_artifacts = 0

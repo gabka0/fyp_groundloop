@@ -11,6 +11,7 @@ from groundloop.m4.contracts import (
     VectorIndexKind,
     stable_m4_digest,
 )
+from groundloop.m4.models.contracts import sha256_text
 
 
 def hash_config_pairs(namespace: str, values: Sequence[tuple[str, str]]) -> str:
@@ -52,12 +53,8 @@ def build_candidate_policy_manifest(
     return CandidatePolicyManifest.build(
         policy_id=policy_id,
         embedding_model_artifact_id=embedding_model_artifact_id,
-        claim_role_template_hash=stable_m4_digest(
-            "m4-claim-role-template-v1", claim_role_template
-        ),
-        chunk_role_template_hash=stable_m4_digest(
-            "m4-chunk-role-template-v1", chunk_role_template
-        ),
+        claim_role_template_hash=sha256_text(claim_role_template),
+        chunk_role_template_hash=sha256_text(chunk_role_template),
         vector_method_version=vector_method_version,
         vector_index_kind=vector_index_kind,
         vector_index_build_config_hash=hash_config_pairs(

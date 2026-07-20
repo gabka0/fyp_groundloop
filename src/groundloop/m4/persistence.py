@@ -144,8 +144,62 @@ def _runtime_metadata(manifest: object) -> dict[str, object]:
 class PostgresM4RuntimeStore:
     """Conflict-detecting SQL mirror of :mod:`groundloop.m4.runtime.epoch`."""
 
-    def __init__(self, connection: Connection[Any]) -> None:
+    def __init__(
+        self, connection: Connection[Any], *, audit_transitions: bool = True
+    ) -> None:
         self._connection = connection
+        self._audit_transitions = audit_transitions
+
+    def _transition_book(self, epoch_id: int) -> RuntimeBook:
+        target = self.read_epoch(epoch_id)
+        previous = self._connection.execute(
+            """
+            SELECT max(epoch_id) FROM groundloop_epoch
+            WHERE semantic_status = 'sealed' AND epoch_id <> %s
+            """,
+            (epoch_id,),
+        ).fetchone()
+        epochs = [target]
+        last_sealed: int | None = None
+        if previous is not None and previous[0] is not None:
+            last_sealed = int(previous[0])
+            previous_m4 = self._connection.execute(
+                "SELECT 1 FROM groundloop_m4_update WHERE epoch_id = %s",
+                (last_sealed,),
+            ).fetchone()
+            if previous_m4 is not None:
+                epochs.append(self.read_epoch(last_sealed))
+            else:
+                last_sealed = None
+        canonical = tuple(sorted(epochs, key=lambda item: item.epoch_id))
+        return RuntimeBook(
+            next_epoch_id=canonical[-1].epoch_id + 1,
+            epochs=canonical,
+            active_epoch_id=(
+                target.epoch_id
+                if target.state
+                in {
+                    RuntimeEpochState.SEMANTIC_PENDING,
+                    RuntimeEpochState.SEMANTIC_COMPLETE,
+                }
+                else None
+            ),
+            last_sealed_epoch_id=last_sealed,
+        )
+
+    def _before_transition(self, epoch_id: int) -> RuntimeBook:
+        return (
+            self.read_book()
+            if self._audit_transitions
+            else self._transition_book(epoch_id)
+        )
+
+    def _assert_transition(self, expected: RuntimeBook, epoch_id: int) -> None:
+        if self._audit_transitions:
+            self._assert_equal(expected, self.read_book())
+            return
+        expected_epoch = self._epoch(expected, epoch_id)
+        self._assert_equal(expected_epoch, self.read_epoch(epoch_id))
 
     def register_candidate_policy(self, manifest: CandidatePolicyManifest) -> bool:
         """Register one immutable policy; exact replay is a no-op."""
@@ -531,7 +585,7 @@ class PostgresM4RuntimeStore:
         *,
         lease_expires_at: datetime | None = None,
     ) -> TransitionResult:
-        before = self.read_book()
+        before = self._before_transition(epoch_id)
         expected = start_pure_attempt(before, epoch_id, attempt)
         if expected.replayed:
             return expected
@@ -565,13 +619,13 @@ class PostgresM4RuntimeStore:
                 (attempt.job_id, epoch_id),
             )
             self._write_epoch_projection(expected_epoch)
-            self._assert_equal(expected.book, self.read_book())
+            self._assert_transition(expected.book, epoch_id)
         return expected
 
     def mark_retryable_failure(
         self, epoch_id: int, job_id: str, attempt_id: str
     ) -> TransitionResult:
-        before = self.read_book()
+        before = self._before_transition(epoch_id)
         expected = mark_pure_retryable_failure(before, epoch_id, job_id, attempt_id)
         if expected.replayed:
             return expected
@@ -594,7 +648,7 @@ class PostgresM4RuntimeStore:
                 (job_id, epoch_id),
             )
             self._write_epoch_projection(expected_epoch)
-            self._assert_equal(expected.book, self.read_book())
+            self._assert_transition(expected.book, epoch_id)
         return expected
 
     def complete(
@@ -607,7 +661,7 @@ class PostgresM4RuntimeStore:
         lease_expected_revision: int,
         failure_injector: FailureInjector | None = None,
     ) -> TransitionResult:
-        before = self.read_book()
+        before = self._before_transition(plan.expected_epoch_id)
         before_epoch = self._epoch(before, plan.expected_epoch_id)
         before_job = next(
             (
@@ -718,7 +772,7 @@ class PostgresM4RuntimeStore:
             if failure_injector is not None:
                 failure_injector("completion_parent_written")
             self._write_epoch_projection(expected_epoch)
-            self._assert_equal(expected.book, self.read_book())
+            self._assert_transition(expected.book, plan.expected_epoch_id)
         return expected
 
     @staticmethod
@@ -784,7 +838,7 @@ class PostgresM4RuntimeStore:
         *,
         failure_injector: FailureInjector | None = None,
     ) -> TransitionResult:
-        before = self.read_book()
+        before = self._before_transition(epoch_id)
         expected = fail_pure_epoch(before, epoch_id, expected_revision, reason)
         if expected.replayed:
             return expected
@@ -812,7 +866,7 @@ class PostgresM4RuntimeStore:
             if failure_injector is not None:
                 failure_injector("failure_reason_written")
             self._write_epoch_projection(expected_epoch)
-            self._assert_equal(expected.book, self.read_book())
+            self._assert_transition(expected.book, epoch_id)
         return expected
 
     def seal_epoch(
@@ -830,7 +884,7 @@ class PostgresM4RuntimeStore:
         connection.  This store never mutates M2 observation currency or
         claim/answer publication tables itself.
         """
-        before = self.read_book()
+        before = self._before_transition(epoch_id)
         expected = seal_pure_epoch(before, epoch_id, expected_revision)
         if expected.replayed:
             return expected
@@ -874,7 +928,7 @@ class PostgresM4RuntimeStore:
             self._write_epoch_projection(expected_epoch)
             if failure_injector is not None:
                 failure_injector("seal_epoch_written")
-            self._assert_equal(expected.book, self.read_book())
+            self._assert_transition(expected.book, epoch_id)
         return expected
 
     def _validate_open_declaration(
@@ -901,20 +955,46 @@ class PostgresM4RuntimeStore:
         }
         if {scope.root_job_id for scope in scopes} != impact_roots:
             raise ValidationError("each impact root requires exactly one scope")
-        registered = tuple(
-            str(row[0])
-            for row in self._connection.execute(
-                "SELECT claim_id FROM groundloop_claim ORDER BY claim_id"
-            ).fetchall()
+        snapshot = (
+            None
+            if self._audit_transitions
+            else self._connection.execute(
+                """
+                SELECT claim_count, claim_set_hash
+                FROM groundloop_m4_claim_registry_snapshot
+                WHERE claim_registry_snapshot_id = %s
+                """,
+                (registry_snapshot_id,),
+            ).fetchone()
+        )
+        registered = (
+            tuple(
+                str(row[0])
+                for row in self._connection.execute(
+                    "SELECT claim_id FROM groundloop_claim ORDER BY claim_id"
+                ).fetchall()
+            )
+            if snapshot is None
+            else None
         )
         for scope in scopes:
             if scope.closed:
                 raise ValidationError("new discovery scopes must be open")
             if scope.registry_snapshot_id != registry_snapshot_id:
                 raise ValidationError("scope registry differs from epoch registry")
-            if scope.registered_claim_ids != registered:
+            if registered is not None and scope.registered_claim_ids != registered:
                 raise ValidationError(
                     "all-claims scope must equal the registered claim snapshot"
+                )
+            if snapshot is not None and (
+                len(scope.registered_claim_ids),
+                stable_m4_digest(
+                    "m4-claim-registry-snapshot-v1",
+                    *scope.registered_claim_ids,
+                ),
+            ) != (int(snapshot[0]), _strip(snapshot[1])):
+                raise ValidationError(
+                    "all-claims scope differs from the frozen registry snapshot"
                 )
 
     def _read_event_manifest(self, epoch_id: int) -> dict[str, object]:

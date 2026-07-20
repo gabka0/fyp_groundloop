@@ -10,6 +10,7 @@ from groundloop.m4.admission import (
     fuse_admission_channels,
     lineage_channel_hits,
 )
+from groundloop.m4.models.contracts import sha256_text
 from groundloop.m4.contracts import AdmissionChannel, ChannelHit, PairKey
 
 from .conftest import HASH, policy_manifest
@@ -197,6 +198,10 @@ def test_manifest_hash_binds_roles_configs_and_index_kind(
     lexical_config: LexicalV1Config,
 ) -> None:
     exact = policy_manifest(lexical_config)
+    assert exact.claim_role_template_hash == sha256_text(
+        "Represent this sentence for searching relevant passages: {claim}"
+    )
+    assert exact.chunk_role_template_hash == sha256_text("{chunk}")
     changed_search = policy_manifest(
         lexical_config,
         vector_search=(("distance", "cosine"), ("ef_search", "40")),
