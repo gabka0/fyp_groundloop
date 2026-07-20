@@ -331,6 +331,8 @@ class RuntimeTransitionPort(Protocol):
 
     def acquire_job(self, epoch_id: int, spec: LogicalJobSpec) -> JobLease: ...
 
+    def mark_retryable_failure(self, epoch_id: int, lease: JobLease) -> None: ...
+
     def complete_expansion(
         self,
         epoch_id: int,

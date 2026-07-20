@@ -35,6 +35,7 @@ from groundloop.m4.contracts import (
     AdmittedPair,
     CandidatePolicyManifest,
     ChannelHit,
+    ChildClosure,
     CorpusUpdateIdentity,
     DiscoveryScope,
     JobCompletion,
@@ -1985,6 +1986,134 @@ def test_late_postgres_completion_after_failure_is_archive_only(
     assert m4_pipeline_connection.execute(
         "SELECT epoch_id FROM groundloop_m4_publication_head"
     ).fetchone() == (base,)
+
+
+def test_measured_retryable_frontier_failure_keeps_one_pending_job(
+    m4_pipeline_connection: Connection[Any],
+) -> None:
+    base = _seed_b0(m4_pipeline_connection)
+    event = replace(
+        _event(
+            "retryable-frontier",
+            UpdateKind.DELETE,
+            base,
+            deactivated=("chunk-support",),
+        ),
+        registered_claim_ids=(),
+    )
+    inject_retry_failure = True
+
+    def inject(point: str) -> None:
+        if inject_retry_failure and point == "retryable_runtime_failed":
+            raise RuntimeError("injected retryable transition failure")
+
+    ports = PostgresM4ApplicationPorts(
+        m4_pipeline_connection,
+        structural_payloads={
+            event.update.event_id: StructuralPayload(
+                deactivated_document_version_id="dv-support"
+            )
+        },
+        failure_injector=inject,
+        execution_mode=M4ExecutionMode.MEASURED,
+    )
+    ports.runtime_store.register_candidate_policy(_candidate_policy())
+    ports.register_claim_registry_snapshot("registry-v1", ("claim-1",))
+    application = M4Application(
+        structural=ports,
+        runtime=ports,
+        admission=PersistingAdmissionPort(
+            m4_pipeline_connection, ScriptedAdmission({})
+        ),
+        verifier=ScriptedVerifier({}),
+        observations=ports,
+        equality_gates=ports,
+        publication=ports,
+        execution_policy=ApplicationExecutionPolicy(
+            IMPACT_HASH, FRONTIER_HASH, VERIFIER_HASH
+        ),
+    )
+    withdrawal = ports.plan_exact_withdrawal(event)
+    assert withdrawal.fallback_claim_ids == ("claim-1",)
+    roots = application._root_jobs(event, withdrawal.fallback_claim_ids)
+    assert len(roots) == 1 and roots[0].kind is JobKind.FRONTIER_RETRIEVE
+    opened = ports.open_event(event, withdrawal, roots, ())
+    root = roots[0]
+
+    first = ports.acquire_job(opened.epoch_id, root)
+    header_before_failure = ports.runtime_store.read_epoch_header_point(
+        opened.epoch_id
+    )
+    evaluation_before_failure = ports.evaluation_store.read_default(
+        opened.epoch_id
+    )
+    with pytest.raises(RuntimeError, match="injected retryable transition failure"):
+        ports.mark_retryable_failure(opened.epoch_id, first)
+    assert ports.runtime_store.read_epoch_header_point(
+        opened.epoch_id
+    ) == header_before_failure
+    assert ports.evaluation_store.read_default(
+        opened.epoch_id
+    ) == evaluation_before_failure
+
+    inject_retry_failure = False
+    ports.mark_retryable_failure(opened.epoch_id, first)
+    after_failure = ports.runtime_store.read_epoch_header_point(opened.epoch_id)
+    evaluation_after_failure = ports.evaluation_store.read_default(opened.epoch_id)
+    assert after_failure.revision == evaluation_after_failure.revision
+    assert m4_pipeline_connection.execute(
+        """
+        SELECT open_required_job_count
+        FROM groundloop_m4_evaluation_override_counter
+        WHERE epoch_id = %s AND object_type = 'claim' AND object_id = 'claim-1'
+        """,
+        (opened.epoch_id,),
+    ).fetchone() == (1,)
+
+    ports.mark_retryable_failure(opened.epoch_id, first)
+    assert ports.runtime_store.read_epoch_header_point(
+        opened.epoch_id
+    ) == after_failure
+    second = ports.acquire_job(opened.epoch_id, root)
+    assert second.attempt_id != first.attempt_id
+    assert m4_pipeline_connection.execute(
+        """
+        SELECT open_required_job_count
+        FROM groundloop_m4_evaluation_override_counter
+        WHERE epoch_id = %s AND object_type = 'claim' AND object_id = 'claim-1'
+        """,
+        (opened.epoch_id,),
+    ).fetchone() == (1,)
+
+    discovered = ScriptedAdmission({}).discover(opened.epoch_id, root)
+    completion = JobCompletion.build(
+        job_id=root.job_id,
+        payload_hash=root.payload_hash,
+        execution_spec_hash=root.execution_spec_hash,
+        result_artifact_id=discovered.result_artifact_id,
+        result_artifact_hash=discovered.result_artifact_hash,
+        terminal_state=JobState.COMPLETED_ACTIVE,
+        child_closure=ChildClosure.build(
+            parent_job_id=root.job_id,
+            result_artifact_hash=discovered.result_artifact_hash,
+            child_job_ids=(),
+        ),
+    )
+    ports.complete_expansion(
+        opened.epoch_id, second, discovered, completion, ()
+    )
+    snapshot = ports.sealing_snapshot(opened.epoch_id)
+    assert snapshot.ready
+    assert ports.evaluation_store.read_default(opened.epoch_id).revision == (
+        snapshot.revision
+    )
+    assert m4_pipeline_connection.execute(
+        """
+        SELECT count(*) FROM groundloop_m4_evaluation_override_counter
+        WHERE epoch_id = %s
+        """,
+        (opened.epoch_id,),
+    ).fetchone() == (0,)
 
 
 def test_failed_replacement_overlay_cannot_poison_next_published_event(

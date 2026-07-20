@@ -1928,6 +1928,7 @@ class PostgresM4ApplicationPorts:
             }:
                 return JobLease(spec.job_id, False, True)
             if job.state in {JobState.DECLARED, JobState.RETRYABLE_FAILED}:
+                first_attempt = job.state is JobState.DECLARED
                 ordinal = (
                     1
                     if job.latest_attempt is None
@@ -1961,7 +1962,8 @@ class PostgresM4ApplicationPorts:
                                             1,
                                         ),
                                     )
-                                    if job.spec.kind is JobKind.FRONTIER_RETRIEVE
+                                    if first_attempt
+                                    and job.spec.kind is JobKind.FRONTIER_RETRIEVE
                                     and job.spec.target_claim_id is not None
                                     else ()
                                 ),
@@ -2026,6 +2028,49 @@ class PostgresM4ApplicationPorts:
             lease_token_hash=legacy_attempt.lease_token_hash,
             expected_revision=epoch.revision,
         )
+
+    def mark_retryable_failure(self, epoch_id: int, lease: JobLease) -> None:
+        """Atomically retain one failed attempt as retryable semantic work.
+
+        Retry changes the coordination revision but not the number of open
+        semantic jobs.  Measured mode therefore advances the signed evaluation
+        overlay with a zero-delta transition in the same database transaction.
+        """
+        attempt_id, _lease_token_hash, lease_revision = (
+            self._completion_lease_binding(lease, lease.job_id)
+        )
+        if self._measured:
+            transition_id = stable_m4_digest(
+                "m4-evaluation-retryable-failure-v1",
+                str(epoch_id),
+                lease.job_id,
+                attempt_id,
+            )
+            with self.connection.transaction():
+                failed = self.runtime_store.mark_retryable_failure_point(
+                    epoch_id,
+                    lease_revision,
+                    lease.job_id,
+                    attempt_id,
+                )
+                self._inject("retryable_runtime_failed")
+                if not failed.replayed:
+                    self.evaluation_store.apply_transition(
+                        epoch_id,
+                        EvaluationTransition(
+                            transition_id=transition_id,
+                            expected_revision=lease_revision,
+                        ),
+                    )
+            return
+
+        transition = self.runtime_store.mark_retryable_failure(
+            epoch_id, lease.job_id, attempt_id
+        )
+        if not transition.replayed:
+            with self.connection.transaction():
+                with self.connection.cursor() as cursor:
+                    self._sync_evaluation(cursor, epoch_id)
 
     def complete_expansion(
         self,
