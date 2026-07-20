@@ -1,0 +1,64 @@
+{
+  "schema_version": "groundloop-m4-vitaminc-gate-config-v1",
+  "seed": 20260720,
+  "bootstrap_resamples": 1000,
+  "ece_bins": 10,
+  "threads": 8,
+  "verifier_batch_size": 8,
+  "embedding_batch_size": 16,
+  "source": {
+    "repository": "https://github.com/TalSchuster/VitaminC.git",
+    "revision": "eb532922b88b199df68ed26afeb58dca5501b52f",
+    "readme_sha256": "8b1512acf12fa4d7e7ed152e7ce4d7077479f4f7d910fbf47c132c173589870e",
+    "data_license_sha256": "153a128e86c7d0e978243c8c8994dbb5fba9081a36f8d380cd1f5994699e369e",
+    "code_license_sha256": "15670a797ea5bdffa4c9fcfaa1514a3646ca6cfb54364ac505bfadb1a2e6e49a"
+  },
+  "dataset": {
+    "archive_url": "https://raw.githubusercontent.com/TalSchuster/talschuster.github.io/152c9639f1e33ca295d0776b618c17884088f72f/static/vitaminc.zip",
+    "hosting_repository_revision": "152c9639f1e33ca295d0776b618c17884088f72f",
+    "archive_sha256": "49d82dc1690cbee420d18e2c26f687a7937710bb211845d2571430dfd4dc0337",
+    "train_sha256": "446163d81ec9b654d2514e8ba5b8f2e4bd8938342e34c98e7660fe05a8a3ca39",
+    "development_sha256": "a3258bc959754c84bade150d3bf447fd9c91a529d93bb676f034fdafda5f26e5",
+    "test_sha256": "7f799e076dec184e31533d46704fef2022d08ef68a0db2c44f138d2b4e552f36",
+    "embedded_license_sha256": "e5727854e203fc66d725caa6d8e97e541f64a906d1d15d19e63f32bb52134dd1",
+    "embedded_readme_sha256": "aecc6e74b43865b1c8a3c9e044a296644badbf4ffd81adbb6d0ffc80a26256cd",
+    "test_rows": 55197,
+    "test_cases": 16487,
+    "test_pages": 3068,
+    "test_real_rows": 34481,
+    "test_synthetic_rows": 20716,
+    "sample_cases_per_stratum": 64,
+    "sample_strata_order": ["support_refute", "support_neutral"],
+    "sample_rows": 512,
+    "sample_cases": 128,
+    "sample_pages": 128,
+    "sample_support": 256,
+    "sample_refute": 128,
+    "sample_neutral": 128,
+    "sample_manifest_sha256": "214885784d13912ce603cc30eaed5904fbb588e493405767d66bbb3a490787d6"
+  },
+  "m3": {
+    "prepared_manifest_sha256": "1d1ef303a8a7d5b560b6e3a558573953d52a02aa227a96aff5b90f18b14aec7c",
+    "train_sha256": "1b76ed557b43955980e57a0f049666496335b649caa6e406c2e7b0245e7e3f4e",
+    "development_sha256": "a9cd74df8df6e6f7a825ee446d222adc87a7bcf61c9394f45efaacc1cb479882",
+    "test_sha256": "3ccd2c761bed3101f65dadd75a597afd831d3d95041113c2f0236b968cec6a2f"
+  },
+  "verifier": {
+    "logical_model_id": "groundloop/minilm2-m3-bounded-v1",
+    "logical_revision": "groundloop-m3-bounded-v1",
+    "checkpoint_tree_sha256": "81870b683cec57eff82665103fcff3a35f45b9c9be0e18b53dcd40f485bfa4cf",
+    "weights_sha256": "81c49c30048dcbcc9fb2895b56622f702b4aa9894e7d055f28bb520c09f74e3e",
+    "max_length": 256,
+    "calibration_file_sha256": "d0ec9d23ded61fbcfaccc550e0486ce89845685abb4f27a0ca20e22d4934b873",
+    "calibration_version": "temperature-v1:6ae200db8d75477da143bd6d8d6c8927cfdfdbd8995932bbc1c59ce67e090727",
+    "temperature": 1.1037657679769346,
+    "calibration_fit_split": "development"
+  },
+  "embedding": {
+    "model_id": "BAAI/bge-small-en-v1.5",
+    "revision": "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a",
+    "snapshot_tree_sha256": "22ad3b4f1d45d362fed00289e1d5ae2910e566a044767adb33865a9e98863b40",
+    "weights_sha256": "3c9f31665447c8911517620762200d2245a2518d6e7208acc78cd9db317e21ad",
+    "max_length": 512
+  }
+}
