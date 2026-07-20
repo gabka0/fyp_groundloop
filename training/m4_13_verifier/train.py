@@ -109,6 +109,17 @@ class TrainingHyperparameters:
     epochs: int = 1
     learning_rate: float = 1e-5
     weight_decay: float = 0.01
+    optimizer_kind: str = "torch-adamw"
+    adam_beta1: float = 0.9
+    adam_beta2: float = 0.999
+    adam_epsilon: float = 1e-8
+    adam_amsgrad: bool = False
+    adam_maximize: bool = False
+    adam_foreach: bool = False
+    adam_capturable: bool = False
+    adam_differentiable: bool = False
+    adam_fused: bool = False
+    scheduler_kind: str = "transformers-linear-warmup-v1"
     warmup_ratio: float = 0.06
     gradient_norm_clip: float = 1.0
     torch_threads: int = 8
@@ -976,6 +987,7 @@ def seal_training_run(
     schedule_manifest: Mapping[str, object],
     runtime_manifest: Mapping[str, object],
     checkpoint_writer: Callable[[Path], None],
+    pre_publish_check: Callable[[], None] | None = None,
     failure_stage: FailureStage | None = None,
 ) -> CompletedTrainingRun:
     """Publish checkpoint plus manifests by one same-filesystem directory rename."""
@@ -1020,6 +1032,8 @@ def seal_training_run(
         _write_canonical_json(staging / "training_manifest.json", complete_manifest)
         if failure_stage is FailureStage.BEFORE_RESULT_SEALING:
             raise RuntimeError("injected failure before result sealing")
+        if pre_publish_check is not None:
+            pre_publish_check()
         completion = {
             "schema_version": COMPLETION_SCHEMA,
             "status": "complete",
@@ -1053,8 +1067,8 @@ def seal_training_run(
 
 
 def _dependency_versions() -> dict[str, str]:
-    result: dict[str, str] = {}
-    for package in ("torch", "transformers", "safetensors"):
+    result: dict[str, str] = {"python": platform.python_version()}
+    for package in ("torch", "transformers", "tokenizers", "safetensors", "numpy"):
         try:
             result[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:
@@ -1147,6 +1161,14 @@ def train_variant(
             "paired_weight": FROZEN_HYPERPARAMETERS.paired_weight,
         },
         "hyperparameters": asdict(FROZEN_HYPERPARAMETERS),
+        "optimizer_schedule": {
+            "optimizer": FROZEN_HYPERPARAMETERS.optimizer_kind,
+            "scheduler": FROZEN_HYPERPARAMETERS.scheduler_kind,
+            "warmup_steps": math.floor(
+                schedule.optimizer_steps * FROZEN_HYPERPARAMETERS.warmup_ratio
+            ),
+            "total_steps": schedule.optimizer_steps,
+        },
         **repository_provenance.to_manifest(),
     }
     invocation_sha256 = _canonical_sha256(invocation_payload)
@@ -1188,7 +1210,18 @@ def train_variant(
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=FROZEN_HYPERPARAMETERS.learning_rate,
+        betas=(
+            FROZEN_HYPERPARAMETERS.adam_beta1,
+            FROZEN_HYPERPARAMETERS.adam_beta2,
+        ),
+        eps=FROZEN_HYPERPARAMETERS.adam_epsilon,
         weight_decay=FROZEN_HYPERPARAMETERS.weight_decay,
+        amsgrad=FROZEN_HYPERPARAMETERS.adam_amsgrad,
+        maximize=FROZEN_HYPERPARAMETERS.adam_maximize,
+        foreach=FROZEN_HYPERPARAMETERS.adam_foreach,
+        capturable=FROZEN_HYPERPARAMETERS.adam_capturable,
+        differentiable=FROZEN_HYPERPARAMETERS.adam_differentiable,
+        fused=FROZEN_HYPERPARAMETERS.adam_fused,
     )
     scheduler = get_linear_schedule_with_warmup(  # type: ignore[no-untyped-call]
         optimizer,
@@ -1275,7 +1308,6 @@ def train_variant(
         model.save_pretrained(path, safe_serialization=True)
         tokenizer.save_pretrained(path)
 
-    assert_repository_provenance_unchanged(repository_root, repository_provenance)
     return seal_training_run(
         run_directory=run_directory,
         invocation_sha256=invocation_sha256,
@@ -1283,6 +1315,9 @@ def train_variant(
         schedule_manifest=schedule.to_manifest(),
         runtime_manifest=runtime_manifest,
         checkpoint_writer=write_checkpoint,
+        pre_publish_check=lambda: assert_repository_provenance_unchanged(
+            repository_root, repository_provenance
+        ),
         failure_stage=failure_stage,
     )
 

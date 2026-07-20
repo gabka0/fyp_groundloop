@@ -377,7 +377,12 @@ A1 are mandatory ablations, not deployment candidates.
 - Epochs: 1.
 - Learning rate: `1e-5`.
 - Weight decay: `0.01`.
+- Optimizer: PyTorch AdamW with betas `(0.9, 0.999)`, epsilon `1e-8`,
+  `amsgrad=false`, `maximize=false`, `foreach=false`, `capturable=false`,
+  `differentiable=false` and `fused=false`.
 - Warmup ratio: `0.06`.
+- Scheduler: Transformers linear warmup/decay with exactly 13 warmup steps and
+  223 total steps.
 - Gradient norm clip: `1.0`.
 - Torch threads: 8; inter-op threads: 1.
 - Deterministic algorithms: enabled.
@@ -608,6 +613,13 @@ row-bootstrap. Do not pool rows across the three training seeds. Report each
 seed, their arithmetic mean and standard deviation; three seeds do not justify
 a confidence interval over training randomness.
 
+For the three-seed summary, use sample standard deviation (`n-1`) over every
+named scalar point metric: endpoint accuracy/macro-F1/per-present-class
+precision-recall-F1/NLL/Brier/ECE; case-complete accuracy; overall and
+per-stratum flip/joint-correct/bidirectional metrics; and calibration-ablation
+NLL plus operational-label proportions. Keep raw counts, confusion matrices
+and bootstrap intervals per seed rather than averaging them.
+
 The corrected Git pilot is too small for a meaningful bootstrap interval.
 Report exact per-pair decisions and counts.
 
@@ -722,11 +734,23 @@ checkpoint.
 ### 12.3 Git transfer diagnostic
 
 If independent/adjudicated labels are added before the sealed terminal run,
-require at least four of the five previously identified obsolete claims
-(Ubuntu 22.04, 16/16 precision, Boost 1.81, `sbitint.get_type`, hardware TEE) to
-be REFUTE, none to be SUPPORT, and no more than one regression on an adjudicated
-stable claim. Without independent labels, report these same exact counts as a
-diagnostic but do not use them as a go/no-go decision.
+evaluate five obsolete **concept groups** over these six exact claim IDs:
+
+- Ubuntu 22.04: `claim-bustub-development-ubuntu-22` and
+  `claim-bustub-grading-ubuntu-22`;
+- 16/16 precision: `claim-mp-spdz-fixed-16-16`;
+- Boost 1.81: `claim-mp-spdz-boost-1-81`;
+- `sbitint.get_type`: `claim-mp-spdz-sbitint-type`; and
+- hardware TEE: `claim-dynagox-is-hardware-tee`.
+
+An obsolete concept group counts as REFUTE only when every claim ID in that
+group is REFUTE. Require at least four of five groups to be REFUTE, no obsolete
+claim ID to be SUPPORT, and no more than one regression across the exact stable
+IDs `claim-bustub-wsl-unsupported` and `claim-mp-spdz-set-precision`. Report the
+inserted-positive IDs `claim-dynagox-buckets-protected` and
+`claim-dynagox-direct-maps-visible` separately; they are not stable claims.
+Without independent labels, emit all per-ID decisions and these grouped counts
+as a transfer diagnostic only, with no go/no-go effect.
 
 Failure is a valid M4.13 result. Do not tune against terminal errors and rerun
 the same test under the M4.13 name.

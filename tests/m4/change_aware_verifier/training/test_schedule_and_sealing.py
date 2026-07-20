@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from m4_13_verifier.train import (
+    FROZEN_HYPERPARAMETERS,
     FailureStage,
     TrainingExample,
     TrainingVariant,
@@ -17,6 +18,20 @@ from m4_13_verifier.train import (
 
 from groundloop.ai.verification.artifacts import file_sha256, tree_digest
 from groundloop.errors import ValidationError
+
+
+def test_optimizer_and_scheduler_defaults_are_explicitly_frozen() -> None:
+    hyperparameters = FROZEN_HYPERPARAMETERS
+    assert hyperparameters.optimizer_kind == "torch-adamw"
+    assert (hyperparameters.adam_beta1, hyperparameters.adam_beta2) == (0.9, 0.999)
+    assert hyperparameters.adam_epsilon == 1e-8
+    assert hyperparameters.adam_amsgrad is False
+    assert hyperparameters.adam_maximize is False
+    assert hyperparameters.adam_foreach is False
+    assert hyperparameters.adam_capturable is False
+    assert hyperparameters.adam_differentiable is False
+    assert hyperparameters.adam_fused is False
+    assert hyperparameters.scheduler_kind == "transformers-linear-warmup-v1"
 
 
 def _vitaminc_case(case_index: int) -> tuple[TrainingExample, ...]:
@@ -231,6 +246,26 @@ def test_training_run_publish_cleans_staging_on_keyboard_interrupt(
             schedule_manifest={"schema_version": "fixture"},
             runtime_manifest={"schema_version": "fixture-runtime"},
             checkpoint_writer=interrupt_checkpoint_write,
+        )
+    assert not final.exists()
+    assert not list(tmp_path.glob(".run.partial-*"))
+
+
+def test_training_run_rejects_a_failed_pre_publish_check(tmp_path: Path) -> None:
+    final = tmp_path / "run"
+
+    def reject_publication() -> None:
+        raise ValidationError("repository changed")
+
+    with pytest.raises(ValidationError, match="repository changed"):
+        seal_training_run(
+            run_directory=final,
+            invocation_sha256="a" * 64,
+            training_manifest={"variant": "V2-ce-mix", "seed": 20260720},
+            schedule_manifest={"schema_version": "fixture"},
+            runtime_manifest={"schema_version": "fixture-runtime"},
+            checkpoint_writer=_fake_checkpoint,
+            pre_publish_check=reject_publication,
         )
     assert not final.exists()
     assert not list(tmp_path.glob(".run.partial-*"))
