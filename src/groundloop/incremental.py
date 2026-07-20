@@ -12,9 +12,11 @@ M2 currently covers the direct-witness CORE. Evidence groups arrive in M5.
 from __future__ import annotations
 
 import heapq
-from bisect import bisect_left, insort
+from bisect import bisect_left
 from collections import Counter
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field, replace
+from typing import Generic, TypeVar
 
 from groundloop.domain import (
     AnswerState,
@@ -59,6 +61,10 @@ class MaintenanceStats:
     claim_status_changes: int = 0
     answer_keys_touched: int = 0
     answer_status_changes: int = 0
+    score_index_point_updates: int = 0
+    score_index_entries_before: int = 0
+    score_index_shift_work: int = 0
+    score_index_shift_upper_bound: int = 0
 
 
 @dataclass(slots=True)
@@ -70,6 +76,9 @@ class _MutableStats:
     distinct_hash_crossings: int = 0
     claim_status_changes: int = 0
     answer_status_changes: int = 0
+    score_index_point_updates: int = 0
+    score_index_entries_before: int = 0
+    score_index_shift_work: int = 0
 
     def freeze(
         self, touched_claims: set[str], touched_answers: set[str]
@@ -84,6 +93,13 @@ class _MutableStats:
             claim_status_changes=self.claim_status_changes,
             answer_keys_touched=len(touched_answers),
             answer_status_changes=self.answer_status_changes,
+            score_index_point_updates=self.score_index_point_updates,
+            score_index_entries_before=self.score_index_entries_before,
+            score_index_shift_work=self.score_index_shift_work,
+            score_index_shift_upper_bound=(
+                self.score_index_point_updates
+                * (self.score_index_entries_before + self.active_observations_added)
+            ),
         )
 
 
@@ -132,6 +148,105 @@ class _Contribution:
     score: float
 
 
+@dataclass(frozen=True, slots=True)
+class _ScoreMultisetSnapshot:
+    """Immutable copy-on-write image of one affected score multiset."""
+
+    counts: tuple[tuple[float, int], ...]
+    max_heap: tuple[float, ...]
+
+    @classmethod
+    def capture(cls, value: _ScoreMultiset) -> _ScoreMultisetSnapshot:
+        return cls(tuple(sorted(value.counts.items())), tuple(value.max_heap))
+
+    def materialize(self) -> _ScoreMultiset:
+        return _ScoreMultiset(counts=dict(self.counts), max_heap=list(self.max_heap))
+
+
+@dataclass(frozen=True, slots=True)
+class _ClaimAccumulatorSnapshot:
+    """Immutable image of one claim accumulator, never of the whole engine."""
+
+    support_hash_counts: tuple[tuple[str, int], ...]
+    refute_hash_counts: tuple[tuple[str, int], ...]
+    support_observation_ids: frozenset[str]
+    refute_observation_ids: frozenset[str]
+    support_scores: _ScoreMultisetSnapshot
+    refute_scores: _ScoreMultisetSnapshot
+
+    @classmethod
+    def capture(cls, value: _ClaimAccumulator) -> _ClaimAccumulatorSnapshot:
+        return cls(
+            support_hash_counts=tuple(sorted(value.support_hash_counts.items())),
+            refute_hash_counts=tuple(sorted(value.refute_hash_counts.items())),
+            support_observation_ids=frozenset(value.support_observation_ids),
+            refute_observation_ids=frozenset(value.refute_observation_ids),
+            support_scores=_ScoreMultisetSnapshot.capture(value.support_scores),
+            refute_scores=_ScoreMultisetSnapshot.capture(value.refute_scores),
+        )
+
+    def materialize(self) -> _ClaimAccumulator:
+        return _ClaimAccumulator(
+            support_hash_counts=dict(self.support_hash_counts),
+            refute_hash_counts=dict(self.refute_hash_counts),
+            support_observation_ids=set(self.support_observation_ids),
+            refute_observation_ids=set(self.refute_observation_ids),
+            support_scores=self.support_scores.materialize(),
+            refute_scores=self.refute_scores.materialize(),
+        )
+
+
+T = TypeVar("T")
+
+
+@dataclass(frozen=True, slots=True)
+class _PointChange(Generic[T]):
+    """Preconditioned replacement of one dictionary key."""
+
+    key: str
+    before: T | None
+    after: T | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ScoreIndexChange:
+    observation: SemanticObservation
+    add: bool
+
+
+@dataclass(frozen=True, slots=True)
+class IncrementalStatePatch:
+    """Immutable, affected-key transaction prepared from one committed event.
+
+    The private tuples are deliberately point-granular. Applying this object
+    never copies an engine-wide dictionary. A patch is revision-bound and can
+    therefore be applied exactly once and only to the state from which it was
+    prepared.
+    """
+
+    event_id: str
+    expected_state_revision: int
+    active_label_changes: tuple[_PointChange[VerificationLabel], ...]
+    contribution_changes: tuple[_PointChange[_Contribution], ...]
+    accumulator_changes: tuple[_PointChange[_ClaimAccumulatorSnapshot], ...]
+    claim_state_changes: tuple[_PointChange[ClaimState], ...]
+    certificate_changes: tuple[_PointChange[ClaimCertificate], ...]
+    answer_count_changes: tuple[
+        _PointChange[tuple[tuple[ClaimStatus, int], ...]], ...
+    ]
+    answer_state_changes: tuple[_PointChange[AnswerState], ...]
+    score_index_changes: tuple[_ScoreIndexChange, ...]
+    stats: MaintenanceStats
+
+    @property
+    def touched_claim_ids(self) -> tuple[str, ...]:
+        return tuple(change.key for change in self.claim_state_changes)
+
+    @property
+    def touched_answer_ids(self) -> tuple[str, ...]:
+        return tuple(change.key for change in self.answer_state_changes)
+
+
 @dataclass(slots=True)
 class _ScoreRangeIndex:
     """Active-observation threshold index.
@@ -146,22 +261,22 @@ class _ScoreRangeIndex:
     support_entries: list[tuple[float, str]] = field(default_factory=list)
     refute_entries: list[tuple[float, str]] = field(default_factory=list)
 
-    def add(self, observation: SemanticObservation) -> None:
-        insort(
-            self.support_entries,
-            (observation.support_score, observation.observation_id),
-        )
-        insort(
-            self.refute_entries,
-            (observation.refute_score, observation.observation_id),
-        )
+    def add(self, observation: SemanticObservation) -> int:
+        support = (observation.support_score, observation.observation_id)
+        refute = (observation.refute_score, observation.observation_id)
+        support_position = bisect_left(self.support_entries, support)
+        refute_position = bisect_left(self.refute_entries, refute)
+        support_shifts = len(self.support_entries) - support_position
+        refute_shifts = len(self.refute_entries) - refute_position
+        self.support_entries.insert(support_position, support)
+        self.refute_entries.insert(refute_position, refute)
+        return support_shifts + refute_shifts
 
-    def remove(self, observation: SemanticObservation) -> None:
-        self._remove_entry(
+    def remove(self, observation: SemanticObservation) -> int:
+        return self._remove_entry(
             self.support_entries,
             (observation.support_score, observation.observation_id),
-        )
-        self._remove_entry(
+        ) + self._remove_entry(
             self.refute_entries,
             (observation.refute_score, observation.observation_id),
         )
@@ -169,11 +284,26 @@ class _ScoreRangeIndex:
     @staticmethod
     def _remove_entry(
         entries: list[tuple[float, str]], target: tuple[float, str]
-    ) -> None:
+    ) -> int:
         position = bisect_left(entries, target)
         if position >= len(entries) or entries[position] != target:
             raise AssertionError(f"score-index entry missing: {target}")
+        shifts = len(entries) - position - 1
         entries.pop(position)
+        return shifts
+
+    def contains(self, observation: SemanticObservation) -> bool:
+        """Return whether both score entries for ``observation`` are present."""
+        support = (observation.support_score, observation.observation_id)
+        refute = (observation.refute_score, observation.observation_id)
+        support_position = bisect_left(self.support_entries, support)
+        refute_position = bisect_left(self.refute_entries, refute)
+        return (
+            support_position < len(self.support_entries)
+            and self.support_entries[support_position] == support
+            and refute_position < len(self.refute_entries)
+            and self.refute_entries[refute_position] == refute
+        )
 
     @staticmethod
     def _range_ids(
@@ -233,10 +363,12 @@ class IncrementalMaintenanceEngine:
     _claim_to_answer: dict[str, str] = field(default_factory=dict)
     _claim_required: dict[str, bool] = field(default_factory=dict)
     _answer_to_claims: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    _answer_required_counts: dict[str, int] = field(default_factory=dict)
     _active_labels: dict[str, VerificationLabel] = field(default_factory=dict)
     _contributions: dict[str, _Contribution] = field(default_factory=dict)
     _score_index: _ScoreRangeIndex = field(default_factory=_ScoreRangeIndex)
     _certificates: dict[str, ClaimCertificate] = field(default_factory=dict)
+    _state_revision: int = 0
     last_stats: MaintenanceStats = field(default_factory=MaintenanceStats)
 
     @classmethod
@@ -273,6 +405,18 @@ class IncrementalMaintenanceEngine:
     def certificates(self) -> dict[str, ClaimCertificate]:
         return dict(self._certificates)
 
+    def claim_state(self, claim_id: str) -> ClaimState:
+        """Return one maintained claim state without copying the state map."""
+        return self._claim_states[claim_id]
+
+    def answer_state(self, answer_id: str) -> AnswerState:
+        """Return one maintained answer state without copying the state map."""
+        return self._answer_states[answer_id]
+
+    def certificate(self, claim_id: str) -> ClaimCertificate:
+        """Return one maintained direct-witness certificate."""
+        return self._certificates[claim_id]
+
     def sync_registry(self, repository: InMemoryRepository) -> bool:
         """Import newly registered static claims/answers, never observations."""
         registry_changed = False
@@ -294,8 +438,12 @@ class IncrementalMaintenanceEngine:
             if known is None:
                 registry_changed = True
             self._answer_to_claims[answer_id] = claim_ids
+            self._answer_required_counts[answer_id] = sum(
+                1 for claim_id in claim_ids if self._claim_required[claim_id]
+            )
         if registry_changed:
             self._rebuild_answer_aggregates(repository)
+            self._state_revision += 1
         return registry_changed
 
     def _rebuild_answer_aggregates(self, repository: InMemoryRepository) -> None:
@@ -324,6 +472,7 @@ class IncrementalMaintenanceEngine:
         dirty_claims: set[str] = set()
         dirty_answers: set[str] = set()
         stats = _MutableStats()
+        stats.score_index_entries_before = len(self._score_index.support_entries)
 
         if isinstance(event, DeleteDocumentVersionEvent):
             self._withdraw_document_version(
@@ -375,6 +524,475 @@ class IncrementalMaintenanceEngine:
                 stats.answer_status_changes += 1
 
         self.last_stats = stats.freeze(dirty_claims, dirty_answers)
+        self._state_revision += 1
+
+    def prepare_committed_event_patch(
+        self,
+        event: Event,
+        before: InMemoryRepository,
+        after: InMemoryRepository,
+    ) -> IncrementalStatePatch:
+        """Prepare an immutable affected-key transaction without mutation.
+
+        The claim/answer registry must already be synchronized. This explicit
+        precondition prevents a nominal point-update path from hiding the
+        engine-wide answer rebuild performed by :meth:`sync_registry`. The
+        method deliberately does not scan the registry to re-check that
+        caller-owned precondition; an affected unknown key fails at point
+        lookup.
+        """
+        label_values: dict[str, VerificationLabel | None] = {}
+        contribution_values: dict[str, _Contribution | None] = {}
+        accumulator_before: dict[str, _ClaimAccumulatorSnapshot] = {}
+        accumulators: dict[str, _ClaimAccumulator] = {}
+        score_changes: list[_ScoreIndexChange] = []
+        dirty_claims: set[str] = set()
+        dirty_answers: set[str] = set()
+        stats = _MutableStats(
+            score_index_entries_before=len(self._score_index.support_entries)
+        )
+
+        def active_label(observation_id: str) -> VerificationLabel | None:
+            if observation_id in label_values:
+                return label_values[observation_id]
+            return self._active_labels.get(observation_id)
+
+        def contribution(observation_id: str) -> _Contribution | None:
+            if observation_id in contribution_values:
+                return contribution_values[observation_id]
+            return self._contributions.get(observation_id)
+
+        def accumulator(claim_id: str) -> _ClaimAccumulator:
+            current = accumulators.get(claim_id)
+            if current is not None:
+                return current
+            original = self._claim_accumulators[claim_id]
+            snapshot = _ClaimAccumulatorSnapshot.capture(original)
+            accumulator_before[claim_id] = snapshot
+            current = snapshot.materialize()
+            accumulators[claim_id] = current
+            return current
+
+        def add_contribution(value: _Contribution) -> None:
+            current = accumulator(value.claim_id)
+            if value.label is VerificationLabel.SUPPORT:
+                counts = current.support_hash_counts
+                ids = current.support_observation_ids
+                scores = current.support_scores
+            else:
+                counts = current.refute_hash_counts
+                ids = current.refute_observation_ids
+                scores = current.refute_scores
+            old_count = counts.get(value.text_hash, 0)
+            counts[value.text_hash] = old_count + 1
+            if old_count == 0:
+                stats.distinct_hash_crossings += 1
+            ids.add(value.observation_id)
+            scores.add(value.score)
+            dirty_claims.add(value.claim_id)
+
+        def remove_contribution(value: _Contribution) -> None:
+            current = accumulator(value.claim_id)
+            if value.label is VerificationLabel.SUPPORT:
+                counts = current.support_hash_counts
+                ids = current.support_observation_ids
+                scores = current.support_scores
+            else:
+                counts = current.refute_hash_counts
+                ids = current.refute_observation_ids
+                scores = current.refute_scores
+            old_count = counts.get(value.text_hash, 0)
+            if old_count <= 0:
+                raise AssertionError(
+                    "cannot remove absent distinct-content contribution"
+                )
+            if old_count == 1:
+                del counts[value.text_hash]
+                stats.distinct_hash_crossings += 1
+            else:
+                counts[value.text_hash] = old_count - 1
+            ids.remove(value.observation_id)
+            scores.remove(value.score)
+            dirty_claims.add(value.claim_id)
+
+        def deactivate(observation: SemanticObservation) -> None:
+            if active_label(observation.observation_id) is None:
+                return
+            label_values[observation.observation_id] = None
+            score_changes.append(_ScoreIndexChange(observation, add=False))
+            stats.active_observations_removed += 1
+            old_contribution = contribution(observation.observation_id)
+            if old_contribution is not None:
+                contribution_values[observation.observation_id] = None
+                remove_contribution(old_contribution)
+
+        def activate(
+            observation: SemanticObservation,
+            repository: InMemoryRepository,
+            policy: DecisionPolicy,
+        ) -> None:
+            if active_label(observation.observation_id) is not None:
+                raise AssertionError("observation already active in incremental engine")
+            label = decide(observation, policy)
+            label_values[observation.observation_id] = label
+            score_changes.append(_ScoreIndexChange(observation, add=True))
+            stats.active_observations_added += 1
+            if (
+                observation.subject_kind is not SubjectKind.CLAIM
+                or label is VerificationLabel.NEUTRAL
+            ):
+                return
+            text_hash = repository.chunk_version(
+                observation.chunk_version_id
+            ).text_hash
+            score = (
+                observation.support_score
+                if label is VerificationLabel.SUPPORT
+                else observation.refute_score
+            )
+            value = _Contribution(
+                observation_id=observation.observation_id,
+                claim_id=observation.subject_id,
+                text_hash=text_hash,
+                label=label,
+                score=score,
+            )
+            contribution_values[observation.observation_id] = value
+            add_contribution(value)
+
+        def withdraw_document(document_version_id: str) -> None:
+            for chunk_id in before.chunk_ids_of_document_version(document_version_id):
+                for observation_id in before.current_observation_ids_for_chunk(
+                    chunk_id
+                ):
+                    deactivate(before.observation(observation_id))
+
+        if isinstance(event, DeleteDocumentVersionEvent):
+            withdraw_document(event.document_version_id)
+        elif isinstance(event, ReplaceDocumentVersionEvent):
+            withdraw_document(event.old_document_version_id)
+        elif isinstance(event, ObserveEvent):
+            previous_id = before.current_observation_id(event.observation.key)
+            if previous_id is not None:
+                deactivate(before.observation(previous_id))
+            if after.is_chunk_active(event.observation.chunk_version_id):
+                activate(event.observation, after, after.current_policy())
+        elif isinstance(event, PolicyChangeEvent):
+            candidates = self._score_index.policy_candidates(
+                before.current_policy(), after.current_policy()
+            )
+            stats.policy_index_candidates = len(candidates)
+            for observation_id in sorted(candidates):
+                observation = before.observation(observation_id)
+                old_label = active_label(observation_id)
+                if old_label is None:
+                    raise AssertionError("policy candidate is not active")
+                new_label = decide(observation, after.current_policy())
+                if old_label is new_label:
+                    continue
+                stats.decision_flips += 1
+                old_contribution = contribution(observation_id)
+                if old_contribution is not None:
+                    contribution_values[observation_id] = None
+                    remove_contribution(old_contribution)
+                label_values[observation_id] = new_label
+                if (
+                    observation.subject_kind is SubjectKind.CLAIM
+                    and new_label is not VerificationLabel.NEUTRAL
+                ):
+                    text_hash = before.chunk_version(
+                        observation.chunk_version_id
+                    ).text_hash
+                    score = (
+                        observation.support_score
+                        if new_label is VerificationLabel.SUPPORT
+                        else observation.refute_score
+                    )
+                    new_contribution = _Contribution(
+                        observation_id=observation_id,
+                        claim_id=observation.subject_id,
+                        text_hash=text_hash,
+                        label=new_label,
+                        score=score,
+                    )
+                    contribution_values[observation_id] = new_contribution
+                    add_contribution(new_contribution)
+
+        claim_state_changes: list[_PointChange[ClaimState]] = []
+        certificate_changes: list[_PointChange[ClaimCertificate]] = []
+        answer_counts: dict[str, Counter[ClaimStatus]] = {}
+        for claim_id in sorted(dirty_claims):
+            old_claim_state = self._claim_states[claim_id]
+            new_claim_state = self._state_from_accumulator_value(
+                claim_id, accumulators[claim_id]
+            )
+            claim_state_changes.append(
+                _PointChange(claim_id, old_claim_state, new_claim_state)
+            )
+            old_certificate = self._certificates[claim_id]
+            new_certificate = self._certificate_from_state(new_claim_state)
+            certificate_changes.append(
+                _PointChange(claim_id, old_certificate, new_certificate)
+            )
+            if old_claim_state.status is not new_claim_state.status:
+                stats.claim_status_changes += 1
+                if self._claim_required[claim_id]:
+                    answer_id = self._claim_to_answer[claim_id]
+                    counts = answer_counts.setdefault(
+                        answer_id, Counter(self._answer_status_counts[answer_id])
+                    )
+                    counts[old_claim_state.status] -= 1
+                    counts[new_claim_state.status] += 1
+                    dirty_answers.add(answer_id)
+
+        answer_count_changes: list[
+            _PointChange[tuple[tuple[ClaimStatus, int], ...]]
+        ] = []
+        answer_state_changes: list[_PointChange[AnswerState]] = []
+        for answer_id in sorted(dirty_answers):
+            old_counts = self._counter_snapshot(
+                self._answer_status_counts[answer_id]
+            )
+            new_counts = self._counter_snapshot(answer_counts[answer_id])
+            answer_count_changes.append(
+                _PointChange(answer_id, old_counts, new_counts)
+            )
+            old_answer_state = self._answer_states[answer_id]
+            new_answer_state = self._state_from_answer_count_value(
+                answer_id, answer_counts[answer_id]
+            )
+            answer_state_changes.append(
+                _PointChange(answer_id, old_answer_state, new_answer_state)
+            )
+            if old_answer_state.status is not new_answer_state.status:
+                stats.answer_status_changes += 1
+
+        stats.score_index_point_updates = 2 * len(score_changes)
+        frozen_stats = stats.freeze(dirty_claims, dirty_answers)
+        return IncrementalStatePatch(
+            event_id=event.event_id,
+            expected_state_revision=self._state_revision,
+            active_label_changes=self._point_changes(
+                self._active_labels, label_values
+            ),
+            contribution_changes=self._point_changes(
+                self._contributions, contribution_values
+            ),
+            accumulator_changes=tuple(
+                _PointChange(
+                    claim_id,
+                    accumulator_before[claim_id],
+                    _ClaimAccumulatorSnapshot.capture(accumulators[claim_id]),
+                )
+                for claim_id in sorted(accumulators)
+            ),
+            claim_state_changes=tuple(claim_state_changes),
+            certificate_changes=tuple(certificate_changes),
+            answer_count_changes=tuple(answer_count_changes),
+            answer_state_changes=tuple(answer_state_changes),
+            score_index_changes=tuple(score_changes),
+            stats=frozen_stats,
+        )
+
+    def apply_state_patch(
+        self,
+        patch: IncrementalStatePatch,
+        *,
+        failure_injector: Callable[[str], None] | None = None,
+    ) -> None:
+        """Atomically apply one prepared patch, rolling back injected failure."""
+        self._validate_patch_preconditions(patch)
+        undo: list[Callable[[], None]] = []
+        shift_work = 0
+
+        def checkpoint(name: str) -> None:
+            if failure_injector is not None:
+                failure_injector(name)
+
+        try:
+            for label_change in patch.active_label_changes:
+                undo.append(
+                    self._apply_point_change(self._active_labels, label_change)
+                )
+                checkpoint(f"active_label:{label_change.key}")
+            for contribution_change in patch.contribution_changes:
+                undo.append(
+                    self._apply_point_change(
+                        self._contributions, contribution_change
+                    )
+                )
+                checkpoint(f"contribution:{contribution_change.key}")
+            for accumulator_change in patch.accumulator_changes:
+                before = accumulator_change.before
+                after = accumulator_change.after
+                assert before is not None and after is not None
+                self._claim_accumulators[accumulator_change.key] = after.materialize()
+
+                def restore_accumulator(
+                    key: str = accumulator_change.key,
+                    value: _ClaimAccumulatorSnapshot = before,
+                ) -> None:
+                    self._claim_accumulators[key] = value.materialize()
+
+                undo.append(
+                    restore_accumulator
+                )
+                checkpoint(f"accumulator:{accumulator_change.key}")
+            for claim_state_change in patch.claim_state_changes:
+                undo.append(
+                    self._apply_point_change(self._claim_states, claim_state_change)
+                )
+                checkpoint(f"claim_state:{claim_state_change.key}")
+            for certificate_change in patch.certificate_changes:
+                undo.append(
+                    self._apply_point_change(
+                        self._certificates, certificate_change
+                    )
+                )
+                checkpoint(f"certificate:{certificate_change.key}")
+            for count_change in patch.answer_count_changes:
+                before_counts = count_change.before
+                after_counts = count_change.after
+                assert before_counts is not None and after_counts is not None
+                self._answer_status_counts[count_change.key] = Counter(
+                    dict(after_counts)
+                )
+
+                def restore_answer_counts(
+                    key: str = count_change.key,
+                    value: tuple[tuple[ClaimStatus, int], ...] = before_counts,
+                ) -> None:
+                    self._answer_status_counts[key] = Counter(dict(value))
+
+                undo.append(restore_answer_counts)
+                checkpoint(f"answer_counts:{count_change.key}")
+            for answer_state_change in patch.answer_state_changes:
+                undo.append(
+                    self._apply_point_change(
+                        self._answer_states, answer_state_change
+                    )
+                )
+                checkpoint(f"answer_state:{answer_state_change.key}")
+            for score_change in patch.score_index_changes:
+                if score_change.add:
+                    shift_work += self._score_index.add(score_change.observation)
+
+                    def undo_score_add(
+                        observation: SemanticObservation = score_change.observation,
+                    ) -> None:
+                        self._score_index.remove(observation)
+
+                    undo.append(undo_score_add)
+                else:
+                    shift_work += self._score_index.remove(score_change.observation)
+
+                    def undo_score_remove(
+                        observation: SemanticObservation = score_change.observation,
+                    ) -> None:
+                        self._score_index.add(observation)
+
+                    undo.append(undo_score_remove)
+                checkpoint(
+                    f"score_index:{score_change.observation.observation_id}"
+                )
+            previous_stats = self.last_stats
+            self.last_stats = replace(patch.stats, score_index_shift_work=shift_work)
+
+            def restore_stats(value: MaintenanceStats = previous_stats) -> None:
+                self.last_stats = value
+
+            undo.append(restore_stats)
+            self._state_revision += 1
+
+            def restore_revision() -> None:
+                self._state_revision -= 1
+
+            undo.append(restore_revision)
+            checkpoint("published")
+        except Exception:
+            for rollback in reversed(undo):
+                rollback()
+            raise
+
+    @staticmethod
+    def _point_changes(
+        current: Mapping[str, T], values: Mapping[str, T | None]
+    ) -> tuple[_PointChange[T], ...]:
+        return tuple(
+            _PointChange(key, current.get(key), values[key]) for key in sorted(values)
+        )
+
+    @staticmethod
+    def _apply_point_change(
+        target: dict[str, T], change: _PointChange[T]
+    ) -> Callable[[], None]:
+        if change.after is None:
+            del target[change.key]
+        else:
+            target[change.key] = change.after
+
+        if change.before is None:
+            def remove_new_key(key: str = change.key) -> None:
+                target.pop(key, None)
+
+            return remove_new_key
+
+        def restore_old_value(
+            key: str = change.key, value: T = change.before
+        ) -> None:
+            target[key] = value
+
+        return restore_old_value
+
+    @staticmethod
+    def _counter_snapshot(
+        counts: Counter[ClaimStatus],
+    ) -> tuple[tuple[ClaimStatus, int], ...]:
+        return tuple(sorted(counts.items(), key=lambda item: item[0].value))
+
+    def _validate_patch_preconditions(self, patch: IncrementalStatePatch) -> None:
+        if patch.expected_state_revision != self._state_revision:
+            raise AssertionError("state patch is stale or was already applied")
+
+        def validate_map(
+            current: Mapping[str, T], changes: tuple[_PointChange[T], ...]
+        ) -> None:
+            for change in changes:
+                if current.get(change.key) != change.before:
+                    raise AssertionError(
+                        f"state patch precondition failed for key {change.key}"
+                    )
+
+        validate_map(self._active_labels, patch.active_label_changes)
+        validate_map(self._contributions, patch.contribution_changes)
+        validate_map(self._claim_states, patch.claim_state_changes)
+        validate_map(self._certificates, patch.certificate_changes)
+        validate_map(self._answer_states, patch.answer_state_changes)
+        for accumulator_change in patch.accumulator_changes:
+            current = _ClaimAccumulatorSnapshot.capture(
+                self._claim_accumulators[accumulator_change.key]
+            )
+            if current != accumulator_change.before:
+                raise AssertionError(
+                    "state patch accumulator precondition failed for "
+                    f"{accumulator_change.key}"
+                )
+        for count_change in patch.answer_count_changes:
+            current_counts = self._counter_snapshot(
+                self._answer_status_counts[count_change.key]
+            )
+            if current_counts != count_change.before:
+                raise AssertionError(
+                    "state patch answer-count precondition failed for "
+                    f"{count_change.key}"
+                )
+        for score_change in patch.score_index_changes:
+            if self._score_index.contains(score_change.observation) == score_change.add:
+                action = "add" if score_change.add else "remove"
+                raise AssertionError(
+                    f"state patch cannot {action} score entries for "
+                    f"{score_change.observation.observation_id}"
+                )
 
     def _withdraw_document_version(
         self,
@@ -401,7 +1019,8 @@ class IncrementalMaintenanceEngine:
             raise AssertionError("observation already active in incremental engine")
         label = decide(observation, policy)
         self._active_labels[observation.observation_id] = label
-        self._score_index.add(observation)
+        stats.score_index_shift_work += self._score_index.add(observation)
+        stats.score_index_point_updates += 2
         stats.active_observations_added += 1
         if observation.subject_kind is not SubjectKind.CLAIM:
             return
@@ -431,7 +1050,8 @@ class IncrementalMaintenanceEngine:
     ) -> None:
         if observation.observation_id not in self._active_labels:
             return
-        self._score_index.remove(observation)
+        stats.score_index_shift_work += self._score_index.remove(observation)
+        stats.score_index_point_updates += 2
         del self._active_labels[observation.observation_id]
         stats.active_observations_removed += 1
         contribution = self._contributions.pop(observation.observation_id, None)
@@ -531,7 +1151,14 @@ class IncrementalMaintenanceEngine:
         dirty_claims.add(contribution.claim_id)
 
     def _state_from_accumulator(self, claim_id: str) -> ClaimState:
-        accumulator = self._claim_accumulators[claim_id]
+        return self._state_from_accumulator_value(
+            claim_id, self._claim_accumulators[claim_id]
+        )
+
+    @staticmethod
+    def _state_from_accumulator_value(
+        claim_id: str, accumulator: _ClaimAccumulator
+    ) -> ClaimState:
         support_count = len(accumulator.support_hash_counts)
         refute_count = len(accumulator.refute_hash_counts)
         return ClaimState(
@@ -548,12 +1175,14 @@ class IncrementalMaintenanceEngine:
         )
 
     def _state_from_answer_counts(self, answer_id: str) -> AnswerState:
-        counts = self._answer_status_counts[answer_id]
-        required = sum(
-            1
-            for claim_id in self._answer_to_claims[answer_id]
-            if self._claim_required[claim_id]
+        return self._state_from_answer_count_value(
+            answer_id, self._answer_status_counts[answer_id]
         )
+
+    def _state_from_answer_count_value(
+        self, answer_id: str, counts: Counter[ClaimStatus]
+    ) -> AnswerState:
+        required = self._answer_required_counts[answer_id]
         return AnswerState(
             answer_version_id=answer_id,
             required_claim_count=required,
@@ -566,8 +1195,12 @@ class IncrementalMaintenanceEngine:
 
     def _repair_certificate(self, claim_id: str) -> None:
         state = self._claim_states[claim_id]
-        self._certificates[claim_id] = ClaimCertificate(
-            claim_id=claim_id,
+        self._certificates[claim_id] = self._certificate_from_state(state)
+
+    @staticmethod
+    def _certificate_from_state(state: ClaimState) -> ClaimCertificate:
+        return ClaimCertificate(
+            claim_id=state.claim_id,
             support_observation_id=(
                 state.supporting_observation_ids[0]
                 if state.supporting_observation_ids
