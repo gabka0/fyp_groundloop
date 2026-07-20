@@ -17,7 +17,7 @@ from groundloop.ai.contracts import ModelArtifact, ModelTask, PromptArtifact
 from groundloop.ai.embeddings.common import EMBEDDING_DIMENSION
 from groundloop.ai.persistence import ChunkerArtifactRecord
 from groundloop.errors import ArtifactConflictError, ValidationError
-from groundloop.m4.contracts import CandidatePolicyManifest
+from groundloop.m4.contracts import CandidatePolicyManifest, sha256_text
 from groundloop.m4.models.contracts import (
     CHUNK_ROLE_TEMPLATE,
     CLAIM_ROLE_TEMPLATE,
@@ -25,7 +25,6 @@ from groundloop.m4.models.contracts import (
     ClaimVectorArtifact,
     EmbeddingRole,
     RoleEmbeddingProvenance,
-    sha256_text,
     vector_sha256,
 )
 

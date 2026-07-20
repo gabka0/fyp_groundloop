@@ -10,8 +10,7 @@ from groundloop.m4.admission import (
     fuse_admission_channels,
     lineage_channel_hits,
 )
-from groundloop.m4.models.contracts import sha256_text
-from groundloop.m4.contracts import AdmissionChannel, ChannelHit, PairKey
+from groundloop.m4.contracts import AdmissionChannel, ChannelHit, PairKey, sha256_text
 
 from .conftest import HASH, policy_manifest
 

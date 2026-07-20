@@ -61,6 +61,7 @@ from groundloop.m4.contracts import (
     CorpusUpdateIdentity,
     UpdateKind,
     VectorIndexKind,
+    sha256_text,
     stable_m4_digest,
 )
 from groundloop.m4.execution import M4ExecutionIdentity
@@ -74,7 +75,6 @@ from groundloop.m4.models.contracts import (
     CHUNK_ROLE_TEMPLATE,
     CLAIM_ROLE_TEMPLATE,
     decision_policy_hash,
-    sha256_text,
 )
 from groundloop.m4.models.embedding import ClaimEmbeddingInput
 from groundloop.m4.models.ports import (

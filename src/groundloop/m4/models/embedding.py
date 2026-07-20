@@ -16,6 +16,7 @@ from groundloop.ai.embeddings.bge import BGE_QUERY_PREFIX
 from groundloop.ai.embeddings.common import EmbeddedQuery, EmbeddingInputAudit
 from groundloop.errors import ArtifactConflictError, ValidationError
 from groundloop.m4.admission.vector import ChunkRoleVector, ClaimRoleVector
+from groundloop.m4.contracts import sha256_text
 from groundloop.m4.models.contracts import (
     CHUNK_ROLE_TEMPLATE,
     CLAIM_ROLE_TEMPLATE,
@@ -24,7 +25,6 @@ from groundloop.m4.models.contracts import (
     EmbeddingAdapterSpec,
     EmbeddingRole,
     RoleEmbeddingProvenance,
-    sha256_text,
     vector_sha256,
 )
 
