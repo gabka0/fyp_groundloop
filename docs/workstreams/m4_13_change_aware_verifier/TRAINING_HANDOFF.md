@@ -86,7 +86,7 @@ before loading model weights. The objective variant is deliberately excluded
 from that schedule identity.
 
 Against Lane A's final deterministic artifact root
-`/tmp/groundloop-m4-13-data-real-f`, the pre-training audit loaded 4,096
+`artifacts/m4_13_change_aware_verifier`, the pre-training audit loaded 4,096
 VitaminC rows in 1,024 cases and all 3,022 M3 rows in 2,067 claim groups. The
 real schedule identities are:
 
@@ -131,7 +131,8 @@ training-manifest identity. Existing incomplete or conflicting run directories
 fail closed. A new run is constructed under a sibling temporary directory,
 self-validated, and exposed by one same-filesystem directory rename. Injected
 failures before checkpoint write, manifest write and final sealing leave no
-visible run.
+visible run. `KeyboardInterrupt` and other direct `BaseException` exits also
+remove the staging directory.
 
 Before importing or loading PyTorch/model weights, every real invocation also
 records and validates:
@@ -154,6 +155,15 @@ module. The aggregate SHA-256 is over canonical JSON containing the schema and
 sorted relative-path/file-hash map. Both the Git HEAD and aggregate
 implementation identity enter the invocation hash, so a code or commit change
 cannot reuse an earlier training run.
+
+The trainer repeats the same repository/provenance validation after checkpoint
+serialization and immediately before writing the completion seal. A source edit
+or clean commit created during the long optimizer run therefore aborts
+publication instead of producing a checkpoint that claims the earlier state.
+AdamW betas, epsilon and all execution flags are explicit (`foreach=false`,
+`fused=false`), and the linear scheduler binds 13 warmup steps out of 223.
+Runtime provenance records Python, PyTorch, Transformers, Tokenizers,
+Safetensors and NumPy versions plus the frozen CPU thread settings.
 
 Lane C should emit development logits with schema
 `groundloop-m4-13-development-logit-v1`. Required fields are:
@@ -228,7 +238,7 @@ package root explicitly:
 export PYTHONPATH=src:training
 
 .venv/bin/python -m m4_13_verifier.train \
-  --artifact-root /tmp/groundloop-m4-13-data-real-f \
+  --artifact-root artifacts/m4_13_change_aware_verifier \
   --config configs/m4/verifier/change_aware_v1.json \
   --m3-checkpoint \
     models/m3/verifier-run-20260718/checkpoints/minilm2-m3-bounded-v1 \
@@ -243,14 +253,14 @@ and writes the selected checkpoint's combined development logits:
 
 ```bash
 .venv/bin/python -m m4_13_verifier.calibrate \
-  --artifact-root /tmp/groundloop-m4-13-data-real-f \
+  --artifact-root artifacts/m4_13_change_aware_verifier \
   --config configs/m4/verifier/change_aware_v1.json \
   --run-directory \
-    /tmp/groundloop-m4-13-data-real-f/runs/V2-ce-mix/20260720 \
+    artifacts/m4_13_change_aware_verifier/runs/V2-ce-mix/20260720 \
   --selection \
-    /tmp/groundloop-m4-13-data-real-f/selection.json \
+    artifacts/m4_13_change_aware_verifier/selection.json \
   --development-logits \
-    /tmp/groundloop-m4-13-data-real-f/runs/V2-ce-mix/20260720/development_logits.jsonl \
+    artifacts/m4_13_change_aware_verifier/runs/V2-ce-mix/20260720/development_logits.jsonl \
   --repository-root "$PWD"
 ```
 
@@ -264,7 +274,7 @@ completed:
 
 ```text
 pytest -q tests/m4/change_aware_verifier/training
-  35 passed
+  39 passed
 
 ruff check training/m4_13_verifier \
   tests/m4/change_aware_verifier/training
@@ -272,7 +282,7 @@ ruff check training/m4_13_verifier \
 
 mypy --strict --python-version 3.12 --explicit-package-bases \
   training/m4_13_verifier
-  Success: no issues found in 4 source files
+  Success: no issues found in 5 source files
 
 python -m compileall -q training/m4_13_verifier \
   tests/m4/change_aware_verifier/training
@@ -285,8 +295,10 @@ identity, complete M3 replay, control cycling, dataset-manifest and checkpoint
 drift, terminal-input rejection, failure injection, exact replay, artifact
 tampering, incomplete-run rejection, exact trainer and calibrator
 Git/implementation provenance, dependency hash drift, invocation-hash binding
-and tracked/untracked dirty-worktree rejection. Calibration replay tests also
-reject a same-invocation payload with drifted semantic results.
+and tracked/untracked dirty-worktree rejection. Direct interruption and
+pre-publication source-change tests prove that no partial run is published.
+Calibration replay tests also reject a same-invocation payload with drifted
+semantic results.
 
 The final real Lane A training surface and the local M3 checkpoint were also
 validated without optimizer work. The observed config, dataset-manifest,
