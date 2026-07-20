@@ -128,6 +128,28 @@ self-validated, and exposed by one same-filesystem directory rename. Injected
 failures before checkpoint write, manifest write and final sealing leave no
 visible run.
 
+Before importing or loading PyTorch/model weights, every real invocation also
+records and validates:
+
+```text
+repository.git_head
+repository.dirty = false
+trainer_implementation.schema_version =
+  groundloop-m4-13-trainer-implementation-v1
+trainer_implementation.files_sha256
+trainer_implementation.sha256
+```
+
+The repository root must be the exact Git worktree root. `git status
+--porcelain=v1 --untracked-files=all` must be empty, so staged, modified,
+deleted and nonignored untracked files all stop the run; ignored external model
+artifacts do not. The implementation file map binds `train.py`, `losses.py`,
+the package `__init__.py`, GroundLoop's artifact hashing module and its error
+module. The aggregate SHA-256 is over canonical JSON containing the schema and
+sorted relative-path/file-hash map. Both the Git HEAD and aggregate
+implementation identity enter the invocation hash, so a code or commit change
+cannot reuse an earlier training run.
+
 Lane C should emit development logits with schema
 `groundloop-m4-13-development-logit-v1`. Required fields are:
 
@@ -181,6 +203,7 @@ export PYTHONPATH=src:training
   --config configs/m4/verifier/change_aware_v1.json \
   --m3-checkpoint \
     models/m3/verifier-run-20260718/checkpoints/minilm2-m3-bounded-v1 \
+  --repository-root "$PWD" \
   --variant V2-ce-mix \
   --seed 20260720
 ```
@@ -210,7 +233,7 @@ No real model training was run. Fixture-sized validation completed:
 
 ```text
 pytest -q tests/m4/change_aware_verifier/training
-  24 passed
+  28 passed
 
 ruff check training/m4_13_verifier \
   tests/m4/change_aware_verifier/training
@@ -229,7 +252,8 @@ Tests cover hand-computed weighted CE and paired loss, finite gradients,
 margin monotonicity, shift invariance, label/logit order, V2/V3 schedule
 identity, complete M3 replay, control cycling, dataset-manifest and checkpoint
 drift, terminal-input rejection, failure injection, exact replay, artifact
-tampering and incomplete-run rejection.
+tampering, incomplete-run rejection, exact Git/implementation provenance and
+tracked/untracked dirty-worktree rejection.
 
 The final real Lane A training surface and the local M3 checkpoint were also
 validated without optimizer work. The observed config, dataset-manifest,

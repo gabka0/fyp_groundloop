@@ -13,6 +13,7 @@ import platform
 import random
 import resource
 import shutil
+import subprocess
 import tempfile
 import time
 from collections import Counter, defaultdict
@@ -41,6 +42,15 @@ TRAINING_MANIFEST_SCHEMA = "groundloop-m4-13-training-run-v1"
 CHECKPOINT_IDENTITY_SCHEMA = "groundloop-m4-13-checkpoint-identity-v1"
 COMPLETION_SCHEMA = "groundloop-m4-13-training-complete-v1"
 SCHEDULE_SCHEMA = "groundloop-m4-13-batch-schedule-v1"
+TRAINER_IMPLEMENTATION_SCHEMA = "groundloop-m4-13-trainer-implementation-v1"
+
+_TRAINER_IMPLEMENTATION_PATHS = (
+    "training/m4_13_verifier/train.py",
+    "training/m4_13_verifier/losses.py",
+    "training/m4_13_verifier/__init__.py",
+    "src/groundloop/ai/verification/artifacts.py",
+    "src/groundloop/errors.py",
+)
 
 FROZEN_PRIMARY_SEED = 20260720
 FROZEN_REPLICATION_SEEDS = (20260720, 20260721, 20260722)
@@ -198,12 +208,94 @@ class CompletedTrainingRun:
     completion: Mapping[str, object]
 
 
+@dataclass(frozen=True, slots=True)
+class RepositoryProvenance:
+    git_head: str
+    dirty: bool
+    implementation_files_sha256: Mapping[str, str]
+    implementation_sha256: str
+
+    def to_manifest(self) -> dict[str, object]:
+        return {
+            "repository": {
+                "git_head": self.git_head,
+                "dirty": self.dirty,
+            },
+            "trainer_implementation": {
+                "schema_version": TRAINER_IMPLEMENTATION_SCHEMA,
+                "files_sha256": dict(self.implementation_files_sha256),
+                "sha256": self.implementation_sha256,
+            },
+        }
+
+
 def _canonical_bytes(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
 def _canonical_sha256(value: object) -> str:
     return hashlib.sha256(_canonical_bytes(value)).hexdigest()
+
+
+def _run_git(repository_root: Path, *arguments: str) -> str:
+    result = subprocess.run(
+        ("git", "-C", str(repository_root), *arguments),
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "unknown git error"
+        raise ValidationError(f"cannot validate training repository: {detail}")
+    return result.stdout
+
+
+def validate_repository_provenance(repository_root: Path) -> RepositoryProvenance:
+    """Bind one clean Git commit and the exact trainer implementation bytes."""
+    supplied_root = repository_root.resolve()
+    discovered = Path(
+        _run_git(supplied_root, "rev-parse", "--show-toplevel").strip()
+    ).resolve()
+    if discovered != supplied_root:
+        raise ValidationError(
+            "training repository root must be the exact Git worktree root"
+        )
+    git_head = _run_git(discovered, "rev-parse", "HEAD").strip()
+    if len(git_head) not in {40, 64} or any(
+        character not in "0123456789abcdef" for character in git_head
+    ):
+        raise ValidationError("training repository HEAD is not a canonical Git digest")
+    status = _run_git(
+        discovered,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+    )
+    if status:
+        raise ValidationError(
+            "real training requires a clean repository with no tracked or "
+            "nonignored untracked changes"
+        )
+    files: dict[str, str] = {}
+    for relative in _TRAINER_IMPLEMENTATION_PATHS:
+        path = discovered / relative
+        if not path.is_file():
+            raise ValidationError(
+                f"trainer implementation dependency is absent: {relative}"
+            )
+        files[relative] = file_sha256(path)
+    implementation = {
+        "schema_version": TRAINER_IMPLEMENTATION_SCHEMA,
+        "files_sha256": files,
+    }
+    return RepositoryProvenance(
+        git_head=git_head,
+        dirty=False,
+        implementation_files_sha256=files,
+        implementation_sha256=_canonical_sha256(implementation),
+    )
 
 
 def _mapping(value: object, name: str) -> Mapping[str, object]:
@@ -969,6 +1061,7 @@ def train_variant(
     artifact_root: Path,
     config_path: Path,
     m3_checkpoint: Path,
+    repository_root: Path,
     variant: TrainingVariant,
     seed: int,
     failure_stage: FailureStage | None = None,
@@ -1018,6 +1111,8 @@ def train_variant(
         else:
             assert_v2_v3_schedule_identity(comparator, schedule)
 
+    repository_provenance = validate_repository_provenance(repository_root)
+
     invocation_payload = {
         "schema_version": "groundloop-m4-13-training-invocation-v1",
         "variant": variant.value,
@@ -1041,6 +1136,7 @@ def train_variant(
             "paired_weight": FROZEN_HYPERPARAMETERS.paired_weight,
         },
         "hyperparameters": asdict(FROZEN_HYPERPARAMETERS),
+        **repository_provenance.to_manifest(),
     }
     invocation_sha256 = _canonical_sha256(invocation_payload)
     run_directory = artifact_root / "runs" / variant.value / str(seed)
@@ -1187,6 +1283,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--m3-checkpoint", type=Path, required=True)
     parser.add_argument(
+        "--repository-root",
+        type=Path,
+        default=Path("."),
+        help="exact clean Git worktree root whose trainer bytes are executed",
+    )
+    parser.add_argument(
         "--variant",
         choices=[variant.value for variant in TrainingVariant],
         required=True,
@@ -1204,6 +1306,7 @@ def main() -> None:
         artifact_root=arguments.artifact_root,
         config_path=arguments.config,
         m3_checkpoint=arguments.m3_checkpoint,
+        repository_root=arguments.repository_root,
         variant=TrainingVariant(arguments.variant),
         seed=arguments.seed,
         failure_stage=(
