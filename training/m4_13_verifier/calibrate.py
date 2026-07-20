@@ -33,6 +33,7 @@ from .train import (
     _load_json,
     _load_jsonl,
     _mapping,
+    _run_git,
     _string,
     _validate_dataset_manifest,
     load_completed_training_run,
@@ -42,7 +43,19 @@ DEVELOPMENT_LOGIT_SCHEMA = "groundloop-m4-13-development-logit-v1"
 SELECTION_SCHEMA = "groundloop-m4-13-selection-v1"
 CALIBRATION_SCHEMA = "groundloop-m4-13-group-balanced-temperature-v1"
 CALIBRATION_METHOD = "equal-domain-group-balanced-log-temperature-golden-v1"
+CALIBRATOR_IMPLEMENTATION_SCHEMA = (
+    "groundloop-m4-13-calibrator-implementation-v1"
+)
 OLD_M3_TEMPERATURE = 1.1037657679769346
+
+_CALIBRATOR_IMPLEMENTATION_PATHS = (
+    "training/m4_13_verifier/calibrate.py",
+    "training/m4_13_verifier/losses.py",
+    "training/m4_13_verifier/train.py",
+    "training/m4_13_verifier/__init__.py",
+    "src/groundloop/ai/verification/artifacts.py",
+    "src/groundloop/errors.py",
+)
 
 
 class CalibrationFailureStage(StrEnum):
@@ -86,12 +99,83 @@ class CalibrationFit:
     nll_deployed: DomainNll
 
 
+@dataclass(frozen=True, slots=True)
+class CalibrationRepositoryProvenance:
+    git_head: str
+    dirty: bool
+    implementation_files_sha256: Mapping[str, str]
+    implementation_sha256: str
+
+    def to_manifest(self) -> dict[str, object]:
+        return {
+            "repository": {
+                "git_head": self.git_head,
+                "dirty": self.dirty,
+            },
+            "calibrator_implementation": {
+                "schema_version": CALIBRATOR_IMPLEMENTATION_SCHEMA,
+                "files_sha256": dict(self.implementation_files_sha256),
+                "sha256": self.implementation_sha256,
+            },
+        }
+
+
 def _canonical_bytes(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
 def _canonical_sha256(value: object) -> str:
     return hashlib.sha256(_canonical_bytes(value)).hexdigest()
+
+
+def validate_calibration_repository_provenance(
+    repository_root: Path,
+) -> CalibrationRepositoryProvenance:
+    """Bind one clean Git commit and every local calibrator dependency."""
+    supplied_root = repository_root.resolve()
+    discovered = Path(
+        _run_git(supplied_root, "rev-parse", "--show-toplevel").strip()
+    ).resolve()
+    if discovered != supplied_root:
+        raise ValidationError(
+            "calibration repository root must be the exact Git worktree root"
+        )
+    git_head = _run_git(discovered, "rev-parse", "HEAD").strip()
+    if len(git_head) not in {40, 64} or any(
+        character not in "0123456789abcdef" for character in git_head
+    ):
+        raise ValidationError(
+            "calibration repository HEAD is not a canonical Git digest"
+        )
+    status = _run_git(
+        discovered,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+    )
+    if status:
+        raise ValidationError(
+            "real calibration requires a clean repository with no tracked or "
+            "nonignored untracked changes"
+        )
+    files: dict[str, str] = {}
+    for relative in _CALIBRATOR_IMPLEMENTATION_PATHS:
+        path = discovered / relative
+        if not path.is_file():
+            raise ValidationError(
+                f"calibrator implementation dependency is absent: {relative}"
+            )
+        files[relative] = file_sha256(path)
+    implementation = {
+        "schema_version": CALIBRATOR_IMPLEMENTATION_SCHEMA,
+        "files_sha256": files,
+    }
+    return CalibrationRepositoryProvenance(
+        git_head=git_head,
+        dirty=False,
+        implementation_files_sha256=files,
+        implementation_sha256=_canonical_sha256(implementation),
+    )
 
 
 def _load_development_logits(path: Path) -> tuple[DevelopmentLogit, ...]:
@@ -440,6 +524,12 @@ def _write_calibration_atomically(
     expected_invocation_sha256: str,
     failure_stage: CalibrationFailureStage | None,
 ) -> Mapping[str, object]:
+    if (
+        _string(payload, "schema_version") != CALIBRATION_SCHEMA
+        or _string(payload, "status") != "complete"
+        or _string(payload, "invocation_sha256") != expected_invocation_sha256
+    ):
+        raise ValidationError("requested calibration payload is not self-consistent")
     if path.exists():
         try:
             existing = _load_json(path, "calibration artifact")
@@ -447,6 +537,7 @@ def _write_calibration_atomically(
                 _string(existing, "schema_version") == CALIBRATION_SCHEMA
                 and _string(existing, "status") == "complete"
                 and _string(existing, "invocation_sha256") == expected_invocation_sha256
+                and _canonical_bytes(existing) == _canonical_bytes(payload)
             )
         except (FileNotFoundError, ValidationError):
             exact = False
@@ -476,6 +567,7 @@ def _write_calibration_atomically(
             _string(result, "schema_version") != CALIBRATION_SCHEMA
             or _string(result, "status") != "complete"
             or _string(result, "invocation_sha256") != expected_invocation_sha256
+            or _canonical_bytes(result) != _canonical_bytes(payload)
         ):
             raise AssertionError("newly written calibration failed its own seal")
         return result
@@ -490,9 +582,13 @@ def calibrate_selected_checkpoint(
     run_directory: Path,
     selection_path: Path,
     development_logits_path: Path,
+    repository_root: Path,
     failure_stage: CalibrationFailureStage | None = None,
 ) -> Mapping[str, object]:
     """Calibrate one development-selected checkpoint without any test input."""
+    repository_provenance = validate_calibration_repository_provenance(
+        repository_root
+    )
     completed = load_completed_training_run(run_directory)
     manifest = completed.training_manifest
     variant = _string(manifest, "variant")
@@ -570,6 +666,7 @@ def calibrate_selected_checkpoint(
             "iterations": 96,
             "maximum_domain_nll_increase": 0.01,
         },
+        **repository_provenance.to_manifest(),
     }
     invocation_sha256 = _canonical_sha256(invocation_payload)
     semantic = {
@@ -611,6 +708,11 @@ def calibrate_selected_checkpoint(
         "invocation_sha256": invocation_sha256,
         "calibration_version": calibration_version,
     }
+    if (
+        validate_calibration_repository_provenance(repository_root)
+        != repository_provenance
+    ):
+        raise ValidationError("calibration repository changed before result write")
     return _write_calibration_atomically(
         run_directory / "calibration.json",
         payload,
@@ -629,6 +731,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--selection", type=Path, required=True)
     parser.add_argument("--development-logits", type=Path, required=True)
     parser.add_argument(
+        "--repository-root",
+        type=Path,
+        required=True,
+        help="exact clean Git worktree root whose calibrator bytes are executed",
+    )
+    parser.add_argument(
         "--failure-stage", choices=[stage.value for stage in CalibrationFailureStage]
     )
     return parser.parse_args()
@@ -642,6 +750,7 @@ def main() -> None:
         run_directory=arguments.run_directory,
         selection_path=arguments.selection,
         development_logits_path=arguments.development_logits,
+        repository_root=arguments.repository_root,
         failure_stage=(
             None
             if arguments.failure_stage is None

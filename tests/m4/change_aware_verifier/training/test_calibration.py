@@ -3,11 +3,16 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import shutil
+import subprocess
+from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 import pytest
 from m4_13_verifier.calibrate import (
     CALIBRATION_SCHEMA,
+    CALIBRATOR_IMPLEMENTATION_SCHEMA,
     CalibrationFailureStage,
     DevelopmentLogit,
     _development_source_alignment_sha256,
@@ -18,10 +23,45 @@ from m4_13_verifier.calibrate import (
     fit_group_balanced_temperature,
     group_balanced_nll,
 )
+from m4_13_verifier.calibrate import _canonical_sha256 as _calibration_sha256
 from m4_13_verifier.train import seal_training_run
 
 from groundloop.ai.verification.artifacts import file_sha256
 from groundloop.errors import ValidationError
+
+CALIBRATOR_IMPLEMENTATION_PATHS = (
+    "training/m4_13_verifier/calibrate.py",
+    "training/m4_13_verifier/losses.py",
+    "training/m4_13_verifier/train.py",
+    "training/m4_13_verifier/__init__.py",
+    "src/groundloop/ai/verification/artifacts.py",
+    "src/groundloop/errors.py",
+)
+SOURCE_ROOT = Path(__file__).resolve().parents[4]
+
+
+def _clean_calibrator_repository(root: Path) -> Path:
+    root.mkdir()
+    for relative in CALIBRATOR_IMPLEMENTATION_PATHS:
+        destination = root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(SOURCE_ROOT / relative, destination)
+    (root / ".gitignore").write_text("*.ignored\n", encoding="utf-8")
+    for arguments in (
+        ("init", "--quiet"),
+        ("config", "user.email", "fixture@example.invalid"),
+        ("config", "user.name", "GroundLoop Fixture"),
+        ("add", "."),
+        ("commit", "--quiet", "-m", "fixture"),
+    ):
+        subprocess.run(
+            ("git", "-C", str(root), *arguments),
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+    return root
 
 
 def _row(
@@ -217,6 +257,57 @@ def test_existing_partial_calibration_is_rejected(tmp_path: Path) -> None:
         )
 
 
+def test_calibration_replay_requires_the_full_canonical_payload(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "calibration.json"
+    payload = {
+        "schema_version": CALIBRATION_SCHEMA,
+        "status": "complete",
+        "invocation_sha256": "a" * 64,
+        "candidate_temperature": 1.25,
+        "calibration_version": "temperature-m4-13-v1:fixture",
+    }
+    first = _write_calibration_atomically(
+        path,
+        payload,
+        expected_invocation_sha256="a" * 64,
+        failure_stage=None,
+    )
+    assert _write_calibration_atomically(
+        path,
+        payload,
+        expected_invocation_sha256="a" * 64,
+        failure_stage=None,
+    ) == first
+
+    drifted = dict(payload)
+    drifted["candidate_temperature"] = 3.0
+    with pytest.raises(ValidationError, match="partial or belongs to another run"):
+        _write_calibration_atomically(
+            path,
+            drifted,
+            expected_invocation_sha256="a" * 64,
+            failure_stage=None,
+        )
+
+
+def test_calibration_writer_rejects_inconsistent_requested_payload(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValidationError, match="not self-consistent"):
+        _write_calibration_atomically(
+            tmp_path / "calibration.json",
+            {
+                "schema_version": CALIBRATION_SCHEMA,
+                "status": "complete",
+                "invocation_sha256": "b" * 64,
+            },
+            expected_invocation_sha256="a" * 64,
+            failure_stage=None,
+        )
+
+
 def test_development_identity_check_rejects_same_count_substitution(
     tmp_path: Path,
 ) -> None:
@@ -305,6 +396,7 @@ def test_development_identity_check_rejects_same_count_substitution(
 def test_calibrate_selected_checkpoint_seals_real_schema_end_to_end(
     tmp_path: Path,
 ) -> None:
+    repository_root = _clean_calibrator_repository(tmp_path / "repository")
     artifact_root = tmp_path / "artifacts"
     prepared = artifact_root / "prepared"
     prepared.mkdir(parents=True)
@@ -492,8 +584,66 @@ def test_calibrate_selected_checkpoint_seals_real_schema_end_to_end(
         run_directory=run_directory,
         selection_path=selection_path,
         development_logits_path=development,
+        repository_root=repository_root,
     )
     assert result["schema_version"] == CALIBRATION_SCHEMA
     assert result["status"] == "complete"
     assert result["development_logits_sha256"] == file_sha256(development)
     assert result["source_alignment_sha256"] == alignment
+    expected_files = {
+        relative: file_sha256(repository_root / relative)
+        for relative in CALIBRATOR_IMPLEMENTATION_PATHS
+    }
+    expected_implementation_sha256 = _calibration_sha256(
+        {
+            "schema_version": CALIBRATOR_IMPLEMENTATION_SCHEMA,
+            "files_sha256": expected_files,
+        }
+    )
+    assert result["repository"] == {
+        "git_head": subprocess.run(
+            ("git", "-C", str(repository_root), "rev-parse", "HEAD"),
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        ).stdout.strip(),
+        "dirty": False,
+    }
+    assert result["calibrator_implementation"] == {
+        "schema_version": CALIBRATOR_IMPLEMENTATION_SCHEMA,
+        "files_sha256": expected_files,
+        "sha256": expected_implementation_sha256,
+    }
+    invocation_keys = (
+        "selection_sha256",
+        "selected",
+        "variant",
+        "seed",
+        "checkpoint_tree_sha256",
+        "checkpoint_identity_sha256",
+        "dataset_manifest_sha256",
+        "m3_development_jsonl_sha256",
+        "vitaminc_development_manifest_sha256",
+        "development_logits_sha256",
+        "source_alignment_sha256",
+        "method",
+        "group_weighting",
+        "search",
+        "repository",
+        "calibrator_implementation",
+    )
+    invocation = {
+        "schema_version": "groundloop-m4-13-calibration-invocation-v1",
+        **{key: result[key] for key in invocation_keys},
+    }
+    assert result["invocation_sha256"] == _calibration_sha256(invocation)
+    drifted_implementation = dict(
+        cast(Mapping[str, object], result["calibrator_implementation"])
+    )
+    drifted_implementation["sha256"] = "f" * 64
+    drifted_invocation = dict(invocation)
+    drifted_invocation["calibrator_implementation"] = {
+        **drifted_implementation,
+    }
+    assert _calibration_sha256(drifted_invocation) != result["invocation_sha256"]

@@ -1,6 +1,6 @@
 # M4.13 training and calibration handoff
 
-Status: implementation complete; no real optimizer run has been started
+Status: implementation complete; no real optimizer run has completed
 
 ## Verdict
 
@@ -9,6 +9,11 @@ contract. It does not provide a model-quality result. Until the serialized
 V1/V2/V3/A1 runs, development selection, calibration and terminal evaluation
 finish, whether either continuation objective improves revision response is
 **unknown**.
+
+One V2 primary-seed process was deliberately interrupted after the later
+provenance audit found that trainer code identity was not yet bound. It
+published no run directory or completion seal and is not a result. Real runs
+must start again from the final clean integrated commit.
 
 The code starts only from the exact M3 checkpoint tree
 `81870b683cec57eff82665103fcff3a35f45b9c9be0e18b53dcd40f485bfa4cf`
@@ -190,6 +195,30 @@ deployment temperature is exactly 1.0. The artifact reports uncalibrated,
 old-M3-temperature, candidate and deployed NLL surfaces. Its atomic temporary
 file is never accepted without a complete schema/invocation seal.
 
+Calibration also fails closed unless `--repository-root` is the exact clean
+Git worktree root. The calibration invocation binds:
+
+```text
+repository.git_head
+repository.dirty = false
+calibrator_implementation.schema_version =
+  groundloop-m4-13-calibrator-implementation-v1
+calibrator_implementation.files_sha256
+calibrator_implementation.sha256
+```
+
+The file map covers `calibrate.py`, `losses.py`, `train.py`, package
+`__init__.py`, GroundLoop's artifact hashing module and its error module.
+These are all local modules on the calibrator's semantic import path. The
+aggregate digest uses canonical JSON over the schema and sorted relative-path
+map. The repository is checked before any calibration input artifact is loaded
+and again after fitting, immediately before the result write; a tracked,
+staged, deleted or nonignored untracked change stops publication. Both
+provenance objects are copied into the sealed artifact and covered by
+`invocation_sha256`. Exact replay compares the complete canonical result, not
+just the invocation digest, so a stale or corrupted same-invocation
+temperature, NLL or semantic version fails closed.
+
 ## Commands
 
 Use the repository virtual environment but add the standalone training
@@ -221,7 +250,8 @@ and writes the selected checkpoint's combined development logits:
   --selection \
     /tmp/groundloop-m4-13-data-real-f/selection.json \
   --development-logits \
-    /tmp/groundloop-m4-13-data-real-f/runs/V2-ce-mix/20260720/development_logits.jsonl
+    /tmp/groundloop-m4-13-data-real-f/runs/V2-ce-mix/20260720/development_logits.jsonl \
+  --repository-root "$PWD"
 ```
 
 The variant in the second command is illustrative. The calibrator rejects it
@@ -229,11 +259,12 @@ unless that exact variant/checkpoint is in the sealed development selection.
 
 ## Validation
 
-No real model training was run. Fixture-sized validation completed:
+No completed real model result was produced. Fixture-sized validation
+completed:
 
 ```text
 pytest -q tests/m4/change_aware_verifier/training
-  28 passed
+  35 passed
 
 ruff check training/m4_13_verifier \
   tests/m4/change_aware_verifier/training
@@ -252,8 +283,10 @@ Tests cover hand-computed weighted CE and paired loss, finite gradients,
 margin monotonicity, shift invariance, label/logit order, V2/V3 schedule
 identity, complete M3 replay, control cycling, dataset-manifest and checkpoint
 drift, terminal-input rejection, failure injection, exact replay, artifact
-tampering, incomplete-run rejection, exact Git/implementation provenance and
-tracked/untracked dirty-worktree rejection.
+tampering, incomplete-run rejection, exact trainer and calibrator
+Git/implementation provenance, dependency hash drift, invocation-hash binding
+and tracked/untracked dirty-worktree rejection. Calibration replay tests also
+reject a same-invocation payload with drifted semantic results.
 
 The final real Lane A training surface and the local M3 checkpoint were also
 validated without optimizer work. The observed config, dataset-manifest,
