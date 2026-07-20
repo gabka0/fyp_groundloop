@@ -24,7 +24,7 @@ from groundloop.m4.contracts import (
     UpdateKind,
     VectorIndexKind,
 )
-from groundloop.m4.persistence import PostgresM4RuntimeStore
+from groundloop.m4.persistence import PointEpochHeader, PostgresM4RuntimeStore
 from groundloop.m4.runtime.epoch import CompletionPlan, RuntimeEpochState
 from groundloop.postgres import record_epoch
 
@@ -540,6 +540,60 @@ def test_point_seal_uses_counter_header_without_aggregate_scans(
         sealed.header.revision,
         publication_action=_advance_head,
     ).replayed
+
+
+def test_sealed_impact_epoch_declaration_replay_returns_point_header(
+    point_connection: Connection[tuple[object, ...]], monkeypatch: Any
+) -> None:
+    base = _seed_base(point_connection)
+    audit = PostgresM4RuntimeStore(point_connection)
+    audit.register_candidate_policy(_policy(2))
+    audit.register_claim_registry_snapshot(
+        "point-registry", ("claim-1", "claim-2")
+    )
+    root = _job(JobKind.IMPACT_DISCOVERY, event_id="sealed-impact-replay")
+    scope = DiscoveryScope(root.job_id, "point-registry", ())
+    update = _update("sealed-impact-replay", base)
+    store = PostgresM4RuntimeStore(point_connection, audit_transitions=False)
+    opened = store.open_epoch(
+        update,
+        (root,),
+        (scope,),
+        registry_snapshot_id="point-registry",
+        structural_action=_no_structural,
+    )
+    header = store.read_epoch_header_point(opened.epoch.epoch_id)
+    attempt = _attempt(root)
+    started = store.start_attempt_point(header.epoch_id, header.revision, attempt)
+    completed = store.complete_point(
+        CompletionPlan(
+            expected_epoch_id=header.epoch_id,
+            expected_revision=started.header.revision,
+            completion=_completion(root, JobState.COMPLETED_ACTIVE, ()),
+        ),
+        attempt_id=attempt.attempt_id,
+        lease_token_hash=attempt.lease_token_hash,
+        lease_expected_revision=started.header.revision,
+    )
+    store.seal_epoch_point(
+        completed.header.epoch_id,
+        completed.header.revision,
+        publication_action=_advance_head,
+    )
+
+    _forbid_full_reads(store, monkeypatch)
+    replay = store.open_epoch(
+        update,
+        (root,),
+        (scope,),
+        registry_snapshot_id="point-registry",
+        structural_action=_no_structural,
+    )
+
+    assert replay.replayed
+    assert isinstance(replay.epoch, PointEpochHeader)
+    assert replay.epoch.state is RuntimeEpochState.SEALED
+    assert (replay.epoch.open_job_count, replay.epoch.open_scope_count) == (0, 0)
 
 
 def test_counter_contract_preserves_the_full_audit_transition_path(
