@@ -48,6 +48,7 @@ from groundloop.m4.contracts import (
 )
 from groundloop.m4.pipeline import (
     InsertedDocument,
+    M4ExecutionMode,
     PersistingAdmissionPort,
     PostgresM4ApplicationPorts,
     StructuralPayload,
@@ -71,7 +72,9 @@ FRONTIER_HASH = _hash("m4-pipeline-frontier")
 VERIFIER_HASH = _hash("m4-pipeline-verifier")
 
 
-def _candidate_policy(*, frontier_depth: int = 4) -> CandidatePolicyManifest:
+def _candidate_policy(
+    *, frontier_depth: int = 4, claim_count: int = 1
+) -> CandidatePolicyManifest:
     return CandidatePolicyManifest.build(
         policy_id="candidate-v1",
         embedding_model_artifact_id="embedder-v1",
@@ -86,7 +89,7 @@ def _candidate_policy(*, frontier_depth: int = 4) -> CandidatePolicyManifest:
         lexical_postgres_version="16.14",
         lexical_regconfig_identity="simple",
         claim_registry_snapshot_id="registry-v1",
-        claim_count=1,
+        claim_count=claim_count,
         fusion_version="rank-interleave-v1",
         approximate_cap_per_inserted_chunk=4,
         frontier_depth=frontier_depth,
@@ -852,6 +855,106 @@ def test_structural_open_surface_c_is_exact_before_any_attempt(
         ("answer", "pending", base, 0, True, 1),
         ("claim", "pending", base, 0, True, 1),
     ]
+
+
+def test_compact_pending_does_not_propagate_optional_claim_to_answer(
+    m4_pipeline_connection: Connection[Any],
+) -> None:
+    base = _seed_b0(m4_pipeline_connection)
+    m4_pipeline_connection.execute(
+        """
+        INSERT INTO groundloop_claim VALUES (
+            'claim-optional', 'answer-1', 'Optional detail.',
+            'extractor', 'v1', 'prompt-v1', false
+        )
+        """
+    )
+    inserted_document = _inserted(
+        "doc-optional", "dv-optional", "chunk-optional", "Optional detail."
+    )
+    event = replace(
+        _event(
+            "optional-pending",
+            UpdateKind.INSERT,
+            base,
+            inserted=("chunk-optional",),
+        ),
+        registered_claim_ids=("claim-1", "claim-optional"),
+    )
+    ports = PostgresM4ApplicationPorts(
+        m4_pipeline_connection,
+        structural_payloads={
+            "optional-pending": StructuralPayload(inserted=inserted_document)
+        },
+        execution_mode=M4ExecutionMode.MEASURED,
+    )
+    ports.runtime_store.register_candidate_policy(_candidate_policy(claim_count=2))
+    application = M4Application(
+        structural=ports,
+        runtime=ports,
+        admission=PersistingAdmissionPort(
+            m4_pipeline_connection, ScriptedAdmission({})
+        ),
+        verifier=ScriptedVerifier({}),
+        observations=ports,
+        equality_gates=ports,
+        publication=ports,
+        execution_policy=ApplicationExecutionPolicy(
+            IMPACT_HASH, FRONTIER_HASH, VERIFIER_HASH
+        ),
+    )
+    withdrawal = ports.plan_exact_withdrawal(event)
+    roots = application._root_jobs(event, withdrawal.fallback_claim_ids)
+    scopes = tuple(
+        DiscoveryScope(
+            root.job_id,
+            event.claim_registry_snapshot_id,
+            event.registered_claim_ids,
+        )
+        for root in roots
+        if root.kind is JobKind.IMPACT_DISCOVERY
+    )
+    opened = ports.open_event(event, withdrawal, roots, scopes)
+    root = roots[0]
+    pair = PairKey("claim-optional", "chunk-optional")
+    job_id = LogicalJobSpec.derive_job_id(
+        event_id=event.update.event_id,
+        kind=JobKind.VERIFY_PAIR,
+        candidate_policy_id=event.update.candidate_policy_id,
+        execution_spec_hash=VERIFIER_HASH,
+        parent_job_id=root.job_id,
+        claim_id=pair.claim_id,
+        chunk_version_id=pair.chunk_version_id,
+    )
+    optional_job = LogicalJobSpec(
+        job_id=job_id,
+        event_id=event.update.event_id,
+        kind=JobKind.VERIFY_PAIR,
+        candidate_policy_id=event.update.candidate_policy_id,
+        payload_hash=_hash(f"verify:{pair.claim_id}:{pair.chunk_version_id}"),
+        execution_spec_hash=VERIFIER_HASH,
+        parent_job_id=root.job_id,
+        pair=pair,
+    )
+    with m4_pipeline_connection.transaction():
+        with m4_pipeline_connection.cursor() as cursor:
+            ports._write_compact_evaluation(
+                cursor,
+                epoch_id=opened.epoch_id,
+                revision=2,
+                confirmed_as_of_epoch=base,
+                open_jobs=(optional_job,),
+                discovery_scope_open=False,
+                failed=False,
+            )
+
+    assert m4_pipeline_connection.execute(
+        """
+        SELECT object_type, object_id FROM groundloop_object_evaluation
+        WHERE epoch_id = %s ORDER BY object_type, object_id
+        """,
+        (opened.epoch_id,),
+    ).fetchall() == [("claim", "claim-optional")]
 
 
 @pytest.mark.parametrize(

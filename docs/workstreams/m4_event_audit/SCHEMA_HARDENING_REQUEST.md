@@ -26,4 +26,3 @@ Before running large M4.6 histories, add a coordinator-owned migration with:
 Do not silently retrofit these columns in this lane. Migration ordering and
 backfill semantics are coordinator-owned, and existing controlled-evaluation
 records may need an explicit compatibility path.
-

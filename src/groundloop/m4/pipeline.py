@@ -1685,10 +1685,11 @@ class PostgresM4ApplicationPorts:
         if not open_by_claim:
             return
         answer_by_claim = {
-            str(row[0]): str(row[1])
+            str(row[0]): (str(row[1]), bool(row[2]))
             for row in cursor.execute(
                 """
-                SELECT claim_id, answer_version_id FROM groundloop_claim
+                SELECT claim_id, answer_version_id, required
+                FROM groundloop_claim
                 WHERE claim_id = ANY(%s)
                 """,
                 (list(sorted(open_by_claim)),),
@@ -1712,8 +1713,9 @@ class PostgresM4ApplicationPorts:
             )
         answer_counts: dict[str, int] = {}
         for claim_id, open_count in open_by_claim.items():
-            answer_id = answer_by_claim.get(claim_id)
-            if answer_id is not None:
+            answer = answer_by_claim.get(claim_id)
+            if answer is not None and answer[1]:
+                answer_id = answer[0]
                 answer_counts[answer_id] = answer_counts.get(answer_id, 0) + open_count
         for answer_id, open_count in sorted(answer_counts.items()):
             cursor.execute(
@@ -3091,14 +3093,15 @@ class PostgresM4ApplicationPorts:
                 )
                 if claim_id is not None:
                     open_by_claim[claim_id] = open_by_claim.get(claim_id, 0) + 1
-        answer_by_claim = (
+        answer_by_claim: dict[str, tuple[str, bool]] = (
             {}
             if not open_by_claim
             else {
-                str(row[0]): str(row[1])
+                str(row[0]): (str(row[1]), bool(row[2]))
                 for row in cursor.execute(
                     """
-                    SELECT claim_id, answer_version_id FROM groundloop_claim
+                    SELECT claim_id, answer_version_id, required
+                    FROM groundloop_claim
                     WHERE claim_id = ANY(%s)
                     """,
                     (list(sorted(open_by_claim)),),
@@ -3115,8 +3118,9 @@ class PostgresM4ApplicationPorts:
                 scope_open,
                 epoch.revision,
             )
-            answer_id = answer_by_claim.get(claim_id)
-            if answer_id is not None:
+            answer = answer_by_claim.get(claim_id)
+            if answer is not None and answer[1]:
+                answer_id = answer[0]
                 answer_counts[answer_id] = answer_counts.get(answer_id, 0) + count
         for answer_id, count in answer_counts.items():
             expected_overrides[("answer", answer_id)] = (
