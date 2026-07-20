@@ -24,7 +24,6 @@ def test_published_interval_relations_have_exclusion_constraints(
         """,
         (
             [
-                "groundloop_candidate_frontier",
                 "groundloop_published_answer_state",
                 "groundloop_published_claim_state",
                 "groundloop_published_observation_currency",
@@ -33,7 +32,6 @@ def test_published_interval_relations_have_exclusion_constraints(
     ).fetchall()
 
     assert [str(row[0]) for row in rows] == [
-        "groundloop_candidate_frontier",
         "groundloop_published_answer_state",
         "groundloop_published_claim_state",
         "groundloop_published_observation_currency",

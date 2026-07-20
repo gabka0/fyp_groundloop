@@ -25,12 +25,3 @@ EXCLUDE USING gist (
     task_type WITH =,
     int8range(valid_from_epoch, valid_to_epoch, '[)') WITH &&
 );
-
-ALTER TABLE groundloop_candidate_frontier
-ADD CONSTRAINT groundloop_candidate_frontier_no_overlap
-EXCLUDE USING gist (
-    claim_id WITH =,
-    chunk_version_id WITH =,
-    candidate_policy_id WITH =,
-    int8range(valid_from_epoch, valid_to_epoch, '[)') WITH &&
-);

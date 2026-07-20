@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from psycopg import Connection, errors
 
+from groundloop.m4.contracts import stable_m4_digest
 from groundloop.postgres import record_epoch, temporary_m2_schema
 
 HASH = "a" * 64
@@ -81,6 +82,19 @@ def _seed_registered_claim(connection: Connection[Any], epoch_id: int) -> None:
         )
         """,
         ("d" * 64, "e" * 64, "f" * 64, "1" * 64, "2" * 64, "3" * 64),
+    )
+    connection.execute(
+        """
+        INSERT INTO groundloop_m4_claim_registry_snapshot VALUES
+          ('registry-1', 1, %s, now())
+        """,
+        (stable_m4_digest("m4-claim-registry-snapshot-v1", "claim"),),
+    )
+    connection.execute(
+        """
+        INSERT INTO groundloop_m4_claim_registry_member VALUES
+          ('registry-1', 'claim', 0)
+        """
     )
 
 
