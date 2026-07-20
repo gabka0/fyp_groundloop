@@ -213,6 +213,29 @@ def test_training_run_publish_is_failure_atomic(
     assert not list(tmp_path.glob(".run.partial-*"))
 
 
+def test_training_run_publish_cleans_staging_on_keyboard_interrupt(
+    tmp_path: Path,
+) -> None:
+    final = tmp_path / "run"
+
+    def interrupt_checkpoint_write(path: Path) -> None:
+        path.mkdir()
+        (path / "incomplete").write_bytes(b"partial")
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        seal_training_run(
+            run_directory=final,
+            invocation_sha256="a" * 64,
+            training_manifest={"variant": "V2-ce-mix", "seed": 20260720},
+            schedule_manifest={"schema_version": "fixture"},
+            runtime_manifest={"schema_version": "fixture-runtime"},
+            checkpoint_writer=interrupt_checkpoint_write,
+        )
+    assert not final.exists()
+    assert not list(tmp_path.glob(".run.partial-*"))
+
+
 def test_training_seal_replay_tamper_and_partial_run_rejection(tmp_path: Path) -> None:
     final = tmp_path / "run"
     first = seal_training_run(

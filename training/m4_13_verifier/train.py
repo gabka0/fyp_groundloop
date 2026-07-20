@@ -1036,9 +1036,12 @@ def seal_training_run(
         return load_completed_training_run(
             run_directory, expected_invocation_sha256=invocation_sha256
         )
-    except Exception:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
+    finally:
+        # KeyboardInterrupt and SystemExit inherit directly from BaseException.
+        # A finally block therefore preserves the failure-atomic publication
+        # contract even when an operator interrupts checkpoint serialization.
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 def _dependency_versions() -> dict[str, str]:
