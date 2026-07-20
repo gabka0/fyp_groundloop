@@ -27,8 +27,13 @@ order:
 21. `docs/m4_implementation_plan.md` (phasing; freeze overrides its proposal)
 22. `docs/m4_multiagent_execution_plan.md` (ownership and contract barriers)
 23. `docs/m4_implementation_status.md` (implemented evidence and next gate)
-24. `docs/m4_1_multiagent_implementation_plan.md` (active M4.1 ownership)
-25. `docs/m4_1_acceptance_matrix.md` (required deterministic/live gates)
+24. `docs/m4_1_multiagent_implementation_plan.md` (historical M4.1 ownership)
+25. `docs/m4_1_acceptance_matrix.md` (accepted deterministic/live contract)
+26. `docs/m4_7_physical_runtime_plan.md` (measured-kernel scope and gates)
+27. `docs/workstreams/m4_7_complexity_proof/README.md` (corrected theorem)
+28. `docs/workstreams/m4_8_real_dynamic_history/HANDOFF.md` (real-model history)
+29. `docs/workstreams/m4_9_empirical_study/HANDOFF.md` (controlled study boundary)
+30. `docs/workstreams/m4_11_physical_history_gate/README.md` (history matrix)
 
 `docs/initial_technical_design.md` (v0.1) is superseded and retained for audit
 only. The M0.5 design freeze and M1.1 amendments are complete; frozen decisions
@@ -93,19 +98,36 @@ M4 audit and contract correction are complete. The authoritative contract is
 history. Do not implement an older proposal where it conflicts with the
 freeze.
 
-M4 uses three path-exclusive lanes. Agents must follow
-`docs/m4_multiagent_execution_plan.md` and their lane prompt. No lane may cross
-the audit or contract barrier, edit coordinator-owned contracts, or work in
-another lane's paths.
+The original M4 audit and Wave 1/2 work used three path-exclusive lanes under
+`docs/m4_multiagent_execution_plan.md`. That plan is historical evidence, not
+an active ownership grant. No future lane may cross the audit/contract barrier
+or edit another active lane's paths without a new coordinator-approved
+manifest.
 
-M4 deterministic Wave 1 is integrated. It is not M4 completion: read
-`docs/m4_implementation_status.md` before proposing work or making performance
-claims. Path-exclusive Wave 2 is also integrated; shared PostgreSQL
-persistence, pipeline, CLI, end-to-end tests and merges remain
-coordinator-owned.
+M4.1 through the measured-runtime and real dynamic-history implementation
+gates are integrated. This includes PostgreSQL persistence, application and
+CLI composition, durable model provenance, exact fresh fallback, a point/CAS
+measured runtime, signed evaluation counters, affected-key state patches,
+sparse publication, adversarial physical-history tests and one pinned-model
+insert/delete/replace history. Read `docs/m4_implementation_status.md` before
+proposing work or making performance claims.
 
-M4.1 uses a new three-lane ownership manifest in
-`docs/m4_1_multiagent_implementation_plan.md`. Its explicit delegation of the
-new M4 persistence/application/model modules overrides the older general
-coordinator reservation for those exact paths only. Shared contracts,
-migrations, CLI and end-to-end integration remain coordinator-only.
+Do not describe the original linear-looking whole-kernel expression in
+`docs/m4_design_freeze.md` Section 13 as proved. The explicit 2026-07-20
+decision-log amendment and
+`docs/workstreams/m4_7_complexity_proof/README.md` reject it for the composed
+implementation. The supported bound includes affected-accumulator/witness
+work `G`, ordered score-index work, canonical sorting, bytes and PostgreSQL
+index/I/O/WAL/lock costs. No superiority over DBSP, F-IVM, CROWN or another
+named system follows.
+
+The M4.9 controlled study is reproducible evaluation plumbing, not real-model
+quality or latency evidence. A naturally versioned real-history pilot is still
+in progress as M4.10. M5 must not begin merely because the implementation
+gate passes; first record the M4.10 verdict and the remaining scientific
+evidence limits in the milestone status.
+
+The older M4 and M4.1 multi-agent plans are historical ownership records.
+Future parallel work requires a new explicit disjoint-path manifest; it does
+not inherit permission to reopen completed contracts or edit another active
+lane's files.

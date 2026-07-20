@@ -154,13 +154,12 @@ Exit criteria:
 
 ## M4 — Selective Semantic Maintenance
 
-Status: active. Three-lane audit, corrected contract freeze, migration 003,
-deterministic Wave 1 and path-exclusive Wave 2 were integrated on 2026-07-19.
-The coordinator-owned M4.1 end-to-end vertical slice is next. M4 CORE is not
-complete. See `docs/m4_design_freeze.md`,
-`docs/m4_multiagent_execution_plan.md` and
-`docs/m4_implementation_status.md`. Active M4.1 and real-model ownership is
-frozen in `docs/m4_1_multiagent_implementation_plan.md`.
+Status: active. The semantic freeze, durable end-to-end application,
+production model ports, measured structured kernel, bounded real-model dynamic
+history, controlled seven-treatment harness and adversarial physical-history
+matrix are integrated through M4.11. The naturally versioned real-history
+pilot (M4.10) remains in progress, so M4's scientific evaluation gate is not
+complete. See `docs/m4_implementation_status.md` for the exact boundary.
 
 Deliverables:
 
@@ -172,13 +171,57 @@ Deliverables:
 - Dynamic job-DAG coordination with versioned working/published state.
 - Optional learned impact retriever TARGET after CORE labels are frozen.
 
+Implemented stages:
+
+- **M4.1--M4.4:** PostgreSQL runtime/application/CLI, working/publication
+  overlays, durable execution and model provenance, exact withdrawal/fresh
+  fallback, event audit and crash atomicity.
+- **M4.5--M4.6:** pinned-model application ports, real insertion/replay smoke
+  and controlled history evaluation mechanics.
+- **M4.7:** point/CAS measured runtime, signed evaluation counters,
+  affected-key grounding patches and sparse publication. The original
+  linear-looking whole-kernel formula is explicitly rejected and replaced by
+  the corrected conditional bound in
+  `docs/workstreams/m4_7_complexity_proof/README.md`.
+- **M4.8:** pinned-model INSERT/DELETE/REPLACE history with three-oracle
+  equality and zero-model-call reconnect replay.
+- **M4.9 (controlled):** seven-treatment, same-event evaluation harness with
+  deterministic output, explicit misses/timeouts and optional telemetry.
+- **M4.11:** two-scale adversarial event histories that forbid full-state
+  paths during successful measured kernels and audit afterwards.
+
+Still open:
+
+- **M4.10:** naturally versioned real histories using persisted exhaustive
+  audits, pinned real models and actual available telemetry;
+- a coordinator decision on whether the pilot is sufficient to close M4 CORE
+  implementation while deferring a larger scientific study, or whether more
+  real-history evidence must precede M5.
+
 Exit criteria:
 
-- Impact recall and verifier-call savings are measured on recorded update
-  streams.
-- Missed affected claims are inspectable.
+- Exact structured equality is demonstrated after measured insert, delete and
+  replacement histories without running the full oracles inside the kernel.
+  **Passed.**
+- Exact replay, retry, conflict, failure, late-inactive completion and
+  required/optional PENDING semantics survive adversarial history tests.
+  **Passed.**
+- Missed affected pairs/claims and status effects are inspectable under all
+  seven treatments on identical event IDs. **Passed on controlled fixtures;
+  real-history execution pending.**
+- Impact recall, actual verifier work and available latency/token telemetry are
+  measured on pinned naturally versioned update streams. **Pending M4.10.**
+- Every final performance or AI-quality statement names its workload and
+  uncertainty, and does not promote controlled fixture values to scientific
+  evidence. **Pending final M4 verdict.**
+
+M4 implementation exactness and M4 scientific evidence are separate gates.
+Passing the former does not establish neural completeness, objective truth,
+useful call savings or superiority to an existing IVM system.
 
 ## M5 — Bounded Evidence Groups
+
+Status: not started; blocked on the explicit post-M4.10 milestone decision.
 
 Deliverables:
 

@@ -1,183 +1,252 @@
 # GroundLoop M4 Implementation Status
 
-Status date: 2026-07-19
+Status date: 2026-07-20
 
-Milestone status: **active; contract freeze, deterministic Wave 1 and
-path-exclusive Wave 2 are integrated, but M4 CORE is not complete**.
+Milestone status: **active; the deterministic and physical implementation
+gates through M4.11 are integrated, but the real-history scientific gate is
+not complete**.
 
 ## 1. Honest verdict
 
-M4 has moved beyond a paper plan. The repository now contains executable
-contracts, a live PostgreSQL schema, independent semantic oracles,
-deterministic admission logic, a dynamic epoch/job state machine, exact
-withdrawal planning, frontier repair, and provenance-safe evaluation
-mechanics.
+GroundLoop now executes selective corpus insert, delete and replacement events
+through the production PostgreSQL application. The integrated measured path
+uses a prebuilt claim-registry identity, point/CAS runtime transitions, signed
+evaluation counters, affected-key grounding patches and sparse publication.
+It has passed adversarial event-history tests and one bounded pinned-model
+insert/delete/replace history with exact reconnect replay.
 
-It is not yet an end-to-end dynamic GroundLoop system. In particular, the
-coordinator-owned PostgreSQL repository adapter, M4 pipeline/CLI, production
-admission adapters, real-model insert/delete/replacement run, and empirical
-recall/work study remain open. No verifier-call saving or latency claim is
-therefore justified yet.
+That is an implementation result, not the final M4 research result. The M4.9
+controlled study proves that the seven-treatment evaluation protocol is
+executable and catches deliberate misses. It contains table judgments and no
+real latency or token measurements. M4.10, the naturally versioned real-history
+pilot, is still in progress. Therefore GroundLoop currently has no defensible
+claim of useful real-history recall/call savings, latency superiority,
+objective truth maintenance, or asymptotic superiority over an existing IVM
+system.
 
-## 2. Frozen baseline and integration history
+The strongest supported exact statement is conditional: for a prebuilt
+registry, a fixed policy and the immutable model observations actually stored,
+each successfully sealed measured event agrees with independent structured
+recomputation. Neural impact discovery and verifier correctness remain
+empirical.
 
-- Planning baseline: tag `m4-planning-baseline-2026-07-19`.
-- Corrected contract baseline: tag `m4-contract-baseline-2026-07-19` at
-  `a1059ff63883fa388def0e39986fa4b8393ef709`.
-- Deterministic Wave 1 integration point:
-  `b3623feb36f719ef8715e6011e92c1a865530d7d`.
-- Lane-local Wave 2 integration point:
-  `74ddefd` (before this status-only update).
-- Authoritative semantic contract: `docs/m4_design_freeze.md`.
-- Ownership and merge protocol: `docs/m4_multiagent_execution_plan.md`.
+## 2. Authoritative documents and integrated baselines
 
-Three adversarial audits rejected important parts of the original proposal
-before implementation. The freeze corrects the non-nested affected-set
-assumption, separates exhaustive delta audit from snapshot refresh, separates
-working from append-only published state, requires atomic dynamic child-set
-closure, gives impact discovery a global PENDING scope, and treats `L` as an
-approximate-channel cap rather than the observed verifier cost.
+- Semantic contract: `docs/m4_design_freeze.md`.
+- Explicit complexity amendment:
+  `docs/workstreams/m4_7_complexity_proof/README.md` and the 2026-07-20
+  decision-log entry.
+- Physical-runtime plan: `docs/m4_7_physical_runtime_plan.md`.
+- M4.1 executable acceptance matrix: `docs/m4_1_acceptance_matrix.md`.
+- Real dynamic history: `docs/workstreams/m4_8_real_dynamic_history/HANDOFF.md`.
+- Controlled empirical harness:
+  `docs/workstreams/m4_9_empirical_study/HANDOFF.md`.
+- Adversarial physical histories:
+  `docs/workstreams/m4_11_physical_history_gate/README.md`.
+- Current integration baseline for this status: `9221b6f`.
 
-## 3. Implemented
+The design freeze remains authoritative for semantics. Its Section 13 simple
+whole-kernel formula is not authoritative as a proved implementation-time
+bound; it is explicitly amended below rather than silently rewritten.
 
-### 3.1 Shared contracts and storage
+## 3. Integrated implementation
 
-- Content-validated candidate-policy manifests with model, role-template,
-  vector-index, lexical, registry, fusion, verifier and decision provenance.
-- Content-derived logical job, attempt, completion and child-closure identity.
-- Baseline-qualified affected sets, full-pair audit and snapshot-refresh DTOs.
-- Migration `003_m4_dynamic_impact.sql` for policies, updates, jobs,
-  dependencies, discovery scopes, channel hits, admitted pairs, frontier,
-  judgments, working transitions, publication and evaluation records.
-- Live schema tests for state transitions, labels, publication preservation,
-  epoch-scoped discovery and lineage consistency.
+### 3.1 M4.1--M4.4: durable vertical slice and audit boundary
 
-### 3.2 Epoch/runtime lane
+- Serialized structural epochs with immutable updates, dynamic roots/jobs,
+  attempts, dependencies, child closure, exact replay and conflict rejection.
+- PostgreSQL working overlays and append-only publication intervals, with one
+  publication head and preservation of the prior sealed state on failure.
+- Deterministic insert/delete/replace orchestration, exact withdrawal,
+  observation supersession, strict sealing and a top-level CLI.
+- Complete claim/answer state comparison against the Python full recomputation
+  and the independent SQL oracle.
+- Durable execution, verification and role-embedding provenance, including
+  exact cross-process replay validation.
+- Real PostgreSQL lexical-v1 and exact/approximate pgvector adapter boundaries,
+  deterministic vector/lexical fusion and mandatory lineage.
+- Exact fresh frontier retrieval for bounded correctness histories; artifact
+  coverage is checked explicitly and is not called semantic completeness.
+- Persisted exhaustive event audits and policy-relative `SnapshotRefresh_k`
+  records with content validation, deliberate-miss detection and zero-judge
+  replay.
+- Crash-injection coverage across structural, completion, publication and seal
+  boundaries in both audit and measured execution modes.
 
-- Immutable serialized epoch and dynamic-job transition model.
-- Revision compare-and-swap, exact replay, retry/conflict and failure rules.
-- Atomic parent completion, child declaration and child-set closure.
-- Global discovery PENDING semantics, strict sealing and late-inactive
-  completion without failed-epoch resurrection.
-- Exact reverse-dependency withdrawal planner with no ANN call.
-- Deterministic frontier refill from current/queued/reserve candidates with a
-  mandatory fresh-retrieval signal for any residual deficit.
+### 3.2 M4.5--M4.6: real model ports and controlled evaluation
 
-### 3.3 Impact-admission lane
+- Pinned M3 BGE and calibrated MiniLM verifier application ports with immutable
+  input, model, prompt, calibration and result identities.
+- A bounded real PostgreSQL insertion/replay smoke with durable role artifacts,
+  channel hits, admitted pairs, raw logits and typed pair judgments.
+- Controlled history workloads, baseline-qualified impact metrics, explicit
+  misses, split-leakage rejection and history-component bootstrap mechanics.
 
-- Exact reverse-vector reference search over role-specific normalized vectors.
-- Frozen lexical-v1 query preparation and injected PostgreSQL boundaries.
-- Deterministic VECTOR-then-LEXICAL rank interleaving, pair deduplication and
-  mandatory-lineage inclusion.
-- Correct accounting of approximate cap, lineage excess and actual admitted
-  pairs.
-- ANN recall measurement hook that makes no ANN exactness claim.
-- Deterministic fake adapters for ordinary tests. These are not presented as
-  BGE, PostgreSQL ranking or HNSW results.
+These gates establish integration and evaluation mechanics. They do not
+establish model quality.
 
-### 3.4 Independent oracle/evaluation lane
+### 3.3 M4.7: measured structured kernel
 
-- Exhaustive inserted-chunk by registered-claim full-pair audit.
-- Independent additive affected-set and full grounding recomputation paths.
-- Exact brute-force policy-relative `SnapshotRefresh_k`.
-- Structural import-boundary and deliberate-selective-miss tests.
-- Four integer event-level recall metrics with genuine N/A for zero
-  denominators.
-- Strict policy/split/verifier/oracle/seed provenance and paired-event
-  alignment.
-- Deterministic history-cluster percentile bootstrap with frozen seed,
-  10,000 replicates and no interval below two eligible histories.
+- Immutable claim-registry snapshots are built once as an explicit `O(C)`
+  policy-build operation; measured events carry only the snapshot identity.
+- Runtime mutations use named point/CAS operations and exact open-job/open-scope
+  counters rather than reconstructing an epoch or runtime book.
+- Evaluation Surface C uses one epoch default and signed per-object counters;
+  optional claims do not propagate PENDING to their answers.
+- Direct-witness maintenance prepares and applies affected-key patches rather
+  than deep-copying the complete engine.
+- Score-range maintenance uses a deterministic AVL set with
+  `O(Q log(E + Q + 1))` point-update work.
+- Working and publication state write only event-touched claim/answer keys.
+- Retryable runtime failure and evaluation state change are composed in one
+  transaction. Retrying a failed verifier attempt does not double-count
+  PENDING work.
+- A result arriving after epoch failure is archived as
+  `COMPLETED_INACTIVE`; it does not alter grounding, evaluation or publication.
 
-## 4. Validation
+The measured path excludes registry build, startup/recovery hydration, explicit
+oracles, vector/lexical retrieval, embedding and neural inference. Failure
+cleanup and pending-process recovery may hydrate a snapshot and are reported
+outside the fresh successful-event theorem.
 
-The following commands passed from the main worktree with the live database
-configured:
+### 3.4 M4.8: pinned-model dynamic history
 
-```bash
-GROUNDLOOP_TEST_DATABASE_URL="$GROUNDLOOP_DATABASE_URL" .venv/bin/pytest -q
-.venv/bin/ruff check .
-.venv/bin/mypy --strict src
-.venv/bin/python -m compileall -q src tests scripts experiments training
-PYTHONPATH=src .venv/bin/python scripts/validate_m2_postgres.py
-.venv/bin/pip check
+The production measured application completed INSERT, DELETE and REPLACE using
+the pinned BGE and calibrated verifier. After every event, the Python and SQL
+oracles reported zero claim and answer mismatches. Three reconnect replays used
+zero discovery, embedding and verifier calls and left all 62 ordinary table
+projections unchanged.
+
+The recorded state trajectory was:
+
+```text
+B0                       SUPPORTED / VALID
+after INSERT             CONFLICTED / CONFLICTED
+after support DELETE     REFUTED / CONTRADICTED
+after auxiliary REPLACE  REFUTED / CONTRADICTED
 ```
 
-Wave 1 observed results:
+This is a bounded exactness/integration gate over stored judgments. The
+run-specific manifest hash in the handoff binds one execution; it is not a
+model-quality or cross-run byte-determinism result.
 
-- 266 tests collected and passed, including live PostgreSQL tests.
-- Ruff passed.
-- strict mypy passed over 78 source files.
-- compileall passed.
-- PostgreSQL 16.14 and pgvector 0.8.5 validator: zero claim mismatches, zero
-  answer mismatches and zero invalid certificates; both checked indexes were
-  usable.
-- dependency check reported no broken requirements.
+### 3.5 M4.9: controlled seven-treatment harness
 
-After all three Wave 2 lanes were integrated, the same live gate passed again:
+The frozen harness evaluates the same event IDs under exhaustive refresh,
+vector-only, lexical-only, union, lineage, frontier and mandatory fresh
+fallback. It records positive-pair/claim recall, claim/answer status-effect
+recall, calls, attempts, failures, timeouts, optional token/latency telemetry,
+misses and deterministic raw JSON/CSV hashes.
 
-- 341 tests collected and passed.
-- Ruff passed.
-- strict mypy passed over 83 source files.
-- compileall passed.
-- PostgreSQL 16.14 and pgvector 0.8.5 validator again reported zero claim
-  mismatches, zero answer mismatches and zero invalid certificates; both
-  checked indexes were usable.
-- dependency check reported no broken requirements.
+The controlled run produced 84 policy-event rows over twelve events and seven
+treatments. Exhaustive used 45 verifier pairs; fresh fallback 27; frontier 26;
+lineage 19; union 17; vector-only and lexical-only 9 each. The fixture makes
+fresh fallback and exhaustive reach 1.0 recall and deliberately makes cheaper
+policies miss effects. Those values validate fixture mechanics only. Token and
+latency fields are absent because the controlled judgments do not execute real
+models.
 
-## 5. Completed path-exclusive Wave 2
+### 3.6 M4.11: adversarial physical-history matrix
 
-Each lane remained inside its existing owned paths.
+The measured kernel now covers zero-admission insert, multi-child insert,
+support deletion plus exact empty frontier closure, neutral-to-refute
+replacement, retry/exact/conflicting replay, failed epoch plus late inactive
+completion, and required/optional sibling children. Successful histories run
+at `(8 claims, 2 unrelated jobs)` and `(256 claims, 256 unrelated jobs)` with
+identical per-event client SQL fingerprints, event-job projections and
+execution-accounting rows.
 
-| Lane | Implemented task | Evidence |
-|---|---|---|
-| Epoch/runtime | Randomized indexed-withdrawal versus naive full-scan differential testing under skew | 60 seeded event-shape cases plus duplicates, empty/absent and hot/cold skew; dense fanout limitation stated |
-| Impact admission | Real PostgreSQL lexical-v1 plus exact/approximate pgvector adapter boundaries | Live unique-schema GIN/HNSW plan tests, deterministic ordering and complete index/query provenance |
-| Oracles/evaluation | Controlled history workloads and machine-readable paired reports | Four independent histories, development/test leakage rejection, missed-candidate and zero-denominator fixtures |
+During the measured kernel the tests reject whole-engine `deepcopy`, full
+repository hydration, full runtime epoch/book reads and inline Python/SQL full
+recomputation. The full audits run afterwards. This is strong regression
+evidence for those concrete paths, not an asymptotic proof and not evidence of
+equal PostgreSQL page work or latency.
 
-The coordinator alone owns shared persistence, migrations, M4 pipeline, CLI,
-end-to-end PostgreSQL tests, merges and research claims. This makes the three
-lane tasks independent at the file and semantic-contract levels.
+## 4. Corrected complexity result
 
-The indexed withdrawal work is output-sensitive, not worst-case sublinear. In
-the frozen skew fixture, cold deletion required 2 logical indexed operations
-versus 12,002 full-scan operations; dense deletion required 10,001 in both
-paths. The PostgreSQL HNSW fixture's recall@8 of 1.0 is a wiring check on a tiny
-population, not evidence of admission quality.
+The original whole-kernel expression in `docs/m4_design_freeze.md` Section 13
+and the first M4.7 target omitted real costs. It is rejected for the composed
+implementation.
 
-## 6. Immediate coordinator stage: M4.1 vertical slice
+For a fresh successful measured event, under expected Python hash-map access,
+fixed policy, prebuilt registry and bootstrapped publication head, the current
+Python work is bounded by:
 
-The next critical path is not neural retraining. It is one deterministic
-insert/delete/replacement history through the actual M4 storage and
-publication boundary:
+```text
+O(
+    P+ + P- + D_obs + D_candidate
+  + sort(R)
+  + sum_roots sort(H_root) + sum_roots sort(A_root)
+  + sort(A)
+  + J_attempt
+  + G
+  + T_score
+  + W_claim + W_answer + U_claim + U_answer
+  + B
+)
+```
 
-1. implement `src/groundloop/m4/persistence.py` over migration 003;
-2. implement `src/groundloop/m4/pipeline.py` using the frozen runtime,
-   admission and oracle interfaces;
-3. publish working state only after every declared/expanded semantic job and
-   discovery scope closes successfully;
-4. preserve the previous published snapshot on injected failure;
-5. test exact replay, conflict, retry, replacement atomicity and late inactive
-   completion;
-6. compare each sealed microbatch against the Python full recomputation and
-   independent SQL structured-state oracle.
+where `G` charges affected accumulator copies and complete witness-array
+materialization/sorting, `T_score = O(Q log(E + Q + 1))`, and `B` charges bytes
+compared, hashed, copied into SQL parameters or serialized. The logical sparse
+SQL row count is output-sensitive, but physical database time additionally
+includes B-tree factors, row widths, query outputs, triggers, planner choices,
+WAL, buffer/I/O, network and lock waiting.
 
-Only after this deterministic vertical slice should production BGE/verifier
-adapters be connected. The learned impact retriever remains a later TARGET;
-training it before full-pair audit labels and history-level splits are frozen
-would produce an evaluation that cannot support a serious research claim.
+One high-degree claim can incur repeated growing accumulator copies and witness
+sorts across completions, including quadratic aggregate work. Dense deletion,
+large admitted output and large publication deltas remain output-linear or
+worse in their materialized payload. No worst-case sublinear event theorem and
+no superiority claim over DBSP, F-IVM, CROWN or another named system is
+supported.
 
-## 7. Remaining M4 CORE gates
+## 5. Validation evidence and limits
 
-- Coordinator persistence/pipeline/CLI and deterministic end-to-end history.
-- Production pinned M3 embedding and calibrated-verifier adapters.
-- Real insert/delete/replacement execution with PENDING and publication
-  behavior.
-- An executable event-level baseline/ablation runner over the now-frozen
-  controlled workload and later real histories.
-- Recall versus actual verifier calls and latency, with history-cluster
-  uncertainty and inspectable misses.
-- One clean reproduction command and manifest-linked raw outputs.
+The latest recorded repository-wide gate before the final late-completion and
+M4.11 integration commits was:
 
-Until those gates pass, M4 is correctly described as an integrated
-deterministic foundation, not a completed selective semantic-maintenance
-system.
+```text
+556 passed, 4 skipped
+Ruff: passed
+mypy --strict src: passed over 108 source files
+compileall: passed
+```
+
+Post-integration focused evidence includes:
+
+- M4.11 physical-runtime gate: 6 live PostgreSQL tests passed; Ruff and
+  compileall passed.
+- measured late-inactive/retry regressions: 3 focused tests passed; Ruff and
+  strict typing passed.
+- M4.8 direct real-history command: INSERT/DELETE/REPLACE sealed, three
+  zero-model-call reconnect replays, zero Python/SQL oracle mismatches.
+- M4.9 empirical-evaluation tests: 7 passed; controlled report and bundle
+  hashes reproduced as recorded in its handoff.
+- M4.7 static complexity guards: the point runtime, counter update, AVL score
+  index, publication-head and theorem-term guards pass.
+
+A repository-wide rerun after every final integration commit remains a
+coordinator closure action; the older 556-test result must not be presented as
+post-M4.11 evidence.
+
+## 6. Remaining M4 CORE gate
+
+M4.10 must execute the seven treatments on pinned naturally versioned histories
+with real BGE/verifier artifacts, persisted event-audit identities and actual
+available telemetry. Its pilot must state dataset size, manual-adjudication
+status, split construction and statistical limitations. A small pilot may
+close the executable path while remaining insufficient for a thesis-level
+quality or generalization claim.
+
+After M4.10, the coordinator must record one of two honest outcomes:
+
+1. **M4 implementation complete, scientific evidence preliminary:** proceed to
+   M5 only while explicitly scheduling a larger real-history evaluation before
+   dissertation claims; or
+2. **M4 scientific gate incomplete:** add a bounded public/real-history study
+   before M5 because the current pilot cannot evaluate the stated recall/work
+   hypothesis.
+
+The optional learned impact retriever remains TARGET work. It does not block
+M4 CORE and must not begin until exhaustive development judgments and
+history-component splits are frozen.

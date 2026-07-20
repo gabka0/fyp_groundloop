@@ -1,5 +1,95 @@
 # GroundLoop Decision Log
 
+## 2026-07-20 — M4 Physical and Real-Dynamic Implementation Gates Accepted; Scientific Gate Remains Open
+
+Decision status: implementation gates accepted through M4.11; M4 CORE remains
+active pending the M4.10 real-history verdict.
+
+The production measured application now composes prebuilt registry identity,
+point/CAS runtime transitions, signed evaluation counters, affected-key
+grounding patches and sparse publication. The M4.11 gate covers zero-admission
+and multi-child insertion, support deletion with exact frontier closure,
+neutral-to-refute replacement, retry/exact/conflicting replay, failed epoch
+plus late inactive completion, required/optional children and transaction
+rollback at two unrelated-state scales. Full runtime and grounding audits run
+after, never inside, each guarded successful kernel. This is adversarial
+regression evidence for the concrete implementation, not an asymptotic proof
+or a database-page/latency result.
+
+The M4.8 bounded pinned-model history completed INSERT, DELETE and REPLACE,
+agreed with the Python and independent SQL structured oracles after every
+event, and replayed each event through a fresh connection with zero discovery,
+embedding or verifier calls. This proves integration and exactness relative to
+the stored model observations. It does not measure retrieval recall, verifier
+accuracy or calibration transfer.
+
+The M4.9 controlled harness is accepted as executable evaluation
+infrastructure. Its seven policies use identical event IDs, immutable
+persisted-audit identities, explicit misses/timeouts and deterministic raw
+artifacts. Its table-judgment recall and work values are fixture mechanics;
+token and latency measurements are absent. A naturally versioned real-history
+pilot, M4.10, is still in progress and must be evaluated before any final M4
+recall/call-saving or generalization statement. M5 remains blocked on that
+explicit verdict.
+
+Evidence: `docs/m4_implementation_status.md`,
+`docs/workstreams/m4_8_real_dynamic_history/HANDOFF.md`,
+`docs/workstreams/m4_9_empirical_study/HANDOFF.md`, and
+`docs/workstreams/m4_11_physical_history_gate/README.md`.
+
+## 2026-07-20 — Amend M4 Complexity Claim; Reject the Simple Whole-Kernel Formula
+
+Decision status: accepted correction to `docs/m4_design_freeze.md` Section 13
+and the initial `docs/m4_7_physical_runtime_plan.md` target. The frozen text is
+retained as audit history and is not silently rewritten.
+
+The proposed expression
+
+```text
+O(P+ + P- + D_obs + D_candidate + H + A + J + X_claim + X_answer)
+```
+
+is not a proved time bound for the composed measured kernel. It treats a
+touched claim/answer row as unit cost and omits repeated affected-accumulator
+copies, complete witness-array materialization, canonical sorts, ordered score
+index work and variable-sized artifact/SQL payloads.
+
+For a fresh successful measured event with a fixed policy, prebuilt registry,
+bootstrapped publication head, serialized mutation and expected Python
+hash-map access, the accepted Python-work implementation bound is:
+
+```text
+O(
+    P+ + P- + D_obs + D_candidate
+  + sort(R)
+  + sum_roots sort(H_root) + sum_roots sort(A_root)
+  + sort(A)
+  + J_attempt
+  + G
+  + T_score
+  + W_claim + W_answer + U_claim + U_answer
+  + B
+)
+```
+
+`G` charges affected claim-accumulator copies and witness-ID
+materialization/sorting. The AVL score index gives
+`T_score = O(Q log(E + Q + 1))`. `B` charges bytes compared, hashed, copied or
+serialized. The separate logical sparse-row statement must not be called a
+physical time bound: PostgreSQL B-tree factors, row width, result sets,
+triggers, query planning, WAL, I/O, network and lock waits remain additional
+costs. Registry construction and startup/recovery hydration are explicitly
+outside the fresh successful-event theorem.
+
+A high-degree claim may incur repeated growing accumulator copies and witness
+sorts, including quadratic aggregate work across completions. Dense deletion
+and large admitted/publication output remain output-linear in materialized
+data. Therefore no worst-case sublinear update theorem, general speedup, or
+superiority over DBSP, F-IVM, CROWN or another named system is accepted.
+
+Evidence: `docs/workstreams/m4_7_complexity_proof/README.md` and
+`tests/m4/complexity_contract/test_measured_kernel_contract.py`.
+
 ## 2026-07-19 — M4 Lane-Local Wave 2 Accepted; Coordinator Integration Remains
 
 Decision status: lane-local evidence accepted; M4 CORE remains active.

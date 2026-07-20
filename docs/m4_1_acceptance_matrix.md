@@ -1,12 +1,14 @@
 # GroundLoop M4.1 Acceptance Matrix
 
-Status: coordinator integration gate
+Status: **M4.1 deterministic integration accepted; retained as a regression
+contract**
 
-Date: 2026-07-19
+Date: 2026-07-20
 
-This matrix is executable scope, not an aspirational checklist. M4.1 is not
-accepted until every required row has a deterministic test and every
-PostgreSQL row runs against a unique live schema.
+This matrix is executable scope, not an aspirational checklist. Every required
+row now has deterministic/live PostgreSQL evidence. Later M4.7--M4.11 work
+strengthens the physical and real-model paths but does not redefine the M4.1
+semantics. M4.1 acceptance is not M4 scientific completion.
 
 ## 1. Frozen deterministic history
 
@@ -44,6 +46,13 @@ After every transition, the SQL projection must equal the pure runtime model,
 including job states, attempts, child closure, scope closure, revision,
 evaluation state and active/sealed epoch pointers.
 
+Acceptance evidence: the runtime-store, application and PostgreSQL pipeline
+tests cover structural open, child expansion, verifier completion, retry,
+failure, seal and replay. M4.11 additionally runs retryable runtime failure and
+the signed evaluation transition in one transaction, proves that the second
+attempt does not double-count PENDING work, and checks exact/conflicting replay
+with full-state readers forbidden during the measured kernel.
+
 ## 3. Grounding surface
 
 | Event point | Required claim state | Required answer state |
@@ -65,6 +74,11 @@ Equality includes counts, best scores, observation identifiers and answer
 aggregates, not only status enums. The three paths consume the identical
 stored-observation snapshot.
 
+Acceptance evidence: deterministic integration histories cover the table
+above. M4.8 repeats the INSERT/DELETE/REPLACE shape with pinned BGE and
+calibrated-verifier ports, then runs Python and independent SQL audits after
+every measured event with zero claim/answer mismatches.
+
 ## 4. Evaluation and publication surface
 
 | Point | Provisional visibility | Strict visibility |
@@ -80,6 +94,11 @@ the new complete claim/answer rows, emit one net public status delta per
 changed object, advance the sealed pointer and mark the epoch SEALED in one
 transaction.
 
+Acceptance evidence: sparse working/publication integration tests preserve
+nonoverlapping validity intervals and the previous publication on failure.
+M4.11 checks required/optional PENDING propagation, failed-epoch preservation,
+late `COMPLETED_INACTIVE` archival and sealed reconnect replay.
+
 ## 5. Failure injection
 
 Inject an exception after every logical SQL step in:
@@ -94,23 +113,42 @@ For each injected failure, reconnect or begin a new transaction and compare
 the entire affected table projection with the pre-transaction snapshot. No
 test may establish rollback merely by observing one row.
 
-## 6. M4 completion stages before M5
+Acceptance evidence: `tests/m4/crash_matrix/` reconnects after every exposed
+production injection point and compares complete logical base-table
+projections. M4.11 independently injects failure after verifier-state
+installation and verifies rollback of all 61 transactional GroundLoop tables;
+the separately committed execution-accounting increment is asserted
+explicitly rather than hidden.
+
+## 6. Stage disposition before M5
 
 M5 evidence groups cannot begin until these stages pass:
 
-1. **M4.1a:** PostgreSQL runtime parity and rollback.
-2. **M4.1b:** persistence-neutral deterministic application.
-3. **M4.1c:** live deterministic insert/delete/replace publication plus CLI.
-4. **M4.2i:** persisted exact withdrawal and frontier fallback integrated into
-   the application, not only unit-tested.
-5. **M4.3i:** production claim registry, lexical and vector admission
-   integrated with persisted hits/pairs.
-6. **M4.4i:** executable exhaustive audit/refresh runner integrated with event
-   records and deliberate-miss detection.
-7. **M4.5:** pinned real-model dynamic smoke with exact replay.
-8. **M4.6:** controlled/real-history evaluation, ablations, uncertainty and
-   one-command reproduction.
+1. **M4.1a — passed:** PostgreSQL runtime parity, full-projection rollback and
+   reconnect tests.
+2. **M4.1b — passed:** persistence-neutral deterministic application and
+   composed PostgreSQL ports.
+3. **M4.1c — passed:** live deterministic insert/delete/replace publication
+   plus CLI.
+4. **M4.2i — passed:** persisted exact withdrawal and mandatory exact fresh
+   frontier fallback integrated into the application.
+5. **M4.3i — passed:** frozen claim registry, PostgreSQL lexical/vector
+   admission and persisted hit/pair provenance.
+6. **M4.4i — passed:** executable exhaustive audit/refresh persistence,
+   content-validated replay and deliberate-miss detection.
+7. **M4.5/M4.8 — passed as an implementation gate:** pinned real-model
+   insert/delete/replace with exact reconnect replay and post-kernel oracles.
+8. **M4.6/M4.9 controlled — passed as evaluation infrastructure:** all seven
+   ablations, same-event checks, misses/timeouts and deterministic outputs.
+9. **M4.10 — in progress:** naturally versioned real-history execution with
+   pinned models, persisted audit identities and actual telemetry.
+10. **M4.11 — passed as physical regression evidence:** adversarial histories
+    at two unrelated-state scales with full paths forbidden in the successful
+    measured kernel and audited afterwards.
 
-The optional learned impact retriever M4.N may follow M4.6 or remain future
-work; it does not block M4 CORE. Any newly discovered correctness dependency
-becomes another explicit M4.x gate rather than being deferred silently to M5.
+The optional learned impact retriever M4.N may follow the real-history study or
+remain future work; it does not block M4 CORE. Any newly discovered correctness
+dependency becomes another explicit M4.x gate rather than being deferred
+silently to M5. M5 remains blocked until the M4.10 verdict states whether the
+pilot closes only the executable implementation path or also provides enough
+scientific evidence for the planned M4 claim.
