@@ -619,11 +619,12 @@ class PostgresM4RuntimeStore:
             if (
                 self._connection.execute(
                     """
-                SELECT 1 FROM groundloop_epoch e
-                JOIN groundloop_m4_update u USING (epoch_id)
-                WHERE e.semantic_status IN ('pending', 'complete')
-                FOR UPDATE OF e
-                """
+                    SELECT 1 FROM groundloop_epoch e
+                    JOIN groundloop_m4_update u USING (epoch_id)
+                    WHERE e.structural_status = 'committed'
+                      AND e.semantic_status IN ('pending', 'complete')
+                    FOR UPDATE OF e
+                    """
                 ).fetchone()
                 is not None
             ):
