@@ -2677,7 +2677,11 @@ class PostgresM4ApplicationPorts:
                                 ),
                             )
                         self._inject("verifier_state_written")
-                    if not replayed:
+                    if (
+                        not replayed
+                        and point_transition.header.state
+                        is not RuntimeEpochState.FAILED
+                    ):
                         claim_id = (
                             verifier_job.pair.claim_id
                             if verifier_job.pair is not None

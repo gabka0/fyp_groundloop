@@ -1900,8 +1900,11 @@ def test_restart_after_one_verifier_completion_rebuilds_working_snapshot(
     assert _state(m4_pipeline_connection) == ("supported", "valid")
 
 
+@pytest.mark.parametrize(
+    "execution_mode", (M4ExecutionMode.AUDIT, M4ExecutionMode.MEASURED)
+)
 def test_late_postgres_completion_after_failure_is_archive_only(
-    m4_pipeline_connection: Connection[Any],
+    m4_pipeline_connection: Connection[Any], execution_mode: M4ExecutionMode
 ) -> None:
     base = _seed_b0(m4_pipeline_connection)
     inserted_document = _inserted(
@@ -1913,13 +1916,18 @@ def test_late_postgres_completion_after_failure_is_archive_only(
         base,
         inserted=("chunk-late",),
     )
+    if execution_mode is M4ExecutionMode.MEASURED:
+        event = replace(event, registered_claim_ids=())
     ports = PostgresM4ApplicationPorts(
         m4_pipeline_connection,
         structural_payloads={
             "late-insert": StructuralPayload(inserted=inserted_document)
         },
+        execution_mode=execution_mode,
     )
     ports.runtime_store.register_candidate_policy(_candidate_policy())
+    if execution_mode is M4ExecutionMode.MEASURED:
+        ports.register_claim_registry_snapshot("registry-v1", ("claim-1",))
 
     @dataclass(slots=True)
     class FailingVerifier:
@@ -1947,6 +1955,17 @@ def test_late_postgres_completion_after_failure_is_archive_only(
         ),
     ).run_event(event)
     assert failed.state is EventRunState.FAILED
+    failed_evaluation = (
+        m4_pipeline_connection.execute(
+            """
+            SELECT lifecycle_state, default_evaluation_state, revision
+            FROM groundloop_m4_evaluation_epoch_counter WHERE epoch_id = %s
+            """,
+            (failed.epoch_id,),
+        ).fetchone()
+        if execution_mode is M4ExecutionMode.MEASURED
+        else None
+    )
     epoch = ports.runtime_store.read_epoch(failed.epoch_id)
     child = next(job.spec for job in epoch.jobs if job.spec.kind is JobKind.VERIFY_PAIR)
     lease = ports.acquire_job(failed.epoch_id, child)
@@ -1986,6 +2005,16 @@ def test_late_postgres_completion_after_failure_is_archive_only(
     assert m4_pipeline_connection.execute(
         "SELECT epoch_id FROM groundloop_m4_publication_head"
     ).fetchone() == (base,)
+    if execution_mode is M4ExecutionMode.MEASURED:
+        assert failed_evaluation is not None
+        assert failed_evaluation[0:2] == ("failed", "failed")
+        assert m4_pipeline_connection.execute(
+            """
+            SELECT lifecycle_state, default_evaluation_state, revision
+            FROM groundloop_m4_evaluation_epoch_counter WHERE epoch_id = %s
+            """,
+            (failed.epoch_id,),
+        ).fetchone() == failed_evaluation
 
 
 def test_measured_retryable_frontier_failure_keeps_one_pending_job(
