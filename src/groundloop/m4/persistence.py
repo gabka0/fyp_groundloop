@@ -514,13 +514,77 @@ class PostgresM4RuntimeStore:
             (update.event_id,),
         ).fetchone()
         if existing is not None:
-            epoch = self.read_epoch(int(existing[0]))
-            roots = tuple(
-                job.spec for job in epoch.jobs if job.spec.parent_job_id is None
-            )
-            original_scopes = tuple(
-                replace(scope, closed=False) for scope in epoch.discovery_scopes
-            )
+            epoch_id = int(existing[0])
+            if self._audit_transitions:
+                epoch = self.read_epoch(epoch_id)
+                roots = tuple(
+                    job.spec for job in epoch.jobs if job.spec.parent_job_id is None
+                )
+                original_scopes = tuple(
+                    replace(scope, closed=False) for scope in epoch.discovery_scopes
+                )
+            else:
+                self._validate_open_declaration(
+                    update,
+                    canonical_jobs,
+                    canonical_scopes,
+                    registry_snapshot_id,
+                )
+                header = self.read_epoch_header_point(epoch_id)
+                update_row = self._connection.execute(
+                    """
+                    SELECT epoch.payload_hash, update_row.update_kind,
+                           update_row.previous_published_epoch_id,
+                           update_row.candidate_policy_id
+                    FROM groundloop_epoch AS epoch
+                    JOIN groundloop_m4_update AS update_row USING (epoch_id)
+                    WHERE epoch.epoch_id = %s
+                    """,
+                    (epoch_id,),
+                ).fetchone()
+                assert update_row is not None
+                persisted_update = CorpusUpdateIdentity(
+                    event_id=header.event_id,
+                    payload_hash=_strip(update_row[0]),
+                    update_kind=UpdateKind(str(update_row[1])),
+                    previous_published_epoch_id=(
+                        None if update_row[2] is None else int(update_row[2])
+                    ),
+                    candidate_policy_id=str(update_row[3]),
+                )
+                roots = tuple(
+                    self.read_job_point(epoch_id, spec.job_id).spec
+                    for spec in canonical_jobs
+                )
+                scope_rows = self._connection.execute(
+                    """
+                    SELECT root_job_id, registry_snapshot_id
+                    FROM groundloop_discovery_scope
+                    WHERE epoch_id = %s ORDER BY root_job_id
+                    """,
+                    (epoch_id,),
+                ).fetchall()
+                scope_claim_ids = {
+                    scope.root_job_id: scope.registered_claim_ids
+                    for scope in canonical_scopes
+                }
+                original_scopes = tuple(
+                    DiscoveryScope(
+                        root_job_id=str(row[0]),
+                        registry_snapshot_id=str(row[1]),
+                        registered_claim_ids=scope_claim_ids.get(str(row[0]), ()),
+                    )
+                    for row in scope_rows
+                )
+                epoch = RuntimeEpoch(
+                    epoch_id=epoch_id,
+                    update=persisted_update,
+                    state=header.state,
+                    revision=header.revision,
+                    jobs=(),
+                    discovery_scopes=original_scopes,
+                    failure_reason=header.failure_reason,
+                )
             stored_event = self._read_event_manifest(epoch.epoch_id)
             if (
                 epoch.update == update
@@ -649,8 +713,9 @@ class PostgresM4RuntimeStore:
                 jobs=tuple(RuntimeJob(spec=spec) for spec in canonical_jobs),
                 discovery_scopes=canonical_scopes,
             )
-            actual = self.read_epoch(epoch_id)
-            self._assert_equal(expected, actual)
+            if self._audit_transitions:
+                actual = self.read_epoch(epoch_id)
+                self._assert_equal(expected, actual)
         return OpenEpochResult(expected, replayed=False)
 
     def read_epoch(self, epoch_id: int) -> RuntimeEpoch:

@@ -3,32 +3,13 @@ from __future__ import annotations
 import os
 import uuid
 from collections.abc import Iterator
-from dataclasses import dataclass
 
 import psycopg
 import pytest
-from psycopg import Connection, sql
+from crash_harness import CommittedM4Schema
+from psycopg import sql
 
 from groundloop.postgres import apply_m2_schema
-
-
-@dataclass(frozen=True, slots=True)
-class CommittedM4Schema:
-    """A PostgreSQL schema whose setup and test operations really commit."""
-
-    url: str
-    schema_name: str
-
-    def connect(self) -> Connection[tuple[object, ...]]:
-        connection: Connection[tuple[object, ...]] = psycopg.connect(
-            self.url, autocommit=True
-        )
-        connection.execute(
-            sql.SQL("SET search_path TO {}, public").format(
-                sql.Identifier(self.schema_name)
-            )
-        )
-        return connection
 
 
 @pytest.fixture

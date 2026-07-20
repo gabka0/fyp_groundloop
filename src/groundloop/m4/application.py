@@ -419,6 +419,12 @@ class M4Application:
     audit_transition_surfaces: bool | None = None
 
     def run_event(self, event: DynamicEventPlan) -> EventRunResult:
+        audit_transitions = self.audit_transition_surfaces
+        if audit_transitions is None:
+            audit_transitions = (
+                getattr(self.equality_gates, "execution_mode", "audit")
+                != "measured"
+            )
         withdrawal = self.structural.plan_exact_withdrawal(event)
         if withdrawal.plan.deactivated_chunk_ids != (
             event.deactivated_chunk_version_ids
@@ -429,7 +435,9 @@ class M4Application:
             DiscoveryScope(
                 root_job_id=root.job_id,
                 registry_snapshot_id=event.claim_registry_snapshot_id,
-                registered_claim_ids=event.registered_claim_ids,
+                registered_claim_ids=(
+                    event.registered_claim_ids if audit_transitions else ()
+                ),
             )
             for root in roots
             if root.kind is JobKind.IMPACT_DISCOVERY
@@ -461,12 +469,6 @@ class M4Application:
                 failure_reason=opened.failure_reason,
             )
 
-        audit_transitions = self.audit_transition_surfaces
-        if audit_transitions is None:
-            audit_transitions = (
-                getattr(self.equality_gates, "execution_mode", "audit")
-                != "measured"
-            )
         if audit_transitions:
             self._validate_initial_pending(opened.epoch_id, event, withdrawal)
         discovery_calls = 0

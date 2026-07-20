@@ -69,7 +69,7 @@ def test_measured_event_is_physically_incremental_and_separately_auditable(
         ),
         ("incrementality-chunk",),
         (),
-        claim_ids(),
+        (),
         REGISTRY_SNAPSHOT_ID,
     )
     admission_delegate = CompactPendingAdmission(incrementality_connection)
@@ -82,6 +82,7 @@ def test_measured_event_is_physically_incremental_and_separately_auditable(
         execution_mode=mode,
     )
     ports.runtime_store.register_candidate_policy(candidate_policy())
+    ports.register_claim_registry_snapshot(REGISTRY_SNAPSHOT_ID, claim_ids())
     application = M4Application(
         structural=ports,
         runtime=ports,
@@ -117,27 +118,32 @@ def test_measured_event_is_physically_incremental_and_separately_auditable(
     assert accounting.published_claim_versions_written == 1
     assert accounting.published_answer_versions_written == 1
 
-    # Evaluation accounting is proportional to the one targeted child job,
-    # not to the 64-object discovery scope.
+    # Evaluation work uses one default plus signed point-counter transitions;
+    # it never populates the legacy rebuild tables.
     logical_jobs = result.discovery_call_count + result.verifier_call_count
-    assert 0 < accounting.evaluation_default_rows_written <= 3 * logical_jobs
-    assert 0 <= accounting.evaluation_override_rows_written <= 2 * logical_jobs
-    assert accounting.evaluation_default_rows_written < REGISTRY_SIZE
-    assert accounting.evaluation_override_rows_written < REGISTRY_SIZE
+    assert accounting.evaluation_default_rows_written == 0
+    assert accounting.evaluation_override_rows_written == 0
     assert incrementality_connection.execute(
         """
-        SELECT count(*) FROM groundloop_m4_evaluation_default
+        SELECT count(*) FROM groundloop_m4_evaluation_epoch_counter
         WHERE epoch_id = %s
         """,
         (result.epoch_id,),
     ).fetchone() == (1,)
     assert incrementality_connection.execute(
         """
-        SELECT count(*) FROM groundloop_object_evaluation
+        SELECT count(*) FROM groundloop_m4_evaluation_override_counter
         WHERE epoch_id = %s
         """,
         (result.epoch_id,),
     ).fetchone() == (0,)
+    assert incrementality_connection.execute(
+        """
+        SELECT count(*) FROM groundloop_m4_evaluation_counter_transition
+        WHERE epoch_id = %s
+        """,
+        (result.epoch_id,),
+    ).fetchone() == (2 * logical_jobs + 1,)
 
     # Point checks may occur at root and verifier completion boundaries, but
     # their work must scale with jobs, not with the active corpus cardinality.

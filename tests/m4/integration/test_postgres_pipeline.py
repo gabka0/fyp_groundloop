@@ -46,6 +46,7 @@ from groundloop.m4.contracts import (
     VectorIndexKind,
     stable_m4_digest,
 )
+from groundloop.m4.evaluation_overlay import ClaimJobDelta, EvaluationTransition
 from groundloop.m4.pipeline import (
     InsertedDocument,
     M4ExecutionMode,
@@ -898,7 +899,7 @@ def test_compact_pending_does_not_propagate_optional_claim_to_answer(
             base,
             inserted=("chunk-optional",),
         ),
-        registered_claim_ids=("claim-1", "claim-optional"),
+        registered_claim_ids=(),
     )
     ports = PostgresM4ApplicationPorts(
         m4_pipeline_connection,
@@ -908,6 +909,10 @@ def test_compact_pending_does_not_propagate_optional_claim_to_answer(
         execution_mode=M4ExecutionMode.MEASURED,
     )
     ports.runtime_store.register_candidate_policy(_candidate_policy(claim_count=2))
+    ports.register_claim_registry_snapshot(
+        event.claim_registry_snapshot_id,
+        ("claim-1", "claim-optional"),
+    )
     application = M4Application(
         structural=ports,
         runtime=ports,
@@ -928,7 +933,7 @@ def test_compact_pending_does_not_propagate_optional_claim_to_answer(
         DiscoveryScope(
             root.job_id,
             event.claim_registry_snapshot_id,
-            event.registered_claim_ids,
+            (),
         )
         for root in roots
         if root.kind is JobKind.IMPACT_DISCOVERY
@@ -945,31 +950,20 @@ def test_compact_pending_does_not_propagate_optional_claim_to_answer(
         claim_id=pair.claim_id,
         chunk_version_id=pair.chunk_version_id,
     )
-    optional_job = LogicalJobSpec(
-        job_id=job_id,
-        event_id=event.update.event_id,
-        kind=JobKind.VERIFY_PAIR,
-        candidate_policy_id=event.update.candidate_policy_id,
-        payload_hash=_hash(f"verify:{pair.claim_id}:{pair.chunk_version_id}"),
-        execution_spec_hash=VERIFIER_HASH,
-        parent_job_id=root.job_id,
-        pair=pair,
+    ports.evaluation_store.apply_transition(
+        opened.epoch_id,
+        EvaluationTransition(
+            transition_id=job_id,
+            expected_revision=1,
+            scope_delta=-1,
+            claim_job_deltas=(ClaimJobDelta(pair.claim_id, 1),),
+        ),
     )
-    with m4_pipeline_connection.transaction():
-        with m4_pipeline_connection.cursor() as cursor:
-            ports._write_compact_evaluation(
-                cursor,
-                epoch_id=opened.epoch_id,
-                revision=2,
-                confirmed_as_of_epoch=base,
-                open_jobs=(optional_job,),
-                discovery_scope_open=False,
-                failed=False,
-            )
 
     assert m4_pipeline_connection.execute(
         """
-        SELECT object_type, object_id FROM groundloop_object_evaluation
+        SELECT object_type, object_id
+        FROM groundloop_m4_evaluation_override_counter
         WHERE epoch_id = %s ORDER BY object_type, object_id
         """,
         (opened.epoch_id,),

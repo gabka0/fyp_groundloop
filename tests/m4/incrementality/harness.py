@@ -243,14 +243,16 @@ class CompactPendingAdmission:
     ) -> DiscoveryResult:
         default_count = self.connection.execute(
             """
-            SELECT count(*) FROM groundloop_m4_evaluation_default
-            WHERE epoch_id = %s
+            SELECT count(*)
+            FROM groundloop_m4_evaluation_epoch_counter
+            WHERE epoch_id = %s AND default_evaluation_state = 'pending'
+              AND open_discovery_scope_count = 1
             """,
             (epoch_id,),
         ).fetchone()
         override_count = self.connection.execute(
             """
-            SELECT count(*) FROM groundloop_object_evaluation
+            SELECT count(*) FROM groundloop_m4_evaluation_override_counter
             WHERE epoch_id = %s
             """,
             (epoch_id,),

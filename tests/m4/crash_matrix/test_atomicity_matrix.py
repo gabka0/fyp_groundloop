@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import Any
 
 import pytest
-from conftest import CommittedM4Schema
+from crash_harness import CommittedM4Schema
 from psycopg import Connection, Cursor, sql
 
 from groundloop.domain import (
@@ -319,7 +319,13 @@ def _inserted_document() -> InsertedDocument:
     )
 
 
-def _event(previous_epoch_id: int) -> DynamicEventPlan:
+def _is_measured(execution_mode: object | None) -> bool:
+    return getattr(execution_mode, "value", execution_mode) == "measured"
+
+
+def _event(
+    previous_epoch_id: int, *, compact_registry: bool = False
+) -> DynamicEventPlan:
     return DynamicEventPlan(
         CorpusUpdateIdentity(
             "crash-insert",
@@ -330,7 +336,7 @@ def _event(previous_epoch_id: int) -> DynamicEventPlan:
         ),
         ("crash-chunk-new",),
         (),
-        ("crash-claim",),
+        () if compact_registry else ("crash-claim",),
         "crash-registry-v1",
     )
 
@@ -392,8 +398,12 @@ def _prepare_expansion(
     base = _seed_b0(connection)
     ports = _ports(connection, failure_switch, execution_mode)
     ports.runtime_store.register_candidate_policy(_candidate_policy())
+    if _is_measured(execution_mode):
+        ports.register_claim_registry_snapshot(
+            "crash-registry-v1", ("crash-claim",)
+        )
     application = _application(ports)
-    event = _event(base)
+    event = _event(base, compact_registry=_is_measured(execution_mode))
     withdrawal = ports.plan_exact_withdrawal(event)
     roots = application._root_jobs(event, withdrawal.fallback_claim_ids)
     assert len(roots) == 1
@@ -581,7 +591,11 @@ def test_structural_open_is_fully_atomic_after_reconnect(
         base = _seed_b0(connection)
         ports = _ports(connection, switch, mode)
         ports.runtime_store.register_candidate_policy(_candidate_policy())
-        event = _event(base)
+        if _is_measured(mode):
+            ports.register_claim_registry_snapshot(
+                "crash-registry-v1", ("crash-claim",)
+            )
+        event = _event(base, compact_registry=_is_measured(mode))
         application = _application(ports)
         roots = application._root_jobs(event, ())
         root = roots[0]
@@ -619,13 +633,14 @@ def test_structural_open_is_fully_atomic_after_reconnect(
                 """,
                 (text, normalized_text_hash(text), epoch_id),
             )
-            cursor.execute(
-                """
-                INSERT INTO groundloop_m4_claim_registry_member (
-                    claim_registry_snapshot_id, claim_id, member_ordinal
-                ) VALUES ('crash-registry-v1', 'crash-claim', 0)
-                """
-            )
+            if not _is_measured(mode):
+                cursor.execute(
+                    """
+                    INSERT INTO groundloop_m4_claim_registry_member (
+                        claim_registry_snapshot_id, claim_id, member_ordinal
+                    ) VALUES ('crash-registry-v1', 'crash-claim', 0)
+                    """
+                )
             assert epoch_id > base
 
         before = _snapshot_all_tables(connection)
@@ -654,7 +669,11 @@ def test_pipeline_structural_open_is_fully_atomic_after_reconnect(
         base = _seed_b0(connection)
         ports = _ports(connection, switch, mode)
         ports.runtime_store.register_candidate_policy(_candidate_policy())
-        event = _event(base)
+        if _is_measured(mode):
+            ports.register_claim_registry_snapshot(
+                "crash-registry-v1", ("crash-claim",)
+            )
+        event = _event(base, compact_registry=_is_measured(mode))
         application = _application(ports)
         withdrawal = ports.plan_exact_withdrawal(event)
         roots = application._root_jobs(event, withdrawal.fallback_claim_ids)
@@ -682,22 +701,41 @@ def test_runtime_child_closure_is_fully_atomic_after_reconnect(
     switch = FailureSwitch(failure_point, [])
     with committed_m4_schema.connect() as connection:
         prepared = _prepare_expansion(connection, switch, mode)
-        epoch = prepared.ports.runtime_store.read_epoch(prepared.epoch_id)
         before = _snapshot_all_tables(connection)
         with pytest.raises(RuntimeError, match=failure_point):
-            prepared.ports.runtime_store.complete(
-                CompletionPlan(
-                    prepared.epoch_id,
-                    epoch.revision,
-                    prepared.completion,
-                    (prepared.child,),
-                ),
-                active_chunk_ids=frozenset({"crash-chunk-new"}),
-                attempt_id=prepared.lease.attempt_id or "",
-                lease_token_hash=prepared.lease.lease_token_hash or "",
-                lease_expected_revision=prepared.lease.expected_revision or 0,
-                failure_injector=switch,
-            )
+            if _is_measured(mode):
+                header = prepared.ports.runtime_store.read_epoch_header_point(
+                    prepared.epoch_id
+                )
+                prepared.ports.runtime_store.complete_point(
+                    CompletionPlan(
+                        prepared.epoch_id,
+                        header.revision,
+                        prepared.completion,
+                        (prepared.child,),
+                    ),
+                    attempt_id=prepared.lease.attempt_id or "",
+                    lease_token_hash=prepared.lease.lease_token_hash or "",
+                    lease_expected_revision=prepared.lease.expected_revision or 0,
+                    failure_injector=lambda point: switch(
+                        point.removeprefix("point_")
+                    ),
+                )
+            else:
+                epoch = prepared.ports.runtime_store.read_epoch(prepared.epoch_id)
+                prepared.ports.runtime_store.complete(
+                    CompletionPlan(
+                        prepared.epoch_id,
+                        epoch.revision,
+                        prepared.completion,
+                        (prepared.child,),
+                    ),
+                    active_chunk_ids=frozenset({"crash-chunk-new"}),
+                    attempt_id=prepared.lease.attempt_id or "",
+                    lease_token_hash=prepared.lease.lease_token_hash or "",
+                    lease_expected_revision=prepared.lease.expected_revision or 0,
+                    failure_injector=switch,
+                )
         assert failure_point in switch.seen
     _assert_rollback_after_reconnect(committed_m4_schema, before)
 

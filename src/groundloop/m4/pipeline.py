@@ -47,7 +47,10 @@ from groundloop.events import (
     ObserveEvent,
     ReplaceDocumentVersionEvent,
 )
-from groundloop.incremental import IncrementalMaintenanceEngine
+from groundloop.incremental import (
+    IncrementalMaintenanceEngine,
+    IncrementalStatePatch,
+)
 from groundloop.m4.application import (
     DiscoveryResult,
     DynamicEventPlan,
@@ -65,11 +68,19 @@ from groundloop.m4.contracts import (
     DiscoveryScope,
     JobAttempt,
     JobCompletion,
+    JobKind,
     JobState,
     LogicalJobSpec,
     PairKey,
     UpdateKind,
     stable_m4_digest,
+)
+from groundloop.m4.evaluation_overlay import (
+    ClaimJobDelta,
+    EvaluationLifecycle,
+    EvaluationTransition,
+    EvaluationTransitionKind,
+    PostgresEvaluationOverlayStore,
 )
 from groundloop.m4.models.contracts import PairVerificationInput
 from groundloop.m4.models.ports import M4VerificationApplicationPort
@@ -821,6 +832,7 @@ class PostgresM4ApplicationPorts:
         self.runtime_store = PostgresM4RuntimeStore(
             connection, audit_transitions=not self._measured
         )
+        self.evaluation_store = PostgresEvaluationOverlayStore(connection)
         self._payloads = dict(structural_payloads)
         self._verification_writer = verification_provenance_writer
         self._failure_injector = failure_injector
@@ -829,8 +841,15 @@ class PostgresM4ApplicationPorts:
         self._published_repository, self._published_engine = _load_published_repository(
             connection, head
         )
-        self._working_repository = deepcopy(self._published_repository)
-        self._working_engine = deepcopy(self._published_engine)
+        if self._measured:
+            # Startup hydration is outside the measured event kernel.  The
+            # measured path advances this cache with affected-key patches and
+            # adopts the same objects at seal; it never clones full state.
+            self._working_repository = self._published_repository
+            self._working_engine = self._published_engine
+        else:
+            self._working_repository = deepcopy(self._published_repository)
+            self._working_engine = deepcopy(self._published_engine)
         self._active_epoch_id: int | None = None
 
     @property
@@ -895,6 +914,14 @@ class PostgresM4ApplicationPorts:
         if row is None:
             raise ValidationError("M4 publication is not bootstrapped")
         return int(row[0])
+
+    def register_claim_registry_snapshot(
+        self, snapshot_id: str, claim_ids: tuple[str, ...]
+    ) -> bool:
+        """Build immutable policy-time registry state outside event execution."""
+        return self.runtime_store.register_claim_registry_snapshot(
+            snapshot_id, claim_ids
+        )
 
     def plan_exact_withdrawal(
         self, event: DynamicEventPlan
@@ -1019,7 +1046,33 @@ class PostgresM4ApplicationPorts:
             if self._measured
             else None
         )
-        if snapshot is not None:
+        registered: tuple[str, ...]
+        if self._measured:
+            if event.registered_claim_ids:
+                raise ValidationError(
+                    "measured events bind a prebuilt registry by identity only"
+                )
+            if snapshot is None:
+                raise InvalidEventError(
+                    "measured event requires a prebuilt claim registry snapshot"
+                )
+            policy = self.connection.execute(
+                """
+                SELECT claim_count, claim_registry_snapshot_id
+                FROM groundloop_candidate_policy
+                WHERE candidate_policy_id = %s
+                """,
+                (event.update.candidate_policy_id,),
+            ).fetchone()
+            if policy is None or (
+                int(policy[0]),
+                str(policy[1]),
+            ) != (int(snapshot[0]), event.claim_registry_snapshot_id):
+                raise EventConflictError(
+                    "candidate policy differs from its frozen claim registry"
+                )
+            registered = ()
+        elif snapshot is not None:
             expected_hash = stable_m4_digest(
                 "m4-claim-registry-snapshot-v1", *event.registered_claim_ids
             )
@@ -1123,9 +1176,13 @@ class PostgresM4ApplicationPorts:
     def _stage_structural(
         self, event: DynamicEventPlan, payload: StructuralPayload
     ) -> tuple[InMemoryRepository, IncrementalMaintenanceEngine]:
-        before = deepcopy(self._published_repository)
-        after = deepcopy(before)
-        engine = deepcopy(self._published_engine)
+        if self._measured:
+            after = self._working_repository
+            engine = self._working_engine
+        else:
+            after = deepcopy(self._published_repository)
+            engine = deepcopy(self._published_engine)
+        before = after if self._measured else deepcopy(after)
         epoch = after.advance_epoch()
         if event.update.update_kind is UpdateKind.INSERT:
             assert payload.inserted is not None
@@ -1167,7 +1224,13 @@ class PostgresM4ApplicationPorts:
                 payload.inserted.version.content_hash,
                 (),
             )
-        engine.apply_committed_event(semantic_event, before, after)
+        if self._measured:
+            patch = engine.prepare_committed_event_patch(
+                semantic_event, before, after
+            )
+            engine.apply_state_patch(patch)
+        else:
+            engine.apply_committed_event(semantic_event, before, after)
         return after, engine
 
     def open_event(
@@ -1240,13 +1303,24 @@ class PostgresM4ApplicationPorts:
         self._validate_payload(event, payload)
         if withdrawal.plan.deactivated_chunk_ids != event.deactivated_chunk_version_ids:
             raise EventConflictError("withdrawal and event deactivation differ")
-        staged_repository, staged_engine = self._stage_structural(event, payload)
+        try:
+            staged_repository, staged_engine = self._stage_structural(event, payload)
+        except Exception:
+            if self._measured:
+                head = self._publication_head()
+                self._published_repository, self._published_engine = (
+                    _load_published_repository(self.connection, head)
+                )
+                self._working_repository = self._published_repository
+                self._working_engine = self._published_engine
+            raise
         touched_claim_ids = withdrawal.plan.affected_claim_ids
         touched_answer_ids = self._answer_ids_for_claims(touched_claim_ids)
 
         def structural_action(cursor: Cursor[Any], epoch_id: int) -> None:
             self._register_execution_accounting(cursor, epoch_id)
-            self._write_claim_registry_members(cursor, event)
+            if not self._measured:
+                self._write_claim_registry_members(cursor, event)
             self._inject("structural_registry_written")
             self._write_structural_rows(cursor, epoch_id, payload)
             self._inject("structural_versions_written")
@@ -1263,8 +1337,11 @@ class PostgresM4ApplicationPorts:
             )
             self._inject("structural_working_states_written")
             if self._measured:
-                self._write_initial_compact_evaluation(
-                    cursor, epoch_id, event, root_jobs, discovery_scopes
+                self.evaluation_store.declare_epoch(
+                    epoch_id,
+                    revision=1,
+                    confirmed_as_of_epoch=event.update.previous_published_epoch_id,
+                    open_discovery_scope_count=len(discovery_scopes),
                 )
             else:
                 self._write_initial_evaluation(
@@ -1279,14 +1356,24 @@ class PostgresM4ApplicationPorts:
                 )
             self._inject("structural_evaluation_written")
 
-        opened = self.runtime_store.open_epoch(
-            event.update,
-            root_jobs,
-            discovery_scopes,
-            registry_snapshot_id=event.claim_registry_snapshot_id,
-            structural_action=structural_action,
-            event_manifest=payload.manifest,
-        )
+        try:
+            opened = self.runtime_store.open_epoch(
+                event.update,
+                root_jobs,
+                discovery_scopes,
+                registry_snapshot_id=event.claim_registry_snapshot_id,
+                structural_action=structural_action,
+                event_manifest=payload.manifest,
+            )
+        except Exception:
+            if self._measured:
+                head = self._publication_head()
+                self._published_repository, self._published_engine = (
+                    _load_published_repository(self.connection, head)
+                )
+                self._working_repository = self._published_repository
+                self._working_engine = self._published_engine
+            raise
         self._working_repository = staged_repository
         self._working_engine = staged_engine
         self._active_epoch_id = opened.epoch.epoch_id
@@ -1767,7 +1854,12 @@ class PostgresM4ApplicationPorts:
                 (chunk_version_id, epoch_id, epoch_id),
             ).fetchone()
             return row is not None
-        if self.runtime_store.read_epoch(epoch_id).state is RuntimeEpochState.FAILED:
+        state = (
+            self.runtime_store.read_epoch_header_point(epoch_id).state
+            if self._measured
+            else self.runtime_store.read_epoch(epoch_id).state
+        )
+        if state is RuntimeEpochState.FAILED:
             return False
         row = self.connection.execute(
             """
@@ -1825,18 +1917,83 @@ class PostgresM4ApplicationPorts:
         )
 
     def acquire_job(self, epoch_id: int, spec: LogicalJobSpec) -> JobLease:
+        if self._measured:
+            header = self.runtime_store.read_epoch_header_point(epoch_id)
+            job = self.runtime_store.read_job_point(epoch_id, spec.job_id)
+            if job.spec != spec:
+                raise EventConflictError("requested job differs from persisted job")
+            if job.state in {
+                JobState.COMPLETED_ACTIVE,
+                JobState.COMPLETED_INACTIVE,
+            }:
+                return JobLease(spec.job_id, False, True)
+            if job.state in {JobState.DECLARED, JobState.RETRYABLE_FAILED}:
+                ordinal = (
+                    1
+                    if job.latest_attempt is None
+                    else job.latest_attempt.attempt.attempt_ordinal + 1
+                )
+                attempt = JobAttempt(
+                    attempt_id=stable_m4_digest(
+                        "m4-job-attempt-v1", spec.job_id, str(ordinal)
+                    ),
+                    job_id=spec.job_id,
+                    execution_spec_hash=spec.execution_spec_hash,
+                    attempt_ordinal=ordinal,
+                    lease_token_hash=stable_m4_digest(
+                        "m4-lease-token-v1", spec.job_id, str(ordinal)
+                    ),
+                )
+                with self.connection.transaction():
+                    started = self.runtime_store.start_attempt_point(
+                        epoch_id, header.revision, attempt
+                    )
+                    if not started.replayed:
+                        self.evaluation_store.apply_transition(
+                            epoch_id,
+                            EvaluationTransition(
+                                transition_id=attempt.attempt_id,
+                                expected_revision=header.revision,
+                                claim_job_deltas=(
+                                    (
+                                        ClaimJobDelta(
+                                            job.spec.target_claim_id,
+                                            1,
+                                        ),
+                                    )
+                                    if job.spec.kind is JobKind.FRONTIER_RETRIEVE
+                                    and job.spec.target_claim_id is not None
+                                    else ()
+                                ),
+                            ),
+                        )
+                header = started.header
+            elif job.state is JobState.RUNNING:
+                if job.latest_attempt is None:
+                    raise ValidationError("running job has no persisted attempt")
+                attempt = job.latest_attempt.attempt
+            else:
+                raise InvalidEventError("job is not executable")
+            return JobLease(
+                spec.job_id,
+                True,
+                False,
+                attempt_id=attempt.attempt_id,
+                lease_token_hash=attempt.lease_token_hash,
+                expected_revision=header.revision,
+            )
         epoch = self.runtime_store.read_epoch(epoch_id)
-        job = next(
+        runtime_job = next(
             (item for item in epoch.jobs if item.spec.job_id == spec.job_id),
             None,
         )
-        if job is None or job.spec != spec:
+        if runtime_job is None or runtime_job.spec != spec:
             raise EventConflictError("requested job differs from persisted job")
-        if job.completion is not None:
+        if runtime_job.completion is not None:
             return JobLease(spec.job_id, False, True)
-        if job.state in {JobState.DECLARED, JobState.RETRYABLE_FAILED}:
-            ordinal = len(job.attempts) + 1
-            attempt = JobAttempt(
+        if runtime_job.state in {JobState.DECLARED, JobState.RETRYABLE_FAILED}:
+            ordinal = len(runtime_job.attempts) + 1
+            legacy_attempt = JobAttempt(
                 attempt_id=stable_m4_digest(
                     "m4-job-attempt-v1", spec.job_id, str(ordinal)
                 ),
@@ -1847,22 +2004,26 @@ class PostgresM4ApplicationPorts:
                     "m4-lease-token-v1", spec.job_id, str(ordinal)
                 ),
             )
-            started = self.runtime_store.start_attempt(epoch_id, attempt)
-            epoch = next(
-                item for item in started.book.epochs if item.epoch_id == epoch_id
+            started_transition = self.runtime_store.start_attempt(
+                epoch_id, legacy_attempt
             )
-        elif job.state is not JobState.RUNNING:
+            epoch = next(
+                item
+                for item in started_transition.book.epochs
+                if item.epoch_id == epoch_id
+            )
+        elif runtime_job.state is not JobState.RUNNING:
             raise InvalidEventError("job is not executable")
         else:
-            if not job.attempts:
+            if not runtime_job.attempts:
                 raise ValidationError("running job has no persisted attempt")
-            attempt = job.attempts[-1]
+            legacy_attempt = runtime_job.attempts[-1]
         return JobLease(
             spec.job_id,
             True,
             False,
-            attempt_id=attempt.attempt_id,
-            lease_token_hash=attempt.lease_token_hash,
+            attempt_id=legacy_attempt.attempt_id,
+            lease_token_hash=legacy_attempt.lease_token_hash,
             expected_revision=epoch.revision,
         )
 
@@ -1877,6 +2038,57 @@ class PostgresM4ApplicationPorts:
         attempt_id, lease_token_hash, lease_revision = self._completion_lease_binding(
             lease, completion.job_id
         )
+        if self._measured:
+            with self.connection.transaction():
+                with self.connection.cursor() as cursor:
+                    self._persist_discovery_result(
+                        cursor, epoch_id, completion.job_id, discovery
+                    )
+                self._inject("expansion_discovery_persisted")
+                header = self.runtime_store.read_epoch_header_point(epoch_id)
+                parent = self.runtime_store.read_job_point(
+                    epoch_id, completion.job_id
+                )
+                point_transition = self.runtime_store.complete_point(
+                    CompletionPlan(
+                        epoch_id,
+                        header.revision,
+                        completion,
+                        child_jobs,
+                    ),
+                    attempt_id=attempt_id,
+                    lease_token_hash=lease_token_hash,
+                    lease_expected_revision=lease_revision,
+                )
+                self._inject("expansion_runtime_completed")
+                if not point_transition.replayed:
+                    deltas = tuple(
+                        ClaimJobDelta(child.pair.claim_id, 1)
+                        for child in child_jobs
+                        if child.pair is not None
+                    )
+                    if (
+                        parent.spec.kind is JobKind.FRONTIER_RETRIEVE
+                        and parent.spec.target_claim_id is not None
+                    ):
+                        deltas += (
+                            ClaimJobDelta(parent.spec.target_claim_id, -1),
+                        )
+                    self.evaluation_store.apply_transition(
+                        epoch_id,
+                        EvaluationTransition(
+                            transition_id=completion.completion_digest,
+                            expected_revision=header.revision,
+                            scope_delta=(
+                                -1
+                                if parent.spec.kind is JobKind.IMPACT_DISCOVERY
+                                else 0
+                            ),
+                            claim_job_deltas=deltas,
+                        ),
+                    )
+                    self._inject("expansion_evaluation_synced")
+            return
         with self.connection.transaction():
             with self.connection.cursor() as cursor:
                 self._persist_discovery_result(
@@ -2191,18 +2403,59 @@ class PostgresM4ApplicationPorts:
     def children_of(
         self, epoch_id: int, root_job_id: str
     ) -> tuple[LogicalJobSpec, ...]:
+        if self._measured:
+            return self.runtime_store.read_children_point(epoch_id, root_job_id)
         epoch = self.runtime_store.read_epoch(epoch_id)
         return tuple(
             job.spec for job in epoch.jobs if job.spec.parent_job_id == root_job_id
         )
 
     def mark_fallback_blocked(self, epoch_id: int, root_job_id: str) -> None:
+        if self._measured:
+            job = self.runtime_store.read_job_point(epoch_id, root_job_id)
+            if job.state in {
+                JobState.COMPLETED_ACTIVE,
+                JobState.COMPLETED_INACTIVE,
+            }:
+                raise InvalidEventError("fallback root is not open")
+            self._fallback_blocked.add(root_job_id)
+            return
         epoch = self.runtime_store.read_epoch(epoch_id)
         if not any(job.spec.job_id == root_job_id and job.open for job in epoch.jobs):
             raise InvalidEventError("fallback root is not open")
         self._fallback_blocked.add(root_job_id)
 
     def fail_epoch(self, epoch_id: int, reason: str) -> None:
+        if self._measured:
+            header = self.runtime_store.read_epoch_header_point(epoch_id)
+            if header.state is RuntimeEpochState.FAILED:
+                return
+            transition_id = stable_m4_digest(
+                "m4-evaluation-failure-v1", str(epoch_id), reason
+            )
+            with self.connection.transaction():
+                failed = self.runtime_store.fail_epoch_point(
+                    epoch_id, header.revision, reason
+                )
+                if not failed.replayed:
+                    self.evaluation_store.apply_transition(
+                        epoch_id,
+                        EvaluationTransition(
+                            transition_id=transition_id,
+                            expected_revision=header.revision,
+                            kind=EvaluationTransitionKind.FAIL,
+                        ),
+                    )
+            # Discard a provisional in-memory overlay. Recovery hydration is
+            # explicitly outside the successful event-time bound.
+            head = self._publication_head()
+            self._published_repository, self._published_engine = (
+                _load_published_repository(self.connection, head)
+            )
+            self._working_repository = self._published_repository
+            self._working_engine = self._published_engine
+            self._active_epoch_id = None
+            return
         epoch = self.runtime_store.read_epoch(epoch_id)
         if epoch.state is RuntimeEpochState.FAILED:
             return
@@ -2212,6 +2465,17 @@ class PostgresM4ApplicationPorts:
                 self._sync_evaluation(cursor, epoch_id)
 
     def sealing_snapshot(self, epoch_id: int) -> SealingSnapshot:
+        if self._measured:
+            header = self.runtime_store.read_epoch_header_point(epoch_id)
+            blocked = tuple(sorted(self._fallback_blocked))
+            ready = header.seal_ready and not blocked
+            return SealingSnapshot(
+                epoch_id=epoch_id,
+                revision=header.revision,
+                ready=ready,
+                failed=header.state is RuntimeEpochState.FAILED,
+                fallback_blocked_root_ids=blocked,
+            )
         epoch = self.runtime_store.read_epoch(epoch_id)
         open_jobs = tuple(sorted(job.spec.job_id for job in epoch.jobs if job.open))
         open_scopes = tuple(
@@ -2257,6 +2521,156 @@ class PostgresM4ApplicationPorts:
         expected_effective = completion.terminal_state is JobState.COMPLETED_ACTIVE
         if make_effective != expected_effective:
             raise EventConflictError("observation activity and completion disagree")
+
+        if self._measured:
+            header = self.runtime_store.read_epoch_header_point(epoch_id)
+            point_job = self.runtime_store.read_job_point(
+                epoch_id, completion.job_id
+            )
+            if point_job.spec != verifier_job:
+                raise EventConflictError(
+                    "verifier completion differs from persisted job"
+                )
+            already_completed = point_job.state in {
+                JobState.COMPLETED_ACTIVE,
+                JobState.COMPLETED_INACTIVE,
+            }
+            patch: IncrementalStatePatch | None = None
+            if make_effective and not already_completed:
+                patch = self._working_engine.prepare_committed_event_patch(
+                    ObserveEvent(
+                        stable_m4_digest(
+                            "m4-working-observe-event-v1",
+                            str(epoch_id),
+                            observation.observation_id,
+                        ),
+                        observation,
+                    ),
+                    self._working_repository,
+                    self._working_repository,
+                )
+            patch_applied = False
+            inserted = False
+            replayed = False
+            try:
+                with self.connection.transaction():
+                    point_transition = self.runtime_store.complete_point(
+                        CompletionPlan(
+                            epoch_id,
+                            header.revision,
+                            completion,
+                        ),
+                        attempt_id=attempt_id,
+                        lease_token_hash=lease_token_hash,
+                        lease_expected_revision=lease_revision,
+                    )
+                    replayed = point_transition.replayed
+                    self._inject("verifier_runtime_completed")
+                    if replayed:
+                        self._validate_observation(
+                            observation, epoch_id, completion
+                        )
+                    else:
+                        inserted = self._insert_observation(
+                            observation, epoch_id, completion
+                        )
+                    self._inject("verifier_observation_archived")
+                    if not replayed and verifier_job.pair is not None:
+                        self.connection.execute(
+                            """
+                            UPDATE groundloop_candidate_frontier
+                            SET frontier_state = %s
+                            WHERE claim_id = %s AND chunk_version_id = %s
+                              AND candidate_policy_id = %s
+                              AND valid_from_epoch = %s
+                            """,
+                            (
+                                "verified_current" if make_effective else "inactive",
+                                verifier_job.pair.claim_id,
+                                verifier_job.pair.chunk_version_id,
+                                verifier_job.candidate_policy_id,
+                                epoch_id,
+                            ),
+                        )
+                    if self._verification_writer is not None:
+                        with self.connection.cursor() as cursor:
+                            self._verification_writer(
+                                cursor,
+                                epoch_id,
+                                verifier_job,
+                                completion,
+                                observation,
+                            )
+                    if replayed:
+                        with self.connection.cursor() as cursor:
+                            self._validate_verifier_completion_replay(
+                                cursor,
+                                epoch_id,
+                                completion.job_id,
+                                observation,
+                                make_effective=make_effective,
+                            )
+                    elif make_effective:
+                        assert patch is not None
+                        self._working_engine.apply_state_patch(patch)
+                        patch_applied = True
+                        self._insert_working_observation_delta(
+                            epoch_id, point_transition.header.revision, observation
+                        )
+                        self._inject("verifier_overlay_written")
+                        with self.connection.cursor() as cursor:
+                            touched_claim_ids = (observation.subject_id,)
+                            self._persist_working_states(
+                                cursor,
+                                epoch_id,
+                                point_transition.header.revision,
+                                self._working_engine,
+                                causative_digest=completion.completion_digest,
+                                claim_ids=touched_claim_ids,
+                                answer_ids=self._answer_ids_for_claims(
+                                    touched_claim_ids
+                                ),
+                            )
+                        self._inject("verifier_state_written")
+                    if not replayed:
+                        claim_id = (
+                            verifier_job.pair.claim_id
+                            if verifier_job.pair is not None
+                            else observation.subject_id
+                        )
+                        self.evaluation_store.apply_transition(
+                            epoch_id,
+                            EvaluationTransition(
+                                transition_id=completion.completion_digest,
+                                expected_revision=header.revision,
+                                claim_job_deltas=(ClaimJobDelta(claim_id, -1),),
+                            ),
+                        )
+            except Exception:
+                if patch_applied:
+                    self._working_repository, self._working_engine = (
+                        _load_working_repository(
+                            self.connection,
+                            epoch_id,
+                            self._publication_head(),
+                        )
+                    )
+                raise
+            if replayed:
+                return ObservationCompletionReceipt(False, False)
+            if make_effective:
+                try:
+                    self._working_repository.register_observation(observation)
+                except Exception:
+                    self._working_repository, self._working_engine = (
+                        _load_working_repository(
+                            self.connection,
+                            epoch_id,
+                            self._publication_head(),
+                        )
+                    )
+                    raise
+            return ObservationCompletionReceipt(inserted, make_effective)
 
         known_epoch = self.runtime_store.read_epoch(epoch_id)
         known_job = next(
@@ -2667,9 +3081,12 @@ class PostgresM4ApplicationPorts:
             ).fetchall()
         }
         for claim_id in selected_claim_ids:
-            claim_state = engine.claim_states.get(claim_id)
-            if claim_state is None:
-                raise ValidationError("working claim selection is outside the engine")
+            try:
+                claim_state = engine.claim_state(claim_id)
+            except KeyError as error:
+                raise ValidationError(
+                    "working claim selection is outside the engine"
+                ) from error
             cursor.execute(
                 """
                 INSERT INTO groundloop_m4_working_claim_state VALUES (
@@ -2719,9 +3136,12 @@ class PostgresM4ApplicationPorts:
                     ),
                 )
         for answer_id in selected_answer_ids:
-            answer_state = engine.answer_states.get(answer_id)
-            if answer_state is None:
-                raise ValidationError("working answer selection is outside the engine")
+            try:
+                answer_state = engine.answer_state(answer_id)
+            except KeyError as error:
+                raise ValidationError(
+                    "working answer selection is outside the engine"
+                ) from error
             cursor.execute(
                 """
                 INSERT INTO groundloop_m4_working_answer_state VALUES (
@@ -3040,6 +3460,13 @@ class PostgresM4ApplicationPorts:
             )
 
     def check_coordination(self, epoch_id: int) -> None:
+        if self._measured:
+            header = self.runtime_store.read_epoch_header_point(epoch_id)
+            if header.state is not RuntimeEpochState.SEMANTIC_COMPLETE:
+                raise ValidationError("coordination surface is not complete")
+            if header.open_job_count or header.open_scope_count:
+                raise ValidationError("coordination counters retain open work")
+            return
         epoch = self.runtime_store.read_epoch(epoch_id)
         if not self._measured:
             book = self.runtime_store.read_book()
@@ -3051,13 +3478,46 @@ class PostgresM4ApplicationPorts:
     def check_evaluation(self, epoch_id: int) -> None:
         with self.connection.cursor() as cursor:
             if self._measured:
-                self._assert_compact_evaluation(
+                self._assert_incremental_evaluation(
                     cursor, epoch_id, require_complete=True
                 )
             else:
                 self._assert_evaluation_surface(
                     cursor, epoch_id, require_complete=True
                 )
+
+    def _assert_incremental_evaluation(
+        self,
+        cursor: Cursor[Any],
+        epoch_id: int,
+        *,
+        require_complete: bool,
+    ) -> None:
+        header = self.runtime_store.read_epoch_header_point(epoch_id)
+        default = self.evaluation_store.read_default(epoch_id)
+        if default.revision != header.revision:
+            raise ValidationError(
+                "evaluation and runtime revisions are not synchronized"
+            )
+        override = cursor.execute(
+            """
+            SELECT 1 FROM groundloop_m4_evaluation_override_counter
+            WHERE epoch_id = %s LIMIT 1
+            """,
+            (epoch_id,),
+        ).fetchone()
+        if require_complete and (
+            default.lifecycle
+            not in {EvaluationLifecycle.ACTIVE, EvaluationLifecycle.SEALED}
+            or default.default_state.value != "complete"
+            or default.open_discovery_scope_count != 0
+            or override is not None
+            or (
+                default.lifecycle is EvaluationLifecycle.SEALED
+                and default.confirmed_as_of_epoch != epoch_id
+            )
+        ):
+            raise ValidationError("incremental evaluation surface is not sealable")
 
     def _assert_compact_evaluation(
         self,
@@ -3284,6 +3744,92 @@ class PostgresM4ApplicationPorts:
         expected_revision: int,
         update: CorpusUpdateIdentity,
     ) -> PublicationReceipt:
+        if self._measured:
+            header = self.runtime_store.read_epoch_header_point(epoch_id)
+            update_row = self.connection.execute(
+                """
+                SELECT epoch.event_id, epoch.payload_hash,
+                       update_row.update_kind,
+                       update_row.previous_published_epoch_id,
+                       update_row.candidate_policy_id
+                FROM groundloop_epoch AS epoch
+                JOIN groundloop_m4_update AS update_row USING (epoch_id)
+                WHERE epoch.epoch_id = %s
+                """,
+                (epoch_id,),
+            ).fetchone()
+            persisted_update = (
+                None
+                if update_row is None
+                else CorpusUpdateIdentity(
+                    event_id=str(update_row[0]),
+                    payload_hash=str(update_row[1]).strip(),
+                    update_kind=UpdateKind(str(update_row[2])),
+                    previous_published_epoch_id=(
+                        None if update_row[3] is None else int(update_row[3])
+                    ),
+                    candidate_policy_id=str(update_row[4]),
+                )
+            )
+            if persisted_update != update:
+                raise EventConflictError(
+                    "publication update differs from runtime epoch"
+                )
+
+            def publish_point(
+                cursor: Cursor[Any], published_epoch_id: int
+            ) -> None:
+                self._assert_incremental_evaluation(
+                    cursor, published_epoch_id, require_complete=True
+                )
+                self._promote_structural_overlay(cursor, published_epoch_id)
+                self._inject("publication_structure_promoted")
+                self._promote_observation_currency(cursor, published_epoch_id)
+                self._inject("publication_currency_promoted")
+                self._publish_grounding_states(
+                    cursor, published_epoch_id, expected_revision + 1, update
+                )
+                self._inject("publication_states_written")
+                cursor.execute(
+                    """
+                    INSERT INTO groundloop_m4_publication_head(singleton, epoch_id)
+                    VALUES (true, %s)
+                    ON CONFLICT (singleton) DO UPDATE SET
+                        epoch_id = EXCLUDED.epoch_id, updated_at = now()
+                    """,
+                    (published_epoch_id,),
+                )
+                self._inject("publication_head_advanced")
+                self.evaluation_store.apply_transition(
+                    published_epoch_id,
+                    EvaluationTransition(
+                        transition_id=stable_m4_digest(
+                            "m4-evaluation-seal-v1", str(published_epoch_id)
+                        ),
+                        expected_revision=header.revision,
+                        kind=EvaluationTransitionKind.SEAL,
+                    ),
+                )
+                self._inject("publication_evaluation_promoted")
+
+            self.runtime_store.seal_epoch_point(
+                epoch_id,
+                expected_revision,
+                publication_action=publish_point,
+                failure_injector=(
+                    lambda point: self._inject(
+                        "publication_store_" + point.removeprefix("point_")
+                    )
+                ),
+            )
+            self._published_repository = self._working_repository
+            self._published_engine = self._working_engine
+            self._active_epoch_id = None
+            publication_id = stable_m4_digest(
+                "m4-publication-v1", str(epoch_id)
+            )
+            return PublicationReceipt(epoch_id, publication_id)
+
         epoch = self.runtime_store.read_epoch(epoch_id)
         if epoch.update != update:
             raise EventConflictError("publication update differs from runtime epoch")
@@ -3725,7 +4271,7 @@ class PostgresM4ApplicationPorts:
             (epoch_id, list(answer_ids)),
         )
         for claim_id in claim_ids:
-            claim_state = self._working_engine.claim_states[claim_id]
+            claim_state = self._working_engine.claim_state(claim_id)
             digest = _certificate_digest(claim_state.claim_id, claim_state)
             cursor.execute(
                 """
@@ -3809,7 +4355,7 @@ class PostgresM4ApplicationPorts:
                     claim_state.status.value,
                 )
         for answer_id in answer_ids:
-            answer_state = self._working_engine.answer_states[answer_id]
+            answer_state = self._working_engine.answer_state(answer_id)
             cursor.execute(
                 """
                 INSERT INTO groundloop_published_answer_state VALUES (
