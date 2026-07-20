@@ -7,6 +7,7 @@ import pytest
 from m4_13_verifier.train import (
     TRAINER_IMPLEMENTATION_SCHEMA,
     _canonical_sha256,
+    assert_repository_provenance_unchanged,
     validate_repository_provenance,
 )
 
@@ -98,3 +99,14 @@ def test_repository_root_and_dependency_set_fail_closed(tmp_path: Path) -> None:
     nested = root / "training"
     with pytest.raises(ValidationError, match="exact Git worktree root"):
         validate_repository_provenance(nested)
+
+
+def test_pre_publish_recheck_rejects_a_new_clean_commit(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    original = validate_repository_provenance(root)
+    (root / "protocol.md").write_text("changed during training\n", encoding="utf-8")
+    _git(root, "add", "protocol.md")
+    _git(root, "commit", "--quiet", "-m", "concurrent change")
+
+    with pytest.raises(ValidationError, match="changed before result sealing"):
+        assert_repository_provenance_unchanged(root, original)

@@ -298,6 +298,14 @@ def validate_repository_provenance(repository_root: Path) -> RepositoryProvenanc
     )
 
 
+def assert_repository_provenance_unchanged(
+    repository_root: Path, expected: RepositoryProvenance
+) -> None:
+    """Reject a clean-commit or source change that occurred during training."""
+    if validate_repository_provenance(repository_root) != expected:
+        raise ValidationError("training repository changed before result sealing")
+
+
 def _mapping(value: object, name: str) -> Mapping[str, object]:
     if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
         raise ValidationError(f"{name} must be a JSON object")
@@ -1267,6 +1275,7 @@ def train_variant(
         model.save_pretrained(path, safe_serialization=True)
         tokenizer.save_pretrained(path)
 
+    assert_repository_provenance_unchanged(repository_root, repository_provenance)
     return seal_training_run(
         run_directory=run_directory,
         invocation_sha256=invocation_sha256,
