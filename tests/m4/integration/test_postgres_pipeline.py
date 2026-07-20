@@ -525,8 +525,27 @@ def test_insert_delete_replace_replay_and_publication_are_exact(
         replacement,
         update=replace(replacement.update, payload_hash=_hash("conflict")),
     )
+    m4_pipeline_connection.execute(
+        "DELETE FROM groundloop_m4_execution_accounting WHERE epoch_id = %s",
+        (replaced.epoch_id,),
+    )
     with pytest.raises(EventConflictError):
         restarted_application.run_event(conflicting)
+    assert m4_pipeline_connection.execute(
+        """
+        SELECT count(*) FROM groundloop_m4_execution_accounting
+        WHERE epoch_id = %s
+        """,
+        (replaced.epoch_id,),
+    ).fetchone() == (0,)
+    assert restarted_application.run_event(replacement).state is EventRunState.REPLAYED
+    assert m4_pipeline_connection.execute(
+        """
+        SELECT execution_mode FROM groundloop_m4_execution_accounting
+        WHERE epoch_id = %s
+        """,
+        (replaced.epoch_id,),
+    ).fetchone() == (M4ExecutionMode.AUDIT.value,)
 
     head = m4_pipeline_connection.execute(
         "SELECT epoch_id FROM groundloop_m4_publication_head"

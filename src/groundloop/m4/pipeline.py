@@ -1189,8 +1189,6 @@ class PostgresM4ApplicationPorts:
         ).fetchone()
         if existing is not None:
             self._validate_payload(event, payload)
-            with self.connection.cursor() as cursor:
-                self._register_execution_accounting(cursor, int(existing[0]))
             opened = self.runtime_store.open_epoch(
                 event.update,
                 root_jobs,
@@ -1199,6 +1197,9 @@ class PostgresM4ApplicationPorts:
                 structural_action=lambda _cursor, _epoch_id: None,
                 event_manifest=payload.manifest,
             )
+            with self.connection.transaction():
+                with self.connection.cursor() as cursor:
+                    self._register_execution_accounting(cursor, int(existing[0]))
             sealed = str(existing[1]) == "sealed"
             failed = str(existing[1]) == "failed"
             if not sealed and not failed:
@@ -3324,6 +3325,9 @@ class PostgresM4ApplicationPorts:
                 cursor, published_epoch_id, expected_revision + 1
             )
             self._inject("publication_evaluation_promoted")
+            self._assert_sealed_evaluation(
+                published_epoch_id, expected_revision + 1
+            )
 
         self.runtime_store.seal_epoch(
             epoch_id,
@@ -3333,7 +3337,6 @@ class PostgresM4ApplicationPorts:
                 lambda point: self._inject(f"publication_store_{point}")
             ),
         )
-        self._assert_sealed_evaluation(epoch_id, expected_revision + 1)
         self._published_repository = deepcopy(self._working_repository)
         self._published_engine = deepcopy(self._working_engine)
         self._active_epoch_id = None
