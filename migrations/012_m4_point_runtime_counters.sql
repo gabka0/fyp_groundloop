@@ -1,8 +1,4 @@
--- M4.7 exact open-work counters for point-bounded measured coordination.
---
--- Coordinator action: move this contract into the next ordered migration.
--- This file is executable in disposable test schemas but is not itself part of
--- the production migration sequence.
+-- Exact open-work counters for point-bounded M4 measured coordination.
 
 ALTER TABLE groundloop_epoch
     ADD COLUMN open_job_count bigint NOT NULL DEFAULT 0
@@ -53,7 +49,10 @@ BEGIN
             ELSE 0
         END;
     END IF;
-    target_epoch_id := CASE WHEN TG_OP = 'DELETE' THEN OLD.epoch_id ELSE NEW.epoch_id END;
+    target_epoch_id := CASE
+        WHEN TG_OP = 'DELETE' THEN OLD.epoch_id
+        ELSE NEW.epoch_id
+    END;
     IF new_open <> old_open THEN
         UPDATE groundloop_epoch
         SET open_job_count = open_job_count + new_open - old_open
@@ -82,7 +81,10 @@ BEGIN
     IF TG_OP <> 'DELETE' THEN
         new_open := CASE WHEN NEW.closed_revision IS NULL THEN 1 ELSE 0 END;
     END IF;
-    target_epoch_id := CASE WHEN TG_OP = 'DELETE' THEN OLD.epoch_id ELSE NEW.epoch_id END;
+    target_epoch_id := CASE
+        WHEN TG_OP = 'DELETE' THEN OLD.epoch_id
+        ELSE NEW.epoch_id
+    END;
     IF new_open <> old_open THEN
         UPDATE groundloop_epoch
         SET open_scope_count = open_scope_count + new_open - old_open
@@ -95,4 +97,3 @@ $$;
 CREATE TRIGGER groundloop_discovery_scope_open_count
 AFTER INSERT OR DELETE OR UPDATE OF closed_revision ON groundloop_discovery_scope
 FOR EACH ROW EXECUTE FUNCTION groundloop_adjust_open_scope_count();
-

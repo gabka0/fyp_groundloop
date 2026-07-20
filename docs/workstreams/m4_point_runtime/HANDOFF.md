@@ -43,11 +43,11 @@ compatibility path for an existing measured caller that still supplies full
 members remains available while the coordinator moves pipeline registration
 out of event execution.
 
-## Required migration contract
+## Promoted migration contract
 
 The point surface requires `groundloop_epoch.open_job_count` and
-`groundloop_epoch.open_scope_count`. The exact proposed SQL is in
-`PROPOSED_MIGRATION.sql`. It backfills existing data and installs triggers so
+`groundloop_epoch.open_scope_count`. The contract is now migration
+`012_m4_point_runtime_counters.sql`. It backfills existing data and installs triggers so
 both the legacy audit path and point path maintain the counters in the same
 transaction as job/scope changes. The coordinator must promote that SQL to the
 next ordered migration before integrating the point APIs into the production
@@ -82,9 +82,8 @@ the trigger contract performs constant work per changed row.
 
 ## Known limitations
 
-- The migration is a handoff contract, not yet in `migrations/`; production
-  point calls fail fast at SQL schema resolution until the coordinator promotes
-  it.
+- The counter contract is promoted into the ordered migration set and is
+  exercised through the same disposable-schema loader as all other migrations.
 - The coordinator still needs to route policy construction through
   `register_claim_registry_snapshot` and remove the event-time registry writer
   in `pipeline.py`; this lane did not edit that coordinator-owned file.
