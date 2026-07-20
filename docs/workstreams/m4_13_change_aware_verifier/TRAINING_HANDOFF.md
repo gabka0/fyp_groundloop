@@ -258,14 +258,18 @@ and writes the selected checkpoint's combined development logits:
   --run-directory \
     artifacts/m4_13_change_aware_verifier/runs/V2-ce-mix/20260720 \
   --selection \
-    artifacts/m4_13_change_aware_verifier/selection.json \
+    artifacts/m4_13_change_aware_verifier/development_bundle/selection.json \
   --development-logits \
-    artifacts/m4_13_change_aware_verifier/runs/V2-ce-mix/20260720/development_logits.jsonl \
+    'artifacts/m4_13_change_aware_verifier/development_bundle/development/V2-ce-mix:seed-20260720/development_logits.jsonl' \
   --repository-root "$PWD"
 ```
 
 The variant in the second command is illustrative. The calibrator rejects it
 unless that exact variant/checkpoint is in the sealed development selection.
+Run the command once for each of the selected variant's three frozen seeds,
+changing both the run directory and the model-key component of the development
+logits path. Calibration output remains inside each corresponding run
+directory.
 
 ## Validation
 
