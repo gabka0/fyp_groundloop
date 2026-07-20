@@ -113,7 +113,7 @@ The hash-bound M4.12 consumed-diagnostic baseline is:
 | Contrastive transitions | 256 |
 | Detected argmax change | 0.3281, 95% page CI [0.2617, 0.3906] |
 | Both endpoints correct | 0.1992, 95% page CI [0.1445, 0.2578] |
-| True-label bidirectional margin | 0.6836, 95% page CI [0.6211, 0.7383] |
+| True-label bidirectional margin | 0.6836, 95% page CI [0.6211, 0.7383], under the deployed old-M3 temperature |
 
 The same gate reported BGE two-version SUPPORT ranking recall@1 of 0.7891 and
 MRR of 0.8945. Those are retrieval diagnostics, not verifier results, and must
@@ -124,6 +124,11 @@ is below 0.30, fewer than one third of true transitions cause any argmax
 change, and fewer than one fifth have both endpoints correct. These thresholds
 were checked before candidate training. They are not a promise that the
 proposed method will pass the terminal gate.
+
+One audit correction matters for comparison: recomputing the same hash-bound
+M4.12 raw logits at common `T=1` gives bidirectional margin `0.6796875`, not
+`0.68359375`. The published M4.12 interval above belongs to its deployed
+temperature surface and is not silently relabeled as a `T=1` interval.
 
 ### 3.2 Corrected M4.10 required inputs
 
@@ -471,6 +476,13 @@ hash of the complete immutable development report, including mandatory V1 and
 A1 ablation metrics; terminal validation must reject a missing or changed
 report even though those ablations are not terminal candidates.
 
+Publish raw development logits, the complete development report and selection
+as one failure-atomic staged bundle. Before writing anything, an existing
+sealed bundle must either validate as an exact replay of the same invocation
+or cause a collision failure. Never overwrite logits or the report and only
+then discover that an older selection disagrees; that would destroy the
+evidence required to reproduce the sealed decision.
+
 ## 9. Calibration
 
 Fit one scalar temperature per selected checkpoint after selection, using only
@@ -647,8 +659,10 @@ least two of three seeds satisfy the point thresholds:
    from M4.12's consumed diagnostic value 0.1992 and upper CI 0.2578.
 2. On the new reserve, VitaminC `flip_detected >= 0.50`. This floor was frozen
    from M4.12's 0.3281 and upper CI 0.3906.
-3. On the new reserve, VitaminC `bidirectional_margin >= 0.75`. This floor was
-   frozen from M4.12's 0.6836 and upper CI 0.7383.
+3. On the new reserve, VitaminC `bidirectional_margin >= 0.75`. This remains a
+   conservative pre-registered floor above M4.12's deployed-temperature upper
+   CI 0.7383, but it is not claimed to be an apples-to-apples `T=1` CI-derived
+   threshold; the common-`T=1` M4.12 point is 0.6796875.
 4. The primary seed's paired page-bootstrap 95% lower bound for the
    new-reserve `joint_correct` delta over V0 is greater than zero, with point
    delta at least +0.10.
