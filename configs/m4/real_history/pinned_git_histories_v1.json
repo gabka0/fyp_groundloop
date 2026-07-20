@@ -1,0 +1,195 @@
+{
+  "schema_version": "groundloop-m4-real-git-histories-v1",
+  "study_id": "m4-10-naturally-versioned-doc-pilot-v1",
+  "split_id": "test",
+  "annotation_protocol": {
+    "construction_type": "manually_curated_claims_from_pinned_git_diff",
+    "guideline_id": "m4-10-claim-construction-v1",
+    "provenance": "Claims were authored as a frozen benchmark fixture from the exact parent/child excerpts below; they are not human gold labels or objective truth.",
+    "adjudication": "none",
+    "independent_annotators": 0
+  },
+  "admission": {
+    "approximate_cap_per_inserted_chunk": 1,
+    "vector_depth": 1,
+    "lexical_depth": 1,
+    "frontier_depth": 1,
+    "snapshot_refresh_depth": 32,
+    "fusion_rule": "alternating_vector_then_lexical_unique_until_cap_v1",
+    "lineage_rule": "claims_with_prior_citation_cross_child_replacement_chunks_v1",
+    "frontier_rule": "no_invented_reserve_for_m3_imported_claims_v1",
+    "fresh_fallback_rule": "exact_bge_top1_active_chunk_for_claims_with_withdrawn_prior_citation_v1"
+  },
+  "histories": [
+    {
+      "history_id": "bustub-readme-ubuntu-22-to-24",
+      "source_identity": {
+        "repository_url": "https://github.com/cmu-db/bustub.git",
+        "commit": "60c778871a1f5be9d6cbc70beb33c46cfa1dd63e",
+        "parent": "42d40bfd1450a06769e066a51550d65f7b335c8b",
+        "path": "README.md",
+        "diff_sha256": "4823271e55b1ffa1706bd7076492eda889d84c1d4da468ae7c032a2129161a53",
+        "parent_blob_oid": "1c1d026171b52a05b53193042978fd1484623081",
+        "parent_content_sha256": "346412a947e891c117b406be9473246ab995b47c52eff51583e362f13b30e631",
+        "child_blob_oid": "616d741892cb2bc0451800113eb1298d0decfde4",
+        "child_content_sha256": "ce27ee2d5d5f0cf12c85284a60b522fc6268eec5dd7b36b2be8ef4ae39a4cc5b"
+      },
+      "event_kind": "replace",
+      "extractions": [
+        {
+          "extraction_id": "build-platform-paragraph",
+          "rule": "inclusive_utf8_line_range_trim_outer_whitespace_append_lf_v1",
+          "parent_start_line": 76,
+          "parent_end_line": 77,
+          "parent_excerpt_sha256": "6c202a3428aa32529411016cb7f1e5163785fe9487d181a15dfbd6589dbd51e0",
+          "child_start_line": 76,
+          "child_end_line": 77,
+          "child_excerpt_sha256": "e5b663a722af0a617df9ce3f2a86868dc6067e99c05b2e282a8fc762602c3907"
+        }
+      ],
+      "answer_id": "answer-bustub-platform-guidance",
+      "claims": [
+        {
+          "claim_id": "claim-bustub-development-ubuntu-22",
+          "text": "BusTub recommends Ubuntu 22.04 for development.",
+          "required": true,
+          "prior_citation_extraction_ids": ["build-platform-paragraph"],
+          "construction_note": "Old-version claim expected to be contradicted by the child excerpt."
+        },
+        {
+          "claim_id": "claim-bustub-grading-ubuntu-22",
+          "text": "The BusTub grading environment runs Ubuntu 22.04.",
+          "required": true,
+          "prior_citation_extraction_ids": [],
+          "construction_note": "Old-version claim expected to be contradicted by the child excerpt."
+        },
+        {
+          "claim_id": "claim-bustub-wsl-unsupported",
+          "text": "BusTub does not support WSL.",
+          "required": false,
+          "prior_citation_extraction_ids": [],
+          "construction_note": "Stable claim retained in both versions."
+        }
+      ]
+    },
+    {
+      "history_id": "dynagox-protected-oram-design-insert",
+      "source_identity": {
+        "repository_url": "https://github.com/gabka0/dynagox.git",
+        "commit": "579ca17122474f56ffcd9ea72aad3474e75742fa",
+        "parent": "e85f44302b3db67350020bfd5b2d5b369e74850f",
+        "path": "docs/secure_crown_protected_oram_store_design.md",
+        "diff_sha256": "576c33fe3691bf395384bc99a24ee04144f78682080807cb8afab5f55431837f",
+        "parent_blob_oid": null,
+        "parent_content_sha256": null,
+        "child_blob_oid": "2a95d9448b1f58bbeff5056e9c59cac945f1127b",
+        "child_content_sha256": "4ae8f90127f3b4df43d6bf2b7ffd9087d61f1c03e8355b1410005a8835b15ab1"
+      },
+      "event_kind": "insert",
+      "extractions": [
+        {
+          "extraction_id": "goal-and-security-boundary",
+          "rule": "inclusive_utf8_line_range_trim_outer_whitespace_append_lf_v1",
+          "parent_start_line": null,
+          "parent_end_line": null,
+          "parent_excerpt_sha256": null,
+          "child_start_line": 1,
+          "child_end_line": 28,
+          "child_excerpt_sha256": "1f04c1659e34f43e0afd997571e53a9072e5a474b374fe5fb30cbf81fac67325"
+        }
+      ],
+      "answer_id": "answer-dynagox-protected-oram-boundary",
+      "claims": [
+        {
+          "claim_id": "claim-dynagox-is-hardware-tee",
+          "text": "The Secure CROWN ProtectedOramStore prototype is a hardware TEE implementation.",
+          "required": true,
+          "prior_citation_extraction_ids": [],
+          "construction_note": "Inserted documentation explicitly negates this claim."
+        },
+        {
+          "claim_id": "claim-dynagox-buckets-protected",
+          "text": "External ORAM bucket blobs are encrypted, authenticated, and replay-checked.",
+          "required": true,
+          "prior_citation_extraction_ids": [],
+          "construction_note": "Inserted documentation explicitly states this claim."
+        },
+        {
+          "claim_id": "claim-dynagox-direct-maps-visible",
+          "text": "Direct keyed maps are excluded from the protected path because they expose the access pattern.",
+          "required": false,
+          "prior_citation_extraction_ids": [],
+          "construction_note": "Inserted documentation explicitly states this claim."
+        }
+      ]
+    },
+    {
+      "history_id": "mp-spdz-readme-december-2025",
+      "source_identity": {
+        "repository_url": "https://github.com/data61/MP-SPDZ.git",
+        "commit": "bf7f8f4b65e4653b5353fe652005319651794834",
+        "parent": "f10864f85e9127560efb2b7cbd17bd13c43db7d3",
+        "path": "README.md",
+        "diff_sha256": "3fd5290d7fe6d15a07c71e14e098c91547543d7d8def1e877d112d1651ba88f0",
+        "parent_blob_oid": "08e3d167b6a6b5a20b0f0c31602f419a715c7cad",
+        "parent_content_sha256": "a065856ef3a425742a310029ca467cf279f534b4accf6dc28531010f13489302",
+        "child_blob_oid": "e8439344da8a305df6530ed6bd01f8e287e1147e",
+        "child_content_sha256": "98ee1fb8c287f27022e81c086551a08dd34bcc95da0e45fb93d384e646953a37"
+      },
+      "event_kind": "replace",
+      "extractions": [
+        {
+          "extraction_id": "dependency-versions",
+          "rule": "inclusive_utf8_line_range_trim_outer_whitespace_append_lf_v1",
+          "parent_start_line": 294,
+          "parent_end_line": 305,
+          "parent_excerpt_sha256": "6f73ef518035118222ffaa1893594418b3c09cf219cc4b91819887467503e22c",
+          "child_start_line": 294,
+          "child_end_line": 306,
+          "child_excerpt_sha256": "fbbfca326beba1b7ef1042acd9dca2c795f6e0c94df6884162be77daa64e1e99"
+        },
+        {
+          "extraction_id": "binary-fixed-point",
+          "rule": "inclusive_utf8_line_range_trim_outer_whitespace_append_lf_v1",
+          "parent_start_line": 468,
+          "parent_end_line": 473,
+          "parent_excerpt_sha256": "39867c6108779048c5f24c4e069ec40171efb63cd424e46f1eadf40f8235c5ea",
+          "child_start_line": 469,
+          "child_end_line": 474,
+          "child_excerpt_sha256": "d177a7cd46f1d59bd1a77857401a69357e8fce356d1ab8081210819a3f73a271"
+        }
+      ],
+      "answer_id": "answer-mp-spdz-readme-facts",
+      "claims": [
+        {
+          "claim_id": "claim-mp-spdz-fixed-16-16",
+          "text": "In binary circuits, MP-SPDZ sfix uses 16/16-bit precision by default.",
+          "required": true,
+          "prior_citation_extraction_ids": ["binary-fixed-point"],
+          "construction_note": "Old-version claim expected to be contradicted by the child excerpt."
+        },
+        {
+          "claim_id": "claim-mp-spdz-sbitint-type",
+          "text": "MP-SPDZ uses sbitint.get_type(n) to obtain a type for n-bit arithmetic.",
+          "required": true,
+          "prior_citation_extraction_ids": [],
+          "construction_note": "Old-version claim expected to be contradicted by the child excerpt."
+        },
+        {
+          "claim_id": "claim-mp-spdz-boost-1-81",
+          "text": "MP-SPDZ tested Boost.Asio and Boost.Thread against Boost 1.81.",
+          "required": false,
+          "prior_citation_extraction_ids": ["dependency-versions"],
+          "construction_note": "Old-version claim expected to be contradicted by the child excerpt."
+        },
+        {
+          "claim_id": "claim-mp-spdz-set-precision",
+          "text": "MP-SPDZ lets users change the default sfix precision with sfix.set_precision.",
+          "required": false,
+          "prior_citation_extraction_ids": [],
+          "construction_note": "Stable claim retained in both versions."
+        }
+      ]
+    }
+  ]
+}
