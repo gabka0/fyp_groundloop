@@ -535,6 +535,13 @@ def _assert_rollback_after_reconnect(
 
 
 STRUCTURAL_POINTS = ("open_structural_written", "open_rows_written")
+PIPELINE_STRUCTURAL_POINTS = (
+    "structural_registry_written",
+    "structural_versions_written",
+    "structural_withdrawal_written",
+    "structural_working_states_written",
+    "structural_evaluation_written",
+)
 STORE_COMPLETION_POINTS = (
     "completion_children_written",
     "completion_parent_written",
@@ -631,6 +638,36 @@ def test_structural_open_is_fully_atomic_after_reconnect(
                 structural_action=structural_action,
                 failure_injector=switch,
             )
+        assert failure_point in switch.seen
+    _assert_rollback_after_reconnect(committed_m4_schema, before)
+
+
+@pytest.mark.parametrize("failure_point", PIPELINE_STRUCTURAL_POINTS)
+def test_pipeline_structural_open_is_fully_atomic_after_reconnect(
+    committed_m4_schema: CommittedM4Schema,
+    execution_mode: tuple[str, object | None],
+    failure_point: str,
+) -> None:
+    _mode_name, mode = execution_mode
+    switch = FailureSwitch(failure_point, [])
+    with committed_m4_schema.connect() as connection:
+        base = _seed_b0(connection)
+        ports = _ports(connection, switch, mode)
+        ports.runtime_store.register_candidate_policy(_candidate_policy())
+        event = _event(base)
+        application = _application(ports)
+        withdrawal = ports.plan_exact_withdrawal(event)
+        roots = application._root_jobs(event, withdrawal.fallback_claim_ids)
+        scopes = (
+            DiscoveryScope(
+                roots[0].job_id,
+                event.claim_registry_snapshot_id,
+                event.registered_claim_ids,
+            ),
+        )
+        before = _snapshot_all_tables(connection)
+        with pytest.raises(RuntimeError, match=failure_point):
+            ports.open_event(event, withdrawal, roots, scopes)
         assert failure_point in switch.seen
     _assert_rollback_after_reconnect(committed_m4_schema, before)
 
@@ -736,14 +773,6 @@ def test_publication_and_seal_are_fully_atomic_after_reconnect(
     _assert_rollback_after_reconnect(committed_m4_schema, before)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "contract request: production structural open exposes only two coarse "
-        "runtime-store hooks, not the per-step pipeline hooks required by the "
-        "M4.1 acceptance matrix"
-    ),
-)
 def test_pipeline_structural_open_exposes_required_per_step_hooks(
     committed_m4_schema: CommittedM4Schema,
 ) -> None:

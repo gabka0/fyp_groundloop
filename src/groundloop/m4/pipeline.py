@@ -1246,8 +1246,11 @@ class PostgresM4ApplicationPorts:
         def structural_action(cursor: Cursor[Any], epoch_id: int) -> None:
             self._register_execution_accounting(cursor, epoch_id)
             self._write_claim_registry_members(cursor, event)
+            self._inject("structural_registry_written")
             self._write_structural_rows(cursor, epoch_id, payload)
+            self._inject("structural_versions_written")
             self._write_withdrawal_overlay(cursor, epoch_id, withdrawal)
+            self._inject("structural_withdrawal_written")
             self._persist_working_states(
                 cursor,
                 epoch_id,
@@ -1257,6 +1260,7 @@ class PostgresM4ApplicationPorts:
                 claim_ids=(touched_claim_ids if self._measured else None),
                 answer_ids=(touched_answer_ids if self._measured else None),
             )
+            self._inject("structural_working_states_written")
             if self._measured:
                 self._write_initial_compact_evaluation(
                     cursor, epoch_id, event, root_jobs, discovery_scopes
@@ -1272,6 +1276,7 @@ class PostgresM4ApplicationPorts:
                 self._assert_grounding_equality(
                     cursor, epoch_id, staged_repository, staged_engine
                 )
+            self._inject("structural_evaluation_written")
 
         opened = self.runtime_store.open_epoch(
             event.update,
