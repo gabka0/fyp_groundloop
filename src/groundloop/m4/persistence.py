@@ -66,9 +66,15 @@ _RUNTIME_MANIFEST_KEY = "_groundloop_m4_runtime_v1"
 
 @dataclass(frozen=True, slots=True)
 class OpenEpochResult:
-    """The allocated epoch and whether the declaration was replayed."""
+    """The allocated epoch projection and whether the declaration was replayed.
 
-    epoch: RuntimeEpoch
+    Audit mode returns the complete immutable runtime epoch.  Measured replay
+    returns only the constant-size header: reconstructing a terminal epoch
+    would require reading its complete job graph, while fabricating an empty
+    graph would misrepresent the persisted declaration.
+    """
+
+    epoch: RuntimeEpoch | PointEpochHeader
     replayed: bool
 
 
@@ -517,6 +523,8 @@ class PostgresM4RuntimeStore:
             epoch_id = int(existing[0])
             if self._audit_transitions:
                 epoch = self.read_epoch(epoch_id)
+                epoch_projection: RuntimeEpoch | PointEpochHeader = epoch
+                persisted_update = epoch.update
                 roots = tuple(
                     job.spec for job in epoch.jobs if job.spec.parent_job_id is None
                 )
@@ -576,23 +584,15 @@ class PostgresM4RuntimeStore:
                     )
                     for row in scope_rows
                 )
-                epoch = RuntimeEpoch(
-                    epoch_id=epoch_id,
-                    update=persisted_update,
-                    state=header.state,
-                    revision=header.revision,
-                    jobs=(),
-                    discovery_scopes=original_scopes,
-                    failure_reason=header.failure_reason,
-                )
-            stored_event = self._read_event_manifest(epoch.epoch_id)
+                epoch_projection = header
+            stored_event = self._read_event_manifest(epoch_id)
             if (
-                epoch.update == update
+                persisted_update == update
                 and roots == canonical_jobs
                 and original_scopes == canonical_scopes
                 and stored_event == dict(event_manifest or {})
             ):
-                return OpenEpochResult(epoch, replayed=True)
+                return OpenEpochResult(epoch_projection, replayed=True)
             raise EventConflictError("event_id was reused with a different declaration")
 
         self._validate_open_declaration(
