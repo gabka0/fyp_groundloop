@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import math
 from pathlib import Path
@@ -12,6 +13,7 @@ from groundloop.m4.public_ai_gate import (
     classification_metrics,
     exact_normalized_overlap_counts,
     page_bootstrap_classification,
+    semantic_result_hash,
     transition_metrics,
 )
 
@@ -144,3 +146,58 @@ def test_frozen_config_pins_primary_source_and_balanced_diagnostic_sample() -> N
         "214885784d13912ce603cc30eaed5904fbb588e493405767d66bbb3a490787d6"
     )
     assert config.file_sha256
+
+
+def _semantic_report_fixture() -> dict[str, object]:
+    return {
+        "scientific_boundary": {"evaluates": "frozen empirical outputs"},
+        "gate_verdict": {"provenance": "PASSED"},
+        "config": {
+            "canonical_semantic_sha256": "1" * 64,
+            "seed": 7,
+            "bootstrap_resamples": 20,
+            "ece_bins": 5,
+            "path_name": "ignored.json",
+        },
+        "primary_source": {"archive_sha256": "2" * 64},
+        "dataset": {"selection": {"sample_manifest_sha256": "3" * 64}},
+        "artifacts": {"verifier": {"weights_sha256": "4" * 64}},
+        "verifier": {
+            "endpoint_classification": {"accuracy": 0.5},
+            "page_cluster_bootstrap": {"intervals": {"accuracy": [0.4, 0.6]}},
+            "contrastive_transitions": {"point": {"detected_change": 0.3}},
+            "telemetry": {"wall_seconds": 1.0},
+        },
+        "embedding": {
+            "role": "two-version ranking",
+            "queries": 2,
+            "candidate_versions_per_query": 2,
+            "point": {"support_version_recall_at_1": 0.5},
+            "bootstrap": {"support_version_recall_at_1": [0.25, 0.75]},
+            "ties_at_1e_12": 0,
+            "telemetry": {"total_seconds": 2.0},
+        },
+        "derived_predictions": {
+            "sha256": "5" * 64,
+            "contains_raw_dataset_text": False,
+            "path_name": "ignored.jsonl",
+        },
+        "execution": {"wall_seconds": 3.0, "peak_rss_kib": 100},
+    }
+
+
+def test_semantic_hash_excludes_telemetry_but_binds_metrics_and_provenance() -> None:
+    baseline = _semantic_report_fixture()
+    telemetry_changed = copy.deepcopy(baseline)
+    telemetry_changed["verifier"]["telemetry"]["wall_seconds"] = 99.0
+    telemetry_changed["embedding"]["telemetry"]["total_seconds"] = 88.0
+    telemetry_changed["execution"]["peak_rss_kib"] = 999_999
+    assert semantic_result_hash(telemetry_changed) == semantic_result_hash(baseline)
+
+    metric_changed = copy.deepcopy(baseline)
+    metric_changed["verifier"]["endpoint_classification"]["accuracy"] = 0.6
+    assert semantic_result_hash(metric_changed) != semantic_result_hash(baseline)
+
+    provenance_changed = copy.deepcopy(baseline)
+    provenance_changed["primary_source"]["archive_sha256"] = "9" * 64
+    assert semantic_result_hash(provenance_changed) != semantic_result_hash(baseline)

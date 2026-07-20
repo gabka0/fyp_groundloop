@@ -161,17 +161,33 @@ including model load. The whole run took 37.89 seconds externally with
 fail-fast runner enforces no per-batch timeout; the zero timeout count must not
 be read as a timeout-resilience experiment.
 
-Derived output hashes from the executed run:
+Deterministic scientific identities:
 
-| Output | SHA-256 |
+| Identity | SHA-256 |
 |---|---|
-| `report.json` | `201f90dd74a6842f5e15605ac333b89073f3254e48e1ca52329ab2063932b2f6` |
+| `semantic_result.json` / canonical semantic result | `017fd20fb810652725846e214c884114c5afdc06cb009206e4bdaf899f9ecef7` |
 | `predictions.jsonl` | `0cd315438ff94d54923b8fdefc16ac1c20d9f9dc385ae2963251c31e04c4bc0e` |
-| `manifest.json` | `29aa9112429dc2bcf2a3b65eb1a326226751f871c541b8f0e3e83172abeb67cf` |
+
+The semantic result binds frozen source/model/config identities, selected
+cases and labels, deterministic predictions, point metrics, bootstrap outputs,
+the verdict, and the scientific boundary. It excludes timing, throughput,
+memory, dependency, platform, failure, and timeout telemetry.
+
+The lane run produced run-specific `report.json` SHA-256
+`201f90dd74a6842f5e15605ac333b89073f3254e48e1ca52329ab2063932b2f6`
+and run-specific `manifest.json` SHA-256
+`29aa9112429dc2bcf2a3b65eb1a326226751f871c541b8f0e3e83172abeb67cf`.
+An independent coordinator reproduction produced different run-specific hashes
+(`7efee6c7f93c53472f533ff49e18e281535f5e22af34421d6b30e0b66e4c6ab9`
+and `2dbc91e2dbefdf44561493061cb0a94b4c1855dbd9208706ecce7db0f41d3684`)
+because runtime telemetry differed. It reproduced the exact predictions hash
+and the semantic-result hash above. Report and manifest hashes must never be
+used as cross-run scientific identities.
 
 Generated data, raw VitaminC text, model weights, and reports remain outside
 Git. `predictions.jsonl` contains IDs, labels, logits, probabilities, and text
-hashes but no raw claim or evidence text.
+hashes but no raw claim or evidence text. `report.json` and `manifest.json`
+are intentionally run-specific; `semantic_result.json` is canonical.
 
 ## Reproduction
 

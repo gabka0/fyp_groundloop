@@ -95,6 +95,79 @@ def _canonical_sha256(value: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def semantic_result_payload(report: Mapping[str, object]) -> Mapping[str, object]:
+    """Select deterministic scientific content and exclude runtime telemetry."""
+    config = _mapping(report.get("config"), "report config")
+    verifier = _mapping(report.get("verifier"), "report verifier")
+    embedding = _mapping(report.get("embedding"), "report embedding")
+    predictions = _mapping(
+        report.get("derived_predictions"), "report derived predictions"
+    )
+    prediction_sha = _string(predictions, "sha256")
+    if len(prediction_sha) != 64 or any(
+        character not in _HEX for character in prediction_sha
+    ):
+        raise ValidationError("derived prediction identity is not SHA-256")
+    contains_raw_text = predictions.get("contains_raw_dataset_text")
+    if type(contains_raw_text) is not bool:
+        raise ValidationError("contains_raw_dataset_text must be boolean")
+    return {
+        "schema_version": "groundloop-m4-vitaminc-semantic-result-v1",
+        "scientific_boundary": _mapping(
+            report.get("scientific_boundary"), "scientific boundary"
+        ),
+        "gate_verdict": _mapping(report.get("gate_verdict"), "gate verdict"),
+        "config": {
+            "canonical_semantic_sha256": _string(
+                config, "canonical_semantic_sha256"
+            ),
+            "seed": _integer(config, "seed"),
+            "bootstrap_resamples": _integer(config, "bootstrap_resamples"),
+            "ece_bins": _integer(config, "ece_bins"),
+        },
+        "primary_source": _mapping(
+            report.get("primary_source"), "primary source"
+        ),
+        "dataset": _mapping(report.get("dataset"), "dataset"),
+        "artifacts": _mapping(report.get("artifacts"), "artifacts"),
+        "verifier": {
+            "endpoint_classification": _mapping(
+                verifier.get("endpoint_classification"),
+                "endpoint classification",
+            ),
+            "page_cluster_bootstrap": _mapping(
+                verifier.get("page_cluster_bootstrap"),
+                "classification bootstrap",
+            ),
+            "contrastive_transitions": _mapping(
+                verifier.get("contrastive_transitions"),
+                "contrastive transitions",
+            ),
+        },
+        "embedding": {
+            "role": _string(embedding, "role"),
+            "queries": _integer(embedding, "queries"),
+            "candidate_versions_per_query": _integer(
+                embedding, "candidate_versions_per_query"
+            ),
+            "point": _mapping(embedding.get("point"), "embedding point metrics"),
+            "bootstrap": _mapping(
+                embedding.get("bootstrap"), "embedding bootstrap"
+            ),
+            "ties_at_1e_12": _integer(embedding, "ties_at_1e_12"),
+        },
+        "derived_predictions": {
+            "sha256": prediction_sha,
+            "contains_raw_dataset_text": contains_raw_text,
+        },
+    }
+
+
+def semantic_result_hash(report: Mapping[str, object]) -> str:
+    """Hash scientific results reproducibly across equivalent executions."""
+    return _canonical_sha256(semantic_result_payload(report))
+
+
 @dataclass(frozen=True, slots=True)
 class GateConfig:
     path: Path
@@ -1337,26 +1410,50 @@ def run_public_ai_gate(
             "timeouts": 0,
         },
     }
+    semantic_payload = semantic_result_payload(report)
+    semantic_sha = _canonical_sha256(semantic_payload)
+    semantic_path = output_directory / "semantic_result.json"
+    semantic_path.write_text(
+        json.dumps(semantic_payload, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    if file_sha256(semantic_path) != semantic_sha:
+        raise AssertionError("canonical semantic-result file hash is inconsistent")
+    report["semantic_result"] = {
+        "schema_version": "groundloop-m4-vitaminc-semantic-result-v1",
+        "path_name": semantic_path.name,
+        "sha256": semantic_sha,
+        "hash_scope": (
+            "frozen identities, sampled labels, deterministic predictions, metrics, "
+            "bootstrap outputs, verdict, and scientific boundary; excludes paths, "
+            "latency, throughput, memory, platform, dependencies, failures, and "
+            "timeout telemetry"
+        ),
+    }
     report_path = output_directory / "report.json"
     report_path.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     report_sha = file_sha256(report_path)
     manifest = {
-        "schema_version": "groundloop-m4-vitaminc-gate-output-manifest-v1",
+        "schema_version": "groundloop-m4-vitaminc-gate-output-manifest-v2",
         "config_sha256": config.file_sha256,
         "predictions_sha256": predictions_sha,
-        "report_sha256": report_sha,
+        "semantic_result_sha256": semantic_sha,
+        "report_sha256_run_specific": report_sha,
+        "report_hash_scope": "includes runtime telemetry and is run-specific",
         "gate_verdict": report["gate_verdict"],
     }
     manifest_path = output_directory / "manifest.json"
     manifest_path.write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    manifest_sha = file_sha256(manifest_path)
     return {
         "report": report,
-        "report_sha256": report_sha,
+        "semantic_result_sha256": semantic_sha,
         "predictions_sha256": predictions_sha,
-        "manifest_sha256": file_sha256(manifest_path),
+        "report_sha256_run_specific": report_sha,
+        "manifest_sha256_run_specific": manifest_sha,
         "output_directory": str(output_directory),
     }

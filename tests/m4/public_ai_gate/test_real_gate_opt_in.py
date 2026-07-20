@@ -36,4 +36,8 @@ def test_real_vitaminc_gate(tmp_path: Path) -> None:
     assert report["gate_verdict"]["provenance"] == "PASSED"
     assert report["gate_verdict"]["real_model_execution"] == "PASSED"
     assert report["dataset"]["selection"]["pages"] == 128
+    assert result["semantic_result_sha256"] == report["semantic_result"]["sha256"]
+    assert "report_sha256_run_specific" in result
+    assert "manifest_sha256_run_specific" in result
+    assert (tmp_path / "semantic_result.json").is_file()
     assert (tmp_path / "manifest.json").is_file()

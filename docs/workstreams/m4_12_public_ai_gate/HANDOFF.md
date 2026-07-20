@@ -23,6 +23,8 @@ generated report was modified or committed.
 - Ordinary tests are download-free and model-free. Real execution is explicit.
 - The output directory is external/generated and may be deleted without
   changing repository state.
+- `semantic_result.json` and its SHA-256 are the cross-run scientific identity.
+  Report and manifest SHA-256 values include telemetry and are run-specific.
 
 ## Coordinator integration
 
