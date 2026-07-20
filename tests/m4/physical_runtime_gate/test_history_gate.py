@@ -296,10 +296,9 @@ def _run_successful_history(
         replacement_result = run(replacement)
         assert _status(connection) == ("refuted", "contradicted")
 
-        # Worker retry is exercised at the point-runtime layer because the
-        # composed application currently has no retryable-failure port.  The
-        # runtime and evaluation overlay are intentionally not represented as
-        # atomically synchronized by this test.
+        # Exercise the composed retryable-failure transition: runtime and
+        # evaluation state move atomically, exact failure replay is a no-op,
+        # and reacquisition must not double-count the frontier pending delta.
         retry = compact_event(
             "history-retry",
             UpdateKind.INSERT,
