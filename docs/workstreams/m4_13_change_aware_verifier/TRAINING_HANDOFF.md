@@ -1,8 +1,12 @@
 # M4.13 training and calibration handoff
 
-Status: implementation complete; no real optimizer run has completed
+Status: implementation and all eight real optimizer runs complete
 
-## Verdict
+Canonical post-execution result: [`RESULTS.md`](RESULTS.md). The implementation
+and command details below remain the historical pre-execution handoff; where
+they discuss unknown or pending outcomes, `RESULTS.md` supersedes them.
+
+## Pre-execution verdict (historical)
 
 Lane B implements the frozen continuation experiment and its calibration
 contract. It does not provide a model-quality result. Until the serialized

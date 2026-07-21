@@ -2,10 +2,11 @@
 
 ## Status
 
-Lane C is implemented and software-validated. It has not run any real model,
-has not opened the sealed terminal reserve, and has not produced a scientific
-selection, metric, or stop/go result. Every current result is a synthetic test
-fixture and is marked `NON_SCIENTIFIC_TEST_ONLY` with promotion disabled.
+Lane C implementation and the production development, calibration and
+terminal executions are complete. The canonical post-execution report is
+[`RESULTS.md`](RESULTS.md). The implementation and command details below remain
+the historical pre-execution handoff; where they discuss unknown or pending
+outcomes, `RESULTS.md` supersedes them.
 
 The implementation covers development scoring and selection, calibration and
 training-artifact replay, the production terminal unlock boundary, raw-logit
@@ -244,9 +245,6 @@ failure atomicity.
 
 ## Next action
 
-Do not open the reserve yet. First integrate Lane C, rerun the repository gates,
-confirm all eight real training bundles exist and are clean, and run development
-once. Inspect the sealed development report and selection without editing them.
-Then generate and validate the three selected-checkpoint calibration artifacts.
-Only an eligible immutable selection with those calibrations authorizes the
-production terminal command.
+Execution is closed. Read [`RESULTS.md`](RESULTS.md) for the sealed `NO_GO`
+verdict, artifact identities, limitations and the rule that any further model
+work requires a new milestone and newly locked evaluation surface.
