@@ -275,10 +275,10 @@ changing both the run directory and the model-key component of the development
 logits path. Calibration output remains inside each corresponding run
 directory.
 
-## Validation
+## Pre-execution fixture validation (historical)
 
-No completed real model result was produced. Fixture-sized validation
-completed:
+At the time of this lane handoff, no completed real model result had been
+produced. Fixture-sized validation completed:
 
 ```text
 pytest -q tests/m4/change_aware_verifier/training
@@ -313,9 +313,12 @@ validated without optimizer work. The observed config, dataset-manifest,
 checkpoint-tree and weights hashes were respectively `d50c2af5...`,
 `1a5ed4b7...`, `81870b68...` and `81c49c30...`.
 
-## Limits and integration notes
+## Pre-execution limits and integration notes (historical)
 
-- Real training will take hours and remains coordinator-controlled.
+The executed outcomes and current limits are in [`RESULTS.md`](RESULTS.md).
+Before execution, the lane recorded the following constraints:
+
+- Real training was expected to take hours and remain coordinator-controlled.
 - The code proves schedule equivalence, not numerical equality of V2/V3
   gradients; their objectives intentionally differ.
 - Deterministic PyTorch mode and identical seeds reduce implementation noise,

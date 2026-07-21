@@ -273,11 +273,12 @@ hashes. The guarded production command then ran and sealed one terminal
 bundle. This was prerequisite recovery, not terminal-driven model tuning.
 
 The final validation supervisor also recorded two environment/invocation
-retries: Docker access was unavailable to the service account, so the installed
-local PostgreSQL service was used; and one repository-wide pytest invocation
-lacked the required project `PYTHONPATH` and failed collection before the
-corrected invocation ran. Neither retry changed source code, model artifacts,
-selection, calibration or terminal results.
+retries. The original Codex process had not inherited the user's existing
+`docker` supplementary-group membership, so validation was relaunched under
+that group and used the Compose PostgreSQL container. One repository-wide
+pytest invocation then lacked the required project `PYTHONPATH` and failed
+collection before the corrected invocation ran. Neither retry changed source
+code, model artifacts, selection, calibration or terminal results.
 
 ## 10. Software and database validation
 
