@@ -1,5 +1,72 @@
 # GroundLoop Decision Log
 
+## 2026-07-21 — M4 Closed with Negative/Preliminary Scientific Verdict; V0 Retained
+
+Decision status: M4 implementation and bounded evaluation complete; M5 is
+unblocked with explicit scientific debt.
+
+M4.10 closed the executable naturally versioned-history path on three pinned
+Git histories, but not the population-level selective-maintenance hypothesis.
+All non-exhaustive treatments recovered only `1/4` model-relative positive
+pairs and `0/1` answer-status effects at the single frozen `L=1` budget. The
+pilot has fourteen exhaustive pairs and no independent human labels. It is
+reproducible evaluation evidence, not a defensible recall/call-saving or
+generalization result.
+
+M4.12 independently established that the frozen M3 verifier is weak on
+revision-sensitive evidence. On 128 label-stratified real-revision VitaminC
+cases (512 endpoints), it achieved `0.5059` accuracy, `0.4655` macro-F1,
+`0.3281` detected label flips and `0.1992` joint endpoint correctness. The
+`0.6836` bidirectional-margin result showed latent score signal but did not
+rescue the poor decision behavior. This diagnostic is consumed and was not
+used for M4.13 terminal selection.
+
+M4.13 executed V0, replay control V1, three V2 CE-mix seeds, three V3
+paired-margin seeds and the A1 no-replay ablation under clean execution commit
+`2bf686d70ba1be5a2b2ad7f3f6e960e338d36373`. Development-only selection chose
+V2. Both V2 and V3 passed the development forgetting guards, but V3 improved
+median VitaminC joint correctness by only `0.001953125`, below the frozen
+`0.01` requirement. The paired-margin objective is therefore recorded as
+`PAIRED_MARGIN_NOT_USEFUL` for this design and budget.
+
+The single sealed terminal execution returned `NO_GO`. V2 passed clauses
+G1--G7, G9 and G10; only G8 failed. Its paired M3 macro-F1-delta lower bound
+was `-0.0571125531`, below the pre-registered `-0.05` retention floor, although
+the accuracy-delta lower bound was positive. Promotion and terminal tuning are
+both unauthorized. V0 remains GroundLoop's default verifier; V2 remains an
+experimental development-selected checkpoint only. No threshold adjustment,
+post-terminal retraining or repeat candidate selection is accepted under the
+M4.13 name.
+
+This negative result does not alter the exact structured-maintenance result.
+For a prebuilt registry, fixed policy and identical immutable stored model
+observations, successfully sealed measured events agree with independent
+structured recomputation. It also does not improve the corrected complexity
+claim: affected-accumulator/witness work, score-index work, sorting, bytes and
+PostgreSQL index/I/O/WAL/lock costs remain explicit; no worst-case sublinear
+event theorem or superiority over DBSP, F-IVM, CROWN or another named system
+is accepted.
+
+Final validation passed: focused M4.13 tests `109 passed, 1 skipped`; full
+repository tests `680 passed, 7 skipped`; Ruff; strict mypy over 19 focused and
+110 repository source files; compileall; and the live validator on PostgreSQL
+16.14 with pgvector 0.8.5. The validator reported zero claim mismatches, zero
+answer mismatches and zero invalid certificates.
+
+M5 bounded evidence groups may begin because all frozen M4 implementation and
+bounded-evaluation gates executed. This sequencing decision carries mandatory
+scientific debt: larger independently adjudicated real histories, disjoint
+development/test history clusters, multi-budget recall/work curves, meaningful
+frontier histories, end-to-end cost measurement, and a new verifier study with
+a new held-out reserve are still required before thesis-level effectiveness or
+generalization claims.
+
+Evidence: `docs/m4_implementation_status.md`,
+`docs/workstreams/m4_10_real_history_study/HANDOFF.md`,
+`docs/workstreams/m4_12_public_ai_gate/README.md`,
+`docs/m4_13_change_aware_verifier_plan.md`, and the hash-bound M4.13
+development/terminal bundles produced by execution commit `2bf686d`.
+
 ## 2026-07-20 — M4 Physical and Real-Dynamic Implementation Gates Accepted; Scientific Gate Remains Open
 
 Decision status: implementation gates accepted through M4.11; M4 CORE remains

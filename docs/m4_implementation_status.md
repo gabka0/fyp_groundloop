@@ -1,28 +1,40 @@
 # GroundLoop M4 Implementation Status
 
-Status date: 2026-07-20
+Status date: 2026-07-21
 
-Milestone status: **active; the deterministic and physical implementation
-gates through M4.11 are integrated, but the real-history scientific gate is
-not complete**.
+Milestone status: **complete as an implementation milestone and complete as a
+bounded evaluation milestone; the scientific result is negative/preliminary**.
 
 ## 1. Honest verdict
 
-GroundLoop now executes selective corpus insert, delete and replacement events
+GroundLoop executes selective corpus insert, delete and replacement events
 through the production PostgreSQL application. The integrated measured path
 uses a prebuilt claim-registry identity, point/CAS runtime transitions, signed
 evaluation counters, affected-key grounding patches and sparse publication.
-It has passed adversarial event-history tests and one bounded pinned-model
-insert/delete/replace history with exact reconnect replay.
+It passed adversarial event-history tests and one bounded pinned-model
+insert/delete/replace history with exact reconnect replay. M4.10 then executed
+the seven frozen treatments on three pinned Git histories with real BGE,
+MiniLM and PostgreSQL lexical behavior. M4.12 measured the frozen verifier on a
+public revision-sensitive diagnostic. M4.13 trained the frozen controls and
+candidates, selected V2 on development only, and executed the pre-registered
+terminal gate once.
 
-That is an implementation result, not the final M4 research result. The M4.9
-controlled study proves that the seven-treatment evaluation protocol is
-executable and catches deliberate misses. It contains table judgments and no
-real latency or token measurements. M4.10, the naturally versioned real-history
-pilot, is still in progress. Therefore GroundLoop currently has no defensible
-claim of useful real-history recall/call savings, latency superiority,
-objective truth maintenance, or asymptotic superiority over an existing IVM
-system.
+The terminal verdict is **NO_GO**. V2 passed G1--G7, G9 and G10 but failed the
+pre-registered M3-retention interval clause G8: its paired M3 macro-F1-delta
+lower bound was `-0.0571125531`, below the allowed `-0.05`. Promotion was not
+authorized, terminal tuning was not authorized, and the frozen M3 verifier V0
+remains the default. V3's paired-margin term improved median development
+joint correctness over V2 by only `0.001953125`, below the required `0.01`, so
+the added objective is classified `PAIRED_MARGIN_NOT_USEFUL`.
+
+This closes M4 honestly; it does not establish that the current selective
+policy is useful at population scale or that neural quality is solved. There
+is no defensible claim of useful real-history recall/call savings, latency
+superiority, objective truth maintenance, or asymptotic superiority over an
+existing IVM system. Confidence in the executed, hash-bound result is
+**high**. Confidence in generalizing its model-quality or selective-policy
+figures is **low** because the studies are bounded and the Git pilot lacks
+independent human adjudication.
 
 The strongest supported exact statement is conditional: for a prebuilt
 registry, a fixed policy and the immutable model observations actually stored,
@@ -43,7 +55,17 @@ empirical.
   `docs/workstreams/m4_9_empirical_study/HANDOFF.md`.
 - Adversarial physical histories:
   `docs/workstreams/m4_11_physical_history_gate/README.md`.
-- Current integration baseline for this status: `9221b6f`.
+- Naturally versioned real-history pilot:
+  `docs/workstreams/m4_10_real_history_study/HANDOFF.md`.
+- Public revision-sensitive gate:
+  `docs/workstreams/m4_12_public_ai_gate/README.md`.
+- Change-aware verifier plan and handoffs:
+  `docs/m4_13_change_aware_verifier_plan.md` and
+  `docs/workstreams/m4_13_change_aware_verifier/`.
+- M4.13 execution identity: clean commit
+  `2bf686d70ba1be5a2b2ad7f3f6e960e338d36373`. This identifies the code that
+  produced the training, calibration, development and terminal artifacts; it
+  is not the later documentation-closure commit.
 
 The design freeze remains authoritative for semantics. Its Section 13 simple
 whole-kernel formula is not authoritative as a proved implementation-time
@@ -162,6 +184,78 @@ recomputation. The full audits run afterwards. This is strong regression
 evidence for those concrete paths, not an asymptotic proof and not evidence of
 equal PostgreSQL page work or latency.
 
+### 3.7 M4.10: naturally versioned real-history pilot
+
+The corrected pilot executed three one-event histories from pinned MP-SPDZ,
+BusTub and Dynagox revisions. It evaluated all seven policies on identical
+event IDs with real BGE embeddings, calibrated MiniLM judgments and
+PostgreSQL lexical queries. Two executions reproduced the same deterministic
+structural, study, report and bundle hashes while correctly differing in
+runtime hashes. The run created and exactly replayed three persisted event
+audits, and treatment scoring performed real inference rather than reusing the
+exhaustive table.
+
+The exhaustive treatment evaluated 14 pairs and found four model-relative
+positive pairs. Every non-exhaustive treatment recovered `1/4`; all recovered
+`0/1` answer-status effects. These are fixture descriptions, not population
+estimates. The pilot has only three repository clusters, ten fixture-author
+claims, four changed/inserted excerpts, fourteen exhaustive pairs, one `L=1`
+budget and no independent human labels. It closes the executable
+real-history path but supplies no statistically reliable recall/savings
+claim. It also exposed a material frozen-verifier weakness: the operational
+policy emitted four SUPPORT, ten NEUTRAL and zero REFUTE judgments across the
+fourteen exhaustive new-version pairs.
+
+### 3.8 M4.12: public revision-sensitive diagnostic
+
+M4.12 evaluated the frozen V0 verifier on 128 normalized-page-disjoint,
+label-stratified real-revision VitaminC cases: 512 endpoint rows consisting of
+256 SUPPORT, 128 REFUTE and 128 NEUTRAL judgments. Endpoint accuracy was
+`0.5059`, macro-F1 `0.4655`, and ECE `0.2779`. The argmax changed on `0.3281`
+of human-label-changing pairs, both endpoints were correct on `0.1992`, and
+both true-label margins moved in the correct direction on `0.6836`. The
+narrow two-version BGE SUPPORT-version recall@1 was `0.7891`.
+
+This is strong evidence that V0 is weak on fine-grained evidence revisions,
+not an estimate for the unstratified VitaminC population or end-to-end
+GroundLoop utility. M4.12 became a consumed diagnostic and was not reused for
+M4.13 selection or terminal comparison.
+
+### 3.9 M4.13: change-aware verifier experiment
+
+All frozen variants executed under the clean `2bf686d` identity: V0; replay
+control V1; three V2 CE-mix seeds; three V3 paired-margin seeds; and the A1
+no-replay ablation. Development selection used no terminal data. Both V2 and
+V3 passed every development forgetting guard. Their median VitaminC
+development joint-correctness values were `0.3828125` and `0.384765625`,
+respectively. The `+0.001953125` V3 gain missed the pre-registered `+0.01`
+utility threshold, despite two corresponding seeds matching or beating V2.
+The experiment therefore selected V2 and rejected the paired-margin term as
+not useful under this budget.
+
+The selected V2 primary seed achieved the following on the 128-case,
+512-endpoint sealed terminal reserve:
+
+| Gate quantity | Observed result |
+|---|---:|
+| joint correctness | `0.3828125` |
+| flip detected | `0.58203125` |
+| bidirectional margin | `0.81640625` |
+| joint delta over V0, point / 95% lower | `+0.1328125 / +0.078125` |
+| flip-delta 95% lower | `+0.1171875` |
+| M3 public-test accuracy | `0.7122905028` |
+| M3 public-test macro-F1 | `0.5244457628` |
+| paired M3 accuracy-delta lower | `+0.0530726257` |
+| paired M3 macro-F1-delta lower | `-0.0571125531` |
+
+The final row alone failed its threshold. Consequently the machine verdict is
+`NO_GO`, promotion is false, and terminal tuning is false. V2 is the
+development-selected experimental candidate only; it is not the production
+default. The immutable terminal result has semantic-result SHA-256
+`196b1eab46eb93103c72fa6d0d73d016d5b36545ac2673e0cc4da41e6e92cb9c`.
+No post-terminal threshold change, retraining or second candidate selection is
+part of M4.
+
 ## 4. Corrected complexity result
 
 The original whole-kernel expression in `docs/m4_design_freeze.md` Section 13
@@ -202,17 +296,23 @@ supported.
 
 ## 5. Validation evidence and limits
 
-The latest recorded repository-wide gate before the final late-completion and
-M4.11 integration commits was:
+The final post-M4.13 validation on 2026-07-21 recorded:
 
 ```text
-556 passed, 4 skipped
-Ruff: passed
-mypy --strict src: passed over 108 source files
-compileall: passed
+focused M4.13 pytest: 109 passed, 1 skipped
+focused Ruff: passed
+focused mypy --strict: passed over 19 source files
+focused compileall: passed
+full pytest: 680 passed, 7 skipped
+repository Ruff: passed
+repository mypy --strict: passed over 110 source files
+repository compileall: passed
+PostgreSQL validator: passed on PostgreSQL 16.14 with pgvector 0.8.5
 ```
 
-Post-integration focused evidence includes:
+The live validator reported zero claim mismatches, zero answer mismatches,
+zero invalid certificates, and usable current-observation and policy-score
+indexes. Earlier focused evidence also includes:
 
 - M4.11 physical-runtime gate: 6 live PostgreSQL tests passed; Ruff and
   compileall passed.
@@ -225,28 +325,30 @@ Post-integration focused evidence includes:
 - M4.7 static complexity guards: the point runtime, counter update, AVL score
   index, publication-head and theorem-term guards pass.
 
-A repository-wide rerun after every final integration commit remains a
-coordinator closure action; the older 556-test result must not be presented as
-post-M4.11 evidence.
+## 6. Closure decision and M5 boundary
 
-## 6. Remaining M4 CORE gate
+M4 is closed under the first outcome previously defined by this status:
+**implementation complete, scientific evidence preliminary**. M5 bounded
+evidence groups is unblocked, but this is sequencing authorization, not a
+positive scientific verdict and not authorization to promote V2.
 
-M4.10 must execute the seven treatments on pinned naturally versioned histories
-with real BGE/verifier artifacts, persisted event-audit identities and actual
-available telemetry. Its pilot must state dataset size, manual-adjudication
-status, split construction and statistical limitations. A small pilot may
-close the executable path while remaining insufficient for a thesis-level
-quality or generalization claim.
+The following scientific debt remains mandatory before dissertation-scale
+claims:
 
-After M4.10, the coordinator must record one of two honest outcomes:
+1. independently annotate and adjudicate a larger, multi-domain set of
+   naturally versioned histories;
+2. separate policy/model development from untouched history-cluster testing
+   and report cluster-level uncertainty;
+3. exercise multiple budgets and histories with retained active evidence so
+   frontier/fresh-fallback behavior is nontrivial;
+4. improve revision-sensitive verification under a new held-out reserve while
+   preserving M3 capability, because M4.13's V2 failed G8;
+5. measure end-to-end latency, neural calls/tokens where meaningful, and
+   recall/work Pareto curves against full recomputation and appropriately
+   matched baselines; and
+6. optimize and re-prove the high-degree affected-accumulator/witness path
+   before making a stronger update-time claim.
 
-1. **M4 implementation complete, scientific evidence preliminary:** proceed to
-   M5 only while explicitly scheduling a larger real-history evaluation before
-   dissertation claims; or
-2. **M4 scientific gate incomplete:** add a bounded public/real-history study
-   before M5 because the current pilot cannot evaluate the stated recall/work
-   hypothesis.
-
-The optional learned impact retriever remains TARGET work. It does not block
-M4 CORE and must not begin until exhaustive development judgments and
-history-component splits are frozen.
+The optional learned impact retriever remains TARGET work. It must not be
+trained or evaluated against terminal data or treated as a substitute for
+independent labels.
