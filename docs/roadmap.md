@@ -154,12 +154,18 @@ Exit criteria:
 
 ## M4 — Selective Semantic Maintenance
 
-Status: active. The semantic freeze, durable end-to-end application,
-production model ports, measured structured kernel, bounded real-model dynamic
-history, controlled seven-treatment harness and adversarial physical-history
-matrix are integrated through M4.11. The naturally versioned real-history
-pilot (M4.10) remains in progress, so M4's scientific evaluation gate is not
-complete. See `docs/m4_implementation_status.md` for the exact boundary.
+Status: complete (2026-07-21), with strong conditional systems evidence and
+preliminary/negative AI and end-to-end evidence. The implementation gates,
+natural-history pilot, public AI diagnostic and sealed change-aware adaptation
+experiment have all executed. See `docs/m4_implementation_status.md` and the
+M4.10/M4.12/M4.13 result documents for the exact boundary.
+
+Result routing:
+
+- `docs/workstreams/m4_10_real_history_study/HANDOFF.md`
+- `docs/workstreams/m4_12_public_ai_gate/README.md`
+- `docs/m4_13_change_aware_verifier_plan.md`
+- `docs/workstreams/m4_13_change_aware_verifier/RESULTS.md`
 
 Deliverables:
 
@@ -189,14 +195,19 @@ Implemented stages:
   deterministic output, explicit misses/timeouts and optional telemetry.
 - **M4.11:** two-scale adversarial event histories that forbid full-state
   paths during successful measured kernels and audit afterwards.
-
-Still open:
-
-- **M4.10:** naturally versioned real histories using persisted exhaustive
-  audits, pinned real models and actual available telemetry;
-- a coordinator decision on whether the pilot is sufficient to close M4 CORE
-  implementation while deferring a larger scientific study, or whether more
-  real-history evidence must precede M5.
+- **M4.10:** executed naturally versioned real-history pilot using persisted
+  exhaustive audits, pinned real models and actual telemetry. Non-exhaustive
+  policies recovered `1/4` model-relative positive pairs and `0/1` answer-
+  status effects on three unadjudicated histories; these are descriptive
+  negative results, not population estimates.
+- **M4.12:** executed page-disjoint VitaminC diagnostic of the frozen M3
+  verifier: `0.5059` endpoint accuracy, `0.1992` joint endpoint correctness
+  and `0.3281` detected label changes.
+- **M4.13:** executed the preregistered eight-run adaptation, development
+  selection, calibration and one-shot terminal evaluation. V2 cross-entropy
+  mix was selected over V3 paired margin, but the terminal verdict was
+  `NO_GO` because retention gate G8 failed. No adapted checkpoint is promoted;
+  frozen M3 remains the default.
 
 Exit criteria:
 
@@ -207,21 +218,24 @@ Exit criteria:
   required/optional PENDING semantics survive adversarial history tests.
   **Passed.**
 - Missed affected pairs/claims and status effects are inspectable under all
-  seven treatments on identical event IDs. **Passed on controlled fixtures;
-  real-history execution pending.**
+  seven treatments on identical event IDs. **Passed on controlled fixtures
+  and the bounded real-history pilot.**
 - Impact recall, actual verifier work and available latency/token telemetry are
-  measured on pinned naturally versioned update streams. **Pending M4.10.**
+  measured on pinned naturally versioned update streams. **Passed as an
+  executable pilot; too small and unadjudicated for a general quality claim.**
 - Every final performance or AI-quality statement names its workload and
   uncertainty, and does not promote controlled fixture values to scientific
-  evidence. **Pending final M4 verdict.**
+  evidence. **Passed; final verdict is preliminary/negative.**
 
-M4 implementation exactness and M4 scientific evidence are separate gates.
-Passing the former does not establish neural completeness, objective truth,
-useful call savings or superiority to an existing IVM system.
+M4 implementation exactness and M4 scientific evidence remain separate. The
+former passed. The latter did not establish neural completeness, useful call
+savings on a representative population, objective truth or superiority to an
+existing IVM system. A larger independently adjudicated natural-history study
+is explicit pre-dissertation/M6 debt, not a hidden extension of M4.
 
 ## M5 — Bounded Evidence Groups
 
-Status: not started; blocked on the explicit post-M4.10 milestone decision.
+Status: not started; unblocked by the recorded M4 closure decision.
 
 Deliverables:
 
@@ -250,6 +264,8 @@ Deliverables:
 - Baseline and ablation runners.
 - Systems and AI analysis.
 - Error taxonomy.
+- Larger independently adjudicated natural-history evaluation before any
+  dissertation-level selective-maintenance or end-to-end utility claim.
 - Dissertation-ready figures and tables.
 
 Exit criteria:

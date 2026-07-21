@@ -1,8 +1,9 @@
 # GroundLoop Research Plan
 
-Status: project direction and v0.2 design frozen; M1 through M3 complete,
-including live PostgreSQL, pgvector, and real pinned-model validation; M4 is
-next
+Status: project direction and v0.2 design frozen; M1 through M4 complete.
+M4 closed with strong conditional systems evidence but preliminary and
+negative AI/end-to-end evidence. M5 is unblocked but not started; the frozen
+M3 verifier remains the default.
 
 ## Working Title
 
@@ -91,6 +92,32 @@ Empirical claims:
 
 The exact guarantee must never be extended to unrestricted natural-language
 truth or neural semantic correctness.
+
+## Current Evidence Boundary after M4
+
+M4 executed, rather than merely implemented, its final empirical gates:
+
+- M4.10 ran all seven treatments on three naturally versioned software-
+  repository histories with pinned models and persisted audits. The
+  non-exhaustive policies found only `1/4` model-relative positive pairs and
+  `0/1` answer-status effects. The pilot has no independent human labels and
+  is too small for a population claim.
+- M4.12 measured the frozen M3 verifier on a page-disjoint VitaminC revision
+  diagnostic. It obtained `0.5059` endpoint accuracy, `0.1992` joint endpoint
+  correctness and `0.3281` detected label changes, establishing that the
+  semantic producer was the dominant observed weakness.
+- M4.13 trained and evaluated replay, cross-entropy-mix, paired-margin and
+  no-replay controls under a sealed protocol. The cross-entropy mix improved
+  revision sensitivity, but the terminal result was `NO_GO` because the
+  preregistered original-domain retention interval failed G8. The adapted
+  checkpoint is therefore not promoted.
+
+These results close M4 honestly: exact structured maintenance remains the
+strong result, while useful selective recall and a production-safe neural
+improvement are not established. A larger independently adjudicated natural-
+history study remains required before dissertation-level end-to-end claims.
+That study is pre-dissertation/M6 work, not a reason to reopen the completed
+M4 implementation milestone.
 
 ## FYP Scope
 

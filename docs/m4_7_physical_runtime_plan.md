@@ -1,12 +1,13 @@
 # GroundLoop M4.7 Physical Runtime Plan
 
-Status date: 2026-07-20
+Status date: 2026-07-21
 
 Status: **implemented and accepted as a bounded physical-regression gate;
-scientific performance evidence remains open**.
+M4 subsequently closed with preliminary/negative scientific evidence**.
 
-M4.7 no longer blocks on missing implementation. M4.10 and the final M4
-scientific-evidence verdict still block M5. The proved correction is
+M4.7 no longer blocks on missing implementation. M4.10, M4.12 and M4.13 have
+since executed and the final M4 verdict is recorded; M5 is unblocked but not
+started. The proved correction is
 `docs/workstreams/m4_7_complexity_proof/README.md`; this document retains the
 original target below only to show what the audit rejected.
 
@@ -232,7 +233,7 @@ latency or behavior outside the named histories.
 
 ## 5. M4 completion after M4.7
 
-M4.7 is complete, but it does not complete M4.
+M4.7 did not by itself complete M4. The later stages below have now executed.
 
 ### M4.8 — real dynamic history
 
@@ -247,8 +248,8 @@ or replacement.
 
 ### M4.9 — empirical selective-maintenance study
 
-Status: controlled harness complete; real-history scientific execution is
-still open as M4.10.
+Status: controlled harness complete; M4.10 subsequently executed the real-
+history pilot.
 
 Run exhaustive event audits and `SnapshotRefresh_k` on frozen controlled and
 real software-document histories. Report impact recall, status-effect recall,
@@ -257,7 +258,28 @@ timeouts and history-cluster uncertainty. Include exhaustive refresh,
 vector-only, lexical-only, union, lineage, frontier and fresh-fallback
 ablations on identical event IDs.
 
-### M4.N — optional neural improvement
+### M4.10 — naturally versioned real-history pilot
+
+Status: executed as an end-to-end empirical pilot, with a negative and
+preliminary verdict.
+
+The seven treatments ran on three repository histories, ten fixture-author
+claims and fourteen exhaustive new-version pairs. Non-exhaustive policies
+recovered `1/4` model-relative positive pairs and `0/1` answer-status effects.
+Those are descriptive fixture results, not population estimates, because the
+pilot has no independent human adjudication.
+
+### M4.12--M4.13 — bounded neural diagnosis and adaptation
+
+Status: executed; terminal result `NO_GO`.
+
+M4.12 measured weak frozen-M3 behavior on fine-grained VitaminC revisions.
+M4.13 then compared replay-only, cross-entropy-mix, paired-margin and no-replay
+controls under a preregistered sealed protocol. The selected cross-entropy mix
+improved revision metrics but failed original-domain retention gate G8. It was
+not promoted, and the frozen M3 verifier remains the default.
+
+### M4.N — optional future neural improvement
 
 Only after exhaustive event labels and history-component splits are frozen,
 train a learned impact ranker or calibrate a stronger verifier. Compare it
@@ -265,11 +287,10 @@ against the deterministic vector/lexical union under the same verifier budget.
 This is an AI-quality experiment, not part of the exact IVM theorem, and does
 not block M4 CORE unless explicitly promoted by a later decision.
 
-M5 bounded evidence groups begins only after M4.10 produces an explicit
-verdict and the M4 status document records exact commands, manifests and
-limitations. A small real-history pilot may close the executable path without
-supporting a strong quality, generalization or performance claim; that
-distinction must be recorded before moving on.
+M5 bounded evidence groups is now unblocked but not started. M4.10 closed the
+executable path without supporting a strong quality, generalization or
+performance claim. A larger independently adjudicated natural-history study
+remains pre-dissertation/M6 debt before any such claim.
 
 ## 6. Historical parallel ownership
 

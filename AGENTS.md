@@ -34,6 +34,14 @@ order:
 28. `docs/workstreams/m4_8_real_dynamic_history/HANDOFF.md` (real-model history)
 29. `docs/workstreams/m4_9_empirical_study/HANDOFF.md` (controlled study boundary)
 30. `docs/workstreams/m4_11_physical_history_gate/README.md` (history matrix)
+31. `docs/workstreams/m4_10_real_history_study/HANDOFF.md` (executed
+    natural-history pilot)
+32. `docs/workstreams/m4_12_public_ai_gate/README.md` (executed frozen-M3 AI
+    diagnostic)
+33. `docs/m4_13_change_aware_verifier_plan.md` (preregistered adaptation
+    design and gates)
+34. `docs/workstreams/m4_13_change_aware_verifier/RESULTS.md` (executed
+    adaptation result and M4 verdict)
 
 `docs/initial_technical_design.md` (v0.1) is superseded and retained for audit
 only. The M0.5 design freeze and M1.1 amendments are complete; frozen decisions
@@ -104,13 +112,16 @@ an active ownership grant. No future lane may cross the audit/contract barrier
 or edit another active lane's paths without a new coordinator-approved
 manifest.
 
-M4.1 through the measured-runtime and real dynamic-history implementation
-gates are integrated. This includes PostgreSQL persistence, application and
-CLI composition, durable model provenance, exact fresh fallback, a point/CAS
-measured runtime, signed evaluation counters, affected-key state patches,
-sparse publication, adversarial physical-history tests and one pinned-model
-insert/delete/replace history. Read `docs/m4_implementation_status.md` before
-proposing work or making performance claims.
+M4 is closed. The M4 implementation gates through M4.11 integrated PostgreSQL
+persistence, application and CLI composition, durable model provenance, exact fresh
+fallback, a point/CAS measured runtime, signed evaluation counters,
+affected-key state patches, sparse publication, adversarial physical-history
+tests, one pinned-model insert/delete/replace history and the controlled
+evaluation harness. M4.10 then executed the naturally versioned real-history
+pilot; M4.12 measured the frozen verifier on a revision-sensitive public
+diagnostic; M4.13 executed the preregistered adaptation and returned `NO_GO`.
+Read `docs/m4_implementation_status.md` and the M4.10/M4.12/M4.13 result docs
+before proposing work or making performance or AI-quality claims.
 
 Do not describe the original linear-looking whole-kernel expression in
 `docs/m4_design_freeze.md` Section 13 as proved. The explicit 2026-07-20
@@ -121,11 +132,19 @@ work `G`, ordered score-index work, canonical sorting, bytes and PostgreSQL
 index/I/O/WAL/lock costs. No superiority over DBSP, F-IVM, CROWN or another
 named system follows.
 
-The M4.9 controlled study is reproducible evaluation plumbing, not real-model
-quality or latency evidence. A naturally versioned real-history pilot is still
-in progress as M4.10. M5 must not begin merely because the implementation
-gate passes; first record the M4.10 verdict and the remaining scientific
-evidence limits in the milestone status.
+The M4.9 controlled study remains reproducible evaluation plumbing, not
+real-model quality or latency evidence. M4.10 executed the real-history path,
+but its three histories, ten fixture-author claims and fourteen exhaustive
+pairs have no independent human adjudication; its poor non-exhaustive recall
+is a bounded negative result, not a population estimate. M4.12 confirmed that
+the frozen M3 verifier was weak on fine-grained revisions. M4.13 improved the
+held-out VitaminC revision metrics but failed preregistered retention gate G8,
+so it is not promoted: the frozen M3 checkpoint remains the default.
+
+M5 is unblocked but not started. A larger, independently adjudicated natural-
+history evaluation remains mandatory before dissertation-level selective-
+maintenance or end-to-end utility claims; schedule that work in pre-
+dissertation/M6 rather than silently treating the M4 pilot as conclusive.
 
 The older M4 and M4.1 multi-agent plans are historical ownership records.
 Future parallel work requires a new explicit disjoint-path manifest; it does

@@ -6,11 +6,37 @@
 > and broad context. Its proposed schema, labels, phases, and first-task list
 > predate the adversarial review. `docs/technical_design.md` v0.2 plus decisions
 > D-1 through D-20 govern implementation. In particular, observations store
-> scores rather than permanent labels, and M1 through M3 are complete. Read
-> `docs/m2_implementation_status.md` and `docs/m3_implementation_status.md`
-> for the implemented boundary before planning M4.
+> scores rather than permanent labels, and M1 through M4 are complete. The
+> frozen M3 verifier remains the default after the M4.13 adaptation returned
+> `NO_GO`; M5 is unblocked but not started. Read the current milestone routing
+> below before planning new work.
 
-Last updated: 2026-07-18
+Last updated: 2026-07-21
+
+## Current Milestone Routing
+
+This document preserves the original project selection and much of its
+historical plan. It is not the current status authority. For the executed M4
+boundary, read in this order:
+
+1. `docs/m4_implementation_status.md` — integrated implementation and final
+   milestone boundary.
+2. `docs/workstreams/m4_10_real_history_study/HANDOFF.md` — executed natural-
+   history pilot and its severe sample/adjudication limits.
+3. `docs/workstreams/m4_12_public_ai_gate/README.md` — executed frozen-M3
+   revision-sensitive diagnostic.
+4. `docs/m4_13_change_aware_verifier_plan.md` — preregistered adaptation and
+   stop/go gates.
+5. `docs/workstreams/m4_13_change_aware_verifier/RESULTS.md` — sealed terminal
+   `NO_GO`, non-promotion decision and final M4 verdict.
+
+M4 is closed with strong conditional structured-correctness evidence and
+preliminary/negative AI and end-to-end evidence. M4.10's three natural
+histories were not independently adjudicated. M4.13 improved the held-out
+revision diagnostic but failed the preregistered original-domain retention
+interval, so no adapted checkpoint replaces the frozen M3 default. M5 bounded
+evidence groups may begin; the larger independently adjudicated natural-
+history study remains explicit pre-dissertation/M6 debt.
 
 This document records the project decision, research boundaries, proposed
 architecture, evaluation plan, and relationship to the earlier Secure CROWN
@@ -982,9 +1008,16 @@ When entering the new GroundLoop repository:
 11. Treat the UI and reproducibility as core deliverables, not optional polish.
 12. Preserve unrelated user changes in dirty worktrees.
 
-## 25. Recommended First Tasks in the New Repository
+## 25. Historical First Tasks and Current Handoff
 
-The next agent should begin with these concrete tasks:
+The list below records the repository-bootstrap sequence that has already been
+completed. It is not the current work queue. A current agent should follow the
+milestone routing near the top of this document, preserve the frozen M3 model
+as the default, and begin M5 only from an explicit new execution plan. The
+larger independently adjudicated natural-history evaluation belongs on the
+pre-dissertation/M6 schedule.
+
+The original bootstrap tasks were:
 
 1. Create `AGENTS.md` pointing to this onboarding document.
 2. Create `docs/research_plan.md` containing the frozen title, research

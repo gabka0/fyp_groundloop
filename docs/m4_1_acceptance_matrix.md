@@ -3,7 +3,7 @@
 Status: **M4.1 deterministic integration accepted; retained as a regression
 contract**
 
-Date: 2026-07-20
+Acceptance date: 2026-07-20; M4 closure update: 2026-07-21
 
 This matrix is executable scope, not an aspirational checklist. Every required
 row now has deterministic/live PostgreSQL evidence. Later M4.7--M4.11 work
@@ -120,9 +120,9 @@ installation and verifies rollback of all 61 transactional GroundLoop tables;
 the separately committed execution-accounting increment is asserted
 explicitly rather than hidden.
 
-## 6. Stage disposition before M5
+## 6. Stage disposition at M4 closure
 
-M5 evidence groups cannot begin until these stages pass:
+The implementation prerequisites for M5 have now passed:
 
 1. **M4.1a — passed:** PostgreSQL runtime parity, full-projection rollback and
    reconnect tests.
@@ -140,15 +140,24 @@ M5 evidence groups cannot begin until these stages pass:
    insert/delete/replace with exact reconnect replay and post-kernel oracles.
 8. **M4.6/M4.9 controlled — passed as evaluation infrastructure:** all seven
    ablations, same-event checks, misses/timeouts and deterministic outputs.
-9. **M4.10 — in progress:** naturally versioned real-history execution with
-   pinned models, persisted audit identities and actual telemetry.
+9. **M4.10 — executed, bounded negative pilot:** naturally versioned real-
+   history execution with pinned models, persisted audit identities and actual
+   telemetry. Non-exhaustive policies recovered `1/4` model-relative positive
+   pairs and `0/1` answer-status effects; three histories without independent
+   adjudication cannot support a population claim.
 10. **M4.11 — passed as physical regression evidence:** adversarial histories
     at two unrelated-state scales with full paths forbidden in the successful
     measured kernel and audited afterwards.
+11. **M4.12 — executed AI diagnostic:** the frozen M3 verifier was weak on
+    fine-grained public revision pairs, motivating one bounded adaptation.
+12. **M4.13 — executed `NO_GO`:** the change-aware experiment improved the
+    revision diagnostic but failed preregistered retention gate G8. No adapted
+    checkpoint is promoted; frozen M3 remains the default.
 
 The optional learned impact retriever M4.N may follow the real-history study or
 remain future work; it does not block M4 CORE. Any newly discovered correctness
 dependency becomes another explicit M4.x gate rather than being deferred
-silently to M5. M5 remains blocked until the M4.10 verdict states whether the
-pilot closes only the executable implementation path or also provides enough
-scientific evidence for the planned M4 claim.
+silently to M5. M4 is now closed and M5 is unblocked but not started. The
+M4.10 pilot closes the executable path only; a larger independently
+adjudicated natural-history evaluation remains pre-dissertation/M6 debt and is
+required before strong selective-maintenance or end-to-end utility claims.
