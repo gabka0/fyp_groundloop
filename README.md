@@ -3,8 +3,9 @@
 The authoritative design is [docs/technical_design.md](docs/technical_design.md)
 (v0.2 with M1.1 amendments D-19 and D-20). The original
 [initial technical design](docs/initial_technical_design.pdf) is retained for
-audit only. M1 through M3 are complete, including live PostgreSQL 16,
-pgvector, and real pinned-model validation.
+audit only. M1 through M4 are closed, including live PostgreSQL 16, pgvector,
+real pinned-model execution, and an honestly negative/preliminary final M4 AI
+verdict. The M5 specialization is authoritative for bounded evidence groups.
 
 GroundLoop is an FYP research system for maintaining the grounding status of
 previously generated RAG answers as the underlying document collection evolves.
@@ -45,6 +46,14 @@ retrieval, cited Qwen generation, atomic claim extraction, a fine-tuned and
 temperature-calibrated MiniLM2 verifier, atomic publication, and exact replay.
 See [the M3 status](docs/m3_implementation_status.md) for commands, measured
 results, and neural-quality limitations.
+
+M4 is closed with exact conditional systems evidence and bounded negative/
+preliminary AI evidence. M5.0 has frozen the bounded evidence-group extension:
+exact distinct-representative matching, a bounded Hall-mask operator,
+versioned group/certificate/runtime contracts, independent Python/SQL oracles,
+and a retrospective controlled WiCE protocol. M5.1 implementation is active;
+later M5 gates are not yet implemented. See
+[the M5 status](docs/m5_implementation_status.md).
 
 ## Read First
 
@@ -92,7 +101,8 @@ secrets or hosted-model API keys.
 
 ## Current Milestone
 
-M3 is closed. The next milestone is M4: selective maintenance under corpus
-insertions, replacements, and deletions. M4 must measure affected-claim recall
-and verifier-call savings against full recomputation; it must not infer these
-properties from the static M3 result.
+M4 is closed. M5.0 contract freeze is complete, and M5.1 pure reference
+semantics is active. Implementation follows the disjoint-lane plan in
+[the M5 execution contract](docs/m5_multiagent_execution_plan.md). Contract
+PASS must never be reported as implementation PASS; the latter requires the
+executable evidence in [the M5 acceptance matrix](docs/m5_acceptance_matrix.md).

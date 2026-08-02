@@ -42,6 +42,11 @@ order:
     design and gates)
 34. `docs/workstreams/m4_13_change_aware_verifier/RESULTS.md` (executed
     adaptation result and M4 verdict)
+35. `docs/m5_design_freeze.md` (authoritative M5 semantics and theorems)
+36. `docs/m5_implementation_plan.md` (M5.1--M5.6 stage gates)
+37. `docs/m5_multiagent_execution_plan.md` (active path-exclusive ownership)
+38. `docs/m5_acceptance_matrix.md` (contract and executable falsifiers)
+39. `docs/m5_implementation_status.md` (current M5 evidence boundary)
 
 `docs/initial_technical_design.md` (v0.1) is superseded and retained for audit
 only. The M0.5 design freeze and M1.1 amendments are complete; frozen decisions
@@ -141,10 +146,18 @@ the frozen M3 verifier was weak on fine-grained revisions. M4.13 improved the
 held-out VitaminC revision metrics but failed preregistered retention gate G8,
 so it is not promoted: the frozen M3 checkpoint remains the default.
 
-M5 is unblocked but not started. A larger, independently adjudicated natural-
-history evaluation remains mandatory before dissertation-level selective-
-maintenance or end-to-end utility claims; schedule that work in pre-
-dissertation/M6 rather than silently treating the M4 pilot as conclusive.
+M5.0 is frozen and M5.1 is active. The authoritative M5 contract replaces the
+old global-union/group-count sketch with exact bounded covering matching,
+historical currency, immutable certificate artifacts, independent Python/SQL
+oracles, typed v2 runtime identities, and a controlled WiCE mapping. Do not
+implement from the older technical-design pseudocode where it conflicts with
+`docs/m5_design_freeze.md`. Every M5.1--M5.6 implementation/evaluation gate is
+still pending until executable evidence is recorded.
+
+A larger, independently adjudicated natural-history evaluation remains
+mandatory before dissertation-level selective-maintenance or end-to-end
+utility claims; schedule that work in pre-dissertation/M6 rather than silently
+treating the M4 pilot or retrospective WiCE mapping as conclusive.
 
 The older M4 and M4.1 multi-agent plans are historical ownership records.
 Future parallel work requires a new explicit disjoint-path manifest; it does

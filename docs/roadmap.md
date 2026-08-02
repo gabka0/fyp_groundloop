@@ -235,22 +235,58 @@ is explicit pre-dissertation/M6 debt, not a hidden extension of M4.
 
 ## M5 — Bounded Evidence Groups
 
-Status: not started; unblocked by the recorded M4 closure decision.
+Status: active. M5.0 contract freeze completed on 2026-08-02 after three
+independent high-confidence audit GOs; M5.1 pure reference semantics is the
+current stage. See `docs/m5_implementation_status.md`.
 
 Deliverables:
 
-- Versioned evidence requirements and groups (validity intervals).
+- Immutable versioned evidence requirements and groups with group-derived
+  temporal activity.
 - Requirement-subject observations for witnesses.
-- Requirement-satisfaction and group-completeness maintenance with the
-  distinct-representative rule (D-1).
-- Alternative group support.
-- Gold or controlled group evaluation before model-proposed groups.
+- Exact covering-matching completeness, not global witness-union cardinality.
+- A bounded Hall-mask incremental operator, affected-group matching baseline,
+  stateful certificates, and explicit work bounds/counters.
+- Alternative-group support composed with the direct M1--M4 path.
+- Independent Python and PostgreSQL recomputation at every tested revision.
+- Typed v2 requirement jobs, owner-projected PENDING, sparse publication,
+  activation, failure, and exact replay.
+- Pinned controlled/retrospective WiCE evaluation before any model-proposed
+  group result.
+
+Stages:
+
+- **M5.0:** design/theory/schema/data freeze. **Complete.** Contract rows pass;
+  implementation rows remain pending.
+- **M5.1:** pure records, history, structural events, and independent Python
+  oracle. **Active.**
+- **M5.2:** incremental Hall-mask engine, certificates, exhaustive bounded
+  tests, and 100,000-event differential gate.
+- **M5.3:** transactional 013-to-014 PostgreSQL upgrade, typed persistence, and
+  independent SQL oracle.
+- **M5.4:** dynamic requirement retrieval/verification/publication/replay and
+  bounded frozen-model diagnostic.
+- **M5.5:** controlled dataset adapter, seven qualified baselines, and
+  reproducible systems/semantic reports.
+- **M5.6:** full validation, evidence bundle, documentation and honest verdict.
 
 Exit criteria:
 
-- Deleting one required witness invalidates only its group.
-- A claim remains supported when an alternative complete group survives.
-- False invalidation is compared with direct-citation invalidation.
+- Incremental, independent Python, and independent SQL state/certificates agree
+  after every required update class.
+- Exhaustive simple graphs through `r<=4,H<=4` and the frozen 100,000-event
+  stream have zero mismatch.
+- Deleting one required edge invalidates only the affected group; a matching-
+  only loss is detected even without a requirement zero crossing.
+- A claim remains supported when direct support or an alternative complete
+  group survives.
+- Fresh/upgrade/rerun/rollback/concurrency PostgreSQL gates and v1 compatibility
+  pass.
+- Controlled evaluation reports false invalidation, false retention, work,
+  latency, state/certificate size, all exclusions, and qualified baseline
+  availability on identical event histories.
+- Without fresh independent adjudication, the conclusion remains explicitly
+  controlled/retrospective and the representative utility claim stays M6 debt.
 
 ## M6 — Application, Experiments, and Dissertation
 

@@ -3,6 +3,9 @@
 This is the short architectural overview. The frozen design containing the
 formal schema, delta rules, consistency protocol, and scope decisions is
 `docs/technical_design.md` (v0.2). Where the two differ, v0.2 governs.
+For M5 bounded evidence groups, `docs/m5_design_freeze.md` is the authoritative
+specialization and corrects the older global-union completeness sketch to exact
+covering matching.
 
 ## Design Principle
 
@@ -44,8 +47,9 @@ require approximate semantic discovery.
 
 ### 5. Neural verifier
 
-Maps a claim and passage or bounded evidence group to versioned support,
-refutation, and neutral scores. Verifier results are immutable observations.
+Maps a claim/passage or requirement/passage pair to versioned support,
+refutation, and neutral scores. Verifier results are immutable observations;
+requirement REFUTE/NEUTRAL never refutes the parent claim.
 
 ### 6. Incremental maintenance engine
 

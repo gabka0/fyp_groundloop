@@ -1,5 +1,66 @@
 # GroundLoop Decision Log
 
+## 2026-08-02 — M5.0 Bounded Evidence-Group Contract Frozen
+
+Decision status: M5.0 accepted after three independent high-confidence audit
+GOs; M5.1 implementation is active and all later evidence gates remain
+pending.
+
+The original evidence-group sketch was not implementable as written. Counting
+nonempty requirements or comparing the global union of witness hashes with the
+number of requirements does not establish a system of distinct
+representatives. The frozen M5 semantics therefore define one bipartite graph
+per group and require a covering matching. Every distinct
+`(requirement_version_id,text_hash)` zero crossing is material, even when no
+requirement count or global-union count crosses a boundary.
+
+The optimized operator uses the fixed left bound `r <= 8`. It maintains one
+adjacency mask per distinct content hash, a mask histogram, Hall neighbor
+counts for all nonempty requirement subsets, maximum deficiency and exact
+matching size. A coalesced hash-mask transition touches at most `2^r-1` Hall
+entries. Immutable matching-certificate artifacts have exact epoch/revision
+bindings and stateful repair/rebuild rules. Independent Python unmatched-branch
+backtracking and a base-edge SQL Hall oracle are forbidden from reading this
+incremental state.
+
+The accepted complexity statement is M5-T2 in
+`docs/m5_design_freeze.md`. It charges ordered policy probes even when no
+candidate flips, changed observations, hash-mask transitions, provenance
+repairs, certificate reconstruction and representative-index work, touched
+group/claim/answer state, structural construction, and output bytes.
+PostgreSQL I/O/WAL/locks and neural inference remain outside that logical RAM
+bound. No general dynamic-matching novelty or superiority over DBSP, F-IVM,
+CROWN, or another named system is accepted.
+
+Physical M5 state is additive and versioned. Group and requirement semantic
+records are immutable; requirement activity derives from one group-validity
+sidecar. PostgreSQL receives a typed subject registry, historical
+revision-level M5 currency, immutable eligibility, staged/effective/published
+group overlays, temporal duplicate/lineage constraints, certificate artifacts,
+and a separately activated v2 publication head. Migration and the independent
+SQL oracle form one content-hashed transactional bundle. Existing M4 v1
+digests and receipts remain unchanged on the never-activated route; activation
+serializes with v1/M5 durable opens and rejects new v1 mutations thereafter.
+
+WiCE is accepted only as a retrospective controlled substrate. A supporting
+sentence set remains atomic; identical textual content coalesces as an SDR
+representative while every source annotation retains its original zero-based
+ordinal. Only the least-ordinal duplicate is projected, and every projected
+row is a REQUIREMENT-subject observation. A subclaim label can never create
+direct claim support. Source-semantic labels and GroundLoop SDR completeness
+remain separate, Hall-failing source-positive examples remain in the result,
+and model-proposed groups cannot enter the primary table.
+
+Three read-only audit lanes initially returned NO-GO and exposed concrete
+theory, schema, runtime and evaluation contradictions. After correction, all
+three returned GO with high confidence against identical file hashes. The
+audited hashes and complete current boundary are recorded in
+`docs/m5_implementation_status.md`.
+
+This decision freezes M5-D1 through M5-D20 and the falsification contract. It
+does not mark matching, PostgreSQL, runtime, real-model, evaluation or closure
+evidence complete. Those cells remain `PENDING` until M5.1--M5.6 execute.
+
 ## 2026-07-21 — M4 Closed with Negative/Preliminary Scientific Verdict; V0 Retained
 
 Decision status: M4 implementation and bounded evaluation complete; M5 is

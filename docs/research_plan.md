@@ -2,7 +2,7 @@
 
 Status: project direction and v0.2 design frozen; M1 through M4 complete.
 M4 closed with strong conditional systems evidence but preliminary and
-negative AI/end-to-end evidence. M5 is unblocked but not started; the frozen
+negative AI/end-to-end evidence. M5.0 is frozen and M5.1 is active; the frozen
 M3 verifier remains the default.
 
 ## Working Title
