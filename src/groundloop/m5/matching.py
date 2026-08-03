@@ -16,7 +16,7 @@ import hashlib
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import Protocol
+from typing import Protocol, TypeVar
 
 from groundloop.errors import ValidationError
 from groundloop.m5.domain import (
@@ -30,6 +30,8 @@ from groundloop.m5.domain import (
 MAX_REQUIREMENTS = 8
 GROUP_CERTIFICATE_VERSION = "m5-group-certificate-v1"
 _HEX = frozenset("0123456789abcdef")
+_K = TypeVar("_K")
+_V = TypeVar("_V")
 
 # Backward-compatible Lane A name; the concrete record is coordinator-owned.
 GroupMatchingCertificateRow = GroupCertificateRow
@@ -1055,11 +1057,20 @@ class CertificateEvidenceView(Protocol):
     construct a full witness image merely to validate or repair a certificate.
     """
 
-    epoch_id: int
-    revision: int
-    decision_policy_version: str
-    group_version_id: str
-    requirement_version_ids: tuple[str, ...]
+    @property
+    def epoch_id(self) -> int: ...
+
+    @property
+    def revision(self) -> int: ...
+
+    @property
+    def decision_policy_version(self) -> str: ...
+
+    @property
+    def group_version_id(self) -> str: ...
+
+    @property
+    def requirement_version_ids(self) -> tuple[str, ...]: ...
 
     @property
     def requirement_count(self) -> int: ...
@@ -1318,6 +1329,82 @@ class MaintainedIndexUpdate:
 
 
 @dataclass(frozen=True, slots=True)
+class _EdgeObservationChange:
+    key: tuple[int, str]
+    before: PersistentStringSet | None
+    after: PersistentStringSet | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ObservationEdgeChange:
+    key: str
+    before: tuple[int, str] | None
+    after: tuple[int, str] | None
+
+
+@dataclass(frozen=True, slots=True)
+class _HashMaskChange:
+    key: str
+    before: int | None
+    after: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class _MaskBucketChange:
+    key: int
+    before: PersistentStringSet | None
+    after: PersistentStringSet | None
+
+
+@dataclass(slots=True)
+class PreparedObservationIndexPatch:
+    """Opaque point-granular update prepared against one index generation."""
+
+    expected_generation: int
+    transitions: tuple[HashMaskTransition, ...]
+    work: MatchingWorkCounters
+    _owner: MaintainedCertificateIndex
+    _edge_changes: tuple[_EdgeObservationChange, ...]
+    _observation_changes: tuple[_ObservationEdgeChange, ...]
+    _mask_changes: tuple[_HashMaskChange, ...]
+    _bucket_changes: tuple[_MaskBucketChange, ...]
+    _state: str = "prepared"
+
+    @property
+    def mutates(self) -> bool:
+        return bool(
+            self._edge_changes
+            or self._observation_changes
+            or self._mask_changes
+            or self._bucket_changes
+        )
+
+    def preview_view(
+        self,
+        *,
+        point: SnapshotPoint,
+        decision_policy_version: str,
+    ) -> PreparedCertificateView:
+        """Expose the proposed post-patch certificate view without mutation."""
+
+        return PreparedCertificateView(
+            patch=self,
+            point=point,
+            decision_policy_version=decision_policy_version,
+        )
+
+
+@dataclass(slots=True)
+class MaintainedIndexRollbackToken:
+    """Single-use rollback capability returned after a prepared patch applies."""
+
+    _owner: MaintainedCertificateIndex
+    _patch: PreparedObservationIndexPatch
+    _applied_generation: int
+    _active: bool = True
+
+
+@dataclass(frozen=True, slots=True)
 class CertificateIndexBuildResult:
     index: MaintainedCertificateIndex
     work: MatchingWorkCounters
@@ -1423,7 +1510,22 @@ class MaintainedCertificateIndex:
         self,
         deltas: Iterable[ObservationMembershipDelta],
     ) -> MaintainedIndexUpdate:
-        """Coalesce and failure-atomically update maintained provenance indexes."""
+        """Prepare and apply one update while preserving the original API."""
+
+        patch = self.prepare_observation_deltas(deltas)
+        self.apply_prepared_observation_deltas(patch)
+        return MaintainedIndexUpdate(patch.transitions, patch.work)
+
+    def prepare_observation_deltas(
+        self,
+        deltas: Iterable[ObservationMembershipDelta],
+    ) -> PreparedObservationIndexPatch:
+        """Prepare touched-key persistent-root changes without mutating state.
+
+        The method allocates maps proportional only to the supplied deltas and
+        their affected edges, hashes, and mask buckets.  It neither copies an
+        index-wide dictionary nor materializes a full certificate snapshot.
+        """
 
         items = tuple(deltas)
         additions = sum(max(item.delta, 0) for item in items)
@@ -1543,36 +1645,6 @@ class MaintainedCertificateIndex:
                 ordered_operations += 1
             transitions.append(HashMaskTransition(text_hash, old_mask, new_mask))
 
-        if not changed_edge_sets and not transitions:
-            return MaintainedIndexUpdate(
-                (),
-                MatchingWorkCounters(
-                    contribution_additions=additions,
-                    contribution_removals=removals,
-                ),
-            )
-
-        for edge, edge_set in changed_edge_sets.items():
-            if edge_set.root is None:
-                self._edge_observations.pop(edge, None)
-            else:
-                self._edge_observations[edge] = edge_set
-        for observation_id, target_edge in observation_changes.items():
-            if target_edge is None:
-                self._observation_edge.pop(observation_id, None)
-            else:
-                self._observation_edge[observation_id] = target_edge
-        for text_hash, mask in next_masks.items():
-            if mask:
-                self._hash_masks[text_hash] = mask
-            else:
-                self._hash_masks.pop(text_hash, None)
-        for mask, bucket in changed_buckets.items():
-            if bucket.root is None:
-                self._hashes_by_mask.pop(mask, None)
-            else:
-                self._hashes_by_mask[mask] = bucket
-        self._generation += 1
         work = MatchingWorkCounters(
             contribution_additions=additions,
             contribution_removals=removals,
@@ -1580,7 +1652,174 @@ class MaintainedCertificateIndex:
             edge_refcount_keys_updated=touched_edge_count,
         )
         work.assert_nonnegative()
-        return MaintainedIndexUpdate(tuple(transitions), work)
+        return PreparedObservationIndexPatch(
+            expected_generation=self._generation,
+            transitions=tuple(transitions),
+            work=work,
+            _owner=self,
+            _edge_changes=tuple(
+                _EdgeObservationChange(
+                    edge,
+                    self._edge_observations.get(edge),
+                    None if next_set.root is None else next_set,
+                )
+                for edge, next_set in changed_edge_sets.items()
+            ),
+            _observation_changes=tuple(
+                _ObservationEdgeChange(
+                    observation_id,
+                    self._observation_edge.get(observation_id),
+                    target_edge,
+                )
+                for observation_id, target_edge in observation_changes.items()
+            ),
+            _mask_changes=tuple(
+                _HashMaskChange(
+                    text_hash,
+                    self._hash_masks.get(text_hash),
+                    mask or None,
+                )
+                for text_hash, mask in next_masks.items()
+            ),
+            _bucket_changes=tuple(
+                _MaskBucketChange(
+                    mask,
+                    self._hashes_by_mask.get(mask),
+                    None if bucket.root is None else bucket,
+                )
+                for mask, bucket in changed_buckets.items()
+            ),
+        )
+
+    @staticmethod
+    def _set_value_matches(
+        current: PersistentStringSet | None,
+        expected: PersistentStringSet | None,
+    ) -> bool:
+        return current is expected
+
+    def _validate_prepared_patch(
+        self,
+        patch: PreparedObservationIndexPatch,
+        *,
+        use_after: bool,
+        expected_generation: int,
+    ) -> None:
+        if patch._owner is not self:
+            raise ValidationError("prepared observation patch belongs to another index")
+        if self._generation != expected_generation:
+            raise ValidationError("prepared observation patch is stale")
+        expected_state = "applied" if use_after else "prepared"
+        if patch._state != expected_state:
+            raise ValidationError(
+                f"prepared observation patch is already {patch._state}"
+            )
+        for edge_change in patch._edge_changes:
+            expected_edge_values = (
+                edge_change.after if use_after else edge_change.before
+            )
+            current_edge_values = self._edge_observations.get(edge_change.key)
+            if not self._set_value_matches(current_edge_values, expected_edge_values):
+                raise ValidationError("prepared edge-observation precondition failed")
+        for observation_change in patch._observation_changes:
+            expected_observation_edge = (
+                observation_change.after if use_after else observation_change.before
+            )
+            if (
+                self._observation_edge.get(observation_change.key)
+                != expected_observation_edge
+            ):
+                raise ValidationError("prepared observation-edge precondition failed")
+        for mask_change in patch._mask_changes:
+            expected_mask = mask_change.after if use_after else mask_change.before
+            if self._hash_masks.get(mask_change.key) != expected_mask:
+                raise ValidationError("prepared hash-mask precondition failed")
+        for bucket_change in patch._bucket_changes:
+            expected_bucket = bucket_change.after if use_after else bucket_change.before
+            current_bucket = self._hashes_by_mask.get(bucket_change.key)
+            if not self._set_value_matches(current_bucket, expected_bucket):
+                raise ValidationError("prepared mask-bucket precondition failed")
+
+    @staticmethod
+    def _assign_or_remove(mapping: dict[_K, _V], key: _K, value: _V | None) -> None:
+        if value is None:
+            mapping.pop(key, None)
+        else:
+            mapping[key] = value
+
+    def apply_prepared_observation_deltas(
+        self,
+        patch: PreparedObservationIndexPatch,
+    ) -> MaintainedIndexRollbackToken:
+        """Apply one prepared patch and return a single-use rollback token."""
+
+        self._validate_prepared_patch(
+            patch,
+            use_after=False,
+            expected_generation=patch.expected_generation,
+        )
+        for edge_change in patch._edge_changes:
+            self._assign_or_remove(
+                self._edge_observations, edge_change.key, edge_change.after
+            )
+        for observation_change in patch._observation_changes:
+            self._assign_or_remove(
+                self._observation_edge,
+                observation_change.key,
+                observation_change.after,
+            )
+        for mask_change in patch._mask_changes:
+            self._assign_or_remove(self._hash_masks, mask_change.key, mask_change.after)
+        for bucket_change in patch._bucket_changes:
+            self._assign_or_remove(
+                self._hashes_by_mask, bucket_change.key, bucket_change.after
+            )
+        applied_generation = patch.expected_generation + int(patch.mutates)
+        self._generation = applied_generation
+        patch._state = "applied"
+        return MaintainedIndexRollbackToken(
+            _owner=self,
+            _patch=patch,
+            _applied_generation=applied_generation,
+        )
+
+    def rollback_prepared_observation_deltas(
+        self,
+        token: MaintainedIndexRollbackToken,
+    ) -> None:
+        """Restore every touched value/root and the exact prior generation."""
+
+        if token._owner is not self:
+            raise ValidationError("rollback token belongs to another index")
+        if not token._active:
+            raise ValidationError("rollback token is already consumed")
+        patch = token._patch
+        self._validate_prepared_patch(
+            patch,
+            use_after=True,
+            expected_generation=token._applied_generation,
+        )
+        for edge_change in patch._edge_changes:
+            self._assign_or_remove(
+                self._edge_observations, edge_change.key, edge_change.before
+            )
+        for observation_change in patch._observation_changes:
+            self._assign_or_remove(
+                self._observation_edge,
+                observation_change.key,
+                observation_change.before,
+            )
+        for mask_change in patch._mask_changes:
+            self._assign_or_remove(
+                self._hash_masks, mask_change.key, mask_change.before
+            )
+        for bucket_change in patch._bucket_changes:
+            self._assign_or_remove(
+                self._hashes_by_mask, bucket_change.key, bucket_change.before
+            )
+        self._generation = patch.expected_generation
+        patch._state = "rolled_back"
+        token._active = False
 
     def current_view(
         self,
@@ -1731,6 +1970,128 @@ class MaintainedCertificateView:
         histogram = [0] * (1 << self.requirement_count)
         for mask, values in self.index._hashes_by_mask.items():
             histogram[mask] = len(values)
+        return tuple(histogram)
+
+
+class PreparedCertificateView:
+    """Certificate evidence over one unapplied touched-key index patch."""
+
+    __slots__ = (
+        "_bucket_overrides",
+        "_edge_overrides",
+        "_observation_overrides",
+        "_patch",
+        "decision_policy_version",
+        "epoch_id",
+        "group_version_id",
+        "requirement_version_ids",
+        "revision",
+    )
+
+    def __init__(
+        self,
+        *,
+        patch: PreparedObservationIndexPatch,
+        point: SnapshotPoint,
+        decision_policy_version: str,
+    ) -> None:
+        owner = patch._owner
+        owner._validate_prepared_patch(
+            patch,
+            use_after=False,
+            expected_generation=patch.expected_generation,
+        )
+        _require_integer("epoch_id", point.epoch_id, minimum=0)
+        _require_integer("revision", point.revision, minimum=0)
+        _require_text("decision_policy_version", decision_policy_version)
+        self.epoch_id = point.epoch_id
+        self.revision = point.revision
+        self.decision_policy_version = decision_policy_version
+        self.group_version_id = owner.group_version_id
+        self.requirement_version_ids = owner.requirement_version_ids
+        self._patch = patch
+        self._edge_overrides = {
+            change.key: change.after for change in patch._edge_changes
+        }
+        self._observation_overrides = {
+            change.key: change.after for change in patch._observation_changes
+        }
+        self._bucket_overrides = {
+            change.key: change.after for change in patch._bucket_changes
+        }
+
+    @property
+    def requirement_count(self) -> int:
+        return len(self.requirement_version_ids)
+
+    def _require_current(self) -> None:
+        patch = self._patch
+        if patch._state != "prepared":
+            raise ValidationError("prepared certificate view is stale")
+        if patch._owner.generation != patch.expected_generation:
+            raise ValidationError("prepared certificate view is stale")
+
+    def _edge_values(
+        self,
+        requirement_ordinal: int,
+        text_hash: str,
+    ) -> PersistentStringSet | None:
+        key = (requirement_ordinal, text_hash)
+        if key in self._edge_overrides:
+            return self._edge_overrides[key]
+        return self._patch._owner._edge_observations.get(key)
+
+    def _bucket_values(self, mask: int) -> PersistentStringSet | None:
+        if mask in self._bucket_overrides:
+            return self._bucket_overrides[mask]
+        return self._patch._owner._hashes_by_mask.get(mask)
+
+    def representative_hash_masks(self) -> tuple[tuple[str, int], ...]:
+        self._require_current()
+        candidates: list[tuple[str, int]] = []
+        for mask in range(1, 1 << self.requirement_count):
+            bucket = self._bucket_values(mask)
+            if bucket is None:
+                continue
+            candidates.extend(
+                (text_hash, mask) for text_hash in bucket.first(self.requirement_count)
+            )
+        return tuple(candidates)
+
+    def edge_active(self, requirement_ordinal: int, text_hash: str) -> bool:
+        self._require_current()
+        values = self._edge_values(requirement_ordinal, text_hash)
+        return values is not None and len(values) > 0
+
+    def least_observation_id(
+        self,
+        requirement_ordinal: int,
+        text_hash: str,
+    ) -> str | None:
+        self._require_current()
+        values = self._edge_values(requirement_ordinal, text_hash)
+        return None if values is None else values.least()
+
+    def observation_active(
+        self,
+        requirement_ordinal: int,
+        text_hash: str,
+        observation_id: str,
+    ) -> bool:
+        self._require_current()
+        if observation_id in self._observation_overrides:
+            edge = self._observation_overrides[observation_id]
+        else:
+            edge = self._patch._owner._observation_edge.get(observation_id)
+        return edge == (requirement_ordinal, text_hash)
+
+    def hall_histogram(self) -> tuple[int, ...]:
+        self._require_current()
+        histogram = [0] * (1 << self.requirement_count)
+        for mask in range(1, 1 << self.requirement_count):
+            values = self._bucket_values(mask)
+            if values is not None:
+                histogram[mask] = len(values)
         return tuple(histogram)
 
 

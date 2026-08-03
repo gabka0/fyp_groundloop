@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import ast
 import hashlib
+import inspect
+import random
+import textwrap
 from copy import deepcopy
 
 import pytest
@@ -326,3 +330,368 @@ def test_maintained_index_deepcopy_is_independent_and_rejection_atomic() -> None
     assert after_rejection == before_rejection
     assert not original.audit_issues()
     assert not cloned.audit_issues()
+
+
+def test_prepared_patch_previews_applies_and_rolls_back_exactly() -> None:
+    group = _group(2)
+    first_hash = _hash("prepared-first")
+    second_hash = _hash("prepared-second")
+    deltas = (
+        ObservationMembershipDelta(0, first_hash, "obs-first", 1),
+        ObservationMembershipDelta(1, second_hash, "obs-second", 1),
+    )
+    index = MaintainedCertificateIndex(
+        group_version_id=group.group_version_id,
+        requirement_version_ids=("requirement-0", "requirement-1"),
+    )
+    baseline = deepcopy(index)
+    point = SnapshotPoint(20, 3)
+    before = index.audit_snapshot(
+        point=point,
+        decision_policy_version="policy-v1",
+    )
+    generation = index.generation
+
+    patch = index.prepare_observation_deltas(deltas)
+    preview = patch.preview_view(
+        point=point,
+        decision_policy_version="policy-v1",
+    )
+    preview_certificate = reconstruct_certificate(preview)
+
+    assert preview_certificate.artifact is not None
+    assert preview_certificate.matching.complete
+    assert preview.hall_histogram() == (0, 1, 1, 0)
+    assert index.generation == generation
+    assert (
+        index.audit_snapshot(
+            point=point,
+            decision_policy_version="policy-v1",
+        )
+        == before
+    )
+
+    expected_update = baseline.apply_observation_deltas(deltas)
+    token = index.apply_prepared_observation_deltas(patch)
+    assert (patch.transitions, patch.work) == (
+        expected_update.transitions,
+        expected_update.work,
+    )
+    assert index.audit_snapshot(
+        point=point,
+        decision_policy_version="policy-v1",
+    ) == baseline.audit_snapshot(
+        point=point,
+        decision_policy_version="policy-v1",
+    )
+    with pytest.raises(ValidationError, match="stale|already"):
+        index.apply_prepared_observation_deltas(patch)
+    with pytest.raises(ValidationError, match="stale"):
+        preview.hall_histogram()
+
+    index.rollback_prepared_observation_deltas(token)
+    assert index.generation == generation
+    assert (
+        index.audit_snapshot(
+            point=point,
+            decision_policy_version="policy-v1",
+        )
+        == before
+    )
+    with pytest.raises(ValidationError, match="consumed"):
+        index.rollback_prepared_observation_deltas(token)
+
+
+def test_prepared_patch_rejects_stale_and_underflow_without_mutation() -> None:
+    group = _group(1)
+    text_hash = _hash("prepared-content")
+    index = MaintainedCertificateIndex(
+        group_version_id=group.group_version_id,
+        requirement_version_ids=("requirement-0",),
+    )
+    point = SnapshotPoint(21, 0)
+    before = index.audit_snapshot(
+        point=point,
+        decision_policy_version="policy-v1",
+    )
+    generation = index.generation
+    first = index.prepare_observation_deltas(
+        (ObservationMembershipDelta(0, text_hash, "obs-first", 1),)
+    )
+    stale = index.prepare_observation_deltas(
+        (ObservationMembershipDelta(0, text_hash, "obs-stale", 1),)
+    )
+    token = index.apply_prepared_observation_deltas(first)
+    applied = index.audit_snapshot(
+        point=point,
+        decision_policy_version="policy-v1",
+    )
+    with pytest.raises(ValidationError, match="stale"):
+        index.apply_prepared_observation_deltas(stale)
+    assert (
+        index.audit_snapshot(
+            point=point,
+            decision_policy_version="policy-v1",
+        )
+        == applied
+    )
+    index.rollback_prepared_observation_deltas(token)
+    assert index.generation == generation
+    assert (
+        index.audit_snapshot(
+            point=point,
+            decision_policy_version="policy-v1",
+        )
+        == before
+    )
+
+    with pytest.raises(ValidationError, match="not active"):
+        index.prepare_observation_deltas(
+            (ObservationMembershipDelta(0, text_hash, "obs-missing", -1),)
+        )
+    assert index.generation == generation
+    assert (
+        index.audit_snapshot(
+            point=point,
+            decision_policy_version="policy-v1",
+        )
+        == before
+    )
+
+
+def test_prepared_noop_patch_preserves_generation_and_is_single_use() -> None:
+    group = _group(1)
+    text_hash = _hash("prepared-noop")
+    index = MaintainedCertificateIndex(
+        group_version_id=group.group_version_id,
+        requirement_version_ids=("requirement-0",),
+    )
+    point = SnapshotPoint(22, 0)
+    before = index.audit_snapshot(
+        point=point,
+        decision_policy_version="policy-v1",
+    )
+    generation = index.generation
+    deltas = (
+        ObservationMembershipDelta(0, text_hash, "obs-net-zero", 1),
+        ObservationMembershipDelta(0, text_hash, "obs-net-zero", -1),
+    )
+
+    patch = index.prepare_observation_deltas(deltas)
+    preview = patch.preview_view(
+        point=point,
+        decision_policy_version="policy-v1",
+    )
+
+    assert not patch.mutates
+    assert patch.transitions == ()
+    assert patch.work.contribution_additions == 1
+    assert patch.work.contribution_removals == 1
+    assert preview.hall_histogram() == (0, 0)
+
+    token = index.apply_prepared_observation_deltas(patch)
+    assert index.generation == generation
+    assert (
+        index.audit_snapshot(
+            point=point,
+            decision_policy_version="policy-v1",
+        )
+        == before
+    )
+    with pytest.raises(ValidationError, match="already"):
+        index.apply_prepared_observation_deltas(patch)
+    with pytest.raises(ValidationError, match="stale"):
+        preview.hall_histogram()
+
+    index.rollback_prepared_observation_deltas(token)
+    assert index.generation == generation
+    assert (
+        index.audit_snapshot(
+            point=point,
+            decision_policy_version="policy-v1",
+        )
+        == before
+    )
+
+
+def test_prepared_patch_randomized_twin_matches_compatibility_path() -> None:
+    rng = random.Random(0x5A4E)
+    group = _group(4)
+    requirement_ids = tuple(
+        requirement.requirement_version_id for requirement in group.requirements
+    )
+    prepared_index = MaintainedCertificateIndex(
+        group_version_id=group.group_version_id,
+        requirement_version_ids=requirement_ids,
+    )
+    compatibility_index = MaintainedCertificateIndex(
+        group_version_id=group.group_version_id,
+        requirement_version_ids=requirement_ids,
+    )
+    hashes = tuple(_hash(f"randomized-hash-{ordinal}") for ordinal in range(6))
+    observation_ids = tuple(f"randomized-obs-{ordinal:02d}" for ordinal in range(48))
+    active: dict[str, tuple[int, str]] = {}
+    saw_net_zero_batch = False
+    saw_edge_multiplicity = False
+
+    for step in range(96):
+        deltas: list[ObservationMembershipDelta] = []
+        selected: set[str] = set()
+        if step == 0:
+            initial_edges = (
+                (0, hashes[0]),
+                (0, hashes[0]),
+                (1, hashes[1]),
+                (2, hashes[2]),
+                (3, hashes[3]),
+                (0, hashes[4]),
+                (1, hashes[5]),
+            )
+            for observation_id, edge in zip(
+                observation_ids[: len(initial_edges)],
+                initial_edges,
+                strict=True,
+            ):
+                selected.add(observation_id)
+                active[observation_id] = edge
+                deltas.append(ObservationMembershipDelta(*edge, observation_id, 1))
+        else:
+            mutation_count = 0 if step % 11 == 0 else rng.randint(1, 5)
+            for observation_id in rng.sample(observation_ids, mutation_count):
+                selected.add(observation_id)
+                if observation_id in active:
+                    current_edge = active.pop(observation_id)
+                    delta = -1
+                else:
+                    current_edge = (rng.randrange(4), rng.choice(hashes))
+                    active[observation_id] = current_edge
+                    delta = 1
+                deltas.append(
+                    ObservationMembershipDelta(*current_edge, observation_id, delta)
+                )
+
+        if step % 3 == 0:
+            net_zero_candidates = tuple(
+                observation_id
+                for observation_id in observation_ids
+                if observation_id not in selected
+            )
+            observation_id = rng.choice(net_zero_candidates)
+            net_zero_edge = active.get(observation_id)
+            if net_zero_edge is None:
+                net_zero_edge = (rng.randrange(4), rng.choice(hashes))
+                first_delta = 1
+            else:
+                first_delta = -1
+            deltas.extend(
+                (
+                    ObservationMembershipDelta(
+                        *net_zero_edge,
+                        observation_id,
+                        first_delta,
+                    ),
+                    ObservationMembershipDelta(
+                        *net_zero_edge,
+                        observation_id,
+                        -first_delta,
+                    ),
+                )
+            )
+            saw_net_zero_batch = True
+
+        edge_counts: dict[tuple[int, str], int] = {}
+        for edge in active.values():
+            edge_counts[edge] = edge_counts.get(edge, 0) + 1
+        saw_edge_multiplicity |= any(count > 1 for count in edge_counts.values())
+
+        point = SnapshotPoint(30, step)
+        before_generation = prepared_index.generation
+        before_snapshot = prepared_index.audit_snapshot(
+            point=point,
+            decision_policy_version="policy-v1",
+        )
+        patch = prepared_index.prepare_observation_deltas(deltas)
+        preview = patch.preview_view(
+            point=point,
+            decision_policy_version="policy-v1",
+        )
+        compatibility_update = compatibility_index.apply_observation_deltas(deltas)
+        compatibility_view = compatibility_index.current_view(
+            point=point,
+            decision_policy_version="policy-v1",
+        )
+
+        assert (patch.transitions, patch.work) == (
+            compatibility_update.transitions,
+            compatibility_update.work,
+        )
+        assert preview.hall_histogram() == compatibility_view.hall_histogram()
+        assert (
+            preview.representative_hash_masks()
+            == compatibility_view.representative_hash_masks()
+        )
+        assert reconstruct_certificate(preview) == reconstruct_certificate(
+            compatibility_view
+        )
+        for observation_id, edge in active.items():
+            assert preview.observation_active(*edge, observation_id)
+
+        token = prepared_index.apply_prepared_observation_deltas(patch)
+        assert prepared_index.generation == before_generation + int(patch.mutates)
+        assert prepared_index.audit_snapshot(
+            point=point,
+            decision_policy_version="policy-v1",
+        ) == compatibility_index.audit_snapshot(
+            point=point,
+            decision_policy_version="policy-v1",
+        )
+
+        prepared_index.rollback_prepared_observation_deltas(token)
+        assert prepared_index.generation == before_generation
+        assert (
+            prepared_index.audit_snapshot(
+                point=point,
+                decision_policy_version="policy-v1",
+            )
+            == before_snapshot
+        )
+
+        replacement = prepared_index.prepare_observation_deltas(deltas)
+        replacement_preview = replacement.preview_view(
+            point=point,
+            decision_policy_version="policy-v1",
+        )
+        assert reconstruct_certificate(replacement_preview) == reconstruct_certificate(
+            compatibility_view
+        )
+        prepared_index.apply_prepared_observation_deltas(replacement)
+        assert prepared_index.audit_snapshot(
+            point=point,
+            decision_policy_version="policy-v1",
+        ) == compatibility_index.audit_snapshot(
+            point=point,
+            decision_policy_version="policy-v1",
+        )
+        assert not prepared_index.audit_issues()
+
+    assert saw_net_zero_batch
+    assert saw_edge_multiplicity
+
+
+def test_prepare_path_has_no_deepcopy_or_full_dictionary_copy() -> None:
+    tree = ast.parse(
+        textwrap.dedent(
+            inspect.getsource(MaintainedCertificateIndex.prepare_observation_deltas)
+        )
+    )
+    calls = tuple(node for node in ast.walk(tree) if isinstance(node, ast.Call))
+
+    assert not any(
+        isinstance(call.func, ast.Name)
+        and call.func.id in {"deepcopy", "dict", "sorted"}
+        for call in calls
+    )
+    assert not any(
+        isinstance(call.func, ast.Attribute) and call.func.attr == "copy"
+        for call in calls
+    )

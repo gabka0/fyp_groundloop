@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import heapq
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Generic, TypeVar
 
@@ -27,6 +27,7 @@ from groundloop.domain import (
     SubjectKind,
     VerificationLabel,
 )
+from groundloop.errors import ValidationError
 from groundloop.events import (
     DeleteDocumentVersionEvent,
     Event,
@@ -927,6 +928,54 @@ class IncrementalMaintenanceEngine:
             score_index_changes=tuple(score_changes),
             stats=frozen_stats,
         )
+
+    def prepare_noop_event_patch(self, event_id: str) -> IncrementalStatePatch:
+        """Prepare an empty direct-state patch for one M5-only event.
+
+        Applying the patch advances the direct engine revision exactly once,
+        so a later patch prepared at the old revision is stale.  It changes no
+        v1 claim, answer, certificate, observation, contribution, or score
+        index entry.
+        """
+
+        if not isinstance(event_id, str) or not event_id.strip():
+            raise ValidationError("event_id must be a nonempty identifier")
+        return IncrementalStatePatch(
+            event_id=event_id,
+            expected_state_revision=self._state_revision,
+            active_label_changes=(),
+            contribution_changes=(),
+            accumulator_changes=(),
+            claim_state_changes=(),
+            certificate_changes=(),
+            answer_count_changes=(),
+            answer_state_changes=(),
+            score_index_changes=(),
+            stats=MaintenanceStats(),
+        )
+
+    def preview_claim_states_after_patch(
+        self,
+        patch: IncrementalStatePatch,
+        claim_ids: Iterable[str],
+    ) -> dict[str, ClaimState]:
+        """Read requested post-patch claims without mutating the engine.
+
+        Preconditions are checked once with their existing ordered-index
+        costs.  The remaining dispatch builds one affected lookup and performs
+        one point lookup per requested ID: O(claim changes + requested IDs)
+        expected work and no registry scan.
+        """
+
+        self._validate_patch_preconditions(patch)
+        changed = {change.key: change.after for change in patch.claim_state_changes}
+        result: dict[str, ClaimState] = {}
+        for claim_id in dict.fromkeys(claim_ids):
+            value = changed.get(claim_id)
+            if value is None:
+                value = self._claim_states[claim_id]
+            result[claim_id] = value
+        return result
 
     def apply_state_patch(
         self,
