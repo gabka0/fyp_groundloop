@@ -118,10 +118,13 @@ An independent adversarial audit initially returned `NO_GO` for two concrete
 defects: closed historical bindings could be carried forward, and certificate
 transition paths performed digest work that their counters did not report.
 The repair rejects closed carry-forward, performs exactly one charged hash on
-certificate construction, performs zero digest work on retain, and preserves
-rehashing in the public audit validators. Four targeted regressions cover
-those properties, including a long selected identifier that would expose work
-hidden behind a constant counter.
+certificate construction, performs zero digest work on the selected-row
+`repair_selected_observations` RETAIN fast path, and preserves rehashing in the
+public audit validators. A `build_or_rebuild_certificate` call still performs
+and charges one reconstruction hash even when the reconstructed artifact is
+identical and its transition kind is RETAIN. Four targeted regressions cover
+the repaired properties, including a long selected identifier that would
+expose work hidden behind a constant counter.
 
 An additional attempt to run strict mypy over the tests was not usable as a
 project gate: the installed NumPy stub contains Python-3.12 `type` syntax while

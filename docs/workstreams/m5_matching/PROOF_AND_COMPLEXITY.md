@@ -380,8 +380,11 @@ The owned suite covers:
   coalescing, supersession, and underflow atomicity;
 - deterministic bounded certificate construction, a 200-hash same-mask
   high-degree case, digest golden bytes, exactly one charged construction hash,
-  zero retain-path digest work even for a 10,000-character selected ID, and
-  exact snapshot validation including hostile in-process corruption detection;
+  zero digest work on the selected-row `repair_selected_observations` RETAIN
+  fast path even for a 10,000-character selected ID, and exact snapshot
+  validation including hostile in-process corruption detection; the separate
+  `build_or_rebuild_certificate` path always performs and charges its one
+  reconstruction hash, including when its result kind is RETAIN;
 - selected observation `2->1` repair, nonselected duplicate removal,
   alternating-cover rebuild, and incomplete close without reconstruction;
 - zero-flip/zero-candidate policy rebinding, policy-plus-edge-change rebuild,
