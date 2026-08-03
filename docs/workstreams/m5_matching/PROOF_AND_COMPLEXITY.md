@@ -243,7 +243,11 @@ lexicographically, runs the deterministic augmenting-path algorithm, and
 chooses the least active observation ID for every selected edge. It serializes
 rows by requirement ordinal and implements the exact frozen
 `m5-group-certificate-v1` typed, length-framed SHA-256 recipe. The checked-in
-golden vector binds both digest and framed preimage byte count.
+golden vector binds both digest and framed preimage byte count. Construction
+computes that byte count with a non-hashing framing-size pass, then the frozen
+artifact constructor performs the sole SHA-256 pass. Thus
+`certificate_digest_input_bytes` charges exactly the bytes consumed by the one
+construction hash; it does not conceal a second validation hash.
 
 ### 7.2 Certificate validity
 
@@ -260,7 +264,11 @@ golden vector binds both digest and framed preimage byte count.
 Items 2--5 directly witness a covering matching. No second matching run is
 needed to validate a supplied certificate. `validate_bound_certificate` also
 requires the binding digest/group to agree and its half-open interval to cover
-the exact epoch/revision snapshot.
+the exact epoch/revision snapshot. These public validators deliberately rehash
+their input and are audit/import-boundary operations, not part of the measured
+stable-update path. Internal transitions accept only frozen artifacts created
+or previously validated by the trusted repository boundary and therefore
+check structure and binding identity without charging an unreported rehash.
 
 ### 7.3 Stateful transition rules
 
@@ -283,10 +291,12 @@ the exact epoch/revision snapshot.
   Transaction-global ordered range probes are charged once via
   `policy_range_probe_work`, not once per group.
 - **Cross-epoch carry-forward:** a later epoch opens a new binding directly at
-  its supplied revision, including revision zero. It never closes or mutates a
-  prior epoch's binding. The artifact is retained, locally repaired, rebuilt,
-  or rebound to a changed policy using the same validity rules. If the new
-  snapshot is incomplete, no current-epoch binding is opened.
+  its supplied revision, including revision zero. The supplied prior binding
+  must still be open; a closed historical binding is rejected and cannot be
+  resurrected. Carry-forward never closes or mutates the open prior epoch's
+  binding. The artifact is retained, locally repaired, rebuilt, or rebound to
+  a changed policy using the same validity rules. If the new snapshot is
+  incomplete, no current-epoch binding is opened.
 
 Every artifact, row, snapshot, binding, and transition result is frozen and
 contains only immutable values. Prior rows are never overwritten. A malformed
@@ -348,7 +358,7 @@ not change the algorithm or add a new asymptotic term.
 | `G_touched` | `groups_touched` | Supplied once through `touched_state_work` after the coordinator deduplicates concrete group IDs across all local actions. |
 | `C_touched`, `A_touched` | `claims_touched`, `answers_touched` | Coordinator-owned propagation supplies these. |
 | Status deltas | `claim_status_changes`, `answer_status_changes` | Separate from full-state/certificate writes. |
-| Logical bytes | `certificate_digest_input_bytes`, `output_bytes` | The module reports exact digest-preimage construction bytes; the coordinator must add complete serialized state/binding bytes to `output_bytes`. PostgreSQL WAL/I/O is separate. |
+| Logical bytes | `certificate_digest_input_bytes`, `output_bytes` | The module reports the exact preimage bytes consumed by the sole construction hash. Public audit/import validation may rehash and is outside the measured stable-update path. The coordinator must add complete serialized state/binding bytes to `output_bytes`. PostgreSQL WAL/I/O is separate. |
 
 Counters support addition, negation, and subtraction so before/after reports can
 be signed. Every operation result is nonnegative and guarded by
@@ -369,12 +379,15 @@ The owned suite covers:
 - multiplicities `0<->1`, `1<->2`, same-edge remove/add, multi-bit
   coalescing, supersession, and underflow atomicity;
 - deterministic bounded certificate construction, a 200-hash same-mask
-  high-degree case, digest golden bytes, and exact snapshot validation;
+  high-degree case, digest golden bytes, exactly one charged construction hash,
+  zero retain-path digest work even for a 10,000-character selected ID, and
+  exact snapshot validation including hostile in-process corruption detection;
 - selected observation `2->1` repair, nonselected duplicate removal,
   alternating-cover rebuild, and incomplete close without reconstruction;
 - zero-flip/zero-candidate policy rebinding, policy-plus-edge-change rebuild,
   and new-epoch retain/repair/rebuild/rebind/incomplete transitions at revision
-  zero without modifying prior-epoch bindings;
+  zero without modifying prior-epoch bindings, plus rejection of a closed
+  historical binding as a carry-forward source;
 - checked shared-`RequirementWitness` bootstrap, a 4,096-observation
   positive-to-positive provenance update with zero Hall work, stale-view
   rejection, maintained-index failure atomicity, and full AVL/index audits;

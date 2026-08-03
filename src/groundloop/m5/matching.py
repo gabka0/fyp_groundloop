@@ -2070,14 +2070,14 @@ def _stable_digest_with_size(*parts: str) -> tuple[str, int]:
     return digest.hexdigest(), byte_count
 
 
-def compute_group_certificate_digest(
+def _group_certificate_digest_parts(
     *,
     decision_policy_version: str,
     group_version_id: str,
     requirement_count: int,
     rows: Sequence[GroupMatchingCertificateRow],
-) -> tuple[str, int]:
-    """Return the exact frozen digest and length-framed preimage byte count."""
+) -> tuple[str, ...]:
+    """Return the exact typed fields in the frozen certificate preimage."""
 
     _require_text("decision_policy_version", decision_policy_version)
     _require_text("group_version_id", group_version_id)
@@ -2094,12 +2094,35 @@ def compute_group_certificate_digest(
                 )
             )
         )
-    parts = (
+    return (
         GROUP_CERTIFICATE_VERSION,
         *_typed_text(decision_policy_version),
         *_typed_text(group_version_id),
         *_typed_int(requirement_count),
         *_typed_sequence(row_fields),
+    )
+
+
+def _framed_input_size(parts: Sequence[str]) -> int:
+    """Return framed UTF-8 input bytes without performing a digest pass."""
+
+    return sum(8 + len(part.encode("utf-8")) for part in parts)
+
+
+def compute_group_certificate_digest(
+    *,
+    decision_policy_version: str,
+    group_version_id: str,
+    requirement_count: int,
+    rows: Sequence[GroupMatchingCertificateRow],
+) -> tuple[str, int]:
+    """Return the exact frozen digest and length-framed preimage byte count."""
+
+    parts = _group_certificate_digest_parts(
+        decision_policy_version=decision_policy_version,
+        group_version_id=group_version_id,
+        requirement_count=requirement_count,
+        rows=rows,
     )
     return _stable_digest_with_size(*parts)
 
@@ -2109,24 +2132,28 @@ def _artifact_from_rows(
     rows: Sequence[GroupMatchingCertificateRow],
 ) -> tuple[GroupMatchingCertificateArtifact, int]:
     canonical_rows = tuple(rows)
-    digest, digest_input_bytes = compute_group_certificate_digest(
+    digest_parts = _group_certificate_digest_parts(
         decision_policy_version=snapshot.decision_policy_version,
         group_version_id=snapshot.group_version_id,
         requirement_count=snapshot.requirement_count,
         rows=canonical_rows,
     )
+    digest_input_bytes = _framed_input_size(digest_parts)
     artifact = GroupMatchingCertificateArtifact(
         decision_policy_version=snapshot.decision_policy_version,
         group_version_id=snapshot.group_version_id,
         rows=canonical_rows,
         certificate_version=GROUP_CERTIFICATE_VERSION,
-        certificate_digest=digest,
     )
-    validation = validate_certificate_artifact(artifact, snapshot)
-    if not validation.valid:
-        raise AssertionError(
-            "constructed certificate is invalid: " + ", ".join(validation.issues)
-        )
+    issues = _artifact_shape_issues(
+        artifact,
+        snapshot,
+        require_policy_match=True,
+        require_active_observations=True,
+        verify_digest=False,
+    )
+    if issues:
+        raise AssertionError("constructed certificate is invalid: " + ", ".join(issues))
     return artifact, digest_input_bytes
 
 
@@ -2136,6 +2163,7 @@ def _artifact_shape_issues(
     *,
     require_policy_match: bool,
     require_active_observations: bool,
+    verify_digest: bool = True,
 ) -> tuple[str, ...]:
     issues: list[str] = []
     if artifact.certificate_version != GROUP_CERTIFICATE_VERSION:
@@ -2179,18 +2207,19 @@ def _artifact_shape_issues(
         ):
             issues.append("selected_observation_inactive")
 
-    try:
-        expected_digest, _ = compute_group_certificate_digest(
-            decision_policy_version=artifact.decision_policy_version,
-            group_version_id=artifact.group_version_id,
-            requirement_count=artifact.requirement_count,
-            rows=artifact.rows,
-        )
-    except ValidationError:
-        issues.append("certificate_digest_input_invalid")
-    else:
-        if artifact.certificate_digest != expected_digest:
-            issues.append("certificate_digest_mismatch")
+    if verify_digest:
+        try:
+            expected_digest, _ = compute_group_certificate_digest(
+                decision_policy_version=artifact.decision_policy_version,
+                group_version_id=artifact.group_version_id,
+                requirement_count=artifact.requirement_count,
+                rows=artifact.rows,
+            )
+        except ValidationError:
+            issues.append("certificate_digest_input_invalid")
+        else:
+            if artifact.certificate_digest != expected_digest:
+                issues.append("certificate_digest_mismatch")
     return tuple(dict.fromkeys(issues))
 
 
@@ -2283,6 +2312,15 @@ def open_certificate_binding(
         raise ValidationError(
             "cannot bind invalid certificate: " + ", ".join(validation.issues)
         )
+    return _open_validated_certificate_binding(snapshot, artifact)
+
+
+def _open_validated_certificate_binding(
+    snapshot: CertificateEvidenceView,
+    artifact: GroupMatchingCertificateArtifact,
+) -> WorkingGroupCertificateBinding:
+    """Open a binding after the caller validated this frozen artifact once."""
+
     return WorkingGroupCertificateBinding(
         epoch_id=snapshot.epoch_id,
         group_version_id=snapshot.group_version_id,
@@ -2333,7 +2371,7 @@ def _replace_open_binding(
         binding,
         closing_revision=snapshot.revision,
     )
-    opened = open_certificate_binding(snapshot, artifact)
+    opened = _open_validated_certificate_binding(snapshot, artifact)
     return closed, opened
 
 
@@ -2354,6 +2392,7 @@ def build_or_rebuild_certificate(
             snapshot,
             require_policy_match=True,
             require_active_observations=True,
+            verify_digest=False,
         )
         blocking_issues = tuple(
             issue
@@ -2390,7 +2429,7 @@ def build_or_rebuild_certificate(
 
     artifact = reconstruction.artifact
     if prior_artifact is None or prior_binding is None:
-        opened = open_certificate_binding(snapshot, artifact)
+        opened = _open_validated_certificate_binding(snapshot, artifact)
         return CertificateTransitionResult(
             CertificateTransitionKind.BUILD,
             artifact,
@@ -2434,6 +2473,7 @@ def repair_selected_observations(
         snapshot,
         require_policy_match=True,
         require_active_observations=False,
+        verify_digest=False,
     )
     blocking = tuple(
         issue for issue in issues if issue != "selected_observation_inactive"
@@ -2465,15 +2505,6 @@ def repair_selected_observations(
         repaired_rows.append(replace(row, selected_observation_id=observation_id))
 
     if repairs == 0:
-        validation = validate_bound_certificate(
-            prior_artifact,
-            prior_binding,
-            snapshot,
-        )
-        if not validation.valid:
-            raise ValidationError(
-                "retained certificate is invalid: " + ", ".join(validation.issues)
-            )
         return CertificateTransitionResult(
             CertificateTransitionKind.RETAIN,
             prior_artifact,
@@ -2520,6 +2551,7 @@ def rebind_certificate_policy(
         snapshot,
         require_policy_match=False,
         require_active_observations=True,
+        verify_digest=False,
     )
     blocking_issues = tuple(
         issue
@@ -2618,6 +2650,8 @@ def carry_forward_certificate_epoch(
     zero case used by M5 structural and observation events.
     """
 
+    if not prior_binding.open:
+        raise ValidationError("prior certificate binding must be open")
     if prior_binding.epoch_id >= snapshot.epoch_id:
         raise ValidationError("epoch carry-forward requires a later epoch")
     if prior_binding.group_version_id != snapshot.group_version_id:
@@ -2632,6 +2666,7 @@ def carry_forward_certificate_epoch(
         snapshot,
         require_policy_match=False,
         require_active_observations=True,
+        verify_digest=False,
     )
     blocking_issues = tuple(
         issue
@@ -2673,7 +2708,7 @@ def carry_forward_certificate_epoch(
             artifact, digest_input_bytes = _artifact_from_rows(snapshot, rows)
         else:
             artifact = prior_artifact
-        opened = open_certificate_binding(snapshot, artifact)
+        opened = _open_validated_certificate_binding(snapshot, artifact)
         if policy_changed:
             kind = (
                 CertificateTransitionKind.EPOCH_REBIND_REPAIR
@@ -2715,7 +2750,7 @@ def carry_forward_certificate_epoch(
             reconstruction.work + policy_work,
         )
     artifact = reconstruction.artifact
-    opened = open_certificate_binding(snapshot, artifact)
+    opened = _open_validated_certificate_binding(snapshot, artifact)
     return CertificateTransitionResult(
         (
             CertificateTransitionKind.EPOCH_REBIND_REBUILD
@@ -2744,6 +2779,7 @@ def close_incomplete_certificate(
         snapshot,
         require_policy_match=True,
         require_active_observations=True,
+        verify_digest=False,
     )
     blocking_issues = tuple(
         issue

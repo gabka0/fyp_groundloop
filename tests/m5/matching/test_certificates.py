@@ -5,6 +5,8 @@ from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
+import groundloop.m5.domain as m5_domain
+import groundloop.m5.matching as matching_module
 from groundloop.errors import ValidationError
 from groundloop.m5.matching import (
     CertificateRebuildRequired,
@@ -78,6 +80,43 @@ def test_certificate_digest_matches_frozen_golden_vector() -> None:
 
     assert digest == "8eb7faa3fb7d626bfe33c32365980c9d292ebae9529a5498674d57b775f57ac3"
     assert framed_bytes == 528
+
+
+def test_certificate_construction_hashes_once_and_reports_exact_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text_hash = _hash("content")
+    snapshot = _snapshot(
+        edge_observations={(0, text_hash): ("obs-a",)},
+        requirement_count=1,
+        revision=1,
+    )
+    original = m5_domain.stable_m5_digest
+    digest_input_sizes: list[int] = []
+
+    def counted_digest(
+        domain_tag: str,
+        *values: tuple[str, ...],
+    ) -> str:
+        fields = (domain_tag, *(field for value in values for field in value))
+        if domain_tag == "m5-group-certificate-v1":
+            digest_input_sizes.append(
+                sum(8 + len(field.encode("utf-8")) for field in fields)
+            )
+        return original(domain_tag, *values)
+
+    monkeypatch.setattr(m5_domain, "stable_m5_digest", counted_digest)
+
+    reconstructed = reconstruct_certificate(snapshot)
+
+    assert reconstructed.artifact is not None
+    assert digest_input_sizes == [reconstructed.work.certificate_digest_input_bytes]
+
+    digest_input_sizes.clear()
+    built = build_or_rebuild_certificate(snapshot)
+
+    assert built.artifact is not None
+    assert digest_input_sizes == [built.work.certificate_digest_input_bytes]
 
 
 def test_reconstruction_is_deterministic_and_snapshot_valid() -> None:
@@ -226,6 +265,44 @@ def test_removing_nonselected_duplicate_retains_artifact_and_binding() -> None:
     assert retained.open_binding is initial.open_binding
     assert retained.work.certificate_repairs == 0
     assert retained.work.groups_touched == 0
+
+
+def test_retain_performs_no_digest_work_for_long_selected_identifier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text_hash = _hash("content")
+    selected_observation_id = "observation-" + "x" * 10_000
+    old_snapshot = _snapshot(
+        edge_observations={(0, text_hash): (selected_observation_id,)},
+        requirement_count=1,
+        revision=1,
+    )
+    initial = _initial_transition(old_snapshot)
+    assert initial.artifact is not None
+    assert initial.open_binding is not None
+
+    def unexpected_digest(**_: object) -> tuple[str, int]:
+        raise AssertionError("retain must trust the frozen artifact digest")
+
+    monkeypatch.setattr(
+        matching_module,
+        "compute_group_certificate_digest",
+        unexpected_digest,
+    )
+    new_snapshot = _snapshot(
+        edge_observations={(0, text_hash): (selected_observation_id,)},
+        requirement_count=1,
+        revision=2,
+    )
+
+    retained = repair_selected_observations(
+        new_snapshot,
+        prior_artifact=initial.artifact,
+        prior_binding=initial.open_binding,
+    )
+
+    assert retained.kind is CertificateTransitionKind.RETAIN
+    assert retained.work.certificate_digest_input_bytes == 0
 
 
 def test_selected_edge_loss_with_alternating_cover_rebuilds() -> None:
@@ -500,6 +577,34 @@ def test_new_epoch_carry_forward_retains_artifact_without_closing_history() -> N
     assert carried.open_binding.epoch_id == 12
     assert carried.open_binding.valid_from_revision == 0
     assert initial.open_binding.open
+
+
+def test_new_epoch_carry_forward_rejects_closed_historical_binding() -> None:
+    text_hash = _hash("content")
+    edges = {(0, text_hash): ("obs-a",)}
+    old_snapshot = _snapshot(
+        edge_observations=edges,
+        requirement_count=1,
+        revision=1,
+        epoch_id=11,
+    )
+    initial = _initial_transition(old_snapshot)
+    assert initial.artifact is not None
+    assert initial.open_binding is not None
+    closed = replace(initial.open_binding, valid_to_revision=2)
+    new_snapshot = _snapshot(
+        edge_observations=edges,
+        requirement_count=1,
+        revision=0,
+        epoch_id=12,
+    )
+
+    with pytest.raises(ValidationError, match="binding must be open"):
+        carry_forward_certificate_epoch(
+            new_snapshot,
+            prior_artifact=initial.artifact,
+            prior_binding=closed,
+        )
 
 
 def test_new_epoch_carry_forward_repairs_selected_observation() -> None:
@@ -786,6 +891,23 @@ def test_validator_detects_digest_and_binding_snapshot_corruption() -> None:
         closed,
         future,
     ).valid
+
+
+def test_public_validator_detects_hostile_in_process_digest_corruption() -> None:
+    text_hash = _hash("content")
+    snapshot = _snapshot(
+        edge_observations={(0, text_hash): ("obs-a",)},
+        requirement_count=1,
+        revision=1,
+    )
+    initial = _initial_transition(snapshot)
+    assert initial.artifact is not None
+    object.__setattr__(initial.artifact, "certificate_digest", "0" * 64)
+
+    validation = validate_certificate_artifact(initial.artifact, snapshot)
+
+    assert not validation.valid
+    assert "certificate_digest_mismatch" in validation.issues
 
 
 def test_artifacts_rows_and_bindings_are_immutable() -> None:

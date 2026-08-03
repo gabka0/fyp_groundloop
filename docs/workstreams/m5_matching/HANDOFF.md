@@ -80,8 +80,8 @@ charges `canonical_sort_items`; do not report the latter as an unqualified
    provenance repair even though `transitions` is empty.
 5. Certificate/full-state changes dirty downstream claim publication even when
    group, claim, and answer enum statuses are unchanged.
-6. Cross-epoch carry-forward opens a binding in the new epoch and never closes
-   a prior-epoch binding.
+6. Cross-epoch carry-forward requires an open prior binding, opens a binding in
+   the new epoch, and never closes or resurrects prior-epoch history.
 7. Unique `groups_touched`, `claims_touched`, and `answers_touched` are
    coordinator counters. Do not derive them by summing local action counts.
 8. Structural `W_g` counts every active currency-eligible canonical
@@ -106,12 +106,22 @@ Final clean validation from this worktree:
 | Ruff format check over owned source/tests | PASS, 7 files already formatted |
 | `mypy --strict` over `src/groundloop/m5/matching.py` | PASS, no issues |
 | `compileall` over owned source/tests with `/tmp` bytecode cache | PASS |
-| Owned pytest suite | PASS, 75 tests in 39.90 seconds |
+| Owned pytest suite | PASS, 79 tests |
+| Aggregate `tests/m5` suite at repair checkpoint | PASS |
 
 The owned suite includes the exact 74,958-graph gate, all frozen small mask
 transitions, seeded `r=5..8` transitions, certificate lifecycle/history cases,
 a 4,096-observation maintained-index stress case, and static
 no-oracle/no-hidden-sort guards.
+
+An independent adversarial audit initially returned `NO_GO` for two concrete
+defects: closed historical bindings could be carried forward, and certificate
+transition paths performed digest work that their counters did not report.
+The repair rejects closed carry-forward, performs exactly one charged hash on
+certificate construction, performs zero digest work on retain, and preserves
+rehashing in the public audit validators. Four targeted regressions cover
+those properties, including a long selected identifier that would expose work
+hidden behind a constant counter.
 
 An additional attempt to run strict mypy over the tests was not usable as a
 project gate: the installed NumPy stub contains Python-3.12 `type` syntax while
