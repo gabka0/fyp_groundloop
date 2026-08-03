@@ -16,10 +16,7 @@ from groundloop.m5.matching import (
 
 
 def _base_masks(requirement_count: int) -> dict[str, int]:
-    return {
-        f"mask-{mask}": mask
-        for mask in range(1, 1 << requirement_count)
-    }
+    return {f"mask-{mask}": mask for mask in range(1, 1 << requirement_count)}
 
 
 def test_every_old_new_mask_pair_through_r4_is_exact() -> None:
@@ -62,19 +59,17 @@ def test_every_old_new_mask_pair_through_r4_is_exact() -> None:
                     assert result.work.hall_subset_entries_examined == 0
                 else:
                     assert result.work.hash_mask_transitions == 1
-                    assert result.work.distinct_edge_crossings == (
-                        old_mask ^ new_mask
-                    ).bit_count()
+                    assert (
+                        result.work.distinct_edge_crossings
+                        == (old_mask ^ new_mask).bit_count()
+                    )
                     assert result.work.hall_subset_entries_examined == full_mask
                     assert result.work.hall_deficiency_entries_examined == full_mask
                     expected_changed = sum(
                         bool(subset & old_mask) != bool(subset & new_mask)
                         for subset in range(1, full_mask + 1)
                     )
-                    assert (
-                        result.work.hall_neighbor_entries_changed
-                        == expected_changed
-                    )
+                    assert result.work.hall_neighbor_entries_changed == expected_changed
                 checked += 1
 
     assert checked == sum(
@@ -121,10 +116,13 @@ def test_batch_is_canonical_and_counts_one_group_touch() -> None:
     reverse = apply_hash_mask_transitions(state, reversed(transitions))
 
     assert forward == reverse
-    assert forward.state == initialize_hall_mask_state(
-        3,
-        {"a": 0b101, "b": 0b110},
-    ).state
+    assert (
+        forward.state
+        == initialize_hall_mask_state(
+            3,
+            {"a": 0b101, "b": 0b110},
+        ).state
+    )
     assert forward.work.hash_mask_transitions == 2
     assert forward.work.group_local_state_operations == 1
     assert forward.work.groups_touched == 0

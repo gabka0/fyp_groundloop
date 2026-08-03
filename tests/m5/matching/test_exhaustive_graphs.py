@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import hashlib
 from itertools import permutations
 
 import pytest
 
 from groundloop.errors import ValidationError
 from groundloop.m5.matching import (
+    CertificateSnapshot,
+    HallMaskState,
     affected_group_matching,
     initialize_hall_mask_state,
+    reconstruct_certificate,
+    validate_certificate_artifact,
     validate_hall_mask_state,
 )
 
@@ -46,6 +51,57 @@ def _assert_valid_matching(
     return result.matching_size
 
 
+def _assert_relational_hall_arrays(
+    requirement_count: int,
+    masks: dict[str, int],
+    state: HallMaskState,
+) -> None:
+    full_mask = (1 << requirement_count) - 1
+    histogram = [0] * (full_mask + 1)
+    for mask in masks.values():
+        histogram[mask] += 1
+    neighbors = [0] * (full_mask + 1)
+    deficiencies = [0] * (full_mask + 1)
+    for subset in range(1, full_mask + 1):
+        neighbors[subset] = sum(bool(mask & subset) for mask in masks.values())
+        deficiencies[subset] = subset.bit_count() - neighbors[subset]
+
+    assert state.mask_histogram == tuple(histogram)
+    assert state.neighbor_counts == tuple(neighbors)
+    assert state.deficiencies == tuple(deficiencies)
+    assert state.maximum_deficiency == max(
+        0,
+        max(deficiencies[1:]),
+    )
+
+
+def _certificate_snapshot(
+    requirement_count: int,
+    masks: dict[str, int],
+) -> CertificateSnapshot:
+    digest_masks = {
+        hashlib.sha256(text_hash.encode("utf-8")).hexdigest(): mask
+        for text_hash, mask in masks.items()
+    }
+    observations = {
+        (ordinal, text_hash): (f"obs-{ordinal}-{text_hash}",)
+        for text_hash, mask in digest_masks.items()
+        for ordinal in range(requirement_count)
+        if mask & (1 << ordinal)
+    }
+    return CertificateSnapshot.from_primitives(
+        epoch_id=1,
+        revision=0,
+        decision_policy_version="policy-v1",
+        group_version_id="group-v1",
+        requirement_version_ids=tuple(
+            f"requirement-{ordinal}" for ordinal in range(requirement_count)
+        ),
+        hash_masks=digest_masks,
+        observation_ids_by_edge=observations,
+    )
+
+
 def test_every_simple_graph_through_r4_h4_matches_hall_state() -> None:
     graph_count = 0
     for requirement_count in range(1, 5):
@@ -60,10 +116,39 @@ def test_every_simple_graph_through_r4_h4_matches_hall_state() -> None:
                 matching_size = _assert_valid_matching(requirement_count, masks)
                 hall = initialize_hall_mask_state(requirement_count, masks)
                 assert not validate_hall_mask_state(hall.state)
-                assert hall.state.matching_size == matching_size
-                assert hall.state.complete is (
-                    matching_size == requirement_count
+                _assert_relational_hall_arrays(
+                    requirement_count,
+                    masks,
+                    hall.state,
                 )
+                assert hall.state.matching_size == matching_size
+                assert hall.state.complete is (matching_size == requirement_count)
+                snapshot = _certificate_snapshot(requirement_count, masks)
+                first_certificate = reconstruct_certificate(snapshot)
+                second_certificate = reconstruct_certificate(snapshot)
+                assert first_certificate.artifact == second_certificate.artifact
+                assert first_certificate.matching == second_certificate.matching
+                assert first_certificate.matching.matching_size == matching_size
+                if matching_size == requirement_count:
+                    assert first_certificate.artifact is not None
+                    rows = first_certificate.artifact.rows
+                    assert tuple(row.requirement_ordinal for row in rows) == tuple(
+                        range(requirement_count)
+                    )
+                    assert len({row.text_hash for row in rows}) == requirement_count
+                    snapshot_masks = dict(snapshot.hash_masks)
+                    assert all(
+                        snapshot_masks[row.text_hash] & (1 << row.requirement_ordinal)
+                        and row.selected_observation_id
+                        == f"obs-{row.requirement_ordinal}-{row.text_hash}"
+                        for row in rows
+                    )
+                    assert validate_certificate_artifact(
+                        first_certificate.artifact,
+                        snapshot,
+                    ).valid
+                else:
+                    assert first_certificate.artifact is None
                 graph_count += 1
 
     # Sum_{r=1..4,H=0..4} 2^(rH): the exact finite frozen gate.
@@ -109,10 +194,7 @@ def test_matching_exposes_every_size_from_zero_through_r() -> None:
     observed_sizes = {
         affected_group_matching(
             requirement_count,
-            {
-                f"h{ordinal}": 1 << ordinal
-                for ordinal in range(target_size)
-            },
+            {f"h{ordinal}": 1 << ordinal for ordinal in range(target_size)},
         ).matching_size
         for target_size in range(requirement_count + 1)
     }

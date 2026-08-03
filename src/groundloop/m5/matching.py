@@ -16,12 +16,23 @@ import hashlib
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from typing import Protocol
 
 from groundloop.errors import ValidationError
+from groundloop.m5.domain import (
+    EvidenceGroupVersion,
+    GroupCertificateRow,
+    GroupMatchingCertificateArtifact,
+    RequirementWitness,
+    SnapshotPoint,
+)
 
 MAX_REQUIREMENTS = 8
 GROUP_CERTIFICATE_VERSION = "m5-group-certificate-v1"
 _HEX = frozenset("0123456789abcdef")
+
+# Backward-compatible Lane A name; the concrete record is coordinator-owned.
+GroupMatchingCertificateRow = GroupCertificateRow
 
 
 def _require_integer(
@@ -82,6 +93,7 @@ class MatchingWorkCounters:
     policy_candidate_observations: int = 0
     ordered_policy_range_probes: int = 0
     ordered_index_operations: int = 0
+    canonical_sort_items: int = 0
     edge_refcount_keys_updated: int = 0
     distinct_edge_crossings: int = 0
     hash_mask_transitions: int = 0
@@ -123,6 +135,7 @@ class MatchingWorkCounters:
             ("policy_candidate_observations", self.policy_candidate_observations),
             ("ordered_policy_range_probes", self.ordered_policy_range_probes),
             ("ordered_index_operations", self.ordered_index_operations),
+            ("canonical_sort_items", self.canonical_sort_items),
             ("edge_refcount_keys_updated", self.edge_refcount_keys_updated),
             ("distinct_edge_crossings", self.distinct_edge_crossings),
             ("hash_mask_transitions", self.hash_mask_transitions),
@@ -176,15 +189,16 @@ class MatchingWorkCounters:
                 + other.requirement_observation_changes_processed
             ),
             policy_candidate_observations=(
-                self.policy_candidate_observations
-                + other.policy_candidate_observations
+                self.policy_candidate_observations + other.policy_candidate_observations
             ),
             ordered_policy_range_probes=(
-                self.ordered_policy_range_probes
-                + other.ordered_policy_range_probes
+                self.ordered_policy_range_probes + other.ordered_policy_range_probes
             ),
             ordered_index_operations=(
                 self.ordered_index_operations + other.ordered_index_operations
+            ),
+            canonical_sort_items=(
+                self.canonical_sort_items + other.canonical_sort_items
             ),
             edge_refcount_keys_updated=(
                 self.edge_refcount_keys_updated + other.edge_refcount_keys_updated
@@ -200,23 +214,18 @@ class MatchingWorkCounters:
             ),
             hall_zeta_additions=self.hall_zeta_additions + other.hall_zeta_additions,
             hall_subset_entries_examined=(
-                self.hall_subset_entries_examined
-                + other.hall_subset_entries_examined
+                self.hall_subset_entries_examined + other.hall_subset_entries_examined
             ),
             hall_neighbor_entries_changed=(
-                self.hall_neighbor_entries_changed
-                + other.hall_neighbor_entries_changed
+                self.hall_neighbor_entries_changed + other.hall_neighbor_entries_changed
             ),
             hall_deficiency_entries_examined=(
                 self.hall_deficiency_entries_examined
                 + other.hall_deficiency_entries_examined
             ),
-            certificate_repairs=(
-                self.certificate_repairs + other.certificate_repairs
-            ),
+            certificate_repairs=(self.certificate_repairs + other.certificate_repairs),
             certificate_reconstructions=(
-                self.certificate_reconstructions
-                + other.certificate_reconstructions
+                self.certificate_reconstructions + other.certificate_reconstructions
             ),
             policy_rebindings=self.policy_rebindings + other.policy_rebindings,
             representative_hashes_read=(
@@ -226,12 +235,9 @@ class MatchingWorkCounters:
                 self.representative_observations_read
                 + other.representative_observations_read
             ),
-            augmenting_searches=(
-                self.augmenting_searches + other.augmenting_searches
-            ),
+            augmenting_searches=(self.augmenting_searches + other.augmenting_searches),
             augmenting_requirement_visits=(
-                self.augmenting_requirement_visits
-                + other.augmenting_requirement_visits
+                self.augmenting_requirement_visits + other.augmenting_requirement_visits
             ),
             augmenting_edge_visits=(
                 self.augmenting_edge_visits + other.augmenting_edge_visits
@@ -241,8 +247,7 @@ class MatchingWorkCounters:
                 + other.certificate_digest_input_bytes
             ),
             group_local_state_operations=(
-                self.group_local_state_operations
-                + other.group_local_state_operations
+                self.group_local_state_operations + other.group_local_state_operations
             ),
             groups_touched=self.groups_touched + other.groups_touched,
             claims_touched=self.claims_touched + other.claims_touched,
@@ -274,15 +279,16 @@ class MatchingWorkCounters:
                 - other.requirement_observation_changes_processed
             ),
             policy_candidate_observations=(
-                self.policy_candidate_observations
-                - other.policy_candidate_observations
+                self.policy_candidate_observations - other.policy_candidate_observations
             ),
             ordered_policy_range_probes=(
-                self.ordered_policy_range_probes
-                - other.ordered_policy_range_probes
+                self.ordered_policy_range_probes - other.ordered_policy_range_probes
             ),
             ordered_index_operations=(
                 self.ordered_index_operations - other.ordered_index_operations
+            ),
+            canonical_sort_items=(
+                self.canonical_sort_items - other.canonical_sort_items
             ),
             edge_refcount_keys_updated=(
                 self.edge_refcount_keys_updated - other.edge_refcount_keys_updated
@@ -298,23 +304,18 @@ class MatchingWorkCounters:
             ),
             hall_zeta_additions=self.hall_zeta_additions - other.hall_zeta_additions,
             hall_subset_entries_examined=(
-                self.hall_subset_entries_examined
-                - other.hall_subset_entries_examined
+                self.hall_subset_entries_examined - other.hall_subset_entries_examined
             ),
             hall_neighbor_entries_changed=(
-                self.hall_neighbor_entries_changed
-                - other.hall_neighbor_entries_changed
+                self.hall_neighbor_entries_changed - other.hall_neighbor_entries_changed
             ),
             hall_deficiency_entries_examined=(
                 self.hall_deficiency_entries_examined
                 - other.hall_deficiency_entries_examined
             ),
-            certificate_repairs=(
-                self.certificate_repairs - other.certificate_repairs
-            ),
+            certificate_repairs=(self.certificate_repairs - other.certificate_repairs),
             certificate_reconstructions=(
-                self.certificate_reconstructions
-                - other.certificate_reconstructions
+                self.certificate_reconstructions - other.certificate_reconstructions
             ),
             policy_rebindings=self.policy_rebindings - other.policy_rebindings,
             representative_hashes_read=(
@@ -324,12 +325,9 @@ class MatchingWorkCounters:
                 self.representative_observations_read
                 - other.representative_observations_read
             ),
-            augmenting_searches=(
-                self.augmenting_searches - other.augmenting_searches
-            ),
+            augmenting_searches=(self.augmenting_searches - other.augmenting_searches),
             augmenting_requirement_visits=(
-                self.augmenting_requirement_visits
-                - other.augmenting_requirement_visits
+                self.augmenting_requirement_visits - other.augmenting_requirement_visits
             ),
             augmenting_edge_visits=(
                 self.augmenting_edge_visits - other.augmenting_edge_visits
@@ -339,8 +337,7 @@ class MatchingWorkCounters:
                 - other.certificate_digest_input_bytes
             ),
             group_local_state_operations=(
-                self.group_local_state_operations
-                - other.group_local_state_operations
+                self.group_local_state_operations - other.group_local_state_operations
             ),
             groups_touched=self.groups_touched - other.groups_touched,
             claims_touched=self.claims_touched - other.claims_touched,
@@ -468,18 +465,24 @@ class AffectedMatchingResult:
         return self.matching_size == self.requirement_count
 
 
-def _canonical_hash_masks(
-    requirement_count: int,
+def _hash_mask_items(
     hash_masks: Mapping[str, int] | Iterable[tuple[str, int]],
 ) -> tuple[tuple[str, int], ...]:
-    _require_requirement_count(requirement_count)
-    items = (
+    return (
         tuple(hash_masks.items())
         if isinstance(hash_masks, Mapping)
         else tuple(hash_masks)
     )
+
+
+def _validated_hash_masks_in_input_order(
+    requirement_count: int,
+    hash_masks: Mapping[str, int] | Iterable[tuple[str, int]],
+) -> tuple[tuple[str, int], ...]:
+    _require_requirement_count(requirement_count)
+    items = _hash_mask_items(hash_masks)
     seen_hashes: set[str] = set()
-    canonical: list[tuple[str, int]] = []
+    validated: list[tuple[str, int]] = []
     full_mask = (1 << requirement_count) - 1
     for text_hash, mask in items:
         _require_text("text_hash", text_hash)
@@ -487,23 +490,25 @@ def _canonical_hash_masks(
         if text_hash in seen_hashes:
             raise ValidationError(f"duplicate text hash: {text_hash}")
         seen_hashes.add(text_hash)
-        canonical.append((text_hash, mask))
-    return tuple(sorted(canonical))
+        validated.append((text_hash, mask))
+    return tuple(validated)
 
 
-def affected_group_matching(
+def _canonical_hash_masks(
     requirement_count: int,
     hash_masks: Mapping[str, int] | Iterable[tuple[str, int]],
+) -> tuple[tuple[str, int], ...]:
+    return tuple(
+        sorted(_validated_hash_masks_in_input_order(requirement_count, hash_masks))
+    )
+
+
+def _affected_group_matching_from_canonical(
+    requirement_count: int,
+    canonical: Sequence[tuple[str, int]],
 ) -> AffectedMatchingResult:
-    """Return a deterministic maximum matching for one affected group.
+    """Run the O(rE) kernel after canonical ordering has been established."""
 
-    Requirements are attempted in ordinal order.  Each augmenting search visits
-    candidate hashes in lexicographic order.  Stateful callers may retain a
-    previously valid certificate instead; this function is the deliberately
-    simple affected-group full-matching baseline and deterministic constructor.
-    """
-
-    canonical = _canonical_hash_masks(requirement_count, hash_masks)
     candidates: list[list[str]] = [[] for _ in range(requirement_count)]
     for text_hash, mask in canonical:
         for ordinal in range(requirement_count):
@@ -535,7 +540,8 @@ def affected_group_matching(
 
     pairs = tuple(
         MatchingPair(ordinal, requirement_hash[ordinal])
-        for ordinal in sorted(requirement_hash)
+        for ordinal in range(requirement_count)
+        if ordinal in requirement_hash
     )
     work = MatchingWorkCounters(
         augmenting_searches=requirement_count,
@@ -543,6 +549,47 @@ def affected_group_matching(
         augmenting_edge_visits=edge_visits,
     )
     return AffectedMatchingResult(requirement_count, pairs, work)
+
+
+def affected_group_matching_canonical(
+    requirement_count: int,
+    hash_masks: Sequence[tuple[str, int]],
+) -> AffectedMatchingResult:
+    """Run deterministic affected-group matching over preordered hash masks.
+
+    ``hash_masks`` must be strictly increasing by text hash.  Validation and
+    matching are linear in the supplied graph image, so the kernel has the
+    frozen ``O(rE)`` cost under the ordered-index input contract.
+    """
+
+    validated = _validated_hash_masks_in_input_order(requirement_count, hash_masks)
+    previous_hash: str | None = None
+    for text_hash, _ in validated:
+        if previous_hash is not None and text_hash <= previous_hash:
+            raise ValidationError("canonical hash masks must be ordered by text hash")
+        previous_hash = text_hash
+    return _affected_group_matching_from_canonical(requirement_count, validated)
+
+
+def affected_group_matching(
+    requirement_count: int,
+    hash_masks: Mapping[str, int] | Iterable[tuple[str, int]],
+) -> AffectedMatchingResult:
+    """Sort arbitrary input, then run the deterministic matching baseline.
+
+    This convenience/build wrapper costs ``O(H log H + rE)``.  Measured callers
+    that already maintain ordered hashes use :func:`affected_group_matching_canonical`
+    and avoid the sort.
+    """
+
+    validated = _validated_hash_masks_in_input_order(requirement_count, hash_masks)
+    canonical = tuple(sorted(validated))
+    result = _affected_group_matching_from_canonical(requirement_count, canonical)
+    return AffectedMatchingResult(
+        result.requirement_count,
+        result.pairs,
+        result.work + MatchingWorkCounters(canonical_sort_items=len(validated)),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -647,9 +694,7 @@ def _state_from_histogram_via_zeta(
     neighbor_counts = [0] * size
     deficiencies = [0] * size
     for subset in range(1, size):
-        neighbor_counts[subset] = (
-            distinct_hash_count - subset_sums[full_mask ^ subset]
-        )
+        neighbor_counts[subset] = distinct_hash_count - subset_sums[full_mask ^ subset]
         deficiencies[subset] = subset.bit_count() - neighbor_counts[subset]
     maximum_deficiency = max(0, max(deficiencies[1:]))
     state = HallMaskState(
@@ -672,8 +717,11 @@ def initialize_hall_mask_state(
 
     _require_requirement_count(requirement_count)
     if isinstance(hash_masks, Mapping):
-        canonical = _canonical_hash_masks(requirement_count, hash_masks)
-        masks = tuple(mask for _, mask in canonical)
+        validated = _validated_hash_masks_in_input_order(
+            requirement_count,
+            hash_masks,
+        )
+        masks = tuple(mask for _, mask in validated)
     else:
         masks = tuple(hash_masks)
     histogram = _histogram_from_masks(requirement_count, masks)
@@ -780,13 +828,13 @@ def apply_hash_mask_transitions(
 ) -> HallKernelResult:
     """Failure-atomically apply at most one net transition per text hash."""
 
-    canonical = tuple(sorted(transitions))
+    ordered = tuple(transitions)
     seen: set[str] = set()
     current = state
     work = MatchingWorkCounters()
     changed = False
     full_mask = (1 << state.requirement_count) - 1
-    for transition in canonical:
+    for transition in ordered:
         if transition.text_hash in seen:
             raise ValidationError(
                 f"duplicate coalesced transition for {transition.text_hash}"
@@ -999,6 +1047,693 @@ def apply_edge_multiplicity_deltas(
     )
 
 
+class CertificateEvidenceView(Protocol):
+    """Bounded lookup contract consumed by measured certificate operations.
+
+    Implementations may be a full immutable audit snapshot or a current view
+    over maintained ordered indexes.  Measured paths use the latter and never
+    construct a full witness image merely to validate or repair a certificate.
+    """
+
+    epoch_id: int
+    revision: int
+    decision_policy_version: str
+    group_version_id: str
+    requirement_version_ids: tuple[str, ...]
+
+    @property
+    def requirement_count(self) -> int: ...
+
+    def representative_hash_masks(self) -> tuple[tuple[str, int], ...]: ...
+
+    def edge_active(self, requirement_ordinal: int, text_hash: str) -> bool: ...
+
+    def least_observation_id(
+        self,
+        requirement_ordinal: int,
+        text_hash: str,
+    ) -> str | None: ...
+
+    def observation_active(
+        self,
+        requirement_ordinal: int,
+        text_hash: str,
+        observation_id: str,
+    ) -> bool: ...
+
+    def hall_histogram(self) -> tuple[int, ...]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _AvlNode:
+    key: str
+    left: _AvlNode | None
+    right: _AvlNode | None
+    height: int
+    size: int
+
+
+def _avl_height(node: _AvlNode | None) -> int:
+    return 0 if node is None else node.height
+
+
+def _avl_size(node: _AvlNode | None) -> int:
+    return 0 if node is None else node.size
+
+
+def _avl_node(
+    key: str,
+    left: _AvlNode | None,
+    right: _AvlNode | None,
+) -> _AvlNode:
+    return _AvlNode(
+        key=key,
+        left=left,
+        right=right,
+        height=1 + max(_avl_height(left), _avl_height(right)),
+        size=1 + _avl_size(left) + _avl_size(right),
+    )
+
+
+def _avl_rotate_left(node: _AvlNode) -> _AvlNode:
+    pivot = node.right
+    if pivot is None:
+        raise AssertionError("left rotation requires a right child")
+    moved = _avl_node(node.key, node.left, pivot.left)
+    return _avl_node(pivot.key, moved, pivot.right)
+
+
+def _avl_rotate_right(node: _AvlNode) -> _AvlNode:
+    pivot = node.left
+    if pivot is None:
+        raise AssertionError("right rotation requires a left child")
+    moved = _avl_node(node.key, pivot.right, node.right)
+    return _avl_node(pivot.key, pivot.left, moved)
+
+
+def _avl_balance(node: _AvlNode) -> _AvlNode:
+    balance = _avl_height(node.left) - _avl_height(node.right)
+    if balance > 1:
+        left = node.left
+        if left is None:
+            raise AssertionError("invalid AVL left-heavy node")
+        if _avl_height(left.left) < _avl_height(left.right):
+            left = _avl_rotate_left(left)
+            node = _avl_node(node.key, left, node.right)
+        return _avl_rotate_right(node)
+    if balance < -1:
+        right = node.right
+        if right is None:
+            raise AssertionError("invalid AVL right-heavy node")
+        if _avl_height(right.right) < _avl_height(right.left):
+            right = _avl_rotate_right(right)
+            node = _avl_node(node.key, node.left, right)
+        return _avl_rotate_left(node)
+    return node
+
+
+def _avl_add(node: _AvlNode | None, key: str) -> tuple[_AvlNode, bool]:
+    if node is None:
+        return _avl_node(key, None, None), True
+    if key == node.key:
+        return node, False
+    if key < node.key:
+        left, changed = _avl_add(node.left, key)
+        if not changed:
+            return node, False
+        return _avl_balance(_avl_node(node.key, left, node.right)), True
+    right, changed = _avl_add(node.right, key)
+    if not changed:
+        return node, False
+    return _avl_balance(_avl_node(node.key, node.left, right)), True
+
+
+def _avl_least_node(node: _AvlNode) -> _AvlNode:
+    current = node
+    while current.left is not None:
+        current = current.left
+    return current
+
+
+def _avl_remove(
+    node: _AvlNode | None,
+    key: str,
+) -> tuple[_AvlNode | None, bool]:
+    if node is None:
+        return None, False
+    if key < node.key:
+        left, changed = _avl_remove(node.left, key)
+        if not changed:
+            return node, False
+        return _avl_balance(_avl_node(node.key, left, node.right)), True
+    if key > node.key:
+        right, changed = _avl_remove(node.right, key)
+        if not changed:
+            return node, False
+        return _avl_balance(_avl_node(node.key, node.left, right)), True
+    if node.left is None:
+        return node.right, True
+    if node.right is None:
+        return node.left, True
+    successor = _avl_least_node(node.right)
+    right, removed = _avl_remove(node.right, successor.key)
+    if not removed:
+        raise AssertionError("AVL successor must be removable")
+    return _avl_balance(_avl_node(successor.key, node.left, right)), True
+
+
+def _avl_contains(node: _AvlNode | None, key: str) -> bool:
+    current = node
+    while current is not None:
+        if key == current.key:
+            return True
+        current = current.left if key < current.key else current.right
+    return False
+
+
+def _avl_first(node: _AvlNode | None, limit: int) -> tuple[str, ...]:
+    if node is None or limit <= 0:
+        return ()
+    result: list[str] = []
+    stack: list[_AvlNode] = []
+    current: _AvlNode | None = node
+    while (current is not None or stack) and len(result) < limit:
+        while current is not None:
+            stack.append(current)
+            current = current.left
+        current = stack.pop()
+        result.append(current.key)
+        current = current.right
+    return tuple(result)
+
+
+def _avl_items(node: _AvlNode | None) -> tuple[str, ...]:
+    return _avl_first(node, _avl_size(node))
+
+
+def _avl_audit(
+    node: _AvlNode | None,
+    lower: str | None = None,
+    upper: str | None = None,
+) -> tuple[int, int, tuple[str, ...]]:
+    if node is None:
+        return 0, 0, ()
+    issues: list[str] = []
+    if lower is not None and node.key <= lower:
+        issues.append("avl_key_not_above_lower_bound")
+    if upper is not None and node.key >= upper:
+        issues.append("avl_key_not_below_upper_bound")
+    left_height, left_size, left_issues = _avl_audit(node.left, lower, node.key)
+    right_height, right_size, right_issues = _avl_audit(node.right, node.key, upper)
+    issues.extend(left_issues)
+    issues.extend(right_issues)
+    expected_height = 1 + max(left_height, right_height)
+    expected_size = 1 + left_size + right_size
+    if node.height != expected_height:
+        issues.append("avl_height_mismatch")
+    if node.size != expected_size:
+        issues.append("avl_size_mismatch")
+    if abs(left_height - right_height) > 1:
+        issues.append("avl_balance_violation")
+    return expected_height, expected_size, tuple(issues)
+
+
+@dataclass(frozen=True, slots=True)
+class PersistentStringSet:
+    """Immutable path-copy AVL set with worst-case logarithmic updates."""
+
+    root: _AvlNode | None = None
+
+    def __len__(self) -> int:
+        return _avl_size(self.root)
+
+    def add(self, key: str) -> tuple[PersistentStringSet, bool]:
+        _require_text("ordered string-set key", key)
+        root, changed = _avl_add(self.root, key)
+        return PersistentStringSet(root), changed
+
+    def remove(self, key: str) -> tuple[PersistentStringSet, bool]:
+        _require_text("ordered string-set key", key)
+        root, changed = _avl_remove(self.root, key)
+        return PersistentStringSet(root), changed
+
+    def contains(self, key: str) -> bool:
+        _require_text("ordered string-set key", key)
+        return _avl_contains(self.root, key)
+
+    def least(self) -> str | None:
+        return None if self.root is None else _avl_least_node(self.root).key
+
+    def first(self, limit: int) -> tuple[str, ...]:
+        _require_integer("ordered string-set limit", limit, minimum=0)
+        return _avl_first(self.root, limit)
+
+    def items(self) -> tuple[str, ...]:
+        return _avl_items(self.root)
+
+    def audit_issues(self) -> tuple[str, ...]:
+        return _avl_audit(self.root)[2]
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class ObservationMembershipDelta:
+    requirement_ordinal: int
+    text_hash: str
+    observation_id: str
+    delta: int
+
+    def __post_init__(self) -> None:
+        _require_integer("requirement_ordinal", self.requirement_ordinal, minimum=0)
+        _require_sha256("text_hash", self.text_hash)
+        _require_text("observation_id", self.observation_id)
+        _require_integer("observation membership delta", self.delta)
+        if self.delta == 0:
+            raise ValidationError("observation membership delta must be nonzero")
+
+
+@dataclass(frozen=True, slots=True)
+class MaintainedIndexUpdate:
+    transitions: tuple[HashMaskTransition, ...]
+    work: MatchingWorkCounters
+
+
+@dataclass(frozen=True, slots=True)
+class CertificateIndexBuildResult:
+    index: MaintainedCertificateIndex
+    work: MatchingWorkCounters
+
+
+class MaintainedCertificateIndex:
+    """Maintained expected-O(1) maps with persistent worst-case-O(log N) sets.
+
+    Updates path-copy only touched AVL roots and commit dictionary assignments
+    after every logical validation succeeds.  Full scans are confined to the
+    explicit ``audit_*`` methods and the bootstrap witness adapter.
+    """
+
+    __slots__ = (
+        "group_version_id",
+        "requirement_version_ids",
+        "_edge_observations",
+        "_generation",
+        "_hash_masks",
+        "_hashes_by_mask",
+        "_observation_edge",
+    )
+
+    def __init__(
+        self,
+        *,
+        group_version_id: str,
+        requirement_version_ids: Sequence[str],
+    ) -> None:
+        _require_text("group_version_id", group_version_id)
+        requirement_ids = tuple(requirement_version_ids)
+        _require_requirement_count(len(requirement_ids))
+        if len(set(requirement_ids)) != len(requirement_ids):
+            raise ValidationError("requirement version IDs must be unique")
+        for requirement_id in requirement_ids:
+            _require_text("requirement_version_id", requirement_id)
+        self.group_version_id = group_version_id
+        self.requirement_version_ids = requirement_ids
+        self._edge_observations: dict[tuple[int, str], PersistentStringSet] = {}
+        self._hash_masks: dict[str, int] = {}
+        self._hashes_by_mask: dict[int, PersistentStringSet] = {}
+        self._observation_edge: dict[str, tuple[int, str]] = {}
+        self._generation = 0
+
+    @property
+    def requirement_count(self) -> int:
+        return len(self.requirement_version_ids)
+
+    @property
+    def generation(self) -> int:
+        return self._generation
+
+    @classmethod
+    def from_requirement_witnesses(
+        cls,
+        group: EvidenceGroupVersion,
+        witnesses: Iterable[RequirementWitness],
+    ) -> CertificateIndexBuildResult:
+        """Full bootstrap/audit adapter from the shared M5.1 witness contract."""
+
+        index = cls(
+            group_version_id=group.group_version_id,
+            requirement_version_ids=tuple(
+                requirement.requirement_version_id for requirement in group.requirements
+            ),
+        )
+        deltas: list[ObservationMembershipDelta] = []
+        seen_edges: set[tuple[int, str]] = set()
+        for witness in witnesses:
+            ordinal = witness.requirement_ordinal
+            _require_integer(
+                "requirement_ordinal",
+                ordinal,
+                minimum=0,
+                maximum=index.requirement_count - 1,
+            )
+            expected_id = index.requirement_version_ids[ordinal]
+            if witness.requirement_version_id != expected_id:
+                raise ValidationError(
+                    "witness requirement ID does not match its group ordinal"
+                )
+            edge = (ordinal, witness.text_hash)
+            if edge in seen_edges:
+                raise ValidationError("duplicate RequirementWitness edge")
+            seen_edges.add(edge)
+            for observation_id in witness.active_observation_ids:
+                deltas.append(
+                    ObservationMembershipDelta(
+                        ordinal,
+                        witness.text_hash,
+                        observation_id,
+                        1,
+                    )
+                )
+        updated = index.apply_observation_deltas(deltas)
+        work = updated.work + MatchingWorkCounters(
+            hash_masks_initialized=len(index._hash_masks),
+        )
+        work.assert_nonnegative()
+        return CertificateIndexBuildResult(index, work)
+
+    def apply_observation_deltas(
+        self,
+        deltas: Iterable[ObservationMembershipDelta],
+    ) -> MaintainedIndexUpdate:
+        """Coalesce and failure-atomically update maintained provenance indexes."""
+
+        items = tuple(deltas)
+        additions = sum(max(item.delta, 0) for item in items)
+        removals = sum(max(-item.delta, 0) for item in items)
+        totals: dict[tuple[int, str, str], int] = {}
+        for item in items:
+            _require_integer(
+                "requirement_ordinal",
+                item.requirement_ordinal,
+                minimum=0,
+                maximum=self.requirement_count - 1,
+            )
+            key = (
+                item.requirement_ordinal,
+                item.text_hash,
+                item.observation_id,
+            )
+            totals[key] = totals.get(key, 0) + item.delta
+
+        observation_targets: dict[str, tuple[int, str]] = {}
+        for (ordinal, text_hash, observation_id), delta in totals.items():
+            if delta == 0:
+                continue
+            if delta not in {-1, 1}:
+                raise ValidationError(
+                    "coalesced observation membership must cross at most once"
+                )
+            edge = (ordinal, text_hash)
+            previous_target = observation_targets.get(observation_id)
+            if previous_target is not None and previous_target != edge:
+                raise ValidationError(
+                    "one observation ID cannot change membership on two edges"
+                )
+            observation_targets[observation_id] = edge
+
+        empty_set = PersistentStringSet()
+        changed_edge_sets: dict[tuple[int, str], PersistentStringSet] = {}
+        observation_changes: dict[str, tuple[int, str] | None] = {}
+        ordered_operations = 0
+        for (ordinal, text_hash, observation_id), delta in totals.items():
+            if delta == 0:
+                continue
+            edge = (ordinal, text_hash)
+            current_set = changed_edge_sets.get(
+                edge,
+                self._edge_observations.get(edge, empty_set),
+            )
+            current_edge = self._observation_edge.get(observation_id)
+            if delta > 0:
+                if current_edge is not None:
+                    raise ValidationError("observation membership is already active")
+                next_set, changed = current_set.add(observation_id)
+                if not changed:
+                    raise ValidationError("observation membership is already active")
+                observation_changes[observation_id] = edge
+            else:
+                if current_edge != edge:
+                    raise ValidationError("observation membership is not active")
+                next_set, changed = current_set.remove(observation_id)
+                if not changed:
+                    raise AssertionError(
+                        "active observation must occur in its edge set"
+                    )
+                observation_changes[observation_id] = None
+            changed_edge_sets[edge] = next_set
+            ordered_operations += 1
+
+        next_masks: dict[str, int] = {}
+        touched_edge_count = 0
+        for edge, next_set in changed_edge_sets.items():
+            original = self._edge_observations.get(edge, empty_set)
+            if original.root is next_set.root:
+                continue
+            touched_edge_count += 1
+            ordinal, text_hash = edge
+            old_present = len(original) > 0
+            new_present = len(next_set) > 0
+            if old_present == new_present:
+                continue
+            mask = next_masks.get(text_hash, self._hash_masks.get(text_hash, 0))
+            bit = 1 << ordinal
+            if new_present:
+                if mask & bit:
+                    raise AssertionError("active edge bit already set")
+                mask |= bit
+            else:
+                if not mask & bit:
+                    raise AssertionError("removed edge bit was absent")
+                mask &= ~bit
+            next_masks[text_hash] = mask
+
+        transitions: list[HashMaskTransition] = []
+        changed_buckets: dict[int, PersistentStringSet] = {}
+        for text_hash, new_mask in next_masks.items():
+            old_mask = self._hash_masks.get(text_hash, 0)
+            if old_mask == new_mask:
+                continue
+            if old_mask:
+                old_bucket = changed_buckets.get(
+                    old_mask,
+                    self._hashes_by_mask.get(old_mask, empty_set),
+                )
+                next_bucket, removed = old_bucket.remove(text_hash)
+                if not removed:
+                    raise AssertionError("hash must occur in its old mask bucket")
+                changed_buckets[old_mask] = next_bucket
+                ordered_operations += 1
+            if new_mask:
+                new_bucket = changed_buckets.get(
+                    new_mask,
+                    self._hashes_by_mask.get(new_mask, empty_set),
+                )
+                next_bucket, added = new_bucket.add(text_hash)
+                if not added:
+                    raise AssertionError("hash already occurs in its new mask bucket")
+                changed_buckets[new_mask] = next_bucket
+                ordered_operations += 1
+            transitions.append(HashMaskTransition(text_hash, old_mask, new_mask))
+
+        if not changed_edge_sets and not transitions:
+            return MaintainedIndexUpdate(
+                (),
+                MatchingWorkCounters(
+                    contribution_additions=additions,
+                    contribution_removals=removals,
+                ),
+            )
+
+        for edge, edge_set in changed_edge_sets.items():
+            if edge_set.root is None:
+                self._edge_observations.pop(edge, None)
+            else:
+                self._edge_observations[edge] = edge_set
+        for observation_id, target_edge in observation_changes.items():
+            if target_edge is None:
+                self._observation_edge.pop(observation_id, None)
+            else:
+                self._observation_edge[observation_id] = target_edge
+        for text_hash, mask in next_masks.items():
+            if mask:
+                self._hash_masks[text_hash] = mask
+            else:
+                self._hash_masks.pop(text_hash, None)
+        for mask, bucket in changed_buckets.items():
+            if bucket.root is None:
+                self._hashes_by_mask.pop(mask, None)
+            else:
+                self._hashes_by_mask[mask] = bucket
+        self._generation += 1
+        work = MatchingWorkCounters(
+            contribution_additions=additions,
+            contribution_removals=removals,
+            ordered_index_operations=ordered_operations,
+            edge_refcount_keys_updated=touched_edge_count,
+        )
+        work.assert_nonnegative()
+        return MaintainedIndexUpdate(tuple(transitions), work)
+
+    def current_view(
+        self,
+        *,
+        point: SnapshotPoint,
+        decision_policy_version: str,
+    ) -> MaintainedCertificateView:
+        return MaintainedCertificateView(
+            epoch_id=point.epoch_id,
+            revision=point.revision,
+            decision_policy_version=decision_policy_version,
+            group_version_id=self.group_version_id,
+            requirement_version_ids=self.requirement_version_ids,
+            index=self,
+            index_generation=self._generation,
+        )
+
+    def audit_snapshot(
+        self,
+        *,
+        point: SnapshotPoint,
+        decision_policy_version: str,
+    ) -> CertificateSnapshot:
+        """Materialize the full image only for bootstrap/audit code."""
+
+        buckets = tuple(
+            MaskHashBucket(mask, values.items())
+            for mask, values in sorted(self._hashes_by_mask.items())
+        )
+        edges = tuple(
+            ActiveEdgeObservations(ordinal, text_hash, values.items())
+            for (ordinal, text_hash), values in sorted(self._edge_observations.items())
+        )
+        return CertificateSnapshot(
+            epoch_id=point.epoch_id,
+            revision=point.revision,
+            decision_policy_version=decision_policy_version,
+            group_version_id=self.group_version_id,
+            requirement_version_ids=self.requirement_version_ids,
+            mask_hash_buckets=buckets,
+            edge_observations=edges,
+        )
+
+    def audit_issues(self) -> tuple[str, ...]:
+        """Full out-of-band invariant scan; never part of measured latency."""
+
+        issues: list[str] = []
+        for values in self._hashes_by_mask.values():
+            issues.extend(values.audit_issues())
+        for values in self._edge_observations.values():
+            issues.extend(values.audit_issues())
+        derived_masks: dict[str, int] = {}
+        derived_observations: dict[str, tuple[int, str]] = {}
+        for (ordinal, text_hash), values in self._edge_observations.items():
+            if not len(values):
+                issues.append("empty_edge_bucket")
+            derived_masks[text_hash] = derived_masks.get(text_hash, 0) | (1 << ordinal)
+            for observation_id in values.items():
+                if observation_id in derived_observations:
+                    issues.append("duplicate_observation_membership")
+                derived_observations[observation_id] = (ordinal, text_hash)
+        if derived_masks != self._hash_masks:
+            issues.append("hash_mask_index_mismatch")
+        if derived_observations != self._observation_edge:
+            issues.append("observation_reverse_index_mismatch")
+        bucket_masks = {
+            text_hash: mask
+            for mask, values in self._hashes_by_mask.items()
+            for text_hash in values.items()
+        }
+        if bucket_masks != self._hash_masks:
+            issues.append("mask_bucket_index_mismatch")
+        return tuple(dict.fromkeys(issues))
+
+
+@dataclass(frozen=True, slots=True)
+class MaintainedCertificateView:
+    """O(1)-capture current view over the maintained index generation."""
+
+    epoch_id: int
+    revision: int
+    decision_policy_version: str
+    group_version_id: str
+    requirement_version_ids: tuple[str, ...]
+    index: MaintainedCertificateIndex
+    index_generation: int
+
+    def __post_init__(self) -> None:
+        _require_integer("epoch_id", self.epoch_id, minimum=0)
+        _require_integer("revision", self.revision, minimum=0)
+        _require_text("decision_policy_version", self.decision_policy_version)
+        if self.group_version_id != self.index.group_version_id:
+            raise ValidationError("maintained view group does not match its index")
+        if self.requirement_version_ids != self.index.requirement_version_ids:
+            raise ValidationError(
+                "maintained view requirements do not match their index"
+            )
+        if self.index_generation != self.index.generation:
+            raise ValidationError("maintained view generation is already stale")
+
+    @property
+    def requirement_count(self) -> int:
+        return len(self.requirement_version_ids)
+
+    def _require_current(self) -> None:
+        if self.index_generation != self.index.generation:
+            raise ValidationError("maintained certificate view is stale")
+
+    def representative_hash_masks(self) -> tuple[tuple[str, int], ...]:
+        self._require_current()
+        candidates: list[tuple[str, int]] = []
+        for mask in range(1, 1 << self.requirement_count):
+            bucket = self.index._hashes_by_mask.get(mask)
+            if bucket is None:
+                continue
+            candidates.extend(
+                (text_hash, mask) for text_hash in bucket.first(self.requirement_count)
+            )
+        return tuple(candidates)
+
+    def edge_active(self, requirement_ordinal: int, text_hash: str) -> bool:
+        self._require_current()
+        return (requirement_ordinal, text_hash) in self.index._edge_observations
+
+    def least_observation_id(
+        self,
+        requirement_ordinal: int,
+        text_hash: str,
+    ) -> str | None:
+        self._require_current()
+        values = self.index._edge_observations.get((requirement_ordinal, text_hash))
+        return None if values is None else values.least()
+
+    def observation_active(
+        self,
+        requirement_ordinal: int,
+        text_hash: str,
+        observation_id: str,
+    ) -> bool:
+        self._require_current()
+        return self.index._observation_edge.get(observation_id) == (
+            requirement_ordinal,
+            text_hash,
+        )
+
+    def hall_histogram(self) -> tuple[int, ...]:
+        self._require_current()
+        histogram = [0] * (1 << self.requirement_count)
+        for mask, values in self.index._hashes_by_mask.items():
+            histogram[mask] = len(values)
+        return tuple(histogram)
+
+
 @dataclass(frozen=True, slots=True, order=True)
 class MaskHashBucket:
     mask: int
@@ -1030,9 +1765,7 @@ class CertificateSnapshot:
         _require_text("decision_policy_version", self.decision_policy_version)
         _require_text("group_version_id", self.group_version_id)
         _require_requirement_count(len(self.requirement_version_ids))
-        if len(set(self.requirement_version_ids)) != len(
-            self.requirement_version_ids
-        ):
+        if len(set(self.requirement_version_ids)) != len(self.requirement_version_ids):
             raise ValidationError("requirement version IDs must be unique")
         for requirement_id in self.requirement_version_ids:
             _require_text("requirement_version_id", requirement_id)
@@ -1148,6 +1881,44 @@ class CertificateSnapshot:
                 upper = middle
         return lower < len(observations) and observations[lower] == observation_id
 
+    def representative_hash_masks(self) -> tuple[tuple[str, int], ...]:
+        candidates: list[tuple[str, int]] = []
+        for bucket in self.mask_hash_buckets:
+            candidates.extend(
+                (text_hash, bucket.mask)
+                for text_hash in bucket.text_hashes[: self.requirement_count]
+            )
+        return tuple(candidates)
+
+    def edge_active(self, requirement_ordinal: int, text_hash: str) -> bool:
+        return bool(self.observations_for(requirement_ordinal, text_hash))
+
+    def least_observation_id(
+        self,
+        requirement_ordinal: int,
+        text_hash: str,
+    ) -> str | None:
+        observations = self.observations_for(requirement_ordinal, text_hash)
+        return None if not observations else observations[0]
+
+    def observation_active(
+        self,
+        requirement_ordinal: int,
+        text_hash: str,
+        observation_id: str,
+    ) -> bool:
+        return self.has_observation(
+            requirement_ordinal,
+            text_hash,
+            observation_id,
+        )
+
+    def hall_histogram(self) -> tuple[int, ...]:
+        histogram = [0] * (1 << self.requirement_count)
+        for bucket in self.mask_hash_buckets:
+            histogram[bucket.mask] = len(bucket.text_hashes)
+        return tuple(histogram)
+
     @classmethod
     def from_primitives(
         cls,
@@ -1189,24 +1960,6 @@ class CertificateSnapshot:
             mask_hash_buckets=buckets,
             edge_observations=edge_observations,
         )
-
-
-@dataclass(frozen=True, slots=True, order=True)
-class GroupMatchingCertificateRow:
-    requirement_ordinal: int
-    requirement_version_id: str
-    text_hash: str
-    selected_observation_id: str
-
-
-@dataclass(frozen=True, slots=True)
-class GroupMatchingCertificateArtifact:
-    certificate_digest: str
-    decision_policy_version: str
-    certificate_version: str
-    group_version_id: str
-    requirement_count: int
-    rows: tuple[GroupMatchingCertificateRow, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1261,6 +2014,13 @@ class CertificateTransitionKind(StrEnum):
     REBIND_REPAIR = "rebind_repair"
     REBIND_REBUILD = "rebind_rebuild"
     CLOSE = "close"
+    EPOCH_RETAIN = "epoch_retain"
+    EPOCH_REPAIR = "epoch_repair"
+    EPOCH_REBUILD = "epoch_rebuild"
+    EPOCH_REBIND = "epoch_rebind"
+    EPOCH_REBIND_REPAIR = "epoch_rebind_repair"
+    EPOCH_REBIND_REBUILD = "epoch_rebind_rebuild"
+    EPOCH_INCOMPLETE = "epoch_incomplete"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1345,7 +2105,7 @@ def compute_group_certificate_digest(
 
 
 def _artifact_from_rows(
-    snapshot: CertificateSnapshot,
+    snapshot: CertificateEvidenceView,
     rows: Sequence[GroupMatchingCertificateRow],
 ) -> tuple[GroupMatchingCertificateArtifact, int]:
     canonical_rows = tuple(rows)
@@ -1356,12 +2116,11 @@ def _artifact_from_rows(
         rows=canonical_rows,
     )
     artifact = GroupMatchingCertificateArtifact(
-        certificate_digest=digest,
         decision_policy_version=snapshot.decision_policy_version,
-        certificate_version=GROUP_CERTIFICATE_VERSION,
         group_version_id=snapshot.group_version_id,
-        requirement_count=snapshot.requirement_count,
         rows=canonical_rows,
+        certificate_version=GROUP_CERTIFICATE_VERSION,
+        certificate_digest=digest,
     )
     validation = validate_certificate_artifact(artifact, snapshot)
     if not validation.valid:
@@ -1373,7 +2132,7 @@ def _artifact_from_rows(
 
 def _artifact_shape_issues(
     artifact: GroupMatchingCertificateArtifact,
-    snapshot: CertificateSnapshot,
+    snapshot: CertificateEvidenceView,
     *,
     require_policy_match: bool,
     require_active_observations: bool,
@@ -1411,10 +2170,9 @@ def _artifact_shape_issues(
         except ValidationError:
             issues.append("certificate_row_shape_invalid")
             continue
-        observations = snapshot.observations_for(ordinal, row.text_hash)
-        if not observations:
+        if not snapshot.edge_active(ordinal, row.text_hash):
             issues.append("selected_edge_inactive")
-        elif require_active_observations and not snapshot.has_observation(
+        elif require_active_observations and not snapshot.observation_active(
             ordinal,
             row.text_hash,
             row.selected_observation_id,
@@ -1438,7 +2196,7 @@ def _artifact_shape_issues(
 
 def validate_certificate_artifact(
     artifact: GroupMatchingCertificateArtifact,
-    snapshot: CertificateSnapshot,
+    snapshot: CertificateEvidenceView,
 ) -> CertificateValidation:
     """Validate exact policy/group/edge/observation semantics at a snapshot."""
 
@@ -1454,7 +2212,7 @@ def validate_certificate_artifact(
 def validate_bound_certificate(
     artifact: GroupMatchingCertificateArtifact,
     binding: WorkingGroupCertificateBinding,
-    snapshot: CertificateSnapshot,
+    snapshot: CertificateEvidenceView,
 ) -> CertificateValidation:
     """Validate an immutable artifact and its exact epoch/revision binding."""
 
@@ -1470,19 +2228,13 @@ def validate_bound_certificate(
 
 
 def _certificate_candidate_masks(
-    snapshot: CertificateSnapshot,
+    snapshot: CertificateEvidenceView,
 ) -> tuple[tuple[str, int], ...]:
-    candidates: list[tuple[str, int]] = []
-    for bucket in snapshot.mask_hash_buckets:
-        limit = min(len(bucket.text_hashes), snapshot.requirement_count)
-        candidates.extend(
-            (text_hash, bucket.mask) for text_hash in bucket.text_hashes[:limit]
-        )
-    return tuple(candidates)
+    return snapshot.representative_hash_masks()
 
 
 def reconstruct_certificate(
-    snapshot: CertificateSnapshot,
+    snapshot: CertificateEvidenceView,
 ) -> CertificateReconstruction:
     """Deterministically build a certificate from bounded mask representatives."""
 
@@ -1494,11 +2246,11 @@ def reconstruct_certificate(
     if matching.complete:
         rows: list[GroupMatchingCertificateRow] = []
         for pair in matching.pairs:
-            observation_ids = snapshot.observations_for(
+            observation_id = snapshot.least_observation_id(
                 pair.requirement_ordinal,
                 pair.text_hash,
             )
-            if not observation_ids:
+            if observation_id is None:
                 raise AssertionError("candidate matching selected an absent edge")
             representative_observations += 1
             rows.append(
@@ -1508,7 +2260,7 @@ def reconstruct_certificate(
                         pair.requirement_ordinal
                     ],
                     text_hash=pair.text_hash,
-                    selected_observation_id=observation_ids[0],
+                    selected_observation_id=observation_id,
                 )
             )
         artifact, digest_input_bytes = _artifact_from_rows(snapshot, rows)
@@ -1523,7 +2275,7 @@ def reconstruct_certificate(
 
 
 def open_certificate_binding(
-    snapshot: CertificateSnapshot,
+    snapshot: CertificateEvidenceView,
     artifact: GroupMatchingCertificateArtifact,
 ) -> WorkingGroupCertificateBinding:
     validation = validate_certificate_artifact(artifact, snapshot)
@@ -1558,7 +2310,7 @@ def close_certificate_binding(
 def _require_prior_binding(
     artifact: GroupMatchingCertificateArtifact,
     binding: WorkingGroupCertificateBinding,
-    snapshot: CertificateSnapshot,
+    snapshot: CertificateEvidenceView,
 ) -> None:
     if not binding.open:
         raise ValidationError("prior certificate binding must be open")
@@ -1575,7 +2327,7 @@ def _require_prior_binding(
 def _replace_open_binding(
     artifact: GroupMatchingCertificateArtifact,
     binding: WorkingGroupCertificateBinding,
-    snapshot: CertificateSnapshot,
+    snapshot: CertificateEvidenceView,
 ) -> tuple[WorkingGroupCertificateBinding, WorkingGroupCertificateBinding]:
     closed = close_certificate_binding(
         binding,
@@ -1586,7 +2338,7 @@ def _replace_open_binding(
 
 
 def build_or_rebuild_certificate(
-    snapshot: CertificateSnapshot,
+    snapshot: CertificateEvidenceView,
     *,
     prior_artifact: GroupMatchingCertificateArtifact | None = None,
     prior_binding: WorkingGroupCertificateBinding | None = None,
@@ -1669,7 +2421,7 @@ def build_or_rebuild_certificate(
 
 
 def repair_selected_observations(
-    snapshot: CertificateSnapshot,
+    snapshot: CertificateEvidenceView,
     *,
     prior_artifact: GroupMatchingCertificateArtifact,
     prior_binding: WorkingGroupCertificateBinding,
@@ -1695,22 +2447,22 @@ def repair_selected_observations(
     repairs = 0
     representative_reads = 0
     for row in prior_artifact.rows:
-        observation_ids = snapshot.observations_for(
-            row.requirement_ordinal,
-            row.text_hash,
-        )
-        if not observation_ids:
-            raise CertificateRebuildRequired("a selected certificate edge disappeared")
-        if snapshot.has_observation(
+        if snapshot.observation_active(
             row.requirement_ordinal,
             row.text_hash,
             row.selected_observation_id,
         ):
             repaired_rows.append(row)
             continue
+        observation_id = snapshot.least_observation_id(
+            row.requirement_ordinal,
+            row.text_hash,
+        )
+        if observation_id is None:
+            raise CertificateRebuildRequired("a selected certificate edge disappeared")
         repairs += 1
         representative_reads += 1
-        repaired_rows.append(replace(row, selected_observation_id=observation_ids[0]))
+        repaired_rows.append(replace(row, selected_observation_id=observation_id))
 
     if repairs == 0:
         validation = validate_bound_certificate(
@@ -1748,7 +2500,7 @@ def repair_selected_observations(
 
 
 def rebind_certificate_policy(
-    snapshot: CertificateSnapshot,
+    snapshot: CertificateEvidenceView,
     *,
     prior_artifact: GroupMatchingCertificateArtifact,
     prior_binding: WorkingGroupCertificateBinding,
@@ -1783,24 +2535,22 @@ def rebind_certificate_policy(
         repairs = 0
         representative_reads = 0
         for row in prior_artifact.rows:
-            if snapshot.has_observation(
+            if snapshot.observation_active(
                 row.requirement_ordinal,
                 row.text_hash,
                 row.selected_observation_id,
             ):
                 rebound_rows.append(row)
                 continue
-            observations = snapshot.observations_for(
+            observation_id = snapshot.least_observation_id(
                 row.requirement_ordinal,
                 row.text_hash,
             )
-            if not observations:
+            if observation_id is None:
                 raise AssertionError("active selected edge has no observation")
             repairs += 1
             representative_reads += 1
-            rebound_rows.append(
-                replace(row, selected_observation_id=observations[0])
-            )
+            rebound_rows.append(replace(row, selected_observation_id=observation_id))
         artifact, digest_input_bytes = _artifact_from_rows(snapshot, rebound_rows)
         closed, opened = _replace_open_binding(artifact, prior_binding, snapshot)
         return CertificateTransitionResult(
@@ -1854,8 +2604,133 @@ def rebind_certificate_policy(
     )
 
 
+def carry_forward_certificate_epoch(
+    snapshot: CertificateEvidenceView,
+    *,
+    prior_artifact: GroupMatchingCertificateArtifact,
+    prior_binding: WorkingGroupCertificateBinding,
+) -> CertificateTransitionResult:
+    """Carry a published certificate into a later epoch at any revision.
+
+    The previous epoch's binding is immutable history and is never closed by
+    this transition.  The resulting current-epoch binding starts directly at
+    the supplied snapshot revision, including the normal new-epoch revision
+    zero case used by M5 structural and observation events.
+    """
+
+    if prior_binding.epoch_id >= snapshot.epoch_id:
+        raise ValidationError("epoch carry-forward requires a later epoch")
+    if prior_binding.group_version_id != snapshot.group_version_id:
+        raise ValidationError("prior binding belongs to another group")
+    if prior_binding.certificate_digest != prior_artifact.certificate_digest:
+        raise ValidationError("prior binding does not name the prior artifact")
+    if prior_artifact.group_version_id != snapshot.group_version_id:
+        raise ValidationError("prior artifact belongs to another group")
+
+    structural_issues = _artifact_shape_issues(
+        prior_artifact,
+        snapshot,
+        require_policy_match=False,
+        require_active_observations=True,
+    )
+    blocking_issues = tuple(
+        issue
+        for issue in structural_issues
+        if issue not in {"selected_edge_inactive", "selected_observation_inactive"}
+    )
+    if blocking_issues:
+        raise ValidationError(
+            "prior certificate is malformed: " + ", ".join(blocking_issues)
+        )
+
+    policy_changed = (
+        prior_artifact.decision_policy_version != snapshot.decision_policy_version
+    )
+    if "selected_edge_inactive" not in structural_issues:
+        rows: list[GroupMatchingCertificateRow] = []
+        repairs = 0
+        representative_reads = 0
+        for row in prior_artifact.rows:
+            if snapshot.observation_active(
+                row.requirement_ordinal,
+                row.text_hash,
+                row.selected_observation_id,
+            ):
+                rows.append(row)
+                continue
+            observation_id = snapshot.least_observation_id(
+                row.requirement_ordinal,
+                row.text_hash,
+            )
+            if observation_id is None:
+                raise AssertionError("active selected edge has no observation")
+            repairs += 1
+            representative_reads += 1
+            rows.append(replace(row, selected_observation_id=observation_id))
+
+        digest_input_bytes = 0
+        if policy_changed or repairs:
+            artifact, digest_input_bytes = _artifact_from_rows(snapshot, rows)
+        else:
+            artifact = prior_artifact
+        opened = open_certificate_binding(snapshot, artifact)
+        if policy_changed:
+            kind = (
+                CertificateTransitionKind.EPOCH_REBIND_REPAIR
+                if repairs
+                else CertificateTransitionKind.EPOCH_REBIND
+            )
+        else:
+            kind = (
+                CertificateTransitionKind.EPOCH_REPAIR
+                if repairs
+                else CertificateTransitionKind.EPOCH_RETAIN
+            )
+        return CertificateTransitionResult(
+            kind,
+            artifact,
+            None,
+            opened,
+            MatchingWorkCounters(
+                certificate_repairs=repairs,
+                policy_rebindings=int(policy_changed),
+                ordered_index_operations=representative_reads,
+                representative_observations_read=representative_reads,
+                certificate_digest_input_bytes=digest_input_bytes,
+                group_local_state_operations=1,
+            ),
+        )
+
+    reconstruction = reconstruct_certificate(snapshot)
+    policy_work = MatchingWorkCounters(
+        policy_rebindings=int(policy_changed),
+        group_local_state_operations=1,
+    )
+    if reconstruction.artifact is None:
+        return CertificateTransitionResult(
+            CertificateTransitionKind.EPOCH_INCOMPLETE,
+            None,
+            None,
+            None,
+            reconstruction.work + policy_work,
+        )
+    artifact = reconstruction.artifact
+    opened = open_certificate_binding(snapshot, artifact)
+    return CertificateTransitionResult(
+        (
+            CertificateTransitionKind.EPOCH_REBIND_REBUILD
+            if policy_changed
+            else CertificateTransitionKind.EPOCH_REBUILD
+        ),
+        artifact,
+        None,
+        opened,
+        reconstruction.work + policy_work,
+    )
+
+
 def close_incomplete_certificate(
-    snapshot: CertificateSnapshot,
+    snapshot: CertificateEvidenceView,
     *,
     hall_state: HallMaskState,
     prior_artifact: GroupMatchingCertificateArtifact,
@@ -1881,10 +2756,7 @@ def close_incomplete_certificate(
         )
     if hall_state.requirement_count != snapshot.requirement_count:
         raise ValidationError("Hall state belongs to a different group shape")
-    expected_histogram = [0] * (1 << snapshot.requirement_count)
-    for bucket in snapshot.mask_hash_buckets:
-        expected_histogram[bucket.mask] = len(bucket.text_hashes)
-    if hall_state.mask_histogram != tuple(expected_histogram):
+    if hall_state.mask_histogram != snapshot.hall_histogram():
         raise ValidationError("Hall state does not match the certificate snapshot")
     if hall_state.complete:
         raise ValidationError("cannot close a certificate for a complete group")

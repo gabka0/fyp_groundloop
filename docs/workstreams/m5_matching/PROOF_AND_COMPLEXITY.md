@@ -14,15 +14,18 @@ This lane implements one-group algorithmic machinery only:
 - a deterministic affected-group maximum-matching baseline;
 - exact Hall-mask initialization and coalesced mask transitions for
   `1 <= r <= 8`;
-- pure edge-multiplicity coalescing helpers;
+- pure edge-multiplicity coalescing helpers and a maintained provenance index;
 - immutable matching-certificate artifacts and half-open revision bindings;
 - deterministic construction, validation, local observation repair,
-  selected-edge rebuild, incompleteness closure, and policy rebinding; and
+  selected-edge rebuild, incompleteness closure, policy rebinding, and
+  cross-epoch carry-forward; and
 - composable signed work counters.
 
 The module does not import or call the independent Python full-state oracle,
-the SQL oracle, PostgreSQL, neural code, or unfinished coordinator M5 types.
-It operates on primitive IDs, integer masks, and immutable tuples.
+the SQL oracle, PostgreSQL, or neural code. It consumes the shared M5.1
+`EvidenceGroupVersion`, `RequirementWitness`, `SnapshotPoint`, certificate-row,
+and certificate-artifact types through a checked adapter; it does not maintain
+a second incompatible certificate representation.
 
 This is not a new general dynamic-matching algorithm. It exploits a frozen
 left-side bound of eight. It does not establish superiority over DBSP, F-IVM,
@@ -50,11 +53,17 @@ epoch/revision and decision policy.
 
 ## 3. Deterministic affected-group matching
 
-`affected_group_matching` builds each left vertex's candidate hashes and sorts
-them lexicographically. It processes requirements in ordinal order. For each
-requirement it runs the standard depth-first augmenting search, visiting each
-candidate hash at most once in that search and recursively moving the current
-owner when an alternating path permits it.
+`affected_group_matching_canonical` consumes hashes that are already strictly
+ordered by the maintained-index contract and builds each left vertex's
+candidate hashes in that order. It processes requirements in ordinal order.
+For each requirement it runs the standard depth-first augmenting search,
+visiting each candidate hash at most once in that search and recursively moving
+the current owner when an alternating path permits it.
+
+`affected_group_matching` is the convenience adapter for arbitrary mappings or
+iterables. It validates and sorts those inputs before invoking the same kernel.
+The distinction is executable: the adapter charges `canonical_sort_items`,
+whereas the canonical kernel rejects unordered input and has zero sort charge.
 
 ### Lemma 1: matching validity
 
@@ -82,9 +91,12 @@ Hall kernel and the frozen certificate constructor.
 ### Cost
 
 Let `E` be the number of distinct requirement/hash edges. One DFS attempt
-visits at most `E` edges and there are `r` attempts, so time is `O(rE)` and
-working space is `O(E+r+|H|)`. The implementation reports searches,
-requirement visits, and edge visits directly.
+visits at most `E` edges and there are `r` attempts, so the canonical kernel is
+`O(rE)` time with `O(E+r+|H|)` working space. The arbitrary-input adapter is
+`O(|H| log |H| + rE)` because the input is not assumed ordered. Any benchmark
+claiming the frozen `O(rE)` comparator must use the canonical entry point or
+charge the explicit sort term. The implementation reports searches,
+requirement visits, edge visits, and adapter sort items directly.
 
 ## 4. Hall-mask initialization
 
@@ -135,12 +147,14 @@ Hence the complete Hall invariant is preserved. A net-equal old/new mask
 returns the identical state and performs zero Hall work.
 
 For multiple hashes, addition in every `C` and `N` cell is commutative.
-`apply_hash_mask_transitions` sorts by text hash only to make execution and
-counters deterministic; it returns no partially mutated external state if a
-later transition is invalid. It charges one `group_local_state_operations`
-action for the whole nonempty batch rather than once per hash. The coordinator
-deduplicates concrete group IDs across Hall and certificate actions before
-setting `groups_touched` once for the microtransaction.
+`apply_hash_mask_transitions` consumes the coalescer's order and uses a seen set
+to reject duplicate hash transitions; it does not sort the `Z` transitions and
+therefore does not hide an `O(Z log Z)` term outside M5-T2. It returns no
+partially mutated external state if a later transition is invalid. It charges
+one `group_local_state_operations` action for the whole nonempty batch rather
+than once per hash. The coordinator deduplicates concrete group IDs across Hall
+and certificate actions before setting `groups_touched` once for the
+microtransaction.
 
 ### Cost
 
@@ -169,6 +183,48 @@ for tests, bootstrap, and coordinator composition checks. It is not evidence
 that a measured runtime may rescan all group refcounts. The M5-T2 stable-update
 path must maintain expected-`O(1)` ownership/refcount maps and feed only the
 coalesced affected keys to the Hall kernel.
+
+### 6.1 Measured maintained-index path
+
+`MaintainedCertificateIndex` is that stable-update path. It owns:
+
+- an expected-`O(1)` hash map from `(requirement ordinal,text hash)` to its
+  active-observation ordered set;
+- an expected-`O(1)` reverse map from observation ID to its unique active edge;
+- an expected-`O(1)` map from text hash to its nonzero adjacency mask; and
+- one ordered hash set for every nonempty mask bucket.
+
+The ordered sets are persistent AVL trees. An update path-copies only nodes on
+the root-to-key path, applies rotations locally, and commits the top-level maps
+only after all membership, uniqueness, range, mask, and bucket checks succeed.
+Thus a logical rejection cannot expose a partial index update. A successful
+observation membership change performs `O(log(N_obs+1))` ordered work, while
+edge, hash, and exact active-observation membership lookups remain expected
+`O(1)`. Certificate retention consults the reverse map; it calls the ordered
+edge minimum only for an actually invalid selected observation, so the
+logarithmic representative cost is charged to `R` rather than every retained
+row.
+
+For the worst-case tree bound, let `n(h)` be the minimum number of nodes in an
+AVL tree of height `h`. The balance invariant gives
+
+```text
+n(0)=0, n(1)=1, n(h) >= 1+n(h-1)+n(h-2).
+```
+
+Therefore `n(h) >= F_(h+2)-1`, so `h=O(log(n+1))`. Search, insertion, deletion,
+least-element access, and path-copy allocation are all worst-case logarithmic.
+The implementation retains both stored height and subtree size and exposes an
+explicit recursive `audit_issues()` check; this audit is outside measured
+latency.
+
+`from_requirement_witnesses` is a checked full-build boundary from the shared
+M5.1 domain: it verifies dense ordinal-to-requirement-ID identity, rejects
+duplicate witness edges, and lets the reverse index reject an observation used
+on two edges. `current_view` captures a generation-tagged bounded lookup view.
+Any subsequent successful index mutation makes the old view fail as stale,
+rather than silently validating an artifact against mixed generations.
+`audit_snapshot` is the only full-image materialization path.
 
 ## 7. Deterministic certificates
 
@@ -226,6 +282,11 @@ the exact epoch/revision snapshot.
   a surviving edge is repaired locally; selected-edge loss reconstructs.
   Transaction-global ordered range probes are charged once via
   `policy_range_probe_work`, not once per group.
+- **Cross-epoch carry-forward:** a later epoch opens a new binding directly at
+  its supplied revision, including revision zero. It never closes or mutates a
+  prior epoch's binding. The artifact is retained, locally repaired, rebuilt,
+  or rebound to a changed policy using the same validity rules. If the new
+  snapshot is incomplete, no current-epoch binding is opened.
 
 Every artifact, row, snapshot, binding, and transition result is frozen and
 contains only immutable values. Prior rows are never overwritten. A malformed
@@ -251,12 +312,23 @@ representative access contributes
 ordered membership/minimum operation for each repaired row, fitting the frozen
 `O(R*(r+log(N_obs+1)))` term for `R>=1`.
 
-`CertificateSnapshot.from_primitives` deliberately performs full canonical
-construction and consistency validation. It is a fixture/bootstrap adapter,
-not a measured stable-update operation. The coordinator's overlay must retain
-ordered hashes per mask and ordered observation IDs per edge across updates;
-rebuilding this snapshot from every active observation inside measured latency
-would invalidate M5-T2 and must be rejected during integration review.
+`MaintainedCertificateView` obtains at most `r` hashes from each of the
+`2^r-1` persistent mask buckets and answers selected-edge membership/minimum
+queries through maintained indexes. It never scans all hashes, edges, or
+observations. `CertificateSnapshot.from_primitives`, `audit_snapshot`, and
+`audit_issues` deliberately perform full canonical construction or full-image
+validation. They are fixture/bootstrap/audit adapters, not a measured
+stable-update operation. More precisely, each of these is **not a measured stable-update operation**. Rebuilding such a snapshot from every active
+observation inside measured latency would invalidate M5-T2 and must be rejected
+during integration review.
+
+For the structural-build term, `W_g` means every active, currency-eligible,
+canonical requirement-verification observation whose policy-index ownership is
+installed or removed for the group version. It is not restricted to rows whose
+current policy decision is SUPPORT: NEUTRAL and REFUTE observations still own
+ordered policy-index entries that replacement or retirement must remove. This
+clarifies which input population the frozen structural bound counts; it does
+not change the algorithm or add a new asymptotic term.
 
 ## 9. Counter-to-M5-T2 mapping
 
@@ -265,6 +337,7 @@ would invalidate M5-T2 and must be rejected during integration review.
 | `U` | `requirement_observation_changes_processed` | Set explicitly by the observation/currency caller through `requirement_observation_work`; cannot be inferred from SUPPORT-edge deltas because an inert REFUTE/NEUTRAL flip may still be processed. |
 | `P` | `ordered_policy_range_probes` | Set once per policy microtransaction; zero candidates do not erase probes. |
 | `N_obs` index work | `ordered_index_operations` | Counts ordered probes/representative operations; population and logarithmic upper-bound conversion remain coordinator report fields. |
+| Arbitrary-input ordering | `canonical_sort_items` | Nonzero only in convenience/build matching adapters. The measured canonical matching kernel and coalesced `Z` transition path do not sort. |
 | `Z` | `hash_mask_transitions` | Net-equal masks are zero. |
 | Edge crossings | `distinct_edge_crossings` | Equals `popcount(m_old xor m_new)` per net transition. |
 | `R` | `certificate_repairs` | Counts locally replaced selected rows. |
@@ -286,7 +359,9 @@ be signed. Every operation result is nonnegative and guarded by
 The owned suite covers:
 
 - every one of the 74,958 simple bipartite graphs with `1<=r<=4` and
-  `0<=H<=4`, comparing deterministic maximum matching with Hall matching size;
+  `0<=H<=4`, independently re-deriving `C`, `N`, and `d`, comparing matching
+  size, and constructing/validating a deterministic certificate exactly when a
+  cover exists;
 - every 340 old/new mask pair across `1<=r<=4`;
 - 1,000 seeded random transitions for each `r=5,6,7,8` using seed `20260802`;
 - the frozen Hall-union counterexample and the matching-only loss with no
@@ -297,9 +372,16 @@ The owned suite covers:
   high-degree case, digest golden bytes, and exact snapshot validation;
 - selected observation `2->1` repair, nonselected duplicate removal,
   alternating-cover rebuild, and incomplete close without reconstruction;
-- zero-flip/zero-candidate policy rebinding and policy-plus-edge-change rebuild;
+- zero-flip/zero-candidate policy rebinding, policy-plus-edge-change rebuild,
+  and new-epoch retain/repair/rebuild/rebind/incomplete transitions at revision
+  zero without modifying prior-epoch bindings;
+- checked shared-`RequirementWitness` bootstrap, a 4,096-observation
+  positive-to-positive provenance update with zero Hall work, stale-view
+  rejection, maintained-index failure atomicity, and full AVL/index audits;
+- three transitions inside one epoch proving exact half-open binding history;
 - immutable artifact/binding rows, malformed digest rejection, historical
-  binding coverage, signed counters, and static oracle-import exclusion.
+  binding coverage, signed counters, a static no-`Z`-sort guard, and corrected
+  static oracle-import exclusion.
 
 ## 11. Integration obligations outside Lane A
 

@@ -13,10 +13,7 @@ from groundloop.m5.matching import (
 
 
 def _refcount_dict(rows: tuple[EdgeRefcount, ...]) -> dict[tuple[int, str], int]:
-    return {
-        (row.requirement_ordinal, row.text_hash): row.count
-        for row in rows
-    }
+    return {(row.requirement_ordinal, row.text_hash): row.count for row in rows}
 
 
 def test_zero_positive_and_positive_positive_multiplicity_transitions() -> None:

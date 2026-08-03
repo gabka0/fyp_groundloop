@@ -11,7 +11,9 @@ from groundloop.errors import ValidationError
 from groundloop.m5.matching import (
     MatchingWorkCounters,
     affected_group_matching,
+    affected_group_matching_canonical,
     apply_hash_mask_transition,
+    apply_hash_mask_transitions,
     initialize_hall_mask_state,
     policy_range_probe_work,
     requirement_observation_work,
@@ -24,15 +26,20 @@ PROOF = ROOT / "docs/workstreams/m5_matching/PROOF_AND_COMPLEXITY.md"
 
 def test_matching_module_does_not_import_either_full_state_oracle() -> None:
     tree = ast.parse(inspect.getsource(matching_module))
-    imported = {
+    imported_modules = {
         alias.name
         for node in ast.walk(tree)
-        if isinstance(node, (ast.Import, ast.ImportFrom))
+        if isinstance(node, ast.Import)
         for alias in node.names
+    } | {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module is not None
     }
 
-    assert "groundloop.reference" not in imported
-    assert not any(name.startswith("groundloop.postgres") for name in imported)
+    assert "groundloop.reference" not in imported_modules
+    assert "groundloop.m5.reference" not in imported_modules
+    assert not any(name.startswith("groundloop.postgres") for name in imported_modules)
 
 
 @pytest.mark.parametrize("requirement_count", range(1, 9))
@@ -68,6 +75,41 @@ def test_augmenting_baseline_counters_are_bounded_by_r_times_edges() -> None:
     assert result.work.augmenting_searches == requirement_count
     assert result.work.augmenting_requirement_visits >= requirement_count
     assert result.work.augmenting_edge_visits <= requirement_count * edge_count
+    assert result.work.canonical_sort_items == len(masks)
+
+
+def test_preordered_matching_kernel_has_no_sort_charge() -> None:
+    result = affected_group_matching_canonical(
+        2,
+        (("a", 0b01), ("b", 0b11)),
+    )
+
+    assert result.complete
+    assert result.work.canonical_sort_items == 0
+    with pytest.raises(ValidationError, match="ordered"):
+        affected_group_matching_canonical(
+            2,
+            (("b", 0b11), ("a", 0b01)),
+        )
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        affected_group_matching_canonical,
+        matching_module._affected_group_matching_from_canonical,
+        apply_hash_mask_transitions,
+    ),
+)
+def test_bounded_kernels_do_not_hide_a_sort(operation: object) -> None:
+    tree = ast.parse(inspect.getsource(operation))
+    called_names = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+
+    assert "sorted" not in called_names
 
 
 def test_zero_candidate_policy_probe_is_not_zero_work() -> None:
