@@ -1,9 +1,9 @@
 # GroundLoop M5 Implementation Status
 
-Status date: 2026-08-02
+Status date: 2026-08-03
 
-Milestone status: **M5.0 contract freeze complete; M5.1 implementation active.**
-No M5.1--M5.6 implementation or evaluation gate is reported complete yet.
+Milestone status: **M5.0 and M5.1 complete; M5.2 integration active.**
+No M5.2--M5.6 implementation or evaluation gate is reported complete yet.
 
 ## 1. Honest current verdict
 
@@ -13,10 +13,11 @@ stateful Hall-mask delta operator, independent Python and SQL oracles,
 versioned certificate artifacts, typed runtime identities, a PostgreSQL
 upgrade/activation boundary, and a retrospective controlled WiCE evaluation.
 
-This is a design result only. There is no M5 implementation evidence yet for
-matching correctness, PostgreSQL integrity, dynamic requirement jobs, model
-quality, latency, call savings, or publishing potential. Those claims remain
-blocked by the executable gates in `docs/m5_acceptance_matrix.md`.
+M5.1 now supplies executable pure-reference evidence. There is still no
+accepted M5 evidence for the optimized matching operator, PostgreSQL integrity,
+dynamic requirement jobs, model quality, latency, call savings, or publishing
+potential. Those claims remain blocked by the executable gates in
+`docs/m5_acceptance_matrix.md`.
 
 ## 2. M5.0 evidence
 
@@ -82,9 +83,9 @@ certificate repairs/rebuilds, touched states and output bytes, with
 `r <= 8`. It is not a claim of general dynamic-matching novelty or superiority
 over DBSP, F-IVM, CROWN, or another system.
 
-## 4. Active next stage
+## 4. M5.1 result and active next stage
 
-M5.1 now implements only the pure semantic foundation:
+M5.1 implements the pure semantic foundation:
 
 1. typed digest and normalization primitives;
 2. immutable family/group/requirement records and lifecycle history;
@@ -93,9 +94,27 @@ M5.1 now implements only the pure semantic foundation:
 5. register/replace/retire/observe events with exact replay and rollback; and
 6. frozen M4 v1 regression vectors.
 
-The matching lane may implement `src/groundloop/m5/matching.py` independently
-after the coordinator publishes shared M5.1 contracts. PostgreSQL and
-evaluation lanes remain read-only until their Wave-2 inputs are frozen.
+An independent adversarial audit returned GO with high confidence after 73
+focused tests, an exact 74,958-graph oracle enumeration, a successful full
+repository suite, Ruff, and strict mypy. It specifically confirmed global
+event/observation identifier collision safety, lazy epoch synchronization,
+failure-atomic currency rejection, typed prevalidation, immutable records, and
+alternative valid certificate acceptance.
+
+Two boundaries remain deliberately open. M5.1 cannot validate historical
+combined claim-certificate bindings because the preserved direct M1 oracle has
+only current state and M5.1 does not persist claim bindings. That is mandatory
+M5.2/M5.3 work. Its in-memory currency interval is a total-order reference
+abstraction; migration 014 must implement exact epoch-local working rows and
+fallback semantics. Neither full M5-D9/D12 persistence nor SQL equivalence is
+claimed here.
+
+M5.2 integration is active. The first matching-kernel audit found its core
+mathematics credible but rejected integration until cross-epoch certificate
+carry-forward, bounded measured indexes, uncharged sorting, shared-type
+adapters, and exhaustive certificate evidence are fixed. M5.3 schema/oracle
+implementation may proceed in a disjoint worktree against the published M5.1
+contracts. M5.4 remains blocked on the audited runtime addendum and M5.2/M5.3.
 
 ## 5. Remaining closure boundary
 

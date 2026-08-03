@@ -235,9 +235,10 @@ is explicit pre-dissertation/M6 debt, not a hidden extension of M4.
 
 ## M5 — Bounded Evidence Groups
 
-Status: active. M5.0 contract freeze completed on 2026-08-02 after three
-independent high-confidence audit GOs; M5.1 pure reference semantics is the
-current stage. See `docs/m5_implementation_status.md`.
+Status: active. M5.0 contract freeze completed on 2026-08-02; M5.1 pure
+reference semantics completed on 2026-08-03 after an independent
+high-confidence audit GO. M5.2 integration and M5.3 PostgreSQL work are the
+current stages. See `docs/m5_implementation_status.md`.
 
 Deliverables:
 
@@ -259,11 +260,11 @@ Stages:
 - **M5.0:** design/theory/schema/data freeze. **Complete.** Contract rows pass;
   implementation rows remain pending.
 - **M5.1:** pure records, history, structural events, and independent Python
-  oracle. **Active.**
+  oracle. **Complete.**
 - **M5.2:** incremental Hall-mask engine, certificates, exhaustive bounded
-  tests, and 100,000-event differential gate.
+  tests, and 100,000-event differential gate. **Active.**
 - **M5.3:** transactional 013-to-014 PostgreSQL upgrade, typed persistence, and
-  independent SQL oracle.
+  independent SQL oracle. **Active in a disjoint implementation lane.**
 - **M5.4:** dynamic requirement retrieval/verification/publication/replay and
   bounded frozen-model diagnostic.
 - **M5.5:** controlled dataset adapter, seven qualified baselines, and

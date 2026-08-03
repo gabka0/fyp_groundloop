@@ -82,12 +82,19 @@ generator rejection is counted separately from committed events.
 
 | Gate | Required outcome | Evidence | Status |
 |---|---|---|---|
-| M5.1-01 | Immutable family/group/requirement records and both hashes validate all M5-D1/D2 rules | Focused domain/hash/lifecycle tests | PENDING |
-| M5.1-02 | Typed requirement observations and canonical normalization work | Domain/repository tests | PENDING |
-| M5.1-03 | Register, replace, retire, and observe-requirement events are exact-replay idempotent and payload-conflict detecting | Event tests | PENDING |
-| M5.1-04 | Every rejected event leaves repository state and epoch unchanged | Snapshot/hash equality under injected failures | PENDING |
-| M5.1-05 | Python oracle independently computes edges, maximum partial/covering matching, group, combined claim, answer, and certificate validity | Exhaustive oracle tests including isolated-left Hall cases | PENDING |
-| M5.1-06 | Direct-only M1 state and digests remain unchanged | Frozen regression fixtures and full pre-M5 suite | PENDING |
+| M5.1-01 | Immutable family/group/requirement records and both hashes validate all M5-D1/D2 rules | Focused domain/hash/lifecycle tests | PASS |
+| M5.1-02 | Typed requirement observations and canonical normalization work | Domain/repository tests | PASS |
+| M5.1-03 | Register, replace, retire, and observe-requirement events are exact-replay idempotent and payload-conflict detecting | Event tests | PASS |
+| M5.1-04 | Every rejected event leaves repository state and epoch unchanged | Snapshot/hash equality under injected failures | PASS |
+| M5.1-05 | Python oracle independently computes edges, maximum partial/covering matching, group, combined claim, answer, and certificate validity | Exhaustive oracle tests including isolated-left Hall cases | PASS |
+| M5.1-06 | Direct-only M1 state and digests remain unchanged | Frozen regression fixtures and full pre-M5 suite | PASS |
+
+M5.1 evidence: 73 focused tests pass, including exact enumeration of 74,958
+simple graphs through `r<=4,H<=4`; the full repository suite, Ruff and strict
+mypy pass under an independent audit. These rows cover the pure reference
+stage only. Historical combined claim-certificate bindings remain a mandatory
+M5.2/M5.3 gate, and the in-memory total-order currency history is not the
+epoch-local SQL representation required by M5.3.
 
 ## 3. M5.2 incremental algorithm gates
 

@@ -79,6 +79,7 @@ class InMemoryRepository:
     _claims_by_answer: dict[str, list[str]] = field(default_factory=dict)
 
     _observations: dict[str, SemanticObservation] = field(default_factory=dict)
+    _reserved_observation_ids: set[str] = field(default_factory=set)
     _current_by_key: dict[ObservationKey, str] = field(default_factory=dict)
     _superseded: set[str] = field(default_factory=set)
     _observations_by_chunk: dict[str, list[str]] = field(default_factory=dict)
@@ -257,7 +258,10 @@ class InMemoryRepository:
         The chunk version must exist but need not be active (D-18): a late
         observation for an inactive chunk is stored, auditable, and inert.
         """
-        if observation.observation_id in self._observations:
+        if (
+            observation.observation_id in self._observations
+            or observation.observation_id in self._reserved_observation_ids
+        ):
             raise DuplicateIdentifierError(
                 f"observation {observation.observation_id} already registered"
             )
@@ -286,6 +290,22 @@ class InMemoryRepository:
         self._observations_by_chunk.setdefault(observation.chunk_version_id, []).append(
             observation.observation_id
         )
+
+    def reserve_external_observation_id(self, observation_id: str) -> None:
+        """Reserve a typed-M5 observation ID in the global identity namespace.
+
+        The legacy repository still stores only claim observations. The M5
+        aggregate stores requirement payloads in its sidecar while reserving
+        their IDs here so a retained legacy alias cannot create a collision.
+        """
+
+        if not observation_id.strip():
+            raise ValidationError("observation_id must be nonempty")
+        if self.has_observation_id(observation_id):
+            raise DuplicateIdentifierError(
+                f"observation {observation_id} already registered"
+            )
+        self._reserved_observation_ids.add(observation_id)
 
     def activate_policy(self, policy: DecisionPolicy, epoch: int) -> None:
         if policy.policy_version in self._policies:
@@ -324,6 +344,12 @@ class InMemoryRepository:
 
     def has_chunk_version(self, chunk_version_id: str) -> bool:
         return chunk_version_id in self._chunk_versions
+
+    def has_observation_id(self, observation_id: str) -> bool:
+        return (
+            observation_id in self._observations
+            or observation_id in self._reserved_observation_ids
+        )
 
     def active_document_version(self, document_id: str) -> str | None:
         for version_id in self._versions_by_document.get(document_id, []):

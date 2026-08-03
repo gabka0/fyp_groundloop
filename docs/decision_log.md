@@ -1,5 +1,33 @@
 # GroundLoop Decision Log
 
+## 2026-08-03 — M5.1 Pure Reference Semantics Accepted
+
+Decision status: M5.1 accepted after an independent high-confidence audit GO;
+M5.2 integration and M5.3 PostgreSQL implementation are active.
+
+The accepted implementation adds exact M5 digest and 29-code-point
+normalization primitives, immutable evidence-family/group/requirement records,
+typed requirement observations, lifecycle and currency history, atomic
+register/replace/retire/observe events, and an independent unmatched-branch
+Python oracle. Its finite-domain gate enumerates all 74,958 simple bipartite
+graphs through `r<=4,H<=4`. The 73 focused tests, full repository suite, Ruff,
+and strict mypy pass.
+
+The audit forced two failure-atomicity fixes before acceptance: a rejected
+same-point currency write may neither archive nor globally reserve the failed
+observation, and snapshot coordinates reject booleans and fractional aliases.
+It also confirmed shared global event and observation identifier namespaces,
+intervening legacy-epoch reconstruction, typed validation before mutation, and
+validation of noncanonical but valid covering certificates.
+
+M5.1 is not full M5-D9/D12 persistence. The preserved direct M1 state is
+current-only, so historical combined claim-certificate binding validation
+remains mandatory in M5.2/M5.3. The Python currency intervals are a
+total-order reference abstraction; migration 014 must implement the frozen
+epoch-local working-history and fallback rules. No optimized matching,
+PostgreSQL, runtime, model, performance, or evaluation claim follows from this
+decision.
+
 ## 2026-08-02 — M5.0 Bounded Evidence-Group Contract Frozen
 
 Decision status: M5.0 accepted after three independent high-confidence audit
