@@ -37,6 +37,7 @@ from groundloop.domain import (
     StatusDelta,
 )
 from groundloop.incremental import ClaimCertificate, IncrementalMaintenanceEngine
+from groundloop.postgres.migrations import apply_legacy_migrations
 from groundloop.repository import InMemoryRepository, Interval
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -177,14 +178,15 @@ class PostgresEventConflictError(RuntimeError):
 
 
 def apply_m2_schema(connection: Connection[Any]) -> None:
-    """Apply the owned migration and independent oracle in the search path."""
-    migrations = sorted((ROOT / "migrations").glob("*.sql"))
+    """Apply exactly legacy migrations 000--013 and their v1 oracles.
+
+    M5 migration 014 is an explicit content-ledgered bundle.  Keeping this
+    historical entrypoint pinned prevents a generic fresh-schema helper from
+    bypassing that bundle protocol as future migrations are added.
+    """
     oracle = (ROOT / "sql/m2_full_recompute_oracle.sql").read_text()
-    m4_working_oracle = (
-        ROOT / "sql/m4_working_full_recompute_oracle.sql"
-    ).read_text()
-    for migration in migrations:
-        connection.execute(migration.read_text())
+    m4_working_oracle = (ROOT / "sql/m4_working_full_recompute_oracle.sql").read_text()
+    apply_legacy_migrations(connection)
     connection.execute(oracle)
     connection.execute(m4_working_oracle)
 
@@ -444,7 +446,12 @@ def load_snapshot(
             claim_state = claim_row.state
             connection.execute(
                 """
-                INSERT INTO groundloop_claim_state_materialized VALUES (
+                INSERT INTO groundloop_claim_state_materialized (
+                    claim_id, support_count, refute_count, best_support_score,
+                    best_refute_score, supporting_observation_ids,
+                    refuting_observation_ids, status, updated_epoch,
+                    updated_revision
+                ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 """,
@@ -464,8 +471,10 @@ def load_snapshot(
             certificate = claim_row.certificate
             connection.execute(
                 """
-                INSERT INTO groundloop_claim_certificate VALUES
-                    (%s, %s, %s, %s, %s)
+                INSERT INTO groundloop_claim_certificate (
+                    claim_id, support_observation_id, refute_observation_id,
+                    repaired_epoch, repaired_revision
+                ) VALUES (%s, %s, %s, %s, %s)
                 """,
                 (
                     certificate.claim_id,
@@ -478,7 +487,11 @@ def load_snapshot(
         for state in snapshot.materialized_answers:
             connection.execute(
                 """
-                INSERT INTO groundloop_answer_state_materialized VALUES (
+                INSERT INTO groundloop_answer_state_materialized (
+                    answer_version_id, required_claim_count, supported_count,
+                    unsupported_count, refuted_count, conflicted_count, status,
+                    updated_epoch, updated_revision
+                ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 """,

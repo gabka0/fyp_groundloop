@@ -1,0 +1,195 @@
+{
+  "inventory_version": "m5-m4-shared-surface-v1",
+  "status": "coordinator_patch_required",
+  "scope": [
+    "src/**/*.py",
+    "tests/**/*.py",
+    "scripts/**/*.py"
+  ],
+  "shared_tables": [
+    "groundloop_claim",
+    "groundloop_semantic_observation",
+    "groundloop_observation_currency",
+    "groundloop_published_observation_currency",
+    "groundloop_working_observation_delta"
+  ],
+  "blocking_runtime_findings": [
+    {
+      "id": "M4-RUNTIME-READ-001",
+      "kind": "unfiltered_claim_read",
+      "path": "src/groundloop/m4/pipeline.py",
+      "line": 668,
+      "table": "groundloop_observation_currency",
+      "context": "strict repository bootstrap reads all typed current currency"
+    },
+    {
+      "id": "M4-RUNTIME-READ-002",
+      "kind": "unfiltered_claim_read",
+      "path": "src/groundloop/m4/pipeline.py",
+      "line": 684,
+      "table": "groundloop_semantic_observation",
+      "context": "working repository reconnect reads all typed effective currency"
+    },
+    {
+      "id": "M4-RUNTIME-READ-003",
+      "kind": "unfiltered_claim_read",
+      "path": "src/groundloop/m4/pipeline.py",
+      "line": 763,
+      "table": "groundloop_observation_currency",
+      "context": "v1 bootstrap copies all typed current currency into v1 publication"
+    },
+    {
+      "id": "M4-RUNTIME-READ-004",
+      "kind": "unfiltered_claim_read",
+      "path": "src/groundloop/m4/pipeline.py",
+      "line": 940,
+      "table": "groundloop_working_observation_delta",
+      "context": "withdrawal replay assumes every shared legacy delta is claim-scoped"
+    },
+    {
+      "id": "M4-RUNTIME-READ-005",
+      "kind": "unfiltered_claim_read",
+      "path": "src/groundloop/m4/pipeline.py",
+      "line": 973,
+      "table": "groundloop_observation_currency",
+      "context": "reverse withdrawal discovers all typed current observations"
+    },
+    {
+      "id": "M4-RUNTIME-READ-006",
+      "kind": "unfiltered_claim_read",
+      "path": "src/groundloop/m4/pipeline.py",
+      "line": 1614,
+      "table": "groundloop_semantic_observation",
+      "context": "withdrawal overlay lookup does not assert claim subject kind"
+    },
+    {
+      "id": "M4-RUNTIME-READ-007",
+      "kind": "unfiltered_claim_read",
+      "path": "src/groundloop/m4/pipeline.py",
+      "line": 2902,
+      "table": "groundloop_semantic_observation",
+      "context": "v1 completion replay validates by observation ID without claim predicate"
+    },
+    {
+      "id": "M4-RUNTIME-READ-008",
+      "kind": "unfiltered_claim_read",
+      "path": "src/groundloop/m4/pipeline.py",
+      "line": 4207,
+      "table": "groundloop_working_observation_delta",
+      "context": "v1 seal promotion scans the shared legacy delta without claim predicate"
+    },
+    {
+      "id": "M4-RUNTIME-WRITE-001",
+      "kind": "positional_insert",
+      "path": "src/groundloop/m4/pipeline.py",
+      "line": 4238,
+      "table": "groundloop_published_observation_currency",
+      "context": "v1 seal publication uses positional shared-table INSERT"
+    },
+    {
+      "id": "M4-RUNTIME-WRITE-002",
+      "kind": "positional_insert",
+      "path": "src/groundloop/m4/pipeline.py",
+      "line": 4245,
+      "table": "groundloop_observation_currency",
+      "context": "v1 seal current-holder promotion uses positional shared-table INSERT"
+    }
+  ],
+  "nonblocking_source_audit_findings": [
+    {
+      "id": "M4-AUDIT-001",
+      "kind": "broad_audit_count",
+      "path": "src/groundloop/m4/real_dynamic_history.py",
+      "line": 558,
+      "table": "groundloop_working_observation_delta",
+      "context": "epoch-scoped benchmark counter, not a state reader"
+    },
+    {
+      "id": "M4-AUDIT-002",
+      "kind": "broad_audit_count",
+      "path": "src/groundloop/m4/real_dynamic_history.py",
+      "line": 560,
+      "table": "groundloop_semantic_observation",
+      "context": "epoch-scoped benchmark counter, not a state reader"
+    },
+    {
+      "id": "M4-AUDIT-003",
+      "kind": "job_bound_audit_read",
+      "path": "src/groundloop/m4/smoke.py",
+      "line": 823,
+      "table": "groundloop_semantic_observation",
+      "context": "v1 smoke provenance join is job-bound but lacks an explicit claim predicate"
+    },
+    {
+      "id": "M3-REPLAY-001",
+      "kind": "identity_bound_read",
+      "path": "src/groundloop/ai/persistence.py",
+      "line": 1040,
+      "table": "groundloop_semantic_observation",
+      "context": "M3 replay reads immutable observation ID and compares subject kind in Python"
+    },
+    {
+      "id": "M4-BENCH-WRITE-001",
+      "kind": "positional_insert",
+      "path": "src/groundloop/m4/real_history_study.py",
+      "line": 1015,
+      "table": "groundloop_claim",
+      "context": "benchmark fixture seed uses positional INSERT"
+    }
+  ],
+  "fixture_and_script_positional_insert_findings": [
+    ["tests/postgres/test_m3_schema.py", 48, "groundloop_claim"],
+    ["tests/postgres/test_m4_working_publication.py", 45, "groundloop_claim"],
+    ["tests/postgres/test_m4_working_publication.py", 165, "groundloop_observation_currency"],
+    ["tests/postgres/test_m4_working_publication.py", 175, "groundloop_published_observation_currency"],
+    ["tests/postgres/test_m4_working_publication.py", 187, "groundloop_working_observation_delta"],
+    ["tests/postgres/test_m4_working_publication.py", 281, "groundloop_published_observation_currency"],
+    ["tests/postgres/test_m4_working_publication.py", 292, "groundloop_working_observation_delta"],
+    ["tests/postgres/test_m4_durable_execution_schema.py", 64, "groundloop_claim"],
+    ["tests/postgres/test_m4_schema.py", 49, "groundloop_claim"],
+    ["tests/postgres/test_m4_role_embedding_artifacts.py", 107, "groundloop_claim"],
+    ["tests/postgres/test_live_database.py", 257, "groundloop_claim"],
+    ["tests/m4/physical_runtime_gate/physical_gate_harness.py", 245, "groundloop_claim"],
+    ["tests/m4/event_audit/test_event_audit.py", 102, "groundloop_claim"],
+    ["tests/m4/integration/test_postgres_pipeline.py", 152, "groundloop_claim"],
+    ["tests/m4/integration/test_postgres_pipeline.py", 195, "groundloop_observation_currency"],
+    ["tests/m4/integration/test_postgres_pipeline.py", 887, "groundloop_claim"],
+    ["tests/m4/integration/test_postgres_pipeline.py", 2347, "groundloop_claim"],
+    ["tests/m4/persistence/test_runtime_store.py", 82, "groundloop_claim"],
+    ["tests/m4/incrementality/harness.py", 160, "groundloop_claim"],
+    ["tests/m4/point_runtime/test_point_runtime.py", 98, "groundloop_claim"],
+    ["tests/m4/crash_matrix/test_atomicity_matrix.py", 230, "groundloop_claim"],
+    ["tests/m4/crash_matrix/test_atomicity_matrix.py", 274, "groundloop_observation_currency"]
+  ],
+  "script_and_test_unfiltered_audit_reads": [
+    ["scripts/validate_m2_postgres.py", 120, "groundloop_observation_currency"],
+    ["scripts/validate_m2_postgres.py", 124, "groundloop_semantic_observation"],
+    ["tests/postgres/test_m4_working_publication.py", 195, "groundloop_observation_currency"],
+    ["tests/postgres/test_m3_cli_live.py", 78, "groundloop_semantic_observation"],
+    ["tests/postgres/test_m3_persistence.py", 229, "groundloop_observation_currency"],
+    ["tests/postgres/test_m3_persistence.py", 282, "groundloop_semantic_observation"],
+    ["tests/postgres/test_m3_persistence.py", 285, "groundloop_observation_currency"],
+    ["tests/postgres/test_m3_persistence.py", 289, "groundloop_semantic_observation"],
+    ["tests/postgres/test_m3_persistence.py", 290, "groundloop_observation_currency"],
+    ["tests/postgres/test_live_database.py", 349, "groundloop_observation_currency"],
+    ["tests/postgres/test_live_database.py", 356, "groundloop_semantic_observation"],
+    ["tests/m4/physical_runtime_gate/test_history_gate.py", 640, "groundloop_semantic_observation"],
+    ["tests/m4/integration/test_postgres_pipeline.py", 664, "groundloop_observation_currency"],
+    ["tests/m4/integration/test_postgres_pipeline.py", 1036, "groundloop_semantic_observation"],
+    ["tests/m4/integration/test_postgres_pipeline.py", 1043, "groundloop_working_observation_delta"],
+    ["tests/m4/integration/test_postgres_pipeline.py", 1107, "groundloop_semantic_observation"],
+    ["tests/m4/integration/test_postgres_pipeline.py", 1109, "groundloop_working_observation_delta"],
+    ["tests/m4/integration/test_postgres_pipeline.py", 1133, "groundloop_semantic_observation"],
+    ["tests/m4/integration/test_postgres_pipeline.py", 1135, "groundloop_working_observation_delta"],
+    ["tests/m4/integration/test_postgres_pipeline.py", 1236, "groundloop_observation_currency"],
+    ["tests/m4/integration/test_postgres_pipeline.py", 1853, "groundloop_semantic_observation"],
+    ["tests/m4/integration/test_postgres_pipeline.py", 1896, "groundloop_semantic_observation"],
+    ["tests/m4/integration/test_postgres_pipeline.py", 2000, "groundloop_working_observation_delta"]
+  ],
+  "coordinator_patch_order": [
+    "Patch the ten blocking src/groundloop/m4/pipeline.py read/write findings first.",
+    "Run activated coexistence tests with live requirement currency through bootstrap, reconnect, withdrawal, publication, and replay.",
+    "Mechanically convert remaining benchmark/test positional INSERTs without changing v1 bytes or semantics.",
+    "Decide whether audit-only counts remain intentionally cross-kind or become explicitly claim-scoped, and document that choice."
+  ]
+}
