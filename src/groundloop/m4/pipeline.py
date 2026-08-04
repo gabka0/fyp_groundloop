@@ -668,6 +668,7 @@ def _load_repository_snapshot(
             FROM groundloop_observation_currency AS currency
             JOIN groundloop_semantic_observation AS observation
               ON observation.observation_id = currency.observation_id
+            WHERE currency.subject_kind = 'claim'
             ORDER BY observation.observation_id
             """
         ).fetchall()
@@ -687,6 +688,7 @@ def _load_repository_snapshot(
               ON chunk.epoch_id = currency.epoch_id
              AND chunk.chunk_version_id = currency.chunk_version_id
             WHERE currency.epoch_id = %s
+              AND currency.subject_kind = 'claim'
             ORDER BY observation.observation_id
             """,
             (working_epoch_id,),
@@ -761,6 +763,7 @@ def bootstrap_m4_publication(
             SELECT subject_kind, subject_id, chunk_version_id, task_type,
                    observation_id, %s, NULL
             FROM groundloop_observation_currency
+            WHERE subject_kind = 'claim'
             ON CONFLICT DO NOTHING
             """,
             (sealed_epoch_id,),
@@ -939,6 +942,7 @@ class PostgresM4ApplicationPorts:
                        delta.chunk_version_id
                 FROM groundloop_working_observation_delta AS delta
                 WHERE delta.epoch_id = %s
+                  AND delta.subject_kind = 'claim'
                   AND delta.base_observation_id IS NOT NULL
                   AND delta.chunk_version_id = ANY(%s)
                 ORDER BY delta.base_observation_id
@@ -973,7 +977,8 @@ class PostgresM4ApplicationPorts:
             FROM groundloop_observation_currency AS currency
             JOIN groundloop_semantic_observation AS observation
               ON observation.observation_id = currency.observation_id
-            WHERE observation.chunk_version_id = ANY(%s)
+            WHERE currency.subject_kind = 'claim'
+              AND observation.chunk_version_id = ANY(%s)
             ORDER BY observation.observation_id
             """,
             (list(deactivated_chunk_version_ids),),
@@ -1611,7 +1616,8 @@ class PostgresM4ApplicationPorts:
             row = cursor.execute(
                 """
                 SELECT subject_kind, subject_id, chunk_version_id, task_type
-                FROM groundloop_semantic_observation WHERE observation_id = %s
+                FROM groundloop_semantic_observation
+                WHERE observation_id = %s AND subject_kind = 'claim'
                 """,
                 (observation_id,),
             ).fetchone()
@@ -2899,7 +2905,8 @@ class PostgresM4ApplicationPorts:
                    support_score, refute_score, neutral_score, model_id,
                    model_version, prompt_version, input_hash, produced_epoch,
                    raw_output_hash
-            FROM groundloop_semantic_observation WHERE observation_id = %s
+            FROM groundloop_semantic_observation
+            WHERE observation_id = %s AND subject_kind = 'claim'
             """,
             (observation.observation_id,),
         ).fetchone()
@@ -4205,8 +4212,8 @@ class PostgresM4ApplicationPorts:
             SELECT subject_kind, subject_id, chunk_version_id, task_type,
                    base_observation_id, working_observation_id
             FROM groundloop_working_observation_delta
-            WHERE epoch_id = %s ORDER BY subject_kind, subject_id,
-                                         chunk_version_id, task_type
+            WHERE epoch_id = %s AND subject_kind = 'claim'
+            ORDER BY subject_kind, subject_id, chunk_version_id, task_type
             """,
             (epoch_id,),
         ).fetchall()
@@ -4235,15 +4242,19 @@ class PostgresM4ApplicationPorts:
                 continue
             cursor.execute(
                 """
-                INSERT INTO groundloop_published_observation_currency VALUES
-                    (%s, %s, %s, %s, %s, %s, NULL)
+                INSERT INTO groundloop_published_observation_currency (
+                    subject_kind, subject_id, chunk_version_id, task_type,
+                    observation_id, valid_from_epoch, valid_to_epoch
+                ) VALUES (%s, %s, %s, %s, %s, %s, NULL)
                 """,
                 (*key, working_id, epoch_id),
             )
             cursor.execute(
                 """
-                INSERT INTO groundloop_observation_currency VALUES
-                    (%s, %s, %s, %s, %s, %s)
+                INSERT INTO groundloop_observation_currency (
+                    subject_kind, subject_id, chunk_version_id, task_type,
+                    observation_id, installed_epoch
+                ) VALUES (%s, %s, %s, %s, %s, %s)
                 """,
                 (*key, working_id, epoch_id),
             )
