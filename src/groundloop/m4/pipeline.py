@@ -4253,7 +4253,7 @@ class PostgresM4ApplicationPorts:
                 """
                 INSERT INTO groundloop_observation_currency (
                     subject_kind, subject_id, chunk_version_id, task_type,
-                    observation_id, installed_epoch
+                    observation_id, installed_revision
                 ) VALUES (%s, %s, %s, %s, %s, %s)
                 """,
                 (*key, working_id, epoch_id),
