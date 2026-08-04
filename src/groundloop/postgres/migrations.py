@@ -74,6 +74,167 @@ M5_INSTALL_LOCK_RELATIONS = (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class _ExpectedLegacyTrigger:
+    relation: str
+    trigger: str
+    function: str
+    type_bits: int
+    update_columns: tuple[str, ...] = ()
+
+
+# Exact non-internal trigger sets for cumulative migrations 004--013 surfaces
+# whose mutation semantics protect historical M4 truth. PostgreSQL's tgtype
+# bit mask captures ROW/BEFORE/AFTER and INSERT/UPDATE/DELETE shape; tgattr
+# separately captures UPDATE OF column restrictions.
+_CRITICAL_013_TRIGGERS = (
+    _ExpectedLegacyTrigger(
+        "groundloop_working_observation_delta",
+        "groundloop_working_observation_delta_immutable",
+        "groundloop_reject_immutable_working_delta",
+        27,
+    ),
+    _ExpectedLegacyTrigger(
+        "groundloop_m4_working_claim_state",
+        "groundloop_m4_working_claim_state_transition",
+        "groundloop_validate_m4_working_state_mutation",
+        31,
+    ),
+    _ExpectedLegacyTrigger(
+        "groundloop_m4_working_answer_state",
+        "groundloop_m4_working_answer_state_transition",
+        "groundloop_validate_m4_working_state_mutation",
+        31,
+    ),
+    _ExpectedLegacyTrigger(
+        "groundloop_m4_claim_admission_index",
+        "groundloop_m4_claim_admission_validate",
+        "groundloop_validate_m4_claim_admission_row",
+        7,
+    ),
+    _ExpectedLegacyTrigger(
+        "groundloop_m4_claim_admission_index",
+        "groundloop_m4_claim_admission_immutable",
+        "groundloop_reject_immutable_m4_update",
+        27,
+    ),
+    _ExpectedLegacyTrigger(
+        "groundloop_m4_verification_execution",
+        "groundloop_m4_verification_execution_validate",
+        "groundloop_validate_m4_verification_execution",
+        7,
+    ),
+    _ExpectedLegacyTrigger(
+        "groundloop_m4_verification_execution",
+        "groundloop_m4_verification_execution_immutable",
+        "groundloop_reject_immutable_m4_update",
+        27,
+    ),
+    _ExpectedLegacyTrigger(
+        "groundloop_m4_role_embedding_artifact",
+        "groundloop_m4_role_embedding_validate",
+        "groundloop_validate_m4_role_embedding_artifact",
+        7,
+    ),
+    _ExpectedLegacyTrigger(
+        "groundloop_m4_role_embedding_artifact",
+        "groundloop_m4_role_embedding_immutable",
+        "groundloop_reject_immutable_m4_update",
+        27,
+    ),
+    _ExpectedLegacyTrigger(
+        "groundloop_m4_document_metadata_overlay",
+        "groundloop_m4_document_metadata_overlay_immutable",
+        "groundloop_reject_immutable_m4_update",
+        27,
+    ),
+    _ExpectedLegacyTrigger(
+        "groundloop_m4_claim_registry_member",
+        "groundloop_m4_claim_registry_member_immutable",
+        "groundloop_reject_immutable_m4_update",
+        27,
+    ),
+    _ExpectedLegacyTrigger(
+        "groundloop_m4_structural_deactivation",
+        "groundloop_m4_structural_deactivation_immutable",
+        "groundloop_reject_immutable_structural_deactivation",
+        27,
+    ),
+    _ExpectedLegacyTrigger(
+        "groundloop_m4_discovery_result",
+        "groundloop_m4_discovery_result_immutable",
+        "groundloop_reject_immutable_m4_update",
+        27,
+    ),
+    _ExpectedLegacyTrigger(
+        "groundloop_m4_claim_registry_snapshot",
+        "groundloop_m4_claim_registry_snapshot_immutable",
+        "groundloop_reject_immutable_m4_update",
+        27,
+    ),
+    _ExpectedLegacyTrigger(
+        "groundloop_m4_event_audit_run",
+        "groundloop_m4_event_audit_run_immutable",
+        "groundloop_reject_immutable_m4_update",
+        27,
+    ),
+    _ExpectedLegacyTrigger(
+        "groundloop_impact_evaluation_run",
+        "groundloop_completed_event_audit_envelope_immutable",
+        "groundloop_reject_completed_event_audit_envelope_update",
+        27,
+    ),
+    _ExpectedLegacyTrigger(
+        "groundloop_semantic_job",
+        "groundloop_semantic_job_transition",
+        "groundloop_validate_semantic_job_transition",
+        19,
+    ),
+    _ExpectedLegacyTrigger(
+        "groundloop_semantic_job",
+        "groundloop_semantic_job_open_count",
+        "groundloop_adjust_open_job_count",
+        29,
+        ("job_state",),
+    ),
+    _ExpectedLegacyTrigger(
+        "groundloop_discovery_scope",
+        "groundloop_discovery_scope_open_count",
+        "groundloop_adjust_open_scope_count",
+        29,
+        ("closed_revision",),
+    ),
+    _ExpectedLegacyTrigger(
+        "groundloop_m4_evaluation_epoch_counter",
+        "groundloop_m4_evaluation_epoch_counter_guard",
+        "groundloop_validate_m4_evaluation_epoch_counter_change",
+        27,
+    ),
+    _ExpectedLegacyTrigger(
+        "groundloop_m4_evaluation_counter_transition",
+        "groundloop_m4_evaluation_counter_transition_immutable",
+        "groundloop_reject_m4_evaluation_transition_change",
+        27,
+    ),
+)
+_CRITICAL_013_TRIGGER_RELATIONS = tuple(
+    dict.fromkeys(trigger.relation for trigger in _CRITICAL_013_TRIGGERS)
+)
+_M5_TRIGGER_EXTENSIONS_ON_CRITICAL_RELATIONS = (
+    _ExpectedLegacyTrigger(
+        "groundloop_working_observation_delta",
+        "groundloop_working_observation_delta_eligible",
+        "groundloop_m5_validate_currency_holder",
+        23,
+    ),
+)
+M5_CATALOG_PREFLIGHT_ROW_EXCLUSIVE_RELATIONS = tuple(
+    relation
+    for relation in _CRITICAL_013_TRIGGER_RELATIONS
+    if relation not in M5_INSTALL_LOCK_RELATIONS
+)
+
+
 class M5BundleError(RuntimeError):
     """The M5 schema bundle cannot be installed or replayed safely."""
 
@@ -169,24 +330,139 @@ def _relation_exists(connection: Connection[Any], relation: str) -> bool:
     return row is not None and row[0] is not None
 
 
+def _verify_013_relations(connection: Connection[Any]) -> None:
+    """Reject missing relations before issuing the frozen install locks."""
+
+    missing = tuple(
+        relation
+        for relation in dict.fromkeys(
+            _PREREQUISITE_RELATIONS + _CRITICAL_013_TRIGGER_RELATIONS
+        )
+        if not _relation_exists(connection, relation)
+    )
+    if missing:
+        raise M5PrerequisiteError(
+            "M5 requires an intact migration-013 schema; missing relations: "
+            + ", ".join(missing)
+        )
+
+
+def _verify_013_critical_triggers(connection: Connection[Any]) -> None:
+    current_schema_row = connection.execute("SELECT current_schema()").fetchone()
+    if current_schema_row is None or current_schema_row[0] is None:
+        raise M5PrerequisiteError("migration-013 preflight has no current schema")
+    current_schema = str(current_schema_row[0])
+    expected_triggers = _CRITICAL_013_TRIGGERS
+    if _relation_exists(connection, "groundloop_m5_schema_bundle"):
+        # Exact replay sees migration 014's one deliberate trigger extension on
+        # a legacy critical relation. No other extra trigger is accepted.
+        expected_triggers += _M5_TRIGGER_EXTENSIONS_ON_CRITICAL_RELATIONS
+    expected = {
+        (
+            current_schema,
+            trigger.relation,
+            trigger.trigger,
+            "O",
+            False,
+            False,
+            False,
+            current_schema,
+            trigger.function,
+            trigger.type_bits,
+            trigger.update_columns,
+            "",
+            None,
+            None,
+            None,
+        )
+        for trigger in expected_triggers
+    }
+    rows = connection.execute(
+        """
+        SELECT relation_namespace.nspname,
+               relation.relname,
+               trigger_row.tgname,
+               trigger_row.tgenabled,
+               trigger_row.tgconstraint <> 0,
+               trigger_row.tgdeferrable,
+               trigger_row.tginitdeferred,
+               function_namespace.nspname,
+               function_row.proname,
+               trigger_row.tgtype::integer,
+               COALESCE(
+                   (
+                       SELECT array_agg(
+                           attribute_row.attname ORDER BY position.ordinality
+                       )
+                       FROM unnest(trigger_row.tgattr::smallint[])
+                            WITH ORDINALITY AS position(attnum, ordinality)
+                       JOIN pg_attribute AS attribute_row
+                         ON attribute_row.attrelid = trigger_row.tgrelid
+                        AND attribute_row.attnum = position.attnum
+                   ),
+                   ARRAY[]::name[]
+               ),
+               encode(trigger_row.tgargs, 'hex'),
+               pg_get_expr(trigger_row.tgqual, trigger_row.tgrelid, true),
+               trigger_row.tgoldtable,
+               trigger_row.tgnewtable
+        FROM pg_trigger AS trigger_row
+        JOIN pg_class AS relation
+          ON relation.oid = trigger_row.tgrelid
+        JOIN pg_namespace AS relation_namespace
+          ON relation_namespace.oid = relation.relnamespace
+        JOIN pg_proc AS function_row
+          ON function_row.oid = trigger_row.tgfoid
+        JOIN pg_namespace AS function_namespace
+          ON function_namespace.oid = function_row.pronamespace
+        WHERE NOT trigger_row.tgisinternal
+          AND trigger_row.tgrelid IN (
+              SELECT to_regclass(requested.relation_name)
+              FROM unnest(%s::text[]) AS requested(relation_name)
+          )
+        ORDER BY relation_namespace.nspname, relation.relname, trigger_row.tgname
+        """,
+        (list(_CRITICAL_013_TRIGGER_RELATIONS),),
+    ).fetchall()
+    actual = {
+        (
+            str(row[0]),
+            str(row[1]),
+            str(row[2]),
+            str(row[3]),
+            bool(row[4]),
+            bool(row[5]),
+            bool(row[6]),
+            str(row[7]),
+            str(row[8]),
+            int(row[9]),
+            tuple(str(value) for value in row[10]),
+            str(row[11]),
+            None if row[12] is None else str(row[12]),
+            None if row[13] is None else str(row[13]),
+            None if row[14] is None else str(row[14]),
+        )
+        for row in rows
+    }
+    if actual != expected:
+        missing = sorted(expected - actual)
+        changed_or_unexpected = sorted(actual - expected)
+        raise M5PrerequisiteError(
+            "migration-013 critical trigger catalog is not exact; "
+            f"missing_or_changed={missing!r}; unexpected_or_changed="
+            f"{changed_or_unexpected!r}"
+        )
+
+
 def _verify_013_catalog_preflight(connection: Connection[Any]) -> None:
-    """Fail closed on missing migration-013 catalog surfaces.
+    """Fail closed on migration-013 critical semantic catalog drift.
 
     This deliberately does not claim byte provenance: no 000--013 ledger was
     present in the historical schema. The exact local source identity is
     recorded separately in the M5 bundle row.
     """
 
-    missing = [
-        relation
-        for relation in _PREREQUISITE_RELATIONS
-        if not _relation_exists(connection, relation)
-    ]
-    if missing:
-        raise M5PrerequisiteError(
-            "M5 requires an intact migration-013 schema; missing relations: "
-            + ", ".join(missing)
-        )
+    _verify_013_relations(connection)
     extension = connection.execute(
         "SELECT extversion FROM pg_extension WHERE extname = 'btree_gist'"
     ).fetchone()
@@ -224,14 +500,21 @@ def _verify_013_catalog_preflight(connection: Connection[Any]) -> None:
         raise M5PrerequisiteError(
             "migration 013 evaluation-counter shape is incomplete"
         )
+    _verify_013_critical_triggers(connection)
 
 
 def _acquire_m5_install_locks(connection: Connection[Any]) -> None:
-    """Serialize installers and legacy writers in the frozen migration order."""
+    """Serialize install and critical-catalog checks in deterministic order."""
 
     for relation in M5_INSTALL_LOCK_RELATIONS:
         # Names are frozen local constants, never caller input.
         connection.execute(f"LOCK TABLE {relation} IN ACCESS EXCLUSIVE MODE")
+    # ROW EXCLUSIVE is compatible with ordinary DML's own ROW EXCLUSIVE lock,
+    # but conflicts with trigger-changing SHARE ROW EXCLUSIVE (and stronger)
+    # DDL. This stabilizes the extra catalog-only surfaces without expanding
+    # the frozen seven-table writer freeze above.
+    for relation in M5_CATALOG_PREFLIGHT_ROW_EXCLUSIVE_RELATIONS:
+        connection.execute(f"LOCK TABLE {relation} IN ROW EXCLUSIVE MODE")
 
 
 def _read_ledger(
@@ -272,11 +555,12 @@ def install_m5_core_bundle(
     oracle = M5_ORACLE_PATH.read_bytes() if oracle_bytes is None else oracle_bytes
 
     with connection.transaction():
-        _verify_013_catalog_preflight(connection)
+        _verify_013_relations(connection)
         # This must precede the first ledger read. Otherwise two installers can
         # both observe an empty ledger before migration 014 takes its own
         # (reentrant) locks, and the loser attempts duplicate CREATE statements.
         _acquire_m5_install_locks(connection)
+        _verify_013_catalog_preflight(connection)
         ledger = _read_ledger(connection, identity.bundle_id)
         if ledger is not None:
             expected = (
@@ -323,6 +607,7 @@ __all__ = [
     "LEGACY_MIGRATION_NAMES",
     "LEGACY_MIGRATION_PATHS",
     "M5_BUNDLE_ID",
+    "M5_CATALOG_PREFLIGHT_ROW_EXCLUSIVE_RELATIONS",
     "M5_INSTALL_LOCK_RELATIONS",
     "M5BundleError",
     "M5BundleHashConflictError",

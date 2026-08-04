@@ -700,10 +700,14 @@ AS $$
      )
     WHERE effective.epoch_id = epoch_id_to_read
       AND NOT EXISTS (
+          -- Published state is fallback only before this group first acquires
+          -- working history. A later closed interval is a deliberate
+          -- tombstone/incomplete state and must not resurrect published truth.
           SELECT 1
           FROM groundloop_m5_working_group_certificate_binding AS history
           WHERE history.epoch_id = effective.epoch_id
             AND history.group_version_id = effective.group_version_id
+            AND history.valid_from_revision <= revision_to_read
       );
 $$;
 

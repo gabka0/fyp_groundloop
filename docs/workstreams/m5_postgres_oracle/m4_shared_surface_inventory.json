@@ -1,6 +1,6 @@
 {
-  "inventory_version": "m5-m4-shared-surface-v1",
-  "status": "coordinator_patch_required",
+  "inventory_version": "m5-m4-shared-surface-v2",
+  "status": "coordinator_patch_incorporated",
   "scope": [
     "src/**/*.py",
     "tests/**/*.py",
@@ -13,88 +13,99 @@
     "groundloop_published_observation_currency",
     "groundloop_working_observation_delta"
   ],
-  "blocking_runtime_findings": [
+  "resolved_runtime_findings": [
     {
       "id": "M4-RUNTIME-READ-001",
-      "kind": "unfiltered_claim_read",
+      "kind": "resolved_claim_read",
       "path": "src/groundloop/m4/pipeline.py",
       "line": 668,
       "table": "groundloop_observation_currency",
-      "context": "strict repository bootstrap reads all typed current currency"
+      "context": "strict repository bootstrap is mechanically claim-scoped",
+      "evidence": "WHERE currency.subject_kind = 'claim'"
     },
     {
       "id": "M4-RUNTIME-READ-002",
-      "kind": "unfiltered_claim_read",
+      "kind": "resolved_claim_read",
       "path": "src/groundloop/m4/pipeline.py",
-      "line": 684,
+      "line": 685,
       "table": "groundloop_semantic_observation",
-      "context": "working repository reconnect reads all typed effective currency"
+      "context": "working repository reconnect is mechanically claim-scoped",
+      "evidence": "AND currency.subject_kind = 'claim'"
     },
     {
       "id": "M4-RUNTIME-READ-003",
-      "kind": "unfiltered_claim_read",
+      "kind": "resolved_claim_read",
       "path": "src/groundloop/m4/pipeline.py",
-      "line": 763,
+      "line": 765,
       "table": "groundloop_observation_currency",
-      "context": "v1 bootstrap copies all typed current currency into v1 publication"
+      "context": "v1 publication bootstrap copies only claim currency",
+      "evidence": "WHERE subject_kind = 'claim'"
     },
     {
       "id": "M4-RUNTIME-READ-004",
-      "kind": "unfiltered_claim_read",
+      "kind": "resolved_claim_read",
       "path": "src/groundloop/m4/pipeline.py",
-      "line": 940,
+      "line": 943,
       "table": "groundloop_working_observation_delta",
-      "context": "withdrawal replay assumes every shared legacy delta is claim-scoped"
+      "context": "withdrawal replay is mechanically claim-scoped",
+      "evidence": "AND delta.subject_kind = 'claim'"
     },
     {
       "id": "M4-RUNTIME-READ-005",
-      "kind": "unfiltered_claim_read",
+      "kind": "resolved_claim_read",
       "path": "src/groundloop/m4/pipeline.py",
-      "line": 973,
+      "line": 977,
       "table": "groundloop_observation_currency",
-      "context": "reverse withdrawal discovers all typed current observations"
+      "context": "reverse withdrawal discovers only claim current observations",
+      "evidence": "WHERE currency.subject_kind = 'claim'"
     },
     {
       "id": "M4-RUNTIME-READ-006",
-      "kind": "unfiltered_claim_read",
+      "kind": "resolved_claim_read",
       "path": "src/groundloop/m4/pipeline.py",
-      "line": 1614,
+      "line": 1619,
       "table": "groundloop_semantic_observation",
-      "context": "withdrawal overlay lookup does not assert claim subject kind"
+      "context": "withdrawal overlay lookup asserts claim subject kind",
+      "evidence": "WHERE observation_id = %s AND subject_kind = 'claim'"
     },
     {
       "id": "M4-RUNTIME-READ-007",
-      "kind": "unfiltered_claim_read",
+      "kind": "resolved_claim_read",
       "path": "src/groundloop/m4/pipeline.py",
-      "line": 2902,
+      "line": 2908,
       "table": "groundloop_semantic_observation",
-      "context": "v1 completion replay validates by observation ID without claim predicate"
+      "context": "v1 completion replay validates observation ID and claim kind",
+      "evidence": "WHERE observation_id = %s AND subject_kind = 'claim'"
     },
     {
       "id": "M4-RUNTIME-READ-008",
-      "kind": "unfiltered_claim_read",
+      "kind": "resolved_claim_read",
       "path": "src/groundloop/m4/pipeline.py",
-      "line": 4207,
+      "line": 4214,
       "table": "groundloop_working_observation_delta",
-      "context": "v1 seal promotion scans the shared legacy delta without claim predicate"
+      "context": "v1 seal promotion scans only claim legacy deltas",
+      "evidence": "WHERE epoch_id = %s AND subject_kind = 'claim'"
     },
     {
       "id": "M4-RUNTIME-WRITE-001",
-      "kind": "positional_insert",
+      "kind": "resolved_explicit_insert",
       "path": "src/groundloop/m4/pipeline.py",
-      "line": 4238,
+      "line": 4245,
       "table": "groundloop_published_observation_currency",
-      "context": "v1 seal publication uses positional shared-table INSERT"
+      "context": "v1 seal publication names all shared-table columns",
+      "evidence": "subject_kind, subject_id, chunk_version_id, task_type"
     },
     {
       "id": "M4-RUNTIME-WRITE-002",
-      "kind": "positional_insert",
+      "kind": "resolved_explicit_insert",
       "path": "src/groundloop/m4/pipeline.py",
-      "line": 4245,
+      "line": 4254,
       "table": "groundloop_observation_currency",
-      "context": "v1 seal current-holder promotion uses positional shared-table INSERT"
+      "context": "v1 seal current-holder promotion names installed_revision explicitly",
+      "evidence": "observation_id, installed_revision"
     }
   ],
+  "blocking_runtime_findings": [],
   "nonblocking_source_audit_findings": [
     {
       "id": "M4-AUDIT-001",
@@ -187,8 +198,8 @@
     ["tests/m4/integration/test_postgres_pipeline.py", 2000, "groundloop_working_observation_delta"]
   ],
   "coordinator_patch_order": [
-    "Patch the ten blocking src/groundloop/m4/pipeline.py read/write findings first.",
-    "Run activated coexistence tests with live requirement currency through bootstrap, reconnect, withdrawal, publication, and replay.",
+    "The ten production src/groundloop/m4/pipeline.py findings were resolved by f7394f7 and c6dd2a8.",
+    "Retain activated coexistence coverage with live requirement currency through bootstrap, reconnect, withdrawal, publication, and replay.",
     "Mechanically convert remaining benchmark/test positional INSERTs without changing v1 bytes or semantics.",
     "Decide whether audit-only counts remain intentionally cross-kind or become explicitly claim-scoped, and document that choice."
   ]

@@ -900,11 +900,11 @@ SELECT update_row.epoch_id,
        group_row.construction_source_id,
        group_row.semantic_structure_hash,
        group_row.record_payload_hash,
-       true AS staged
+       group_row.lifecycle_state = 'STAGED' AS staged
 FROM groundloop_m5_update AS update_row
 JOIN groundloop_m5_group_version AS group_row
   ON group_row.creator_epoch_id = update_row.epoch_id
- AND group_row.lifecycle_state = 'STAGED'
+ AND group_row.lifecycle_state IN ('STAGED', 'PUBLISHED')
 JOIN groundloop_m5_group_family AS family
   ON family.group_family_id = group_row.group_family_id;
 

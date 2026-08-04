@@ -12,6 +12,7 @@ from groundloop.m5.digests import normalized_text_hash_v1
 from groundloop.m5.domain import (
     ClaimCertificateArtifact,
     ClaimSupportKind,
+    EvidenceGroupVersion,
     GroupCertificateRow,
     GroupMatchingCertificateArtifact,
 )
@@ -70,6 +71,132 @@ def _install_edge(
         epoch_id=epoch_id,
     )
     return observation_id
+
+
+def _insert_staged_group(
+    connection: Connection[Any],
+    *,
+    group: EvidenceGroupVersion,
+    epoch_id: int,
+    include_family: bool,
+) -> None:
+    if include_family:
+        connection.execute(
+            """
+            INSERT INTO groundloop_m5_group_family (
+                group_family_id, claim_id, creator_epoch_id, lifecycle_state
+            ) VALUES (%s, %s, %s, 'STAGED')
+            """,
+            (group.group_family_id, group.owner_claim_id, epoch_id),
+        )
+    connection.execute(
+        """
+        INSERT INTO groundloop_m5_group_version (
+            group_version_id, group_family_id, creator_epoch_id,
+            lifecycle_state, group_type, construction_kind,
+            construction_source_id, constructor_model_id,
+            constructor_model_version, constructor_prompt_version,
+            supersedes_group_version_id, semantic_structure_hash,
+            record_payload_hash
+        ) VALUES (
+            %s, %s, %s, 'STAGED', %s, %s, %s, %s, %s, %s, %s, %s, %s
+        )
+        """,
+        (
+            group.group_version_id,
+            group.group_family_id,
+            epoch_id,
+            group.group_type.value,
+            group.construction_kind.value,
+            group.construction_source_id,
+            group.constructor_model_id,
+            group.constructor_model_version,
+            group.constructor_prompt_version,
+            group.supersedes_group_version_id,
+            group.semantic_structure_hash,
+            group.record_payload_hash,
+        ),
+    )
+    for requirement in group.requirements:
+        connection.execute(
+            """
+            INSERT INTO groundloop_m5_requirement_version (
+                requirement_version_id, group_version_id, creator_epoch_id,
+                lifecycle_state, ordinal, requirement_text,
+                requirement_text_hash, constructor_model_id,
+                constructor_model_version, constructor_prompt_version,
+                supersedes_requirement_version_id
+            ) VALUES (
+                %s, %s, %s, 'STAGED', %s, %s, %s, %s, %s, %s, %s
+            )
+            """,
+            (
+                requirement.requirement_version_id,
+                requirement.group_version_id,
+                epoch_id,
+                requirement.ordinal,
+                requirement.requirement_text,
+                requirement.requirement_text_hash,
+                requirement.constructor_model_id,
+                requirement.constructor_model_version,
+                requirement.constructor_prompt_version,
+                requirement.supersedes_requirement_version_id,
+            ),
+        )
+
+
+def _bind_single_requirement_group(
+    connection: Connection[Any],
+    *,
+    group: EvidenceGroupVersion,
+    epoch_id: int,
+    policy_version: str,
+    chunk_id: str,
+    chunk_text: str,
+    observation_id: str,
+) -> GroupMatchingCertificateArtifact:
+    requirement = group.requirements[0]
+    insert_observation(
+        connection,
+        observation_id=observation_id,
+        subject_kind="requirement",
+        subject_id=requirement.requirement_version_id,
+        chunk_id=chunk_id,
+        produced_epoch=epoch_id,
+    )
+    replace_m5_working_currency(
+        connection,
+        epoch_id=epoch_id,
+        subject_kind=SubjectKind.REQUIREMENT,
+        subject_id=requirement.requirement_version_id,
+        chunk_version_id=chunk_id,
+        task_type="verify_requirement_v1",
+        observation_id=observation_id,
+        revision=0,
+    )
+    certificate = GroupMatchingCertificateArtifact(
+        decision_policy_version=policy_version,
+        group_version_id=group.group_version_id,
+        rows=(
+            GroupCertificateRow(
+                requirement_ordinal=0,
+                requirement_version_id=requirement.requirement_version_id,
+                text_hash=normalized_text_hash_v1(chunk_text),
+                selected_observation_id=observation_id,
+            ),
+        ),
+    )
+    persist_group_certificate(connection, certificate)
+    connection.execute(
+        """
+        INSERT INTO groundloop_m5_working_group_certificate_binding (
+            epoch_id, group_version_id, valid_from_revision,
+            valid_to_revision, certificate_digest
+        ) VALUES (%s, %s, 0, NULL, %s)
+        """,
+        (epoch_id, group.group_version_id, certificate.certificate_digest),
+    )
+    return certificate
 
 
 def test_hall_counterexample_and_recursive_assignment_agree_at_matching_three(
@@ -671,3 +798,322 @@ def test_claim_as_of_validator_uses_bound_certificate_not_latest_state_pointer(
         "SELECT groundloop_m5_claim_certificate_valid_at(%s, %s, 1)",
         (new_claim_certificate.certificate_digest, epoch_id),
     ).fetchone() == (True,)
+
+
+def test_newly_sealed_registration_is_effective_and_valid_at_its_own_epoch(
+    m5_connection: Connection[Any],
+) -> None:
+    chunk_text = "registration evidence"
+    base = seed_base(
+        m5_connection,
+        prefix="own-seal-registration",
+        chunk_texts=(chunk_text,),
+    )
+    install_test_activation_barrier(m5_connection, base)
+    epoch_id = open_m5_update(
+        m5_connection,
+        base,
+        event_id="own-seal-registration-event",
+        update_kind="register_group",
+    )
+    group = make_group(
+        group_id="own-seal-registration-group",
+        family_id="own-seal-registration-family",
+        claim_id=base.claim_ids[0],
+        texts=("registration requirement",),
+    )
+    _insert_staged_group(
+        m5_connection,
+        group=group,
+        epoch_id=epoch_id,
+        include_family=True,
+    )
+    certificate = _bind_single_requirement_group(
+        m5_connection,
+        group=group,
+        epoch_id=epoch_id,
+        policy_version=base.policy_version,
+        chunk_id=base.chunk_ids[0],
+        chunk_text=chunk_text,
+        observation_id="own-seal-registration-observation",
+    )
+    force_deferred_checks(m5_connection)
+
+    m5_connection.execute(
+        """
+        UPDATE groundloop_m5_requirement_version
+        SET lifecycle_state = 'PUBLISHED'
+        WHERE group_version_id = %s
+        """,
+        (group.group_version_id,),
+    )
+    m5_connection.execute(
+        """
+        UPDATE groundloop_m5_group_version
+        SET lifecycle_state = 'PUBLISHED'
+        WHERE group_version_id = %s
+        """,
+        (group.group_version_id,),
+    )
+    m5_connection.execute(
+        """
+        UPDATE groundloop_m5_group_family
+        SET lifecycle_state = 'PUBLISHED'
+        WHERE group_family_id = %s
+        """,
+        (group.group_family_id,),
+    )
+    m5_connection.execute(
+        """
+        INSERT INTO groundloop_m5_group_validity (
+            group_version_id, group_family_id, claim_id,
+            semantic_structure_hash, supersedes_group_version_id,
+            valid_from_epoch, valid_to_epoch
+        ) VALUES (%s, %s, %s, %s, NULL, %s, NULL)
+        """,
+        (
+            group.group_version_id,
+            group.group_family_id,
+            group.owner_claim_id,
+            group.semantic_structure_hash,
+            epoch_id,
+        ),
+    )
+    m5_connection.execute(
+        """
+        UPDATE groundloop_epoch
+        SET semantic_status = 'sealed', evaluation_state = 'complete',
+            publication_mode = 'strict', sealed_at = now()
+        WHERE epoch_id = %s
+        """,
+        (epoch_id,),
+    )
+    force_deferred_checks(m5_connection)
+
+    assert m5_connection.execute(
+        """
+        SELECT group_version_id, staged
+        FROM groundloop_m5_effective_group_version
+        WHERE epoch_id = %s
+        """,
+        (epoch_id,),
+    ).fetchall() == [(group.group_version_id, False)]
+    assert m5_connection.execute(
+        """
+        SELECT requirement_version_id, staged
+        FROM groundloop_m5_effective_requirement_version
+        WHERE epoch_id = %s
+        """,
+        (epoch_id,),
+    ).fetchall() == [(group.requirements[0].requirement_version_id, False)]
+    assert m5_connection.execute(
+        "SELECT groundloop_m5_group_certificate_valid_at(%s, %s, 0)",
+        (certificate.certificate_digest, epoch_id),
+    ).fetchone() == (True,)
+
+
+def test_newly_sealed_replacement_is_effective_and_valid_at_its_own_epoch(
+    m5_connection: Connection[Any],
+) -> None:
+    chunk_text = "replacement evidence"
+    base = seed_base(
+        m5_connection,
+        prefix="own-seal-replacement",
+        chunk_texts=(chunk_text,),
+    )
+    original = make_group(
+        group_id="own-seal-original-group",
+        family_id="own-seal-replacement-family",
+        claim_id=base.claim_ids[0],
+        texts=("original requirement",),
+    )
+    insert_published_group(m5_connection, group=original, epoch_id=base.epoch_id)
+    install_test_activation_barrier(m5_connection, base)
+    epoch_id = open_m5_update(
+        m5_connection,
+        base,
+        event_id="own-seal-replacement-event",
+        update_kind="replace_group",
+    )
+    successor = make_group(
+        group_id="own-seal-successor-group",
+        family_id=original.group_family_id,
+        claim_id=base.claim_ids[0],
+        texts=("successor requirement",),
+        predecessors=(original.requirements[0].requirement_version_id,),
+        supersedes_group_id=original.group_version_id,
+    )
+    _insert_staged_group(
+        m5_connection,
+        group=successor,
+        epoch_id=epoch_id,
+        include_family=False,
+    )
+    m5_connection.execute(
+        """
+        INSERT INTO groundloop_m5_group_deactivation (
+            epoch_id, group_version_id, action,
+            successor_group_version_id, event_id
+        ) VALUES (%s, %s, 'REPLACE', %s, 'own-seal-replacement-event')
+        """,
+        (epoch_id, original.group_version_id, successor.group_version_id),
+    )
+    certificate = _bind_single_requirement_group(
+        m5_connection,
+        group=successor,
+        epoch_id=epoch_id,
+        policy_version=base.policy_version,
+        chunk_id=base.chunk_ids[0],
+        chunk_text=chunk_text,
+        observation_id="own-seal-replacement-observation",
+    )
+    force_deferred_checks(m5_connection)
+
+    m5_connection.execute(
+        """
+        UPDATE groundloop_m5_group_validity
+        SET valid_to_epoch = %s
+        WHERE group_version_id = %s
+        """,
+        (epoch_id, original.group_version_id),
+    )
+    m5_connection.execute(
+        """
+        UPDATE groundloop_m5_requirement_version
+        SET lifecycle_state = 'PUBLISHED'
+        WHERE group_version_id = %s
+        """,
+        (successor.group_version_id,),
+    )
+    m5_connection.execute(
+        """
+        UPDATE groundloop_m5_group_version
+        SET lifecycle_state = 'PUBLISHED'
+        WHERE group_version_id = %s
+        """,
+        (successor.group_version_id,),
+    )
+    m5_connection.execute(
+        """
+        INSERT INTO groundloop_m5_group_validity (
+            group_version_id, group_family_id, claim_id,
+            semantic_structure_hash, supersedes_group_version_id,
+            valid_from_epoch, valid_to_epoch
+        ) VALUES (%s, %s, %s, %s, %s, %s, NULL)
+        """,
+        (
+            successor.group_version_id,
+            successor.group_family_id,
+            successor.owner_claim_id,
+            successor.semantic_structure_hash,
+            original.group_version_id,
+            epoch_id,
+        ),
+    )
+    m5_connection.execute(
+        """
+        UPDATE groundloop_epoch
+        SET semantic_status = 'sealed', evaluation_state = 'complete',
+            publication_mode = 'strict', sealed_at = now()
+        WHERE epoch_id = %s
+        """,
+        (epoch_id,),
+    )
+    force_deferred_checks(m5_connection)
+
+    assert m5_connection.execute(
+        """
+        SELECT group_version_id, staged
+        FROM groundloop_m5_effective_group_version
+        WHERE epoch_id = %s
+        """,
+        (epoch_id,),
+    ).fetchall() == [(successor.group_version_id, False)]
+    assert m5_connection.execute(
+        "SELECT groundloop_m5_group_certificate_valid_at(%s, %s, 0)",
+        (certificate.certificate_digest, epoch_id),
+    ).fetchone() == (True,)
+
+
+def test_group_binding_fallback_precedes_history_but_never_resurrects_after_close(
+    m5_connection: Connection[Any],
+) -> None:
+    base = seed_base(
+        m5_connection,
+        prefix="binding-fallback-boundary",
+        chunk_texts=("fallback evidence",),
+    )
+    group = make_group(
+        group_id="binding-fallback-group",
+        family_id="binding-fallback-family",
+        claim_id=base.claim_ids[0],
+        texts=("fallback requirement",),
+    )
+    insert_published_group(m5_connection, group=group, epoch_id=base.epoch_id)
+    _install_edge(
+        m5_connection,
+        requirement_id=group.requirements[0].requirement_version_id,
+        chunk_id=base.chunk_ids[0],
+        epoch_id=base.epoch_id,
+        ordinal=0,
+        edge=0,
+    )
+    install_test_activation_barrier(m5_connection, base)
+    published_digest = str(
+        m5_connection.execute(
+            """
+            SELECT certificate_digest
+            FROM groundloop_m5_published_group_certificate_binding
+            WHERE group_version_id = %s AND valid_to_epoch IS NULL
+            """,
+            (group.group_version_id,),
+        ).fetchone()[0]
+    ).strip()
+    epoch_id = open_m5_update(
+        m5_connection,
+        base,
+        event_id="binding-fallback-boundary-update",
+    )
+    m5_connection.execute(
+        "UPDATE groundloop_epoch SET revision = 1 WHERE epoch_id = %s",
+        (epoch_id,),
+    )
+    m5_connection.execute(
+        """
+        INSERT INTO groundloop_m5_working_group_certificate_binding (
+            epoch_id, group_version_id, valid_from_revision,
+            valid_to_revision, certificate_digest
+        ) VALUES (%s, %s, 1, NULL, %s)
+        """,
+        (epoch_id, group.group_version_id, published_digest),
+    )
+    force_deferred_checks(m5_connection)
+
+    assert m5_connection.execute(
+        """
+        SELECT group_version_id, certificate_digest::text
+        FROM groundloop_m5_group_certificate_bindings_at(%s, 0)
+        """,
+        (epoch_id,),
+    ).fetchall() == [(group.group_version_id, published_digest)]
+
+    m5_connection.execute(
+        "UPDATE groundloop_epoch SET revision = 2 WHERE epoch_id = %s",
+        (epoch_id,),
+    )
+    m5_connection.execute(
+        """
+        UPDATE groundloop_m5_working_group_certificate_binding
+        SET valid_to_revision = 2
+        WHERE epoch_id = %s AND group_version_id = %s
+        """,
+        (epoch_id, group.group_version_id),
+    )
+    force_deferred_checks(m5_connection)
+    assert (
+        m5_connection.execute(
+            "SELECT * FROM groundloop_m5_group_certificate_bindings_at(%s, 2)",
+            (epoch_id,),
+        ).fetchall()
+        == []
+    )

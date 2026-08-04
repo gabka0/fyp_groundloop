@@ -21,6 +21,7 @@ from groundloop.postgres.m5 import (
 from groundloop.postgres.migrations import (
     M5_ORACLE_PATH,
     M5BundleHashConflictError,
+    M5PrerequisiteError,
     apply_legacy_migrations,
     install_m5_core_bundle,
 )
@@ -151,6 +152,53 @@ def test_populated_upgrade_is_ledgered_replayable_and_hash_conflict_safe(
                 """
             ).fetchall()
             assert extensions == [("btree_gist",), ("pgcrypto",)]
+
+
+def test_dropped_critical_trigger_rejects_bundle_before_014_or_ledger(
+    m5_schema: M5Schema,
+) -> None:
+    with _legacy_schema(m5_schema.dsn) as schema_name:
+        with psycopg.connect(m5_schema.dsn) as connection:
+            _select_schema(connection, schema_name)
+            connection.execute(
+                """
+                DROP TRIGGER groundloop_working_observation_delta_immutable
+                ON groundloop_working_observation_delta
+                """
+            )
+            with pytest.raises(
+                M5PrerequisiteError,
+                match="critical trigger catalog is not exact",
+            ):
+                install_m5_core_bundle(connection)
+            assert connection.execute(
+                "SELECT to_regclass('groundloop_m5_schema_bundle')"
+            ).fetchone() == (None,)
+            assert connection.execute(
+                "SELECT to_regclass('groundloop_m5_group_version')"
+            ).fetchone() == (None,)
+
+
+def test_disabled_critical_trigger_is_a_catalog_near_miss_and_fails_closed(
+    m5_schema: M5Schema,
+) -> None:
+    with _legacy_schema(m5_schema.dsn) as schema_name:
+        with psycopg.connect(m5_schema.dsn) as connection:
+            _select_schema(connection, schema_name)
+            connection.execute(
+                """
+                ALTER TABLE groundloop_semantic_job
+                DISABLE TRIGGER groundloop_semantic_job_open_count
+                """
+            )
+            with pytest.raises(
+                M5PrerequisiteError,
+                match="critical trigger catalog is not exact",
+            ):
+                install_m5_core_bundle(connection)
+            assert connection.execute(
+                "SELECT to_regclass('groundloop_m5_schema_bundle')"
+            ).fetchone() == (None,)
 
 
 def test_bootstrap_publish_true_commits_and_reloads_all_states_and_bindings(

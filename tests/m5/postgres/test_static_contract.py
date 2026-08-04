@@ -12,6 +12,7 @@ from psycopg import Connection
 
 from groundloop.postgres.migrations import (
     LEGACY_MIGRATION_NAMES,
+    M5_CATALOG_PREFLIGHT_ROW_EXCLUSIVE_RELATIONS,
     M5_INSTALL_LOCK_RELATIONS,
     M5_MIGRATION_LABEL,
     M5_ORACLE_LABEL,
@@ -33,6 +34,24 @@ LOCK_ORDER = (
     "groundloop_published_observation_currency",
     "groundloop_working_observation_delta",
 )
+CATALOG_ROW_EXCLUSIVE_LOCK_ORDER = (
+    "groundloop_m4_working_claim_state",
+    "groundloop_m4_working_answer_state",
+    "groundloop_m4_claim_admission_index",
+    "groundloop_m4_verification_execution",
+    "groundloop_m4_role_embedding_artifact",
+    "groundloop_m4_document_metadata_overlay",
+    "groundloop_m4_claim_registry_member",
+    "groundloop_m4_structural_deactivation",
+    "groundloop_m4_discovery_result",
+    "groundloop_m4_claim_registry_snapshot",
+    "groundloop_m4_event_audit_run",
+    "groundloop_impact_evaluation_run",
+    "groundloop_semantic_job",
+    "groundloop_discovery_scope",
+    "groundloop_m4_evaluation_epoch_counter",
+    "groundloop_m4_evaluation_counter_transition",
+)
 
 
 def test_migration_has_exact_frozen_lock_order_before_open_epoch_guard() -> None:
@@ -47,6 +66,24 @@ def test_migration_has_exact_frozen_lock_order_before_open_epoch_guard() -> None
     )
     open_guard = MIGRATION.index("groundloop_m5_open_epoch_guard")
     assert final_lock < open_guard
+
+
+def test_installer_keeps_writer_freeze_and_catalog_stabilization_lock_classes() -> None:
+    assert M5_INSTALL_LOCK_RELATIONS == LOCK_ORDER
+    assert (
+        M5_CATALOG_PREFLIGHT_ROW_EXCLUSIVE_RELATIONS == CATALOG_ROW_EXCLUSIVE_LOCK_ORDER
+    )
+    assert not set(LOCK_ORDER) & set(CATALOG_ROW_EXCLUSIVE_LOCK_ORDER)
+    source = (ROOT / "src/groundloop/postgres/migrations.py").read_text(
+        encoding="utf-8"
+    )
+    exclusive_lock = source.index(
+        'connection.execute(f"LOCK TABLE {relation} IN ACCESS EXCLUSIVE MODE")'
+    )
+    catalog_lock = source.index(
+        'connection.execute(f"LOCK TABLE {relation} IN ROW EXCLUSIVE MODE")'
+    )
+    assert exclusive_lock < catalog_lock
 
 
 def test_bundle_and_legacy_file_order_are_literal_and_m5_defines_no_enum() -> None:
@@ -192,6 +229,24 @@ def test_inventory_read_findings_remain_location_checkable_and_classified() -> N
             .splitlines()[int(entry["line"]) - 1]
         )
         assert entry["table"] in line
+
+
+def test_resolved_runtime_inventory_has_location_checked_mechanical_evidence() -> None:
+    inventory = json.loads(INVENTORY_PATH.read_text(encoding="utf-8"))
+    assert inventory["status"] == "coordinator_patch_incorporated"
+    assert inventory["blocking_runtime_findings"] == []
+    resolved = inventory["resolved_runtime_findings"]
+    assert len(resolved) == 10
+    assert {entry["id"] for entry in resolved} == {
+        *(f"M4-RUNTIME-READ-{number:03d}" for number in range(1, 9)),
+        "M4-RUNTIME-WRITE-001",
+        "M4-RUNTIME-WRITE-002",
+    }
+    for entry in resolved:
+        lines = (ROOT / entry["path"]).read_text(encoding="utf-8").splitlines()
+        line_index = int(entry["line"]) - 1
+        assert entry["table"] in lines[line_index]
+        assert entry["evidence"] in "\n".join(lines[line_index : line_index + 8])
 
 
 def test_m5_indexes_are_valid_and_selected_when_sequential_scan_is_disabled(
