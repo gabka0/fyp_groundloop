@@ -1,0 +1,79 @@
+{
+  "schema": "groundloop-wice-source-manifest-v1",
+  "dataset": "WiCE",
+  "repository_url": "https://github.com/ryokamoi/wice",
+  "official_commit": "ddeb6c183665e2a20c5f03c5aa07f03888b9870f",
+  "adapter_version": "wice-evidence-unit-v1",
+  "source_files": [
+    {
+      "split": "train",
+      "kind": "claim",
+      "relative_path": "data/entailment_retrieval/claim/train.jsonl",
+      "rows": 1260,
+      "bytes": 12039943,
+      "sha256": "3ef74c7203e1d9b369cb2c145e764d8ab4743f008f9765fa47f9bdd6ffa2d2e1"
+    },
+    {
+      "split": "dev",
+      "kind": "claim",
+      "relative_path": "data/entailment_retrieval/claim/dev.jsonl",
+      "rows": 349,
+      "bytes": 3490479,
+      "sha256": "67531ca79bde4c81d3752fb69d9cb0d3d6763de5c3028f548b83ef053a6f8042"
+    },
+    {
+      "split": "test",
+      "kind": "claim",
+      "relative_path": "data/entailment_retrieval/claim/test.jsonl",
+      "rows": 358,
+      "bytes": 3624529,
+      "sha256": "4c91b9e9590cfcd8f8a0f7288b5ff315af8ade946d7bf26f50fbd671bb86dbe8"
+    },
+    {
+      "split": "train",
+      "kind": "subclaim",
+      "relative_path": "data/entailment_retrieval/subclaim/train.jsonl",
+      "rows": 3470,
+      "bytes": 33175462,
+      "sha256": "e8ba1ed589e22c5f9d41c8d858dd10bdc17665d224f8ce28be9d9024239cf513"
+    },
+    {
+      "split": "dev",
+      "kind": "subclaim",
+      "relative_path": "data/entailment_retrieval/subclaim/dev.jsonl",
+      "rows": 949,
+      "bytes": 9646735,
+      "sha256": "4747a5a60c85c0c12cbf1cc7a2ab4bc9279fd4fd01a83d36630b7151330b6f57"
+    },
+    {
+      "split": "test",
+      "kind": "subclaim",
+      "relative_path": "data/entailment_retrieval/subclaim/test.jsonl",
+      "rows": 958,
+      "bytes": 9431288,
+      "sha256": "3202b7bff5979dfbca745f48edd8da5ad166da0886fd15042cc1ab9d2010ee19"
+    }
+  ],
+  "supplementary_files": [
+    {
+      "role": "license",
+      "relative_path": "LICENSE.md",
+      "bytes": 950,
+      "sha256": "f96619e6c5d30955769f82eb72a20f816361c2682c099e6e689e5e82a0352757"
+    },
+    {
+      "role": "readme",
+      "relative_path": "README.md",
+      "bytes": 6418,
+      "sha256": "8359490c1b93bded804ab7760c0f8aa064a22049101d02ed69c8acb51965ea24"
+    }
+  ],
+  "license": {
+    "annotation_license": "ODC-BY",
+    "underlying_text_terms": [
+      "Wikipedia source terms remain applicable",
+      "Common Crawl source terms remain applicable"
+    ],
+    "source_url": "https://github.com/ryokamoi/wice/blob/ddeb6c183665e2a20c5f03c5aa07f03888b9870f/LICENSE.md"
+  }
+}

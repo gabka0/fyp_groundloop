@@ -1,0 +1,33 @@
+{
+  "schema": "groundloop-m5-controlled-evaluation-config-v1",
+  "source_manifest": "wice_source_manifest_v1.json",
+  "projection_policy": {
+    "policy_version": "controlled-projection-policy-v1",
+    "support_threshold": 0.5,
+    "refute_threshold": 0.5,
+    "tie_rule_version": "v1"
+  },
+  "evidence_unit": {
+    "adapter_version": "wice-evidence-unit-v1",
+    "render_limit_kind": "fixed-char-v1",
+    "render_limit_characters": 1200
+  },
+  "bootstrap": {
+    "cluster_unit": "claim-history/source",
+    "method": "percentile",
+    "rng": "numpy-pcg64-v1",
+    "seed": 20260802,
+    "resamples": 10000,
+    "confidence_level": 0.95
+  },
+  "split_roles": {
+    "train": "source-defined training split; not used by this adapter for selection",
+    "dev": "source-defined development split; no M5 policy selection",
+    "test": "source-defined test split; no model, policy, threshold, prompt, or implementation selection"
+  },
+  "model_calls": {
+    "controlled_projection": 0,
+    "source_invalidation": 0,
+    "frozen_citation": 0
+  }
+}
