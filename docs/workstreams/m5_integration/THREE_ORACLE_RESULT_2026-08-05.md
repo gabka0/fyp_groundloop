@@ -1,7 +1,8 @@
 # M5.3-06 integrated three-oracle history result
 
-Status: **PASS for M5.3-06 only**; M5.3-07, M5.4, and M5 completion remain
-pending
+Integrated executable evidence: **PASS for M5.3-06 only**. Top-level
+acceptance-matrix reconciliation is a separate coordinator documentation step;
+M5.3-07, M5.4, and M5 completion remain pending.
 
 Date: 2026-08-05
 
@@ -21,12 +22,14 @@ The continuous in-memory history contains all nine committed M5 overlay event
 variants and an exact replay. At each logical checkpoint, the test loads the
 same checkpoint-specific versioned base snapshot into fresh rollback-isolated
 PostgreSQL rows, reads the SQL oracle before materializing overlay-derived M5
-state, then forces deferred constraints and requires all seven persisted-state
-and certificate mismatch counters to be zero.
+state, then forces deferred constraints and requires all seven state,
+certificate, assignment, and assignment-cap counters to be zero.
 
-This closes the narrow acceptance-matrix row M5.3-06. It is not a durable
-same-schema mutation history, failure/restart runtime, M5.4 activation or
-publication transaction, production latency result, or M5-complete claim.
+This supplies the executable evidence required to close the narrow
+acceptance-matrix row M5.3-06; it does not itself update the top-level row. It
+is not a durable same-schema mutation history, failure/restart runtime, M5.4
+activation or publication transaction, production latency result, or
+M5-complete claim.
 
 ## Covered history and falsifiers
 
@@ -34,13 +37,14 @@ The committed history exercises:
 
 - group registration, replacement, and retirement;
 - requirement observation and supersession;
-- claim-verification observation and answer upsert;
-- policy activation, semantic-epoch advance, and document-version replacement;
+- claim-verification observation and resulting answer-state update;
+- policy change/rebinding and document-version replacement;
 - same-edge provenance repair with `R=1, Y=0`;
 - selected-edge loss followed by alternate-cover rebuild with `R=0, Y=1`;
 - a zero-candidate policy rebind;
 - a claim certificate changing from selected group support to direct support;
-- exact replay with no new work, bindings, artifacts, deltas, or state mutation.
+- exact replay returning the same cached logical deltas and digest, with no
+  newly appended deltas, work, bindings, artifacts, or state mutation.
 
 Every checkpoint compares the four maintained state families exactly with the
 Python reference and SQL oracle. Current group and claim certificates are also
@@ -165,9 +169,11 @@ PostgreSQL concurrency falsifier is not created by this history.
 
 Still pending:
 
-1. M5.3-07 durable coordinator failure/replay behavior.
-2. Every M5.4 activation/publication and exactly-once runtime gate.
-3. M5.5 controlled WiCE execution beyond the existing scaffold.
-4. M5.6 analysis and final acceptance.
-5. Any production, neural-quality, security, novelty, or dissertation-level
+1. At this result checkpoint, separate top-level M5.2/M5.3 status
+   reconciliation.
+2. M5.3-07 durable coordinator failure/replay behavior.
+3. Every M5.4 activation/publication and exactly-once runtime gate.
+4. M5.5 controlled WiCE execution beyond the existing scaffold.
+5. M5.6 analysis and final acceptance.
+6. Any production, neural-quality, security, novelty, or dissertation-level
    utility claim.
