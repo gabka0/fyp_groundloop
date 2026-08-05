@@ -10,6 +10,7 @@ import pytest
 from groundloop.domain import DecisionPolicy
 from groundloop.events import (
     ChunkInput,
+    DeleteDocumentVersionEvent,
     InsertDocumentEvent,
     ObserveEvent,
     PolicyChangeEvent,
@@ -23,6 +24,7 @@ from groundloop.m5.claim_certificates import (
 )
 from groundloop.m5.domain import (
     ClaimCertificateArtifact,
+    ClaimSupportKind,
     CombinedClaimState,
     GroupMatchingCertificateArtifact,
     SnapshotPoint,
@@ -33,6 +35,7 @@ from groundloop.m5.events import (
     RetireGroupEvent,
     apply_m5_event,
 )
+from groundloop.m5.reference import compute_reference_states
 from groundloop.m5.repository import M5Repository
 
 from .helpers import (
@@ -120,6 +123,12 @@ def _prepare_same_epoch_repair(
     point = after.advance_semantic_revision()
     after.register_requirement_observation(event.observation, point)
     return overlay.prepare_committed_event_patch(event, before, after)
+
+
+def _claim_support_kind(
+    overlay: overlay_module.M5IncrementalOverlay,
+) -> ClaimSupportKind:
+    return overlay.claim_certificates["claim-a"].support_kind
 
 
 def test_nonselected_group_repair_is_claim_inert_with_many_alternatives(
@@ -230,6 +239,179 @@ def test_selected_group_repair_republishes_only_claim_certificate(
     assert patch.result.changed_answer_ids == ()
     assert patch.result.deltas == ()
     assert patch.result.work.claims == 1
+    assert patch.result.work.matching.requirement_observation_changes_processed == 2
+    assert patch.result.work.matching.certificate_repairs == 1
+    assert patch.result.work.matching.certificate_reconstructions == 0
+    assert patch.result.work.matching.representative_observations_read == 1
+    assert patch.result.work.matching.hash_mask_transitions == 0
+    assert patch.result.work.matching.canonical_sort_items == 0
+
+
+def test_selected_deletion_at_multiplicity_two_to_one_repairs_provenance() -> None:
+    repository = _repair_ready_repository(("a-group",))
+    overlay = overlay_module.M5IncrementalOverlay.from_repository(repository)
+    prior_group_digest = overlay.group_certificates["a-group"].certificate_digest
+    prior_claim_digest = overlay.claim_certificates["claim-a"].certificate_digest
+    before = deepcopy(repository)
+    after = deepcopy(repository)
+    event = DeleteDocumentVersionEvent(
+        event_id="delete-selected-document",
+        document_version_id="document-version-a",
+    )
+    apply_event(after.base, event)
+    _ = after.current_point
+
+    patch = overlay.prepare_committed_event_patch(event, before, after)
+    work = patch.result.work.matching
+
+    assert work.requirement_observation_changes_processed == 1
+    assert work.contribution_removals == 1
+    assert work.edge_refcount_keys_updated == 1
+    assert work.distinct_edge_crossings == 0
+    assert work.hash_mask_transitions == 0
+    assert work.certificate_repairs == 1
+    assert work.certificate_reconstructions == 0
+    assert patch.group_state_changes == ()
+    assert patch.claim_state_changes == ()
+    assert patch.result.changed_group_ids == ("a-group",)
+    assert patch.result.certificate_only_group_ids == ("a-group",)
+    assert patch.result.changed_claim_ids == ("claim-a",)
+    assert patch.result.certificate_only_claim_ids == ("claim-a",)
+    assert patch.result.changed_answer_ids == ()
+    assert patch.result.deltas == ()
+
+    overlay.apply_prepared_event(patch)
+    reference = compute_reference_states(after)
+    assert overlay.requirement_states == reference.requirements
+    assert overlay.group_states == reference.groups
+    assert overlay.claim_states == reference.claims
+    assert overlay.answer_states == reference.answers
+    assert (
+        overlay.group_certificates["a-group"].certificate_digest != prior_group_digest
+    )
+    assert (
+        overlay.claim_certificates["claim-a"].certificate_digest != prior_claim_digest
+    )
+
+
+def test_selected_edge_loss_rebuilds_alternating_cover_and_claim_certificate() -> None:
+    repository = make_repository()
+    group = make_group(
+        texts=("first", "second"),
+        requirement_ids=("requirement-0", "requirement-1"),
+    )
+    apply_m5_event(
+        repository,
+        RegisterGroupEvent(event_id="register-group", group=group),
+    )
+    observation_chunks: dict[str, str] = {}
+    for requirement_id in ("requirement-0", "requirement-1"):
+        for chunk_id in ("chunk-a", "chunk-b"):
+            observation_id = f"{requirement_id}-{chunk_id}"
+            observation_chunks[observation_id] = chunk_id
+            apply_m5_event(
+                repository,
+                ObserveRequirementEvent(
+                    event_id=f"observe-{observation_id}",
+                    observation=make_requirement_observation(
+                        observation_id=observation_id,
+                        requirement_id=requirement_id,
+                        chunk_id=chunk_id,
+                    ),
+                ),
+            )
+    overlay = overlay_module.M5IncrementalOverlay.from_repository(repository)
+    prior_group_artifact = overlay.group_certificates["group-a"]
+    prior_claim_artifact = overlay.claim_certificates["claim-a"]
+    selected = prior_group_artifact.rows[0]
+    before = deepcopy(repository)
+    after = deepcopy(repository)
+    event = ObserveRequirementEvent(
+        event_id="neutralize-selected-edge",
+        observation=make_requirement_observation(
+            observation_id="neutral-selected-edge",
+            requirement_id=selected.requirement_version_id,
+            chunk_id=observation_chunks[selected.selected_observation_id],
+            scores=(0.1, 0.1, 0.8),
+        ),
+    )
+    apply_m5_event(after, event)
+
+    patch = overlay.prepare_committed_event_patch(event, before, after)
+    work = patch.result.work.matching
+
+    assert work.certificate_repairs == 0
+    assert work.certificate_reconstructions == 1
+    assert work.hash_mask_transitions == 1
+    assert patch.group_state_changes == ()
+    assert patch.claim_state_changes == ()
+    assert patch.result.changed_group_ids == ("group-a",)
+    assert patch.result.certificate_only_group_ids == ("group-a",)
+    assert patch.result.changed_claim_ids == ("claim-a",)
+    assert patch.result.certificate_only_claim_ids == ("claim-a",)
+    assert patch.result.changed_answer_ids == ()
+    assert patch.result.deltas == ()
+
+    overlay.apply_prepared_event(patch)
+    reference = compute_reference_states(after)
+    assert overlay.requirement_states == reference.requirements
+    assert overlay.group_states == reference.groups
+    assert overlay.claim_states == reference.claims
+    assert overlay.answer_states == reference.answers
+    assert overlay.group_state("group-a").complete
+    assert overlay.group_certificates["group-a"] != prior_group_artifact
+    assert overlay.claim_certificates["claim-a"] != prior_claim_artifact
+
+
+def test_claim_certificate_switches_direct_to_group_without_status_delta() -> None:
+    repository = _repair_ready_repository(("a-group",))
+    overlay = overlay_module.M5IncrementalOverlay.from_repository(repository)
+    assert _claim_support_kind(overlay) is ClaimSupportKind.GROUP
+
+    direct = ObserveEvent(
+        event_id="observe-direct-support",
+        observation=make_claim_observation(
+            observation_id="direct-support",
+            chunk_id="chunk-c",
+        ),
+    )
+    before_direct = deepcopy(repository)
+    apply_event(repository.base, direct)
+    _ = repository.current_point
+    direct_result = overlay.apply_committed_event(
+        direct,
+        before_direct,
+        repository,
+    )
+    assert _claim_support_kind(overlay) is ClaimSupportKind.DIRECT
+    assert direct_result.state_only_claim_ids == ("claim-a",)
+    assert direct_result.changed_answer_ids == ()
+    assert direct_result.deltas == ()
+
+    neutral = ObserveEvent(
+        event_id="neutralize-direct-support",
+        observation=make_claim_observation(
+            observation_id="neutral-direct-support",
+            chunk_id="chunk-c",
+            scores=(0.1, 0.1, 0.8),
+        ),
+    )
+    before_neutral = deepcopy(repository)
+    apply_event(repository.base, neutral)
+    _ = repository.current_point
+    neutral_result = overlay.apply_committed_event(
+        neutral,
+        before_neutral,
+        repository,
+    )
+    reference = compute_reference_states(repository)
+
+    assert _claim_support_kind(overlay) is ClaimSupportKind.GROUP
+    assert overlay.claim_states == reference.claims
+    assert overlay.answer_states == reference.answers
+    assert neutral_result.state_only_claim_ids == ("claim-a",)
+    assert neutral_result.changed_answer_ids == ()
+    assert neutral_result.deltas == ()
 
 
 def test_direct_selected_claim_ignores_group_certificate_repair(

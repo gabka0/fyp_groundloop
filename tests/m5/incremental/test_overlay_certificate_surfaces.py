@@ -60,6 +60,7 @@ def test_cross_epoch_group_retain_is_a_certificate_only_change() -> None:
 
     assert patch.group_state_changes == ()
     assert patch.group_artifact_changes == ()
+    assert patch.group_artifact_ledger_changes == ()
     assert tuple(change.key for change in patch.group_binding_changes) == ("group-a",)
     assert tuple(change.key for change in patch.group_history_changes) == ("group-a",)
     assert len(patch.group_binding_rows) == 1
@@ -70,6 +71,7 @@ def test_cross_epoch_group_retain_is_a_certificate_only_change() -> None:
     assert patch.result.work.group_certificate_only_changes == 1
     assert patch.claim_state_changes == ()
     assert patch.claim_artifact_changes == ()
+    assert patch.claim_artifact_ledger_changes == ()
     assert patch.claim_binding_changes == ()
     assert patch.claim_history_changes == ()
     assert patch.result.changed_claim_ids == ()
@@ -97,6 +99,8 @@ def test_exact_replay_returns_references_without_new_certificate_writes() -> Non
         overlay.answer_states,
         overlay.group_certificates,
         overlay.claim_certificates,
+        overlay.group_certificate_artifacts_by_digest,
+        overlay.claim_certificate_artifacts_by_digest,
     )
 
     replay_patch = overlay.prepare_committed_event_patch(event, after, after)
@@ -115,9 +119,11 @@ def test_exact_replay_returns_references_without_new_certificate_writes() -> Non
         replay_patch.answer_count_changes,
         replay_patch.answer_state_changes,
         replay_patch.group_artifact_changes,
+        replay_patch.group_artifact_ledger_changes,
         replay_patch.group_binding_changes,
         replay_patch.group_history_changes,
         replay_patch.claim_artifact_changes,
+        replay_patch.claim_artifact_ledger_changes,
         replay_patch.claim_binding_changes,
         replay_patch.claim_history_changes,
         replay_patch.observation_changes,
@@ -153,4 +159,6 @@ def test_exact_replay_returns_references_without_new_certificate_writes() -> Non
         overlay.answer_states,
         overlay.group_certificates,
         overlay.claim_certificates,
+        overlay.group_certificate_artifacts_by_digest,
+        overlay.claim_certificate_artifacts_by_digest,
     ) == state_images

@@ -97,6 +97,27 @@ OverlayFailureInjector = Callable[[str], None]
 CANONICAL_REQUIREMENT_TASK = "verify_requirement_v1"
 _T = TypeVar("_T")
 _K = TypeVar("_K", bound=Hashable)
+_ArtifactT = TypeVar(
+    "_ArtifactT",
+    GroupMatchingCertificateArtifact,
+    ClaimCertificateArtifact,
+)
+
+
+def _append_immutable_artifact(
+    ledger: dict[str, _ArtifactT],
+    artifact: _ArtifactT,
+    *,
+    name: str,
+) -> None:
+    """Insert one content artifact without permitting digest replacement."""
+
+    digest = artifact.certificate_digest
+    existing = ledger.get(digest)
+    if existing is not None and existing != artifact:
+        raise ValidationError(f"{name} certificate digest collision")
+    if existing is None:
+        ledger[digest] = artifact
 
 
 class _OrderedKeys(Generic[_K]):
@@ -572,11 +593,17 @@ class PreparedM5OverlayPatch:
     group_artifact_changes: tuple[
         _PointChange[str, GroupMatchingCertificateArtifact], ...
     ]
+    group_artifact_ledger_changes: tuple[
+        _PointChange[str, GroupMatchingCertificateArtifact], ...
+    ]
     group_binding_changes: tuple[_PointChange[str, WorkingGroupCertificateBinding], ...]
     group_history_changes: tuple[
         _PointChange[str, _HistoryNode[WorkingGroupCertificateBinding]], ...
     ]
     claim_artifact_changes: tuple[_PointChange[str, ClaimCertificateArtifact], ...]
+    claim_artifact_ledger_changes: tuple[
+        _PointChange[str, ClaimCertificateArtifact], ...
+    ]
     claim_binding_changes: tuple[_PointChange[str, WorkingClaimCertificateBinding], ...]
     claim_history_changes: tuple[
         _PointChange[str, _HistoryNode[WorkingClaimCertificateBinding]], ...
@@ -825,6 +852,9 @@ class M5IncrementalOverlay:
     _group_artifacts: dict[str, GroupMatchingCertificateArtifact] = field(
         default_factory=dict
     )
+    _group_artifacts_by_digest: dict[str, GroupMatchingCertificateArtifact] = field(
+        default_factory=dict
+    )
     _group_bindings: dict[str, WorkingGroupCertificateBinding] = field(
         default_factory=dict
     )
@@ -832,6 +862,9 @@ class M5IncrementalOverlay:
         field(default_factory=dict)
     )
     _claim_artifacts: dict[str, ClaimCertificateArtifact] = field(default_factory=dict)
+    _claim_artifacts_by_digest: dict[str, ClaimCertificateArtifact] = field(
+        default_factory=dict
+    )
     _claim_bindings: dict[str, WorkingClaimCertificateBinding] = field(
         default_factory=dict
     )
@@ -933,6 +966,11 @@ class M5IncrementalOverlay:
             group_binding = group_transition.open_binding
             assert group_artifact is not None and group_binding is not None
             overlay._group_artifacts[group_id] = group_artifact
+            _append_immutable_artifact(
+                overlay._group_artifacts_by_digest,
+                group_artifact,
+                name="group",
+            )
             overlay._group_bindings[group_id] = group_binding
             overlay._group_binding_history[group_id] = _history_append(
                 None, group_binding
@@ -961,6 +999,11 @@ class M5IncrementalOverlay:
                 prior_artifact=None,
             )
             overlay._claim_artifacts[claim_id] = claim_transition.artifact
+            _append_immutable_artifact(
+                overlay._claim_artifacts_by_digest,
+                claim_transition.artifact,
+                name="claim",
+            )
             overlay._claim_bindings[claim_id] = claim_transition.binding
             overlay._claim_binding_history[claim_id] = _history_append(
                 None, claim_transition.binding
@@ -997,8 +1040,24 @@ class M5IncrementalOverlay:
         return dict(self._group_artifacts)
 
     @property
+    def group_certificate_artifacts_by_digest(
+        self,
+    ) -> dict[str, GroupMatchingCertificateArtifact]:
+        """Return the immutable digest-keyed group artifact ledger for audit."""
+
+        return dict(self._group_artifacts_by_digest)
+
+    @property
     def claim_certificates(self) -> dict[str, ClaimCertificateArtifact]:
         return dict(self._claim_artifacts)
+
+    @property
+    def claim_certificate_artifacts_by_digest(
+        self,
+    ) -> dict[str, ClaimCertificateArtifact]:
+        """Return the immutable digest-keyed claim artifact ledger for audit."""
+
+        return dict(self._claim_artifacts_by_digest)
 
     def requirement_state(self, requirement_version_id: str) -> RequirementState:
         return self._requirement_states[requirement_version_id]
@@ -1237,9 +1296,11 @@ class M5IncrementalOverlay:
                 answer_count_changes=(),
                 answer_state_changes=(),
                 group_artifact_changes=(),
+                group_artifact_ledger_changes=(),
                 group_binding_changes=(),
                 group_history_changes=(),
                 claim_artifact_changes=(),
+                claim_artifact_ledger_changes=(),
                 claim_binding_changes=(),
                 claim_history_changes=(),
                 observation_changes=(),
@@ -1455,17 +1516,17 @@ class M5IncrementalOverlay:
             )
             for observation_id in policy_candidates:
                 info = self._observations[observation_id]
-                old_support = (
-                    decide(info.observation, policy_before) is VerificationLabel.SUPPORT
-                )
-                new_support = (
-                    decide(info.observation, policy_after) is VerificationLabel.SUPPORT
-                )
+                old_label = decide(info.observation, policy_before)
+                new_label = decide(info.observation, policy_after)
+                if old_label is not new_label:
+                    observation_changes_processed += 1
+                old_support = old_label is VerificationLabel.SUPPORT
+                new_support = new_label is VerificationLabel.SUPPORT
                 if old_support != new_support:
                     emit_membership(info, 1 if new_support else -1)
             # Policy identity, not just edge flips, rebinds every complete
             # group and every typed-v2 claim.
-            touched_groups.update(after.active_group_ids(after_point.epoch_id))
+            touched_groups.update(self._group_artifacts)
 
         requirement_local_values: dict[str, _RequirementLocal | None] = {}
         edge_count_values: dict[tuple[str, str], int | None] = {}
@@ -1570,9 +1631,11 @@ class M5IncrementalOverlay:
                         for requirement in group.requirements
                     ),
                 )
-                hall_before = initialize_hall_mask_state(
+                initialized_hall = initialize_hall_mask_state(
                     len(group.requirements), ()
-                ).state
+                )
+                hall_before = initialized_hall.state
+                matching_work += initialized_hall.work
                 index_values[group_id] = index
             else:
                 index = self._group_indexes[group_id]
@@ -1597,6 +1660,9 @@ class M5IncrementalOverlay:
         )
         group_state_values: dict[str, GroupState | None] = {}
         group_artifact_values: dict[str, GroupMatchingCertificateArtifact | None] = {}
+        group_artifact_ledger_values: dict[
+            str, GroupMatchingCertificateArtifact | None
+        ] = {}
         group_binding_values: dict[str, WorkingGroupCertificateBinding | None] = {}
         group_history_values: dict[
             str, _HistoryNode[WorkingGroupCertificateBinding] | None
@@ -1605,6 +1671,19 @@ class M5IncrementalOverlay:
         certificate_changed_groups = _OrderedKeys[str]()
         complete_group_values: dict[str, PersistentStringSet | None] = {}
         claim_state_dirty = _OrderedKeys(direct_patch.touched_claim_ids)
+
+        def stage_group_artifact(
+            artifact: GroupMatchingCertificateArtifact,
+        ) -> None:
+            digest = artifact.certificate_digest
+            existing = group_artifact_ledger_values.get(
+                digest,
+                self._group_artifacts_by_digest.get(digest),
+            )
+            if existing is not None and existing != artifact:
+                raise ValidationError("group certificate digest collision")
+            if existing is None:
+                group_artifact_ledger_values[digest] = artifact
 
         def current_complete_groups(claim_id: str) -> PersistentStringSet:
             if claim_id in complete_group_values:
@@ -1715,6 +1794,8 @@ class M5IncrementalOverlay:
             if transition is not None:
                 matching_work += transition.work
                 group_artifact_values[group_id] = transition.artifact
+                if transition.artifact is not None:
+                    stage_group_artifact(transition.artifact)
                 group_binding_values[group_id] = transition.open_binding
                 history = self._group_binding_history.get(group_id)
                 next_history, group_rows = _history_after_group_transition(
@@ -1804,11 +1885,24 @@ class M5IncrementalOverlay:
                 selected_group_certificates[claim_id] = selected
 
         claim_artifact_values: dict[str, ClaimCertificateArtifact | None] = {}
+        claim_artifact_ledger_values: dict[str, ClaimCertificateArtifact | None] = {}
         claim_binding_values: dict[str, WorkingClaimCertificateBinding | None] = {}
         claim_history_values: dict[
             str, _HistoryNode[WorkingClaimCertificateBinding] | None
         ] = {}
         claim_binding_rows: list[WorkingClaimCertificateBinding] = []
+
+        def stage_claim_artifact(artifact: ClaimCertificateArtifact) -> None:
+            digest = artifact.certificate_digest
+            existing = claim_artifact_ledger_values.get(
+                digest,
+                self._claim_artifacts_by_digest.get(digest),
+            )
+            if existing is not None and existing != artifact:
+                raise ValidationError("claim certificate digest collision")
+            if existing is None:
+                claim_artifact_ledger_values[digest] = artifact
+
         for claim_id in claim_certificate_dirty:
             claim_state = claim_states_after[claim_id]
             prior_claim_artifact = self._claim_artifacts.get(claim_id)
@@ -1822,6 +1916,7 @@ class M5IncrementalOverlay:
                 prior_artifact=prior_claim_artifact,
             )
             claim_artifact_values[claim_id] = claim_transition.artifact
+            stage_claim_artifact(claim_transition.artifact)
             claim_binding_values[claim_id] = claim_transition.binding
             claim_history = self._claim_binding_history.get(claim_id)
             next_claim_history, claim_rows = _history_after_claim_transition(
@@ -1843,6 +1938,10 @@ class M5IncrementalOverlay:
         group_artifact_changes = _point_changes(
             self._group_artifacts, group_artifact_values
         )
+        group_artifact_ledger_changes = _point_changes(
+            self._group_artifacts_by_digest,
+            group_artifact_ledger_values,
+        )
         group_binding_changes = _point_changes(
             self._group_bindings, group_binding_values
         )
@@ -1851,6 +1950,10 @@ class M5IncrementalOverlay:
         )
         claim_artifact_changes = _point_changes(
             self._claim_artifacts, claim_artifact_values
+        )
+        claim_artifact_ledger_changes = _point_changes(
+            self._claim_artifacts_by_digest,
+            claim_artifact_ledger_values,
         )
         claim_binding_changes = _point_changes(
             self._claim_bindings, claim_binding_values
@@ -1944,8 +2047,6 @@ class M5IncrementalOverlay:
         changed_claim_keys = _OrderedKeys(claim_state_change_keys)
         changed_claim_keys.update(claim_certificate_keys)
         changed_claim_ids = tuple(changed_claim_keys)
-        claims_touched = _OrderedKeys(claim_state_dirty)
-        claims_touched.update(claim_certificate_dirty)
         output_records: list[tuple[str, str, object]] = []
         for kind, changes in (
             ("requirement_state", requirement_state_changes),
@@ -1973,9 +2074,9 @@ class M5IncrementalOverlay:
         output_bytes = len(output_image)
         logical_output_digest = hashlib.sha256(output_image).hexdigest()
         matching_work += touched_state_work(
-            groups_touched=len(touched_groups),
-            claims_touched=len(claims_touched),
-            answers_touched=len(dirty_answers),
+            groups_touched=len(changed_group_ids),
+            claims_touched=len(changed_claim_ids),
+            answers_touched=len(answer_state_changes),
             claim_status_changes=claim_status_changes,
             answer_status_changes=answer_status_changes,
             output_bytes=output_bytes,
@@ -2041,9 +2142,11 @@ class M5IncrementalOverlay:
             ),
             answer_state_changes=answer_state_changes,
             group_artifact_changes=group_artifact_changes,
+            group_artifact_ledger_changes=group_artifact_ledger_changes,
             group_binding_changes=group_binding_changes,
             group_history_changes=group_history_changes,
             claim_artifact_changes=claim_artifact_changes,
+            claim_artifact_ledger_changes=claim_artifact_ledger_changes,
             claim_binding_changes=claim_binding_changes,
             claim_history_changes=claim_history_changes,
             observation_changes=_point_changes(self._observations, observation_values),
@@ -2074,6 +2177,26 @@ class M5IncrementalOverlay:
             if value is not change.before and value != change.before:
                 raise ValidationError(
                     f"prepared overlay {name} precondition failed for {change.key!r}"
+                )
+
+    @staticmethod
+    def _validate_artifact_ledger_changes(
+        changes: Sequence[_PointChange[str, _ArtifactT]],
+        *,
+        name: str,
+    ) -> None:
+        """Reject any prepared mutation that is not a new digest-keyed artifact."""
+
+        seen: set[str] = set()
+        for change in changes:
+            if change.key in seen:
+                raise ValidationError(f"prepared overlay {name} repeats a digest")
+            seen.add(change.key)
+            if change.before is not None or change.after is None:
+                raise ValidationError(f"prepared overlay {name} must be append-only")
+            if change.key != change.after.certificate_digest:
+                raise ValidationError(
+                    f"prepared overlay {name} key does not match its artifact digest"
                 )
 
     @staticmethod
@@ -2159,6 +2282,15 @@ class M5IncrementalOverlay:
             self._answer_states, patch.answer_state_changes, name="answer state"
         )
         self._validate_changes(
+            self._group_artifacts_by_digest,
+            patch.group_artifact_ledger_changes,
+            name="group artifact ledger",
+        )
+        self._validate_artifact_ledger_changes(
+            patch.group_artifact_ledger_changes,
+            name="group artifact ledger",
+        )
+        self._validate_changes(
             self._group_artifacts,
             patch.group_artifact_changes,
             name="group artifact",
@@ -2172,6 +2304,15 @@ class M5IncrementalOverlay:
             self._group_binding_history,
             patch.group_history_changes,
             name="group history",
+        )
+        self._validate_changes(
+            self._claim_artifacts_by_digest,
+            patch.claim_artifact_ledger_changes,
+            name="claim artifact ledger",
+        )
+        self._validate_artifact_ledger_changes(
+            patch.claim_artifact_ledger_changes,
+            name="claim artifact ledger",
         )
         self._validate_changes(
             self._claim_artifacts,
@@ -2328,6 +2469,13 @@ class M5IncrementalOverlay:
                 name="answer_state",
             )
             self._apply_changes(
+                self._group_artifacts_by_digest,
+                patch.group_artifact_ledger_changes,
+                undo,
+                checkpoint,
+                name="group_artifact_ledger",
+            )
+            self._apply_changes(
                 self._group_artifacts,
                 patch.group_artifact_changes,
                 undo,
@@ -2347,6 +2495,13 @@ class M5IncrementalOverlay:
                 undo,
                 checkpoint,
                 name="group_history",
+            )
+            self._apply_changes(
+                self._claim_artifacts_by_digest,
+                patch.claim_artifact_ledger_changes,
+                undo,
+                checkpoint,
+                name="claim_artifact_ledger",
             )
             self._apply_changes(
                 self._claim_artifacts,
