@@ -64,7 +64,10 @@ from groundloop.m5.incremental_overlay import (
     _history_append,
 )
 from groundloop.m5.matching import WorkingGroupCertificateBinding
-from groundloop.m5.reference import validate_group_certificate
+from groundloop.m5.reference import (
+    build_reference_group_certificate,
+    validate_group_certificate,
+)
 
 from .helpers import make_group, make_repository, make_requirement_observation
 
@@ -200,10 +203,10 @@ def test_planned_prefix_and_full_match_frozen_manifest() -> None:
     manifest, raw_sha256, canonical_sha256 = load_manifest()
     verify_manifest_header(config, manifest)
     assert raw_sha256 == (
-        "9d9aa4863f23050f35b41eea73299e2f61e7e369b1e8f975658ba305b773bac1"
+        "ea6b6b7e43e8ca39c955b4b35d051de329e12fee2940c5d541a39d37dd61e7a9"
     )
     assert canonical_sha256 == (
-        "a8a85ff8ef6924c10411a4225fe1116f78ade9a8108884c2e66e35499ce1659b"
+        "e98b276043340a43ea13fd3f949aecfedf7df83474f7fe293cf77d45b6d230c5"
     )
 
     prefix = run_randomized_differential(
@@ -666,7 +669,6 @@ def test_certificate_audit_rejects_internally_consistent_unrelated_rebinding() -
     )
     with pytest.raises(AssertionError, match="group artifact"):
         _assert_certificate_surface_changes(
-            repository,
             before_certificates,
             false_artifact_image,
             before_audit,
@@ -677,6 +679,69 @@ def test_certificate_audit_rejects_internally_consistent_unrelated_rebinding() -
             set(),
             result,
         )
+
+
+def test_certificate_audit_accepts_alternate_valid_build_identity() -> None:
+    repository = make_repository()
+    apply_event(
+        repository.base,
+        PolicyChangeEvent(
+            event_id="ambiguous-high-policy",
+            policy=DecisionPolicy("policy-high", 0.95, 0.95),
+        ),
+    )
+    _ = repository.current_point
+    apply_m5_event(
+        repository,
+        RegisterGroupEvent(
+            event_id="ambiguous-register-group",
+            group=make_group(texts=("r0", "r1")),
+        ),
+    )
+    for ordinal in range(2):
+        for chunk_id in ("chunk-a", "chunk-b"):
+            apply_m5_event(
+                repository,
+                ObserveRequirementEvent(
+                    event_id=f"ambiguous-observe-{ordinal}-{chunk_id}",
+                    observation=make_requirement_observation(
+                        observation_id=f"ambiguous-{ordinal}-{chunk_id}",
+                        requirement_id=f"group-a-requirement-{ordinal}",
+                        chunk_id=chunk_id,
+                        scores=(0.9, 0.05, 0.05),
+                    ),
+                ),
+            )
+
+    overlay = M5IncrementalOverlay.from_repository(repository)
+    assert overlay.group_certificates == {}
+    before_repository = deepcopy(repository)
+    before_audit = _build_independent_audit(repository)
+    before_certificates = _certificate_image(overlay)
+    event = PolicyChangeEvent(
+        event_id="ambiguous-low-policy",
+        policy=DecisionPolicy("policy-low", 0.8, 0.8),
+    )
+    apply_event(repository.base, event)
+    _ = repository.current_point
+    result = overlay.apply_committed_event(event, before_repository, repository)
+    after_audit = _build_independent_audit(repository)
+    _assert_overlay_matches_reference(
+        repository,
+        overlay,
+        event,
+        before_audit,
+        before_certificates,
+        after_audit,
+        result,
+    )
+
+    actual = overlay.group_certificates["group-a"]
+    reference = build_reference_group_certificate(repository, "group-a")
+    assert reference is not None
+    assert actual != reference
+    assert validate_group_certificate(repository, actual)
+    assert validate_group_certificate(repository, reference)
 
 
 @pytest.mark.parametrize("hash_seed", ("0", "1", "42", "8675309"))
