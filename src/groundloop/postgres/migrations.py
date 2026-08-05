@@ -390,8 +390,8 @@ def _verify_013_critical_triggers(connection: Connection[Any]) -> None:
     current_schema = str(current_schema_row[0])
     expected_triggers = _CRITICAL_013_TRIGGERS
     if _relation_exists(connection, "groundloop_m5_schema_bundle"):
-        # Exact replay sees migration 014's one deliberate trigger extension on
-        # a legacy critical relation. No other extra trigger is accepted.
+        # Exact replay sees migration 014's two deliberate trigger extensions
+        # on legacy critical relations. No other extra trigger is accepted.
         expected_triggers += _M5_TRIGGER_EXTENSIONS_ON_CRITICAL_RELATIONS
     expected = {
         (
