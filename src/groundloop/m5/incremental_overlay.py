@@ -45,10 +45,12 @@ from groundloop.incremental import (
 from groundloop.m5.claim_certificates import (
     WorkingClaimCertificateBinding,
     transition_claim_certificate,
+    transition_claim_certificate_for_selected_support,
 )
 from groundloop.m5.digests import normalized_text_hash_v1
 from groundloop.m5.domain import (
     ClaimCertificateArtifact,
+    ClaimSupportKind,
     CombinedAnswerState,
     CombinedClaimState,
     EvidenceGroupVersion,
@@ -614,6 +616,51 @@ def _answer_status(counts: Counter[ClaimStatus], required: int) -> AnswerStatus:
     if counts[ClaimStatus.SUPPORTED] > 0:
         return AnswerStatus.PARTIALLY_SUPPORTED
     return AnswerStatus.UNSUPPORTED
+
+
+def _selected_group_certificate(
+    state: CombinedClaimState,
+    group_certificates: Mapping[str, GroupMatchingCertificateArtifact],
+) -> GroupMatchingCertificateArtifact | None:
+    if state.supporting_observation_ids or not state.complete_group_ids:
+        return None
+    return group_certificates[state.complete_group_ids[0]]
+
+
+def _claim_certificate_inputs_changed(
+    state: CombinedClaimState,
+    *,
+    decision_policy_version: str,
+    selected_group_certificate: GroupMatchingCertificateArtifact | None,
+    prior_artifact: ClaimCertificateArtifact | None,
+) -> bool:
+    """Compare only the O(1) selector fields represented by a v2 artifact."""
+
+    direct_support_id: str | None = None
+    group_id: str | None = None
+    group_digest: str | None = None
+    if state.supporting_observation_ids:
+        support_kind = ClaimSupportKind.DIRECT
+        direct_support_id = state.supporting_observation_ids[0]
+    elif state.complete_group_ids:
+        support_kind = ClaimSupportKind.GROUP
+        group_id = state.complete_group_ids[0]
+        if selected_group_certificate is None:
+            raise AssertionError("selected complete group has no certificate")
+        group_digest = selected_group_certificate.certificate_digest
+    else:
+        support_kind = ClaimSupportKind.NONE
+    direct_refute_id = (
+        state.refuting_observation_ids[0] if state.refuting_observation_ids else None
+    )
+    return prior_artifact is None or (
+        prior_artifact.decision_policy_version != decision_policy_version
+        or prior_artifact.support_kind is not support_kind
+        or prior_artifact.direct_support_observation_id != direct_support_id
+        or prior_artifact.group_version_id != group_id
+        or prior_artifact.group_certificate_digest != group_digest
+        or prior_artifact.direct_refute_observation_id != direct_refute_id
+    )
 
 
 def _counter_image(
@@ -1555,7 +1602,7 @@ class M5IncrementalOverlay:
         group_binding_rows: list[WorkingGroupCertificateBinding] = []
         certificate_changed_groups = _OrderedKeys[str]()
         complete_group_values: dict[str, PersistentStringSet | None] = {}
-        dirty_claims = _OrderedKeys(direct_patch.touched_claim_ids)
+        claim_state_dirty = _OrderedKeys(direct_patch.touched_claim_ids)
 
         def current_complete_groups(claim_id: str) -> PersistentStringSet:
             if claim_id in complete_group_values:
@@ -1570,9 +1617,9 @@ class M5IncrementalOverlay:
             *,
             old_complete: bool,
             new_complete: bool,
-        ) -> None:
+        ) -> bool:
             if old_complete == new_complete:
-                return
+                return False
             values = current_complete_groups(claim_id)
             if new_complete:
                 values, changed = values.add(group_id)
@@ -1581,6 +1628,7 @@ class M5IncrementalOverlay:
             if not changed:
                 raise AssertionError("complete-group index drift")
             complete_group_values[claim_id] = values
+            return True
 
         group_patch_by_id = {item.group_version_id: item for item in matching_patches}
         for group_id in touched_groups:
@@ -1590,13 +1638,14 @@ class M5IncrementalOverlay:
                 group_state_values[group_id] = None
                 group_artifact_values[group_id] = None
                 group_binding_values[group_id] = None
-                set_group_completeness(
+                completeness_changed = set_group_completeness(
                     group.owner_claim_id,
                     group_id,
                     old_complete=old_state is not None and old_state.complete,
                     new_complete=False,
                 )
-                dirty_claims.add(group.owner_claim_id)
+                if completeness_changed:
+                    claim_state_dirty.add(group.owner_claim_id)
                 continue
 
             group = added_groups.get(group_id, after.group(group_id))
@@ -1606,13 +1655,14 @@ class M5IncrementalOverlay:
                 requirement_state_after,
             )
             group_state_values[group_id] = new_state
-            set_group_completeness(
+            completeness_changed = set_group_completeness(
                 group.owner_claim_id,
                 group_id,
                 old_complete=old_state is not None and old_state.complete,
                 new_complete=new_state.complete,
             )
-            dirty_claims.add(group.owner_claim_id)
+            if completeness_changed:
+                claim_state_dirty.add(group.owner_claim_id)
 
             prepared_group = group_patch_by_id[group_id]
             view = prepared_group.patch.preview_view(
@@ -1677,21 +1727,18 @@ class M5IncrementalOverlay:
                 if transition.artifact != prior_artifact:
                     certificate_changed_groups.add(group_id)
 
-        if isinstance(event, PolicyChangeEvent):
-            dirty_claims.update(after.base.all_claim_ids())
-
         complete_groups_after = _AfterMapping(
             self._complete_groups_by_claim, complete_group_values
         )
         direct_after = self.direct_engine.preview_claim_states_after_patch(
-            direct_patch, dirty_claims
+            direct_patch, claim_state_dirty
         )
         claim_state_values: dict[str, CombinedClaimState | None] = {}
         dirty_answers = _OrderedKeys[str]()
         answer_count_values: dict[str, tuple[tuple[ClaimStatus, int], ...] | None] = {}
         answer_counter_after: dict[str, Counter[ClaimStatus]] = {}
         claim_status_changes = 0
-        for claim_id in dirty_claims:
+        for claim_id in claim_state_dirty:
             next_claim_state = self._combined_claim_from_parts(
                 direct_after[claim_id], complete_groups_after[claim_id]
             )
@@ -1723,6 +1770,37 @@ class M5IncrementalOverlay:
             self._group_artifacts, group_artifact_values
         )
         claim_states_after = _AfterMapping(self._claim_states, claim_state_values)
+        claim_certificate_candidates = _OrderedKeys(claim_state_dirty)
+        if isinstance(event, PolicyChangeEvent):
+            claim_certificate_candidates.update(after.base.all_claim_ids())
+        for group_id in certificate_changed_groups:
+            if group_id in added_groups:
+                claim_id = added_groups[group_id].owner_claim_id
+            elif group_id in removed_groups:
+                claim_id = removed_groups[group_id].owner_claim_id
+            else:
+                claim_id = after.group(group_id).owner_claim_id
+            claim_certificate_candidates.add(claim_id)
+
+        claim_certificate_dirty = _OrderedKeys[str]()
+        selected_group_certificates: dict[
+            str, GroupMatchingCertificateArtifact | None
+        ] = {}
+        for claim_id in claim_certificate_candidates:
+            claim_state = claim_states_after[claim_id]
+            selected = _selected_group_certificate(
+                claim_state,
+                group_artifacts_after,
+            )
+            if _claim_certificate_inputs_changed(
+                claim_state,
+                decision_policy_version=policy_after.policy_version,
+                selected_group_certificate=selected,
+                prior_artifact=self._claim_artifacts.get(claim_id),
+            ):
+                claim_certificate_dirty.add(claim_id)
+                selected_group_certificates[claim_id] = selected
+
         claim_artifact_values: dict[str, ClaimCertificateArtifact | None] = {}
         claim_binding_values: dict[str, WorkingClaimCertificateBinding | None] = {}
         claim_history_values: dict[
@@ -1730,14 +1808,15 @@ class M5IncrementalOverlay:
         ] = {}
         claim_binding_rows: list[WorkingClaimCertificateBinding] = []
         certificate_changed_claims = _OrderedKeys[str]()
-        for claim_id in dirty_claims:
+        for claim_id in claim_certificate_dirty:
+            claim_state = claim_states_after[claim_id]
             prior_claim_artifact = self._claim_artifacts.get(claim_id)
             prior_claim_binding = self._claim_bindings.get(claim_id)
-            claim_transition = transition_claim_certificate(
-                claim_states_after[claim_id],
+            claim_transition = transition_claim_certificate_for_selected_support(
+                claim_state,
                 point=after_point,
                 decision_policy_version=policy_after.policy_version,
-                group_certificates=group_artifacts_after,
+                selected_group_certificate=selected_group_certificates[claim_id],
                 prior_binding=prior_claim_binding,
                 prior_artifact=prior_claim_artifact,
             )
@@ -1844,6 +1923,8 @@ class M5IncrementalOverlay:
         changed_claim_keys = _OrderedKeys(change.key for change in claim_state_changes)
         changed_claim_keys.update(certificate_changed_claims)
         changed_claim_ids = tuple(changed_claim_keys)
+        claims_touched = _OrderedKeys(claim_state_dirty)
+        claims_touched.update(claim_certificate_dirty)
         output_records: list[tuple[str, str, object]] = []
         for kind, changes in (
             ("requirement_state", requirement_state_changes),
@@ -1872,7 +1953,7 @@ class M5IncrementalOverlay:
         logical_output_digest = hashlib.sha256(output_image).hexdigest()
         matching_work += touched_state_work(
             groups_touched=len(touched_groups),
-            claims_touched=len(dirty_claims),
+            claims_touched=len(claims_touched),
             answers_touched=len(dirty_answers),
             claim_status_changes=claim_status_changes,
             answer_status_changes=answer_status_changes,
