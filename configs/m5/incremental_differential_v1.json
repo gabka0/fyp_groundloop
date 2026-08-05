@@ -1,0 +1,56 @@
+{
+  "schema_version": "m5-incremental-differential-config-v1",
+  "generator_version": "m5-randomized-differential-v1",
+  "prng": "splitmix64-v1",
+  "seed": 20260802,
+  "committed_events": 100000,
+  "committed_events_per_stream": 100,
+  "max_proposals_per_stream": 400,
+  "short_prefix_committed_events": 250,
+  "claim_count": 3,
+  "document_slots": 8,
+  "bootstrap_document_slots": 2,
+  "chunks_per_document": 2,
+  "family_slots": 12,
+  "bootstrap_family_slots": 2,
+  "max_active_groups": 6,
+  "requirement_count_choices": [1, 2, 2, 3],
+  "text_pool": [
+    "shared alpha evidence",
+    "shared beta evidence",
+    "shared gamma evidence",
+    "independent delta evidence",
+    "independent epsilon evidence",
+    "independent zeta evidence"
+  ],
+  "score_profiles": [
+    [0.9, 0.05, 0.05],
+    [0.05, 0.9, 0.05],
+    [0.1, 0.1, 0.8],
+    [0.8, 0.1, 0.1],
+    [0.45, 0.44, 0.11]
+  ],
+  "threshold_profiles": [
+    [0.8, 0.8],
+    [0.7, 0.8],
+    [0.9, 0.8],
+    [0.8, 0.9],
+    [0.4, 0.4],
+    [0.95, 0.95]
+  ],
+  "event_mix": [
+    {"kind": "observe_requirement_new", "weight": 18},
+    {"kind": "observe_requirement_supersede", "weight": 12},
+    {"kind": "observe_claim_new", "weight": 12},
+    {"kind": "observe_claim_supersede", "weight": 8},
+    {"kind": "insert_document", "weight": 7},
+    {"kind": "delete_document", "weight": 5},
+    {"kind": "replace_document", "weight": 6},
+    {"kind": "policy_change", "weight": 8},
+    {"kind": "register_group", "weight": 7},
+    {"kind": "replace_group", "weight": 5},
+    {"kind": "retire_group", "weight": 4},
+    {"kind": "exact_replay", "weight": 6},
+    {"kind": "generator_rejection", "weight": 2}
+  ]
+}
