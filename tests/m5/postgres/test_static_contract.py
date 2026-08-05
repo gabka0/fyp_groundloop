@@ -35,6 +35,7 @@ LOCK_ORDER = (
     "groundloop_working_observation_delta",
 )
 CATALOG_ROW_EXCLUSIVE_LOCK_ORDER = (
+    "groundloop_answer_version",
     "groundloop_m4_working_claim_state",
     "groundloop_m4_working_answer_state",
     "groundloop_m4_claim_admission_index",

@@ -81,13 +81,43 @@ class _ExpectedLegacyTrigger:
     function: str
     type_bits: int
     update_columns: tuple[str, ...] = ()
+    is_constraint: bool = False
+    deferrable: bool = False
+    initially_deferred: bool = False
 
 
-# Exact non-internal trigger sets for cumulative migrations 004--013 surfaces
-# whose mutation semantics protect historical M4 truth. PostgreSQL's tgtype
-# bit mask captures ROW/BEFORE/AFTER and INSERT/UPDATE/DELETE shape; tgattr
-# separately captures UPDATE OF column restrictions.
-_CRITICAL_013_TRIGGERS = (
+# Exact non-internal trigger sets for legacy surfaces whose mutation semantics
+# protect historical M4 truth, fields extended by migration 014, or invariants
+# consumed by the M5 oracle. This is deliberately a critical-surface manifest,
+# not a claim that every trigger in migrations 000--013 is byte-proven.
+# PostgreSQL's tgtype bit mask captures ROW/BEFORE/AFTER and
+# INSERT/UPDATE/DELETE shape; tgattr separately captures UPDATE OF column
+# restrictions.
+_CRITICAL_013_TRIGGERS: tuple[_ExpectedLegacyTrigger, ...] = (
+    _ExpectedLegacyTrigger(
+        "groundloop_answer_version",
+        "groundloop_answer_requires_claim",
+        "groundloop_required_claim_constraint_trigger",
+        21,
+        is_constraint=True,
+        deferrable=True,
+        initially_deferred=True,
+    ),
+    _ExpectedLegacyTrigger(
+        "groundloop_claim",
+        "groundloop_claim_preserves_required_claim",
+        "groundloop_required_claim_constraint_trigger",
+        29,
+        is_constraint=True,
+        deferrable=True,
+        initially_deferred=True,
+    ),
+    _ExpectedLegacyTrigger(
+        "groundloop_semantic_observation",
+        "groundloop_semantic_observation_immutable",
+        "groundloop_reject_immutable_ai_update",
+        27,
+    ),
     _ExpectedLegacyTrigger(
         "groundloop_working_observation_delta",
         "groundloop_working_observation_delta_immutable",
@@ -220,7 +250,13 @@ _CRITICAL_013_TRIGGERS = (
 _CRITICAL_013_TRIGGER_RELATIONS = tuple(
     dict.fromkeys(trigger.relation for trigger in _CRITICAL_013_TRIGGERS)
 )
-_M5_TRIGGER_EXTENSIONS_ON_CRITICAL_RELATIONS = (
+_M5_TRIGGER_EXTENSIONS_ON_CRITICAL_RELATIONS: tuple[_ExpectedLegacyTrigger, ...] = (
+    _ExpectedLegacyTrigger(
+        "groundloop_claim",
+        "groundloop_claim_registers_semantic_subject",
+        "groundloop_m5_register_claim_subject",
+        5,
+    ),
     _ExpectedLegacyTrigger(
         "groundloop_working_observation_delta",
         "groundloop_working_observation_delta_eligible",
@@ -331,7 +367,7 @@ def _relation_exists(connection: Connection[Any], relation: str) -> bool:
 
 
 def _verify_013_relations(connection: Connection[Any]) -> None:
-    """Reject missing relations before issuing the frozen install locks."""
+    """Reject missing required relations before issuing the frozen install locks."""
 
     missing = tuple(
         relation
@@ -342,7 +378,7 @@ def _verify_013_relations(connection: Connection[Any]) -> None:
     )
     if missing:
         raise M5PrerequisiteError(
-            "M5 requires an intact migration-013 schema; missing relations: "
+            "M5 requires its migration-013 prerequisite relations; missing: "
             + ", ".join(missing)
         )
 
@@ -363,9 +399,9 @@ def _verify_013_critical_triggers(connection: Connection[Any]) -> None:
             trigger.relation,
             trigger.trigger,
             "O",
-            False,
-            False,
-            False,
+            trigger.is_constraint,
+            trigger.deferrable,
+            trigger.initially_deferred,
             current_schema,
             trigger.function,
             trigger.type_bits,

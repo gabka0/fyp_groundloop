@@ -179,6 +179,71 @@ def test_dropped_critical_trigger_rejects_bundle_before_014_or_ledger(
             ).fetchone() == (None,)
 
 
+def test_dropped_semantic_observation_immutability_rejects_014_extension(
+    m5_schema: M5Schema,
+) -> None:
+    with _legacy_schema(m5_schema.dsn) as schema_name:
+        with psycopg.connect(m5_schema.dsn) as connection:
+            _select_schema(connection, schema_name)
+            connection.execute(
+                """
+                DROP TRIGGER groundloop_semantic_observation_immutable
+                ON groundloop_semantic_observation
+                """
+            )
+            with pytest.raises(
+                M5PrerequisiteError,
+                match="critical trigger catalog is not exact",
+            ):
+                install_m5_core_bundle(connection)
+            assert (
+                connection.execute(
+                    """
+                SELECT attname
+                FROM pg_attribute
+                WHERE attrelid = 'groundloop_semantic_observation'::regclass
+                  AND attname = 'eligible_for_currency'
+                  AND NOT attisdropped
+                """
+                ).fetchone()
+                is None
+            )
+            assert connection.execute(
+                "SELECT to_regclass('groundloop_m5_schema_bundle')"
+            ).fetchone() == (None,)
+
+
+@pytest.mark.parametrize(
+    ("relation", "trigger"),
+    (
+        ("groundloop_answer_version", "groundloop_answer_requires_claim"),
+        ("groundloop_claim", "groundloop_claim_preserves_required_claim"),
+    ),
+)
+def test_dropped_required_claim_constraint_rejects_m5_oracle_prerequisite(
+    m5_schema: M5Schema,
+    relation: str,
+    trigger: str,
+) -> None:
+    with _legacy_schema(m5_schema.dsn) as schema_name:
+        with psycopg.connect(m5_schema.dsn) as connection:
+            _select_schema(connection, schema_name)
+            connection.execute(
+                sql.SQL("DROP TRIGGER {} ON {}").format(
+                    sql.Identifier(trigger),
+                    sql.Identifier(relation),
+                )
+            )
+            with pytest.raises(
+                M5PrerequisiteError,
+                match="critical trigger catalog is not exact",
+            ):
+                install_m5_core_bundle(connection)
+            assert connection.execute(
+                "SELECT to_regclass('groundloop_m5_schema_bundle')"
+            ).fetchone() == (None,)
+
+
 def test_disabled_critical_trigger_is_a_catalog_near_miss_and_fails_closed(
     m5_schema: M5Schema,
 ) -> None:
@@ -459,6 +524,75 @@ def test_bundle_access_exclusive_lock_serializes_concurrent_epoch_writer(
                 "SELECT event_id FROM groundloop_epoch WHERE epoch_id = %s",
                 (writer_epoch,),
             ).fetchone() == ("serialized-writer",)
+
+
+def test_catalog_lock_allows_dml_and_serializes_trigger_ddl(
+    m5_schema: M5Schema,
+) -> None:
+    with _legacy_schema(m5_schema.dsn) as schema_name:
+        migration_locked = threading.Event()
+        release_migration = threading.Event()
+        dml_finished = threading.Event()
+        ddl_finished = threading.Event()
+
+        def installer() -> bool:
+            with psycopg.connect(m5_schema.dsn) as connection:
+                _select_schema(connection, schema_name)
+
+                def hold(stage: str) -> None:
+                    if stage == "after_schema":
+                        migration_locked.set()
+                        assert release_migration.wait(timeout=10)
+
+                result = install_m5_core_bundle(
+                    connection,
+                    failure_injector=hold,
+                )
+                connection.commit()
+                return result.applied
+
+        def ordinary_dml() -> None:
+            assert migration_locked.wait(timeout=10)
+            with psycopg.connect(m5_schema.dsn) as connection:
+                _select_schema(connection, schema_name)
+                connection.execute(
+                    """
+                    UPDATE groundloop_m4_claim_registry_snapshot
+                    SET claim_count = claim_count
+                    WHERE false
+                    """
+                )
+                connection.commit()
+                dml_finished.set()
+
+        def trigger_ddl() -> None:
+            assert dml_finished.wait(timeout=10)
+            with psycopg.connect(m5_schema.dsn) as connection:
+                _select_schema(connection, schema_name)
+                connection.execute(
+                    """
+                    ALTER TABLE groundloop_m4_claim_registry_snapshot
+                    DISABLE TRIGGER groundloop_m4_claim_registry_snapshot_immutable
+                    """
+                )
+                connection.commit()
+                ddl_finished.set()
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            install_future = executor.submit(installer)
+            assert migration_locked.wait(timeout=10)
+            dml_future = executor.submit(ordinary_dml)
+            dml_future.result(timeout=5)
+            assert dml_finished.is_set()
+            ddl_future = executor.submit(trigger_ddl)
+            try:
+                assert not ddl_finished.wait(timeout=0.25)
+            finally:
+                release_migration.set()
+            assert install_future.result(timeout=20)
+            ddl_future.result(timeout=20)
+
+        assert ddl_finished.is_set()
 
 
 def test_two_concurrent_installers_apply_once_then_replay_same_identity(
