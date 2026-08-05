@@ -12,6 +12,7 @@ from groundloop.m5.claim_certificates import (
     build_claim_certificate,
     effective_claim_binding_at,
     transition_claim_certificate,
+    transition_claim_certificate_for_selected_support,
     validate_claim_binding_history,
     validate_claim_certificate,
 )
@@ -33,9 +34,7 @@ def _group_certificate(
     return GroupMatchingCertificateArtifact(
         decision_policy_version=policy,
         group_version_id=group_id,
-        rows=(
-            GroupCertificateRow(0, f"{group_id}-requirement", HASH_A, "group-obs"),
-        ),
+        rows=(GroupCertificateRow(0, f"{group_id}-requirement", HASH_A, "group-obs"),),
     )
 
 
@@ -81,9 +80,7 @@ def test_exact_support_precedence_and_canonical_selection() -> None:
     )
     assert group_only.support_kind is ClaimSupportKind.GROUP
     assert group_only.group_version_id == "group-a"
-    assert group_only.group_certificate_digest == (
-        groups["group-a"].certificate_digest
-    )
+    assert group_only.group_certificate_digest == (groups["group-a"].certificate_digest)
 
     direct = build_claim_certificate(
         _state(
@@ -231,6 +228,173 @@ def test_cross_epoch_transition_never_closes_prior_epoch() -> None:
     assert rebound.closed_prior_binding is None
 
 
+def test_selected_support_transition_matches_exhaustive_transition_sequence() -> None:
+    steps: tuple[
+        tuple[
+            CombinedClaimState,
+            SnapshotPoint,
+            str,
+            dict[str, GroupMatchingCertificateArtifact],
+        ],
+        ...,
+    ] = (
+        (_state(), SnapshotPoint(2, 0), "policy-a", {}),
+        (
+            _state(direct_refute=("refute",)),
+            SnapshotPoint(2, 1),
+            "policy-a",
+            {},
+        ),
+        (
+            _state(direct_support=("support",), direct_refute=("refute",)),
+            SnapshotPoint(2, 2),
+            "policy-a",
+            {},
+        ),
+        (
+            _state(direct_support=("support",), direct_refute=("refute",)),
+            SnapshotPoint(2, 3),
+            "policy-b",
+            {},
+        ),
+        (
+            _state(direct_support=("support",), direct_refute=("refute",)),
+            SnapshotPoint(3, 0),
+            "policy-b",
+            {},
+        ),
+        (
+            _state(direct_refute=("refute",), groups=("group-a", "group-b")),
+            SnapshotPoint(4, 0),
+            "policy-b",
+            {
+                "group-a": _group_certificate("group-a", "policy-b"),
+                "group-b": _group_certificate("group-b", "policy-b"),
+            },
+        ),
+        (
+            _state(direct_refute=("refute",), groups=("group-a", "group-b")),
+            SnapshotPoint(5, 0),
+            "policy-c",
+            {
+                "group-a": _group_certificate("group-a", "policy-c"),
+                "group-b": _group_certificate("group-b", "policy-c"),
+            },
+        ),
+    )
+    expected_kinds = (
+        ClaimCertificateTransitionKind.BUILD,
+        ClaimCertificateTransitionKind.REPLACE,
+        ClaimCertificateTransitionKind.REPLACE,
+        ClaimCertificateTransitionKind.REBIND,
+        ClaimCertificateTransitionKind.EPOCH_RETAIN,
+        ClaimCertificateTransitionKind.EPOCH_REPLACE,
+        ClaimCertificateTransitionKind.EPOCH_REBIND,
+    )
+    prior_binding = None
+    prior_artifact = None
+    actual_kinds: list[ClaimCertificateTransitionKind] = []
+
+    for state, point, policy, certificates in steps:
+        exhaustive = transition_claim_certificate(
+            state,
+            point=point,
+            decision_policy_version=policy,
+            group_certificates=certificates,
+            prior_binding=prior_binding,
+            prior_artifact=prior_artifact,
+        )
+        selected = (
+            certificates[state.complete_group_ids[0]]
+            if not state.supporting_observation_ids and state.complete_group_ids
+            else None
+        )
+        maintained = transition_claim_certificate_for_selected_support(
+            state,
+            point=point,
+            decision_policy_version=policy,
+            selected_group_certificate=selected,
+            prior_binding=prior_binding,
+            prior_artifact=prior_artifact,
+        )
+        assert maintained == exhaustive
+        actual_kinds.append(maintained.kind)
+        prior_binding = exhaustive.binding
+        prior_artifact = exhaustive.artifact
+
+    assert tuple(actual_kinds) == expected_kinds
+
+
+def test_selected_support_transition_rejects_missing_wrong_and_spurious_artifacts() -> (
+    None
+):
+    group_state = _state(groups=("group-a",))
+    with pytest.raises(ValidationError, match="has no certificate"):
+        transition_claim_certificate_for_selected_support(
+            group_state,
+            point=SnapshotPoint(2, 0),
+            decision_policy_version="policy-a",
+            selected_group_certificate=None,
+            prior_binding=None,
+            prior_artifact=None,
+        )
+    with pytest.raises(ValidationError, match="another group"):
+        transition_claim_certificate_for_selected_support(
+            group_state,
+            point=SnapshotPoint(2, 0),
+            decision_policy_version="policy-a",
+            selected_group_certificate=_group_certificate("group-b"),
+            prior_binding=None,
+            prior_artifact=None,
+        )
+    with pytest.raises(ValidationError, match="another policy"):
+        transition_claim_certificate_for_selected_support(
+            group_state,
+            point=SnapshotPoint(2, 0),
+            decision_policy_version="policy-a",
+            selected_group_certificate=_group_certificate("group-a", "policy-b"),
+            prior_binding=None,
+            prior_artifact=None,
+        )
+
+    for state, expected in (
+        (_state(), "NONE"),
+        (_state(direct_support=("support",)), "DIRECT"),
+    ):
+        with pytest.raises(ValidationError, match=expected):
+            transition_claim_certificate_for_selected_support(
+                state,
+                point=SnapshotPoint(2, 0),
+                decision_policy_version="policy-a",
+                selected_group_certificate=_group_certificate(),
+                prior_binding=None,
+                prior_artifact=None,
+            )
+
+
+def test_selected_support_hot_path_does_not_iterate_alternative_group_ids() -> None:
+    class FirstOnlyTuple(tuple[str, ...]):
+        def __iter__(self):  # type: ignore[no-untyped-def]
+            raise AssertionError("hot path enumerated alternative group IDs")
+
+    state = replace(
+        _state(groups=("group-a", "group-b")),
+        complete_group_ids=FirstOnlyTuple(("group-a", "group-b")),
+    )
+
+    transition = transition_claim_certificate_for_selected_support(
+        state,
+        point=SnapshotPoint(2, 0),
+        decision_policy_version="policy-a",
+        selected_group_certificate=_group_certificate("group-a"),
+        prior_binding=None,
+        prior_artifact=None,
+    )
+
+    assert transition.artifact.support_kind is ClaimSupportKind.GROUP
+    assert transition.artifact.group_version_id == "group-a"
+
+
 def test_same_point_change_and_malformed_prior_pair_are_rejected() -> None:
     initial = transition_claim_certificate(
         _state(),
@@ -279,22 +443,34 @@ def test_effective_as_of_binding_uses_epoch_local_then_prior_fallback() -> None:
     )
     assert second.closed_prior_binding is not None
     history = (second.closed_prior_binding, second.binding)
-    assert effective_claim_binding_at(
-        history, claim_id="claim-a", point=SnapshotPoint(2, 1)
-    ) == second.closed_prior_binding
-    assert effective_claim_binding_at(
-        history, claim_id="claim-a", point=SnapshotPoint(2, 2)
-    ) == second.binding
-    assert effective_claim_binding_at(
-        history, claim_id="claim-a", point=SnapshotPoint(3, 0)
-    ) == second.binding
-    assert validate_claim_binding_history(
-        history,
-        {
-            first.artifact.certificate_digest: first.artifact,
-            second.artifact.certificate_digest: second.artifact,
-        },
-    ) == ()
+    assert (
+        effective_claim_binding_at(
+            history, claim_id="claim-a", point=SnapshotPoint(2, 1)
+        )
+        == second.closed_prior_binding
+    )
+    assert (
+        effective_claim_binding_at(
+            history, claim_id="claim-a", point=SnapshotPoint(2, 2)
+        )
+        == second.binding
+    )
+    assert (
+        effective_claim_binding_at(
+            history, claim_id="claim-a", point=SnapshotPoint(3, 0)
+        )
+        == second.binding
+    )
+    assert (
+        validate_claim_binding_history(
+            history,
+            {
+                first.artifact.certificate_digest: first.artifact,
+                second.artifact.certificate_digest: second.artifact,
+            },
+        )
+        == ()
+    )
 
 
 def test_history_audit_detects_gaps_missing_artifacts() -> None:

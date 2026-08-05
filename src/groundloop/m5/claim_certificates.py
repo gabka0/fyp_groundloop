@@ -44,13 +44,9 @@ class WorkingClaimCertificateBinding:
     def __post_init__(self) -> None:
         _require_nonnegative_integer("epoch_id", self.epoch_id)
         _require_identifier("claim_id", self.claim_id)
-        _require_nonnegative_integer(
-            "valid_from_revision", self.valid_from_revision
-        )
+        _require_nonnegative_integer("valid_from_revision", self.valid_from_revision)
         if self.valid_to_revision is not None:
-            _require_nonnegative_integer(
-                "valid_to_revision", self.valid_to_revision
-            )
+            _require_nonnegative_integer("valid_to_revision", self.valid_to_revision)
             if self.valid_to_revision <= self.valid_from_revision:
                 raise ValidationError(
                     "claim binding valid_to_revision must exceed valid_from_revision"
@@ -76,10 +72,7 @@ class WorkingClaimCertificateBinding:
             return False
         if point.revision < self.valid_from_revision:
             return False
-        return (
-            self.valid_to_revision is None
-            or point.revision < self.valid_to_revision
-        )
+        return self.valid_to_revision is None or point.revision < self.valid_to_revision
 
 
 class ClaimCertificateTransitionKind(StrEnum):
@@ -108,32 +101,16 @@ class ClaimCertificateValidation:
     issues: tuple[str, ...]
 
 
-def build_claim_certificate(
-    state: CombinedClaimState,
-    *,
-    decision_policy_version: str,
-    group_certificates: Mapping[str, GroupMatchingCertificateArtifact],
-) -> ClaimCertificateArtifact:
-    """Select the exact M5-D12 certificate from maintained state."""
+def _validate_claim_state_scalars(state: CombinedClaimState) -> None:
+    """Validate O(1) count, presence, and truth-table invariants."""
 
-    _require_identifier("decision_policy_version", decision_policy_version)
+    _require_identifier("claim_id", state.claim_id)
     _require_nonnegative_integer("support_count", state.support_count)
     _require_nonnegative_integer("refute_count", state.refute_count)
-    _require_nonnegative_integer(
-        "complete_group_count", state.complete_group_count
-    )
+    _require_nonnegative_integer("complete_group_count", state.complete_group_count)
     if state.complete_group_count != len(state.complete_group_ids):
         raise ValidationError("complete_group_count disagrees with group IDs")
-    if state.complete_group_ids != tuple(sorted(set(state.complete_group_ids))):
-        raise ValidationError("complete group IDs must be sorted and unique")
-    if state.supporting_observation_ids != tuple(
-        sorted(set(state.supporting_observation_ids))
-    ):
-        raise ValidationError("direct support observation IDs must be sorted")
-    if state.refuting_observation_ids != tuple(
-        sorted(set(state.refuting_observation_ids))
-    ):
-        raise ValidationError("direct refute observation IDs must be sorted")
+
     if bool(state.support_count) != bool(state.supporting_observation_ids):
         raise ValidationError("direct support count and observations disagree")
     if bool(state.refute_count) != bool(state.refuting_observation_ids):
@@ -156,30 +133,69 @@ def build_claim_certificate(
     if state.status is not expected_status:
         raise ValidationError("combined claim status disagrees with its counts")
 
-    for complete_group_id in state.complete_group_ids:
-        certificate = group_certificates.get(complete_group_id)
-        if certificate is None:
-            raise ValidationError(
-                f"complete group {complete_group_id} has no certificate"
-            )
-        if certificate.group_version_id != complete_group_id:
-            raise ValidationError("group certificate is bound to another group")
-        if certificate.decision_policy_version != decision_policy_version:
-            raise ValidationError("group certificate is bound to another policy")
 
+def _validate_claim_state_sequences(state: CombinedClaimState) -> None:
+    """Exhaustively validate canonical tuples for audit/reference callers."""
+
+    if state.complete_group_ids != tuple(sorted(set(state.complete_group_ids))):
+        raise ValidationError("complete group IDs must be sorted and unique")
+    if state.supporting_observation_ids != tuple(
+        sorted(set(state.supporting_observation_ids))
+    ):
+        raise ValidationError("direct support observation IDs must be sorted")
+    if state.refuting_observation_ids != tuple(
+        sorted(set(state.refuting_observation_ids))
+    ):
+        raise ValidationError("direct refute observation IDs must be sorted")
+
+
+def _validate_selected_group_certificate(
+    certificate: GroupMatchingCertificateArtifact,
+    *,
+    group_version_id: str,
+    decision_policy_version: str,
+) -> None:
+    if certificate.group_version_id != group_version_id:
+        raise ValidationError("group certificate is bound to another group")
+    if certificate.decision_policy_version != decision_policy_version:
+        raise ValidationError("group certificate is bound to another policy")
+
+
+def _claim_artifact_from_selected_support(
+    state: CombinedClaimState,
+    *,
+    decision_policy_version: str,
+    selected_group_certificate: GroupMatchingCertificateArtifact | None,
+) -> ClaimCertificateArtifact:
     direct_support_id: str | None = None
     group_version_id: str | None = None
     group_certificate_digest: str | None = None
     if state.supporting_observation_ids:
         support_kind = ClaimSupportKind.DIRECT
         direct_support_id = state.supporting_observation_ids[0]
+        if selected_group_certificate is not None:
+            raise ValidationError(
+                "DIRECT claim support cannot supply a selected group certificate"
+            )
     elif state.complete_group_ids:
         support_kind = ClaimSupportKind.GROUP
         group_version_id = state.complete_group_ids[0]
-        certificate = group_certificates[group_version_id]
-        group_certificate_digest = certificate.certificate_digest
+        if selected_group_certificate is None:
+            raise ValidationError(
+                f"selected complete group {group_version_id} has no certificate"
+            )
+        _validate_selected_group_certificate(
+            selected_group_certificate,
+            group_version_id=group_version_id,
+            decision_policy_version=decision_policy_version,
+        )
+        group_certificate_digest = selected_group_certificate.certificate_digest
     else:
         support_kind = ClaimSupportKind.NONE
+        if selected_group_certificate is not None:
+            raise ValidationError(
+                "NONE claim support cannot supply a selected group certificate"
+            )
 
     return ClaimCertificateArtifact(
         claim_id=state.claim_id,
@@ -193,6 +209,42 @@ def build_claim_certificate(
             if state.refuting_observation_ids
             else None
         ),
+    )
+
+
+def build_claim_certificate(
+    state: CombinedClaimState,
+    *,
+    decision_policy_version: str,
+    group_certificates: Mapping[str, GroupMatchingCertificateArtifact],
+) -> ClaimCertificateArtifact:
+    """Select and exhaustively validate the exact M5-D12 certificate."""
+
+    _require_identifier("decision_policy_version", decision_policy_version)
+    _validate_claim_state_scalars(state)
+    _validate_claim_state_sequences(state)
+
+    for complete_group_id in state.complete_group_ids:
+        certificate = group_certificates.get(complete_group_id)
+        if certificate is None:
+            raise ValidationError(
+                f"complete group {complete_group_id} has no certificate"
+            )
+        _validate_selected_group_certificate(
+            certificate,
+            group_version_id=complete_group_id,
+            decision_policy_version=decision_policy_version,
+        )
+
+    selected_group_certificate = (
+        group_certificates[state.complete_group_ids[0]]
+        if not state.supporting_observation_ids and state.complete_group_ids
+        else None
+    )
+    return _claim_artifact_from_selected_support(
+        state,
+        decision_policy_version=decision_policy_version,
+        selected_group_certificate=selected_group_certificate,
     )
 
 
@@ -217,28 +269,14 @@ def validate_claim_certificate(
     return ClaimCertificateValidation(not issues, tuple(issues))
 
 
-def transition_claim_certificate(
+def _transition_to_desired_claim_certificate(
     state: CombinedClaimState,
     *,
     point: SnapshotPoint,
-    decision_policy_version: str,
-    group_certificates: Mapping[str, GroupMatchingCertificateArtifact],
+    desired: ClaimCertificateArtifact,
     prior_binding: WorkingClaimCertificateBinding | None,
     prior_artifact: ClaimCertificateArtifact | None,
 ) -> ClaimCertificateTransition:
-    """Apply one exact same-epoch or cross-epoch binding transition.
-
-    A new epoch never closes a prior epoch's final binding.  Within one epoch,
-    replacement closes the prior interval exactly at ``point.revision``.
-    Identical state inside the same epoch retains the existing binding and
-    creates no history row.
-    """
-
-    desired = build_claim_certificate(
-        state,
-        decision_policy_version=decision_policy_version,
-        group_certificates=group_certificates,
-    )
     if (prior_binding is None) != (prior_artifact is None):
         raise ValidationError(
             "prior claim binding and artifact must be supplied together"
@@ -274,8 +312,7 @@ def transition_claim_certificate(
 
     artifact_changed = desired.certificate_digest != prior_artifact.certificate_digest
     policy_changed = (
-        desired.decision_policy_version
-        != prior_artifact.decision_policy_version
+        desired.decision_policy_version != prior_artifact.decision_policy_version
     )
     if point.epoch_id == prior_binding.epoch_id:
         if point.revision < prior_binding.valid_from_revision:
@@ -339,6 +376,70 @@ def transition_claim_certificate(
     )
 
 
+def transition_claim_certificate(
+    state: CombinedClaimState,
+    *,
+    point: SnapshotPoint,
+    decision_policy_version: str,
+    group_certificates: Mapping[str, GroupMatchingCertificateArtifact],
+    prior_binding: WorkingClaimCertificateBinding | None,
+    prior_artifact: ClaimCertificateArtifact | None,
+) -> ClaimCertificateTransition:
+    """Apply a transition after exhaustive complete-group validation.
+
+    A new epoch never closes a prior epoch's final binding. Within one epoch,
+    replacement closes the prior interval exactly at ``point.revision``.
+    Identical state inside the same epoch retains the existing binding and
+    creates no history row.
+    """
+
+    desired = build_claim_certificate(
+        state,
+        decision_policy_version=decision_policy_version,
+        group_certificates=group_certificates,
+    )
+    return _transition_to_desired_claim_certificate(
+        state,
+        point=point,
+        desired=desired,
+        prior_binding=prior_binding,
+        prior_artifact=prior_artifact,
+    )
+
+
+def transition_claim_certificate_for_selected_support(
+    state: CombinedClaimState,
+    *,
+    point: SnapshotPoint,
+    decision_policy_version: str,
+    selected_group_certificate: GroupMatchingCertificateArtifact | None,
+    prior_binding: WorkingClaimCertificateBinding | None,
+    prior_artifact: ClaimCertificateArtifact | None,
+) -> ClaimCertificateTransition:
+    """Apply the maintained hot path using at most one selected group artifact.
+
+    This path trusts the overlay's already-maintained canonical identifier
+    tuples. It validates O(1) scalar/truth-table invariants and the selected
+    group artifact only; exhaustive audit callers must use
+    :func:`transition_claim_certificate` or :func:`validate_claim_certificate`.
+    """
+
+    _require_identifier("decision_policy_version", decision_policy_version)
+    _validate_claim_state_scalars(state)
+    desired = _claim_artifact_from_selected_support(
+        state,
+        decision_policy_version=decision_policy_version,
+        selected_group_certificate=selected_group_certificate,
+    )
+    return _transition_to_desired_claim_certificate(
+        state,
+        point=point,
+        desired=desired,
+        prior_binding=prior_binding,
+        prior_artifact=prior_artifact,
+    )
+
+
 def effective_claim_binding_at(
     bindings: Iterable[WorkingClaimCertificateBinding],
     *,
@@ -380,9 +481,7 @@ def effective_claim_binding_at(
         )
     )
     for epoch_id in reversed(prior_epochs):
-        rows = tuple(
-            binding for binding in relevant if binding.epoch_id == epoch_id
-        )
+        rows = tuple(binding for binding in relevant if binding.epoch_id == epoch_id)
         final = max(rows, key=lambda binding: binding.valid_from_revision)
         if final.open:
             return final
@@ -432,6 +531,7 @@ __all__ = [
     "build_claim_certificate",
     "effective_claim_binding_at",
     "transition_claim_certificate",
+    "transition_claim_certificate_for_selected_support",
     "validate_claim_binding_history",
     "validate_claim_certificate",
 ]
