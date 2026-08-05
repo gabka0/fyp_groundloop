@@ -4,6 +4,7 @@
   "config_sha256": "5e33af72f5a54d0d17d3fbb176979268f4e760d98512acc5d95ec1a1561eab8e",
   "derived_runtime_bounds": {
     "active_chunks": 16,
+    "active_groups": 6,
     "e_g": 18,
     "h_g": 6,
     "n_obs": 288,
@@ -15,7 +16,7 @@
   "generator_version": "m5-randomized-differential-v1",
   "max_proposals_per_stream": 400,
   "planned_full": {
-    "committed_event_stream_sha256": "72d2e34f3a723ff9b81b149a1a92b64585a287a7096cfec7393d96b6763ebec1",
+    "committed_event_stream_sha256": "599ff6165dca29d13a74716956a6884fc24199ad190a6dd06c4b6f78b1e8b147",
     "committed_events": 100000,
     "committed_events_per_stream": 100,
     "committed_proposal_kind_counts": {
@@ -45,7 +46,7 @@
     },
     "exact_replays": 7731,
     "fixture_events": 5000,
-    "fixture_stream_sha256": "38811d4a2a61e4e37b9af69ac46910fadc6f53d3c207d0b5724d376dc081301a",
+    "fixture_stream_sha256": "2d714ff73a722e2023905d7e3cff70f81de9812ec18111a697169f2ac3ad3b34",
     "generator_rejections": 20726,
     "max_proposals_in_stream": 284,
     "proposal_kind_counts": {
@@ -63,7 +64,7 @@
       "replace_group": 6329,
       "retire_group": 5217
     },
-    "proposal_stream_sha256": "3f9aa27154406957a98b3efd2f734de624b220f9b3780ea07a201e4eacceade0",
+    "proposal_stream_sha256": "0d265833217910b4ef97891571a6efe1cbbc32b41387ba888fa0c9fd16668788",
     "proposals": 128457,
     "rejection_reason_counts": {
       "max_active_groups_reached": 1743,
@@ -90,7 +91,7 @@
     "streams": 1000
   },
   "planned_prefix": {
-    "committed_event_stream_sha256": "e4907aa0282687c3fb449bc68b15363bf4a8cf4b2239fac1be88def9d757fd28",
+    "committed_event_stream_sha256": "f25fd321079a055072f9e3956e26ce9c5fbb2fccb9c5e12e2dc89dbbcec245d6",
     "committed_events": 250,
     "committed_events_per_stream": 100,
     "committed_proposal_kind_counts": {
@@ -120,7 +121,7 @@
     },
     "exact_replays": 16,
     "fixture_events": 15,
-    "fixture_stream_sha256": "ac4ac11517ead79d1b20ee01ab8ceeca53ad4f0b0c2746b9a27ab0520bdad36c",
+    "fixture_stream_sha256": "f1d3e58c62df469c65d56c941fbc300c02620a71e7217b5f23a68fd498d25466",
     "generator_rejections": 30,
     "max_proposals_in_stream": 126,
     "proposal_kind_counts": {
@@ -138,7 +139,7 @@
       "replace_group": 12,
       "retire_group": 12
     },
-    "proposal_stream_sha256": "b55d596c68d3366632bd9b8c4ee86dc08f4452a2260cfe2428b8a44253c8f56e",
+    "proposal_stream_sha256": "da01ef711cbca80647547d74e3b186dbe40f059e67792f79b34f1e95be6fc650",
     "proposals": 296,
     "rejection_reason_counts": {
       "max_active_groups_reached": 4,
@@ -158,7 +159,7 @@
   },
   "prng": "splitmix64-v1",
   "raw_config_sha256": "54f13958040f8480e5b680804385884f3568eef38f5732d8b9f97522a2972041",
-  "runner_sha256": "a837f92e44d291a18d98aff8ed0119746cd9dc02b20c7acec6edb8164608fab2",
+  "runner_sha256": "6d730efd1dd0cbef2a1507372c586326bb440de8086e89ea507feacc3788e6c7",
   "schema_version": "m5-incremental-differential-manifest-v1",
   "seed": 20260802,
   "short_prefix_committed_events": 250

@@ -18,10 +18,10 @@ import time
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 
 from groundloop.domain import (
     AnswerVersion,
@@ -30,6 +30,7 @@ from groundloop.domain import (
     ModelStamp,
     Question,
     SemanticObservation,
+    StatusDelta,
     SubjectKind,
     VerificationLabel,
 )
@@ -44,14 +45,19 @@ from groundloop.events import (
 )
 from groundloop.incremental import MaintenanceStats
 from groundloop.m5.claim_certificates import (
+    WorkingClaimCertificateBinding,
     build_claim_certificate,
+    effective_claim_binding_at,
     validate_claim_binding_history,
 )
 from groundloop.m5.digests import normalized_text_hash_v1
 from groundloop.m5.domain import (
+    ClaimCertificateArtifact,
     ConstructionKind,
     EvidenceGroupVersion,
     EvidenceRequirementVersion,
+    GroupMatchingCertificateArtifact,
+    SnapshotPoint,
 )
 from groundloop.m5.events import (
     ObserveRequirementEvent,
@@ -69,9 +75,14 @@ from groundloop.m5.incremental_overlay import (
     M5OverlayWork,
     PreparedM5OverlayPatch,
 )
+from groundloop.m5.matching import (
+    MaintainedCertificateIndex,
+    WorkingGroupCertificateBinding,
+)
 from groundloop.m5.reference import (
     CANONICAL_REQUIREMENT_TASK,
     M5ReferenceStates,
+    build_reference_group_certificate,
     compute_reference_states,
     validate_claim_certificate,
     validate_group_certificate,
@@ -93,6 +104,11 @@ FROZEN_COMMITTED_EVENTS = 100_000
 FROZEN_COMMITS_PER_STREAM = 100
 FROZEN_SHORT_PREFIX = 250
 MASK_64 = (1 << 64) - 1
+_BindingT = TypeVar(
+    "_BindingT",
+    WorkingGroupCertificateBinding,
+    WorkingClaimCertificateBinding,
+)
 M5_EVENT_TYPES = (
     RegisterGroupEvent,
     ReplaceGroupEvent,
@@ -275,6 +291,7 @@ class DifferentialConfig:
             {normalized_text_hash_v1(text) for text in self.text_pool}
         )
         return {
+            "active_groups": self.max_active_groups,
             "active_chunks": active_chunks,
             "n_obs": self.max_active_groups * requirement_count * active_chunks,
             "r_max": requirement_count,
@@ -1144,6 +1161,37 @@ class _IndependentAudit:
     shape: _RuntimeShape
 
 
+@dataclass(frozen=True, slots=True)
+class _CertificateImage:
+    group_artifacts: dict[str, GroupMatchingCertificateArtifact]
+    claim_artifacts: dict[str, ClaimCertificateArtifact]
+    group_bindings: dict[str, WorkingGroupCertificateBinding]
+    claim_bindings: dict[str, WorkingClaimCertificateBinding]
+    group_history: dict[str, tuple[WorkingGroupCertificateBinding, ...]]
+    claim_history: dict[str, tuple[WorkingClaimCertificateBinding, ...]]
+    group_ledger: dict[str, GroupMatchingCertificateArtifact]
+    claim_ledger: dict[str, ClaimCertificateArtifact]
+
+
+def _certificate_image(overlay: M5IncrementalOverlay) -> _CertificateImage:
+    return _CertificateImage(
+        group_artifacts=overlay.group_certificates,
+        claim_artifacts=overlay.claim_certificates,
+        group_bindings=dict(overlay._group_bindings),
+        claim_bindings=dict(overlay._claim_bindings),
+        group_history={
+            group_id: overlay.group_binding_history(group_id)
+            for group_id in overlay._group_binding_history
+        },
+        claim_history={
+            claim_id: overlay.claim_binding_history(claim_id)
+            for claim_id in overlay._claim_binding_history
+        },
+        group_ledger=overlay.group_certificate_artifacts_by_digest,
+        claim_ledger=overlay.claim_certificate_artifacts_by_digest,
+    )
+
+
 def _build_independent_audit(
     repository: M5Repository,
     states: M5ReferenceStates | None = None,
@@ -1240,6 +1288,342 @@ def _changed_keys(
     }
 
 
+def _surface_changes(
+    before_artifacts: Mapping[str, object],
+    after_artifacts: Mapping[str, object],
+    before_bindings: Mapping[str, object],
+    after_bindings: Mapping[str, object],
+    before_history: Mapping[str, object],
+    after_history: Mapping[str, object],
+) -> set[str]:
+    return (
+        _changed_keys(before_artifacts, after_artifacts)
+        | _changed_keys(before_bindings, after_bindings)
+        | _changed_keys(before_history, after_history)
+    )
+
+
+def _published_history_rows(
+    before: Mapping[str, tuple[_BindingT, ...]],
+    after: Mapping[str, tuple[_BindingT, ...]],
+    *,
+    name: str,
+    point: SnapshotPoint,
+) -> tuple[_BindingT, ...]:
+    published: list[_BindingT] = []
+    for owner_id in sorted(before.keys() | after.keys()):
+        old_rows = before.get(owner_id, ())
+        new_rows = after.get(owner_id, ())
+        if old_rows == new_rows:
+            continue
+        _require(
+            len(old_rows) <= len(new_rows) <= len(old_rows) + 1,
+            f"{name} history changed by an invalid row count",
+        )
+        if not old_rows:
+            opened = new_rows[0]
+            _require(
+                len(new_rows) == 1
+                and opened.open
+                and opened.epoch_id == point.epoch_id
+                and opened.valid_from_revision == point.revision,
+                f"{name} history has an invalid initial publication",
+            )
+            published.append(opened)
+            continue
+
+        old_tail = old_rows[-1]
+        if len(new_rows) == len(old_rows):
+            _require(
+                old_tail.open
+                and old_tail.epoch_id == point.epoch_id
+                and new_rows[:-1] == old_rows[:-1]
+                and new_rows[-1] == replace(old_tail, valid_to_revision=point.revision),
+                f"{name} history has an invalid same-epoch close",
+            )
+            published.append(new_rows[-1])
+            continue
+
+        opened = new_rows[-1]
+        _require(
+            opened.open
+            and opened.epoch_id == point.epoch_id
+            and opened.valid_from_revision == point.revision,
+            f"{name} history has an invalid opened row",
+        )
+        if opened.epoch_id > old_tail.epoch_id:
+            _require(
+                new_rows[:-1] == old_rows,
+                f"{name} history rewrote a prior epoch during carry-forward",
+            )
+            published.append(opened)
+        elif old_tail.open:
+            _require(
+                opened.epoch_id == old_tail.epoch_id
+                and new_rows[:-2] == old_rows[:-1]
+                and new_rows[-2] == replace(old_tail, valid_to_revision=point.revision),
+                f"{name} history has an invalid same-epoch replacement",
+            )
+            published.extend(new_rows[-2:])
+        else:
+            _require(
+                opened.epoch_id == old_tail.epoch_id and new_rows[:-1] == old_rows,
+                f"{name} history has an invalid same-epoch reopen",
+            )
+            published.append(opened)
+    return tuple(published)
+
+
+def _binding_rows_by_owner(
+    rows: Sequence[_BindingT],
+    *,
+    owner_attribute: str,
+) -> dict[str, tuple[_BindingT, ...]]:
+    grouped: dict[str, list[_BindingT]] = {}
+    for row in rows:
+        owner_id = getattr(row, owner_attribute)
+        if not isinstance(owner_id, str):
+            raise AssertionError("binding owner is not an identifier")
+        grouped.setdefault(owner_id, []).append(row)
+    return {owner_id: tuple(values) for owner_id, values in grouped.items()}
+
+
+def _assert_append_only_ledger(
+    before: Mapping[str, object],
+    after: Mapping[str, object],
+    published_digests: set[str],
+    *,
+    name: str,
+) -> None:
+    _require(
+        before.keys() <= after.keys(),
+        f"{name} artifact ledger lost a digest",
+    )
+    _require(
+        all(after[digest] == artifact for digest, artifact in before.items()),
+        f"{name} artifact ledger replaced immutable content",
+    )
+    new_digests = set(after) - set(before)
+    _require(
+        new_digests == {digest for digest in published_digests if digest not in before},
+        f"{name} artifact ledger additions do not match published bindings",
+    )
+
+
+def _expected_group_artifacts(
+    repository: M5Repository,
+    before: _CertificateImage,
+    after_audit: _IndependentAudit,
+    touched_groups: set[str],
+) -> dict[str, GroupMatchingCertificateArtifact]:
+    expected: dict[str, GroupMatchingCertificateArtifact] = {}
+    for group_id, state in after_audit.states.groups.items():
+        if not state.complete:
+            continue
+        prior = before.group_artifacts.get(group_id)
+        if prior is None:
+            rebuilt = build_reference_group_certificate(repository, group_id)
+            if rebuilt is None:
+                raise AssertionError("complete group has no reference certificate")
+            expected[group_id] = rebuilt
+            continue
+        if group_id not in touched_groups:
+            expected[group_id] = prior
+            continue
+
+        support_ids_by_edge: dict[tuple[str, str], list[str]] = {}
+        for indexed in after_audit.indexed_by_id.values():
+            if (
+                indexed.group_version_id == group_id
+                and indexed.label is VerificationLabel.SUPPORT
+            ):
+                support_ids_by_edge.setdefault(
+                    (indexed.requirement_version_id, indexed.text_hash),
+                    [],
+                ).append(indexed.observation_id)
+        repaired_rows = []
+        rebuild = False
+        for row in prior.rows:
+            candidates = support_ids_by_edge.get(
+                (row.requirement_version_id, row.text_hash),
+                [],
+            )
+            if not candidates:
+                rebuild = True
+                break
+            selected = (
+                row.selected_observation_id
+                if row.selected_observation_id in candidates
+                else min(candidates)
+            )
+            repaired_rows.append(replace(row, selected_observation_id=selected))
+        if rebuild:
+            rebuilt = build_reference_group_certificate(repository, group_id)
+            if rebuilt is None:
+                raise AssertionError("complete group failed reference rebuild")
+            expected[group_id] = rebuilt
+        else:
+            expected[group_id] = GroupMatchingCertificateArtifact(
+                decision_policy_version=after_audit.policy.policy_version,
+                group_version_id=group_id,
+                rows=tuple(repaired_rows),
+            )
+    return expected
+
+
+def _assert_certificate_surface_changes(
+    repository: M5Repository,
+    before: _CertificateImage,
+    after: _CertificateImage,
+    before_audit: _IndependentAudit,
+    after_audit: _IndependentAudit,
+    event: CommittedOverlayEvent,
+    point: SnapshotPoint,
+    group_state_changes: set[str],
+    claim_state_changes: set[str],
+    result: M5OverlayApplyResult,
+) -> None:
+    group_surface_changes = _surface_changes(
+        before.group_artifacts,
+        after.group_artifacts,
+        before.group_bindings,
+        after.group_bindings,
+        before.group_history,
+        after.group_history,
+    )
+    claim_surface_changes = _surface_changes(
+        before.claim_artifacts,
+        after.claim_artifacts,
+        before.claim_bindings,
+        after.claim_bindings,
+        before.claim_history,
+        after.claim_history,
+    )
+    group_artifact_changes = _changed_keys(
+        before.group_artifacts,
+        after.group_artifacts,
+    )
+    claim_artifact_changes = _changed_keys(
+        before.claim_artifacts,
+        after.claim_artifacts,
+    )
+    independently_touched_groups = (
+        before_audit.shape.groups.keys() ^ after_audit.shape.groups.keys()
+    )
+    for observation_id in (
+        before_audit.indexed_by_id.keys() | after_audit.indexed_by_id.keys()
+    ):
+        old = before_audit.indexed_by_id.get(observation_id)
+        new = after_audit.indexed_by_id.get(observation_id)
+        if old == new:
+            continue
+        if old is not None and old.label is VerificationLabel.SUPPORT:
+            independently_touched_groups.add(old.group_version_id)
+        if new is not None and new.label is VerificationLabel.SUPPORT:
+            independently_touched_groups.add(new.group_version_id)
+    if isinstance(event, PolicyChangeEvent):
+        independently_touched_groups.update(before.group_artifacts)
+
+    _require(
+        after.group_artifacts
+        == _expected_group_artifacts(
+            repository,
+            before,
+            after_audit,
+            independently_touched_groups,
+        ),
+        "group artifact transition differs from independent stateful reconstruction",
+    )
+    _require(
+        group_artifact_changes <= independently_touched_groups,
+        "group artifact changed outside independent affected keys",
+    )
+    expected_group_surface_changes = set(group_artifact_changes)
+    for group_id in independently_touched_groups:
+        prior_artifact = before.group_artifacts.get(group_id)
+        prior_binding = before.group_bindings.get(group_id)
+        if (
+            prior_artifact is not None
+            and after.group_artifacts.get(group_id) == prior_artifact
+            and prior_binding is not None
+            and point.epoch_id > prior_binding.epoch_id
+        ):
+            expected_group_surface_changes.add(group_id)
+    _require(
+        group_surface_changes == expected_group_surface_changes,
+        "group certificate surface changed outside independent affected keys",
+    )
+    _require(
+        claim_surface_changes == claim_artifact_changes,
+        "claim certificate surface differs from independent artifact changes",
+    )
+    expected_group_certificate_only = group_surface_changes - group_state_changes
+    expected_claim_certificate_only = claim_surface_changes - claim_state_changes
+    _require(
+        set(result.certificate_only_group_ids) == expected_group_certificate_only,
+        "certificate-only group IDs are not independently exact",
+    )
+    _require(
+        set(result.certificate_only_claim_ids) == expected_claim_certificate_only,
+        "certificate-only claim IDs are not independently exact",
+    )
+    _require(
+        set(result.changed_group_ids) == group_state_changes | group_surface_changes,
+        "changed group IDs omit or add a certificate surface",
+    )
+    _require(
+        set(result.changed_claim_ids) == claim_state_changes | claim_surface_changes,
+        "changed claim IDs omit or add a certificate surface",
+    )
+
+    expected_group_rows = _published_history_rows(
+        before.group_history,
+        after.group_history,
+        name="group binding",
+        point=point,
+    )
+    expected_claim_rows = _published_history_rows(
+        before.claim_history,
+        after.claim_history,
+        name="claim binding",
+        point=point,
+    )
+    _require(
+        _binding_rows_by_owner(
+            result.published_group_bindings,
+            owner_attribute="group_version_id",
+        )
+        == _binding_rows_by_owner(
+            expected_group_rows,
+            owner_attribute="group_version_id",
+        ),
+        "published group binding rows or close-before-open order are not exact",
+    )
+    _require(
+        _binding_rows_by_owner(
+            result.published_claim_bindings,
+            owner_attribute="claim_id",
+        )
+        == _binding_rows_by_owner(
+            expected_claim_rows,
+            owner_attribute="claim_id",
+        ),
+        "published claim binding rows or close-before-open order are not exact",
+    )
+    _assert_append_only_ledger(
+        before.group_ledger,
+        after.group_ledger,
+        {binding.certificate_digest for binding in expected_group_rows},
+        name="group",
+    )
+    _assert_append_only_ledger(
+        before.claim_ledger,
+        after.claim_ledger,
+        {binding.certificate_digest for binding in expected_claim_rows},
+        name="claim",
+    )
+
+
 def _state_only_keys(
     before: Mapping[str, object],
     after: Mapping[str, object],
@@ -1255,11 +1639,13 @@ def _state_only_keys(
     }
 
 
-def _status_changes(
+def _expected_status_deltas(
     before: M5ReferenceStates,
     after: M5ReferenceStates,
-) -> set[tuple[str, str, str, str]]:
-    result: set[tuple[str, str, str, str]] = set()
+    event: CommittedOverlayEvent,
+) -> set[StatusDelta]:
+    result: set[StatusDelta] = set()
+    reason = f"event={event.event_id} op={type(event).__name__}"
     for object_type, old_states, new_states in (
         ("claim", before.claims, after.claims),
         ("answer", before.answers, after.answers),
@@ -1268,7 +1654,16 @@ def _status_changes(
             old_status = old_states[key].status
             new_status = new_states[key].status
             if old_status is not new_status:
-                result.add((object_type, key, old_status.value, new_status.value))
+                result.add(
+                    StatusDelta(
+                        event_id=event.event_id,
+                        object_type=object_type,
+                        object_id=key,
+                        old_status=old_status.value,
+                        new_status=new_status.value,
+                        reason=reason,
+                    )
+                )
     return result
 
 
@@ -1277,7 +1672,57 @@ def _require(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
-def _assert_certificate_histories(overlay: M5IncrementalOverlay) -> int:
+def _effective_group_binding_at(
+    bindings: Sequence[WorkingGroupCertificateBinding],
+    *,
+    group_version_id: str,
+    point: SnapshotPoint,
+) -> WorkingGroupCertificateBinding | None:
+    relevant = tuple(
+        sorted(
+            (
+                binding
+                for binding in bindings
+                if binding.group_version_id == group_version_id
+                and binding.epoch_id <= point.epoch_id
+            ),
+            key=lambda binding: (
+                binding.epoch_id,
+                binding.valid_from_revision,
+            ),
+        )
+    )
+    current = tuple(
+        binding
+        for binding in relevant
+        if binding.covers(point.epoch_id, point.revision)
+    )
+    _require(len(current) <= 1, "group certificate bindings overlap")
+    if current:
+        return current[0]
+    if any(binding.epoch_id == point.epoch_id for binding in relevant):
+        return None
+    for epoch_id in reversed(
+        sorted(
+            {
+                binding.epoch_id
+                for binding in relevant
+                if binding.epoch_id < point.epoch_id
+            }
+        )
+    ):
+        rows = tuple(binding for binding in relevant if binding.epoch_id == epoch_id)
+        final = max(rows, key=lambda binding: binding.valid_from_revision)
+        if final.open:
+            return final
+        return None
+    return None
+
+
+def _assert_certificate_histories(
+    repository: M5Repository,
+    overlay: M5IncrementalOverlay,
+) -> int:
     group_ledger = overlay.group_certificate_artifacts_by_digest
     claim_ledger = overlay.claim_certificate_artifacts_by_digest
     _require(
@@ -1294,7 +1739,17 @@ def _assert_certificate_histories(overlay: M5IncrementalOverlay) -> int:
         ),
         "claim artifact ledger key mismatch",
     )
-    for group_id, current_group_artifact in overlay.group_certificates.items():
+    current_groups = overlay.group_certificates
+    current_claims = overlay.claim_certificates
+    _require(
+        set(overlay._group_bindings) == set(current_groups),
+        "group binding keyset differs from current artifacts",
+    )
+    _require(
+        set(overlay._claim_bindings) == set(current_claims),
+        "claim binding keyset differs from current artifacts",
+    )
+    for group_id, current_group_artifact in current_groups.items():
         group_binding = overlay._group_bindings[group_id]
         _require(
             group_binding.certificate_digest
@@ -1305,8 +1760,31 @@ def _assert_certificate_histories(overlay: M5IncrementalOverlay) -> int:
             group_ledger[group_binding.certificate_digest] == current_group_artifact,
             "current group artifact is absent from the ledger",
         )
+    group_history_digests: set[str] = set()
+    known_group_ids = set(repository.all_group_ids())
+    _require(
+        set(overlay._group_binding_history) <= known_group_ids,
+        "group history contains an unknown owner",
+    )
     for group_id in overlay._group_binding_history:
-        for historical_group_binding in overlay.group_binding_history(group_id):
+        rows = overlay.group_binding_history(group_id)
+        _require(bool(rows), "group history contains an empty owner entry")
+        _require(
+            rows
+            == tuple(
+                sorted(
+                    rows,
+                    key=lambda row: (row.epoch_id, row.valid_from_revision),
+                )
+            ),
+            "group history is not in point order",
+        )
+        by_epoch: dict[int, list[WorkingGroupCertificateBinding]] = {}
+        for historical_group_binding in rows:
+            by_epoch.setdefault(historical_group_binding.epoch_id, []).append(
+                historical_group_binding
+            )
+            group_history_digests.add(historical_group_binding.certificate_digest)
             historical_group_artifact = group_ledger.get(
                 historical_group_binding.certificate_digest
             )
@@ -1318,6 +1796,48 @@ def _assert_certificate_histories(overlay: M5IncrementalOverlay) -> int:
                 == group_id,
                 "group history artifact owner mismatch",
             )
+        for epoch_id, epoch_rows in by_epoch.items():
+            _require(
+                len({row.valid_from_revision for row in epoch_rows}) == len(epoch_rows),
+                f"group history has a duplicate start in epoch {epoch_id}",
+            )
+            _require(
+                sum(row.open for row in epoch_rows) <= 1,
+                f"group history has multiple open rows in epoch {epoch_id}",
+            )
+            for earlier, later in zip(epoch_rows, epoch_rows[1:], strict=False):
+                _require(
+                    earlier.valid_to_revision is not None
+                    and earlier.valid_to_revision <= later.valid_from_revision,
+                    f"group history has an overlap in epoch {epoch_id}",
+                )
+        current_binding = overlay._group_bindings.get(group_id)
+        effective_binding = _effective_group_binding_at(
+            rows,
+            group_version_id=group_id,
+            point=repository.current_point,
+        )
+        if current_binding is not None:
+            _require(
+                rows[-1] == current_binding
+                and current_binding.open
+                and effective_binding == current_binding,
+                "current group binding is not the open history tail",
+            )
+        else:
+            current_epoch_rows = by_epoch.get(repository.current_point.epoch_id, ())
+            _require(
+                not any(row.open for row in current_epoch_rows),
+                "group without a current binding has an open current-epoch row",
+            )
+    _require(
+        set(group_ledger) == group_history_digests,
+        "group artifact ledger contains an unreferenced digest",
+    )
+    _require(
+        set(overlay._claim_binding_history) == set(repository.base.all_claim_ids()),
+        "claim history keyset differs from registered claims",
+    )
     claim_rows = tuple(
         binding
         for claim_id in overlay._claim_binding_history
@@ -1327,7 +1847,11 @@ def _assert_certificate_histories(overlay: M5IncrementalOverlay) -> int:
         validate_claim_binding_history(claim_rows, claim_ledger) == (),
         "claim binding history audit failed",
     )
-    for claim_id, current_claim_artifact in overlay.claim_certificates.items():
+    _require(
+        set(claim_ledger) == {binding.certificate_digest for binding in claim_rows},
+        "claim artifact ledger contains an unreferenced digest",
+    )
+    for claim_id, current_claim_artifact in current_claims.items():
         claim_binding = overlay._claim_bindings[claim_id]
         _require(
             claim_binding.certificate_digest
@@ -1338,7 +1862,12 @@ def _assert_certificate_histories(overlay: M5IncrementalOverlay) -> int:
             claim_ledger[claim_binding.certificate_digest] == current_claim_artifact,
             "current claim artifact is absent from the ledger",
         )
-    return len(overlay.group_certificates) + len(overlay.claim_certificates)
+        _require(
+            overlay.claim_binding_history(claim_id)[-1] == claim_binding
+            and claim_binding.open,
+            "current claim binding is not the open history tail",
+        )
+    return len(current_groups) + len(current_claims)
 
 
 def _assert_current_certificates(
@@ -1353,6 +1882,10 @@ def _assert_current_certificates(
     _require(
         set(group_certificates) == complete_groups,
         "current group certificate set mismatch",
+    )
+    _require(
+        set(overlay._group_bindings) == set(group_certificates),
+        "current group binding keyset mismatch",
     )
     checks = 0
     for group_id, group_artifact in group_certificates.items():
@@ -1394,6 +1927,21 @@ def _assert_current_certificates(
             "group binding digest mismatch",
         )
         _require(
+            group_binding.group_version_id == group_id
+            and group_binding.open
+            and _effective_group_binding_at(
+                overlay.group_binding_history(group_id),
+                group_version_id=group_id,
+                point=repository.current_point,
+            )
+            == group_binding,
+            "group binding is not effective at the current point",
+        )
+        _require(
+            overlay.group_binding_history(group_id)[-1] == group_binding,
+            "group binding is not the history tail",
+        )
+        _require(
             overlay.group_certificate_artifacts_by_digest.get(
                 group_artifact.certificate_digest
             )
@@ -1406,6 +1954,10 @@ def _assert_current_certificates(
     _require(
         set(claim_certificates) == set(audit.states.claims),
         "current claim certificate set mismatch",
+    )
+    _require(
+        set(overlay._claim_bindings) == set(claim_certificates),
+        "current claim binding keyset mismatch",
     )
     for claim_id, claim_state in audit.states.claims.items():
         expected_claim_artifact = build_claim_certificate(
@@ -1425,6 +1977,21 @@ def _assert_current_certificates(
             "claim binding digest mismatch",
         )
         _require(
+            claim_binding.claim_id == claim_id
+            and claim_binding.open
+            and effective_claim_binding_at(
+                overlay.claim_binding_history(claim_id),
+                claim_id=claim_id,
+                point=repository.current_point,
+            )
+            == claim_binding,
+            "claim binding is not effective at the current point",
+        )
+        _require(
+            overlay.claim_binding_history(claim_id)[-1] == claim_binding,
+            "claim binding is not the history tail",
+        )
+        _require(
             overlay.claim_certificate_artifacts_by_digest.get(
                 actual_claim_artifact.certificate_digest
             )
@@ -1438,10 +2005,13 @@ def _assert_current_certificates(
 def _assert_overlay_matches_reference(
     repository: M5Repository,
     overlay: M5IncrementalOverlay,
-    before_states: M5ReferenceStates,
+    event: CommittedOverlayEvent,
+    before_audit: _IndependentAudit,
+    before_certificates: _CertificateImage,
     audit: _IndependentAudit,
     result: M5OverlayApplyResult,
 ) -> int:
+    before_states = before_audit.states
     reference = audit.states
     _require(
         overlay.requirement_states == reference.requirements,
@@ -1451,6 +2021,8 @@ def _assert_overlay_matches_reference(
     _require(overlay.claim_states == reference.claims, "claim mismatch")
     _require(overlay.answer_states == reference.answers, "answer mismatch")
     _require(overlay.point == repository.current_point, "overlay point mismatch")
+    _require(result.event_id == event.event_id, "result event ID mismatch")
+    _require(result.point == repository.current_point, "result point mismatch")
     _require(
         set(overlay._observations) == set(audit.indexed_by_id),
         "indexed requirement-observation population mismatch",
@@ -1471,23 +2043,17 @@ def _assert_overlay_matches_reference(
         set(result.changed_answer_ids) == answer_changes,
         "changed answer IDs are not exact",
     )
-    _require(
-        set(result.certificate_only_group_ids).isdisjoint(group_changes),
-        "certificate-only group overlaps a state change",
-    )
-    _require(
-        set(result.certificate_only_claim_ids).isdisjoint(claim_changes),
-        "certificate-only claim overlaps a state change",
-    )
-    _require(
-        set(result.changed_group_ids)
-        == group_changes | set(result.certificate_only_group_ids),
-        "changed group IDs are not exact",
-    )
-    _require(
-        set(result.changed_claim_ids)
-        == claim_changes | set(result.certificate_only_claim_ids),
-        "changed claim IDs are not exact",
+    _assert_certificate_surface_changes(
+        repository,
+        before_certificates,
+        _certificate_image(overlay),
+        before_audit,
+        audit,
+        event,
+        repository.current_point,
+        group_changes,
+        claim_changes,
+        result,
     )
     _require(
         set(result.state_only_requirement_ids)
@@ -1519,12 +2085,13 @@ def _assert_overlay_matches_reference(
         ),
         "state-only claim IDs are not exact",
     )
-    actual_status_changes = {
-        (delta.object_type, delta.object_id, delta.old_status, delta.new_status)
-        for delta in result.deltas
-    }
+    expected_status_deltas = _expected_status_deltas(
+        before_states,
+        reference,
+        event,
+    )
     _require(
-        actual_status_changes == _status_changes(before_states, reference),
+        Counter(result.deltas) == Counter(expected_status_deltas),
         "public status deltas are not exact",
     )
     for values in (
@@ -1549,6 +2116,43 @@ def _assert_overlay_matches_reference(
         work.answers_touched == len(result.changed_answer_ids),
         "A_touched counter mismatch",
     )
+    _require(
+        result.work.requirement_state_only_changes
+        == len(result.state_only_requirement_ids),
+        "requirement state-only work counter mismatch",
+    )
+    _require(
+        result.work.group_state_only_changes == len(result.state_only_group_ids),
+        "group state-only work counter mismatch",
+    )
+    _require(
+        result.work.claim_state_only_changes == len(result.state_only_claim_ids),
+        "claim state-only work counter mismatch",
+    )
+    _require(
+        result.work.group_certificate_only_changes
+        == len(result.certificate_only_group_ids),
+        "group certificate-only work counter mismatch",
+    )
+    _require(
+        result.work.claim_certificate_only_changes
+        == len(result.certificate_only_claim_ids),
+        "claim certificate-only work counter mismatch",
+    )
+    _require(
+        result.work.public_status_deltas == len(result.deltas),
+        "public status-delta work counter mismatch",
+    )
+    _require(
+        work.claim_status_changes
+        == sum(delta.object_type == "claim" for delta in result.deltas),
+        "claim status-change work counter mismatch",
+    )
+    _require(
+        work.answer_status_changes
+        == sum(delta.object_type == "answer" for delta in result.deltas),
+        "answer status-change work counter mismatch",
+    )
     _require(work.output_bytes > 0, "logical output work is absent")
     _require(
         len(result.logical_output_digest) == 64,
@@ -1566,6 +2170,7 @@ def _apply_and_validate(
 ) -> tuple[M5OverlayApplyResult, _IndependentAudit, int]:
     before = deepcopy(repository)
     before_point = before.current_point
+    before_certificates = _certificate_image(overlay)
     if isinstance(event, M5_EVENT_TYPES):
         repository_result = apply_m5_event(repository, event)
         _require(not repository_result.replayed, "new M5 event replayed unexpectedly")
@@ -1579,7 +2184,9 @@ def _apply_and_validate(
     checks = _assert_overlay_matches_reference(
         repository,
         overlay,
-        before_audit.states,
+        event,
+        before_audit,
+        before_certificates,
         after_audit,
         result,
     )
@@ -1587,7 +2194,11 @@ def _apply_and_validate(
 
 
 def _empty_replay_patch(patch: PreparedM5OverlayPatch) -> bool:
-    if patch.direct_patch is not None or patch.matching_patches:
+    if (
+        patch.direct_patch is not None
+        or patch.matching_patches
+        or patch.score_index_before is not patch.score_index_after
+    ):
         return False
     for changes in (
         patch.index_changes,
@@ -1617,28 +2228,78 @@ def _empty_replay_patch(patch: PreparedM5OverlayPatch) -> bool:
     return not patch.group_binding_rows and not patch.claim_binding_rows
 
 
+def _matching_index_image(index: MaintainedCertificateIndex) -> tuple[object, ...]:
+    return (
+        index.group_version_id,
+        index.requirement_version_ids,
+        deepcopy(index._edge_observations),
+        index._generation,
+        dict(index._hash_masks),
+        deepcopy(index._hashes_by_mask),
+        dict(index._observation_edge),
+    )
+
+
+def _replay_overlay_image(overlay: M5IncrementalOverlay) -> tuple[object, ...]:
+    """Capture every maintained field with structural index images."""
+
+    return (
+        deepcopy(overlay.direct_engine),
+        overlay._point,
+        overlay._policy,
+        {
+            group_id: _matching_index_image(index)
+            for group_id, index in overlay._group_indexes.items()
+        },
+        deepcopy(overlay._hall_states),
+        deepcopy(overlay._requirement_locals),
+        dict(overlay._edge_counts),
+        dict(overlay._requirement_states),
+        dict(overlay._group_states),
+        deepcopy(overlay._complete_groups_by_claim),
+        dict(overlay._claim_states),
+        {key: Counter(value) for key, value in overlay._answer_counts.items()},
+        dict(overlay._answer_states),
+        dict(overlay._group_artifacts),
+        dict(overlay._group_artifacts_by_digest),
+        dict(overlay._group_bindings),
+        deepcopy(overlay._group_binding_history),
+        dict(overlay._claim_artifacts),
+        dict(overlay._claim_artifacts_by_digest),
+        dict(overlay._claim_bindings),
+        deepcopy(overlay._claim_binding_history),
+        dict(overlay._observations),
+        deepcopy(overlay._observations_by_requirement),
+        deepcopy(overlay._observations_by_chunk),
+        deepcopy(overlay._score_index),
+        dict(overlay._claim_to_answer),
+        dict(overlay._claim_required),
+        dict(overlay._answer_required_count),
+        dict(overlay._processed_events),
+        overlay._state_revision,
+        overlay.last_work,
+    )
+
+
 def _replay_and_validate(
     repository: M5Repository,
     overlay: M5IncrementalOverlay,
     event: CommittedOverlayEvent,
 ) -> M5OverlayApplyResult:
-    repository_image = repository.export_snapshot()
-    overlay_image = (
-        overlay.point,
-        overlay.state_revision,
-        overlay.requirement_states,
-        overlay.group_states,
-        overlay.claim_states,
-        overlay.answer_states,
-        overlay.group_certificates,
-        overlay.claim_certificates,
-        overlay.group_certificate_artifacts_by_digest,
-        overlay.claim_certificate_artifacts_by_digest,
-        dict(overlay._group_binding_history),
-        dict(overlay._claim_binding_history),
-        dict(overlay._processed_events),
-        deepcopy(overlay.direct_engine),
+    recorded = overlay._processed_events.get(event.event_id)
+    if recorded is None:
+        raise AssertionError("replay event is absent from the overlay ledger")
+    stored_result = recorded[1]
+    expected_replay = replace(
+        stored_result,
+        published_group_bindings=(),
+        published_claim_bindings=(),
+        work=M5OverlayWork(),
+        direct_stats=MaintenanceStats(),
+        replayed=True,
     )
+    repository_image = deepcopy(repository)
+    overlay_image = _replay_overlay_image(overlay)
     if isinstance(event, M5_EVENT_TYPES):
         repository_result = apply_m5_event(repository, event)
         _require(repository_result.replayed, "M5 replay was not recognized")
@@ -1646,7 +2307,7 @@ def _replay_and_validate(
         apply_event(repository.base, event)
         _ = repository.current_point
     _require(
-        repository.export_snapshot() == repository_image,
+        repository == repository_image,
         "replay mutated repository",
     )
 
@@ -1657,30 +2318,22 @@ def _replay_and_validate(
         patch,
         failure_injector=emitted_stages.append,
     )
+    _require(
+        result == expected_replay,
+        "replay result differs from the stored committed result",
+    )
     _require(result.replayed, "overlay replay was not recognized")
     _require(patch._state == "applied", "replay patch did not become applied")
     _require(result.work == M5OverlayWork(), "replay reported M5 work")
     _require(result.direct_stats == MaintenanceStats(), "replay reported direct work")
+    _require(
+        result.published_group_bindings == () and result.published_claim_bindings == (),
+        "replay reported newly published binding rows",
+    )
     _require(not emitted_stages, "replay reached a mutation checkpoint")
     _require(
-        (
-            overlay.point,
-            overlay.state_revision,
-            overlay.requirement_states,
-            overlay.group_states,
-            overlay.claim_states,
-            overlay.answer_states,
-            overlay.group_certificates,
-            overlay.claim_certificates,
-            overlay.group_certificate_artifacts_by_digest,
-            overlay.claim_certificate_artifacts_by_digest,
-            dict(overlay._group_binding_history),
-            dict(overlay._claim_binding_history),
-            dict(overlay._processed_events),
-            overlay.direct_engine,
-        )
-        == overlay_image,
-        "replay mutated overlay state",
+        _replay_overlay_image(overlay) == overlay_image,
+        "replay mutated maintained overlay state",
     )
     return result
 
@@ -1696,7 +2349,7 @@ def _assert_shard_audit(
     overlay: M5IncrementalOverlay,
 ) -> int:
     _require(overlay.matching_audit_issues() == {}, "matching index audit failed")
-    checks = _assert_certificate_histories(overlay)
+    checks = _assert_certificate_histories(repository, overlay)
     group_certificates = overlay.group_certificates
     for group_artifact in group_certificates.values():
         _require(
@@ -1800,6 +2453,10 @@ class _ObservedBounds:
         shape = audit.shape
         _require(shape.observation_population <= bounds["n_obs"], "N_obs cap exceeded")
         _require(shape.observed_r_max <= bounds["r_max"], "r_max cap exceeded")
+        _require(
+            len(shape.groups) <= bounds["active_groups"],
+            "active group cap exceeded",
+        )
         _require(
             shape.active_chunks <= bounds["active_chunks"],
             "active chunk cap exceeded",

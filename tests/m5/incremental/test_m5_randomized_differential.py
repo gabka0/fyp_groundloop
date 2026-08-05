@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -20,9 +21,17 @@ from run_m5_differential import (
     PROPOSAL_KINDS,
     SplitMix64,
     _apply_and_validate,
+    _assert_certificate_histories,
+    _assert_certificate_surface_changes,
+    _assert_current_certificates,
+    _assert_overlay_matches_reference,
+    _assert_shard_audit,
+    _binding_rows_by_owner,
     _build_independent_audit,
     _certificate_history_digest,
+    _certificate_image,
     _logical_state_digest,
+    _published_history_rows,
     _replay_and_validate,
     _repository_digest,
     _stream_seed,
@@ -35,7 +44,29 @@ from run_m5_differential import (
     verify_manifest_summary,
 )
 
-from groundloop.m5.incremental_overlay import M5IncrementalOverlay, M5OverlayWork
+from groundloop.domain import DecisionPolicy, StatusDelta, VerificationLabel
+from groundloop.events import (
+    ChunkInput,
+    InsertDocumentEvent,
+    PolicyChangeEvent,
+    apply_event,
+)
+from groundloop.m5.claim_certificates import WorkingClaimCertificateBinding
+from groundloop.m5.domain import SnapshotPoint
+from groundloop.m5.events import (
+    ObserveRequirementEvent,
+    RegisterGroupEvent,
+    apply_m5_event,
+)
+from groundloop.m5.incremental_overlay import (
+    M5IncrementalOverlay,
+    M5OverlayWork,
+    _history_append,
+)
+from groundloop.m5.matching import WorkingGroupCertificateBinding
+from groundloop.m5.reference import validate_group_certificate
+
+from .helpers import make_group, make_repository, make_requirement_observation
 
 ROOT = Path(__file__).resolve().parents[3]
 EVENT_CLASSES = {
@@ -99,6 +130,7 @@ def test_frozen_config_contract_and_derived_bounds(tmp_path: Path) -> None:
     assert config.total_weight == 100
     assert {row.kind for row in config.event_mix} == PROPOSAL_KINDS
     assert config.derived_runtime_bounds == {
+        "active_groups": 6,
         "active_chunks": 16,
         "n_obs": 288,
         "r_max": 3,
@@ -168,10 +200,10 @@ def test_planned_prefix_and_full_match_frozen_manifest() -> None:
     manifest, raw_sha256, canonical_sha256 = load_manifest()
     verify_manifest_header(config, manifest)
     assert raw_sha256 == (
-        "22c40ba4baf554ba3b3a33948c012af86d48ba48ea55c648fd068a4c7e2a8bad"
+        "9d9aa4863f23050f35b41eea73299e2f61e7e369b1e8f975658ba305b773bac1"
     )
     assert canonical_sha256 == (
-        "c60fd4a0c645fbb720640620f47b3db6c62db207cda6d1b53e55e16714b3fa34"
+        "a8a85ff8ef6924c10411a4225fe1116f78ade9a8108884c2e66e35499ce1659b"
     )
 
     prefix = run_randomized_differential(
@@ -229,6 +261,7 @@ def test_short_validated_prefix_matches_manifest_and_runtime_bounds() -> None:
 
     observed = cast(dict[str, int], result["observed_runtime_bounds"])
     bounds = config.derived_runtime_bounds
+    assert observed["max_active_groups"] <= bounds["active_groups"]
     assert observed["max_transaction_n_obs"] <= bounds["n_obs"]
     assert observed["max_observed_r"] <= bounds["r_max"]
     assert observed["max_group_w"] <= bounds["w_g"]
@@ -289,6 +322,361 @@ def test_replay_and_generator_rejection_are_state_noops(
         _logical_state_digest(overlay),
         _certificate_history_digest(overlay),
     ) == before_replay
+
+
+def test_certificate_audit_rejects_stale_bindings_and_false_dirtiness() -> None:
+    config = load_config()
+    generator = _StreamGenerator(
+        config,
+        0,
+        SplitMix64(_stream_seed(config.seed, 0)),
+    )
+    repository, _ = generator.fixture_repository()
+    overlay = M5IncrementalOverlay.from_repository(repository)
+    initial_audit = _build_independent_audit(repository)
+
+    stale_binding = next(iter(overlay._claim_bindings.values()))
+    overlay._claim_bindings["unrelated-stale-key"] = stale_binding
+    with pytest.raises(AssertionError, match="binding keyset"):
+        _assert_current_certificates(repository, overlay, initial_audit)
+    with pytest.raises(AssertionError, match="binding keyset"):
+        _assert_certificate_histories(repository, overlay)
+    with pytest.raises(AssertionError, match="binding keyset"):
+        _assert_shard_audit(repository, overlay)
+    del overlay._claim_bindings["unrelated-stale-key"]
+
+    before_repository = deepcopy(repository)
+    before_certificates = _certificate_image(overlay)
+    event = PolicyChangeEvent(
+        event_id="certificate-dirtiness-policy",
+        policy=DecisionPolicy("certificate-dirtiness-policy-v2", 0.8, 0.8),
+    )
+    apply_event(repository.base, event)
+    _ = repository.current_point
+    result = overlay.apply_committed_event(event, before_repository, repository)
+    after_audit = _build_independent_audit(repository)
+    _assert_overlay_matches_reference(
+        repository,
+        overlay,
+        event,
+        initial_audit,
+        before_certificates,
+        after_audit,
+        result,
+    )
+    assert result.certificate_only_claim_ids
+
+    false_dirtiness = replace(result, certificate_only_claim_ids=())
+    with pytest.raises(AssertionError, match="independently exact"):
+        _assert_overlay_matches_reference(
+            repository,
+            overlay,
+            event,
+            initial_audit,
+            before_certificates,
+            after_audit,
+            false_dirtiness,
+        )
+    false_work = replace(
+        result,
+        work=replace(result.work, claim_certificate_only_changes=0),
+    )
+    with pytest.raises(AssertionError, match="work counter"):
+        _assert_overlay_matches_reference(
+            repository,
+            overlay,
+            event,
+            initial_audit,
+            before_certificates,
+            after_audit,
+            false_work,
+        )
+    fabricated_delta = StatusDelta(
+        event_id=event.event_id,
+        object_type="claim",
+        object_id=next(iter(after_audit.states.claims)),
+        old_status="unsupported",
+        new_status="supported",
+        reason=f"event={event.event_id} op={type(event).__name__}",
+    )
+    false_deltas = replace(
+        result,
+        deltas=(fabricated_delta,),
+        work=replace(
+            result.work,
+            matching=replace(result.work.matching, claim_status_changes=1),
+            public_status_deltas=1,
+        ),
+    )
+    with pytest.raises(AssertionError, match="public status deltas"):
+        _assert_overlay_matches_reference(
+            repository,
+            overlay,
+            event,
+            initial_audit,
+            before_certificates,
+            after_audit,
+            false_deltas,
+        )
+    with pytest.raises(AssertionError, match="result event ID"):
+        _assert_overlay_matches_reference(
+            repository,
+            overlay,
+            event,
+            initial_audit,
+            before_certificates,
+            after_audit,
+            replace(result, event_id="wrong-event-id"),
+        )
+    with pytest.raises(AssertionError, match="result point"):
+        _assert_overlay_matches_reference(
+            repository,
+            overlay,
+            event,
+            initial_audit,
+            before_certificates,
+            after_audit,
+            replace(result, point=before_repository.current_point),
+        )
+    closed = WorkingClaimCertificateBinding(
+        epoch_id=1,
+        claim_id="claim-order",
+        valid_from_revision=0,
+        valid_to_revision=1,
+        certificate_digest="a" * 64,
+    )
+    opened = WorkingClaimCertificateBinding(
+        epoch_id=1,
+        claim_id="claim-order",
+        valid_from_revision=1,
+        valid_to_revision=None,
+        certificate_digest="b" * 64,
+    )
+    assert _binding_rows_by_owner(
+        (closed, opened),
+        owner_attribute="claim_id",
+    ) != _binding_rows_by_owner(
+        (opened, closed),
+        owner_attribute="claim_id",
+    )
+
+    prior_epoch = WorkingGroupCertificateBinding(
+        epoch_id=5,
+        group_version_id="group-carry",
+        valid_from_revision=0,
+        valid_to_revision=None,
+        certificate_digest="c" * 64,
+    )
+    carried = WorkingGroupCertificateBinding(
+        epoch_id=6,
+        group_version_id="group-carry",
+        valid_from_revision=0,
+        valid_to_revision=None,
+        certificate_digest="c" * 64,
+    )
+    assert _published_history_rows(
+        {"group-carry": (prior_epoch,)},
+        {"group-carry": (prior_epoch, carried)},
+        name="group binding",
+        point=SnapshotPoint(6, 0),
+    ) == (carried,)
+    with pytest.raises(AssertionError, match="prior epoch"):
+        _published_history_rows(
+            {"group-carry": (prior_epoch,)},
+            {
+                "group-carry": (
+                    replace(prior_epoch, valid_to_revision=1),
+                    carried,
+                )
+            },
+            name="group binding",
+            point=SnapshotPoint(6, 0),
+        )
+
+
+def test_certificate_audit_rejects_internally_consistent_unrelated_rebinding() -> None:
+    repository = make_repository()
+    apply_m5_event(
+        repository,
+        RegisterGroupEvent(event_id="audit-register-group", group=make_group()),
+    )
+    apply_m5_event(
+        repository,
+        ObserveRequirementEvent(
+            event_id="audit-complete-group",
+            observation=make_requirement_observation(
+                observation_id="audit-selected-support",
+                requirement_id="group-a-requirement-0",
+            ),
+        ),
+    )
+    apply_m5_event(
+        repository,
+        ObserveRequirementEvent(
+            event_id="audit-add-alternative-support",
+            observation=make_requirement_observation(
+                observation_id="audit-alternative-support",
+                requirement_id="group-a-requirement-0",
+                chunk_id="chunk-b",
+            ),
+        ),
+    )
+    overlay = M5IncrementalOverlay.from_repository(repository)
+    before_repository = deepcopy(repository)
+    before_audit = _build_independent_audit(repository)
+    before_certificates = _certificate_image(overlay)
+    event = InsertDocumentEvent(
+        event_id="audit-unrelated-document",
+        document_id="audit-unrelated-document",
+        document_version_id="audit-unrelated-version",
+        content_hash="f" * 64,
+        chunks=(ChunkInput("audit-unrelated-chunk", 0, "unrelated text"),),
+    )
+    apply_event(repository.base, event)
+    _ = repository.current_point
+    result = overlay.apply_committed_event(event, before_repository, repository)
+    after_audit = _build_independent_audit(repository)
+    _assert_overlay_matches_reference(
+        repository,
+        overlay,
+        event,
+        before_audit,
+        before_certificates,
+        after_audit,
+        result,
+    )
+    assert result.changed_group_ids == ()
+    assert result.changed_claim_ids == ()
+
+    claim_id = next(iter(overlay._claim_bindings))
+    old_claim_binding = overlay._claim_bindings[claim_id]
+    old_claim_history = overlay._claim_binding_history[claim_id]
+    extra_claim_binding = WorkingClaimCertificateBinding(
+        epoch_id=repository.current_point.epoch_id,
+        claim_id=claim_id,
+        valid_from_revision=repository.current_point.revision,
+        valid_to_revision=None,
+        certificate_digest=old_claim_binding.certificate_digest,
+    )
+    overlay._claim_bindings[claim_id] = extra_claim_binding
+    overlay._claim_binding_history[claim_id] = _history_append(
+        old_claim_history,
+        extra_claim_binding,
+    )
+    false_claim_result = replace(
+        result,
+        changed_claim_ids=(claim_id,),
+        certificate_only_claim_ids=(claim_id,),
+        published_claim_bindings=(extra_claim_binding,),
+        work=replace(
+            result.work,
+            matching=replace(
+                result.work.matching,
+                claims_touched=result.work.matching.claims_touched + 1,
+            ),
+            claim_certificate_only_changes=(
+                result.work.claim_certificate_only_changes + 1
+            ),
+        ),
+    )
+    with pytest.raises(AssertionError, match="claim certificate surface"):
+        _assert_overlay_matches_reference(
+            repository,
+            overlay,
+            event,
+            before_audit,
+            before_certificates,
+            after_audit,
+            false_claim_result,
+        )
+    overlay._claim_bindings[claim_id] = old_claim_binding
+    overlay._claim_binding_history[claim_id] = old_claim_history
+
+    group_id = next(iter(overlay._group_bindings))
+    old_group_binding = overlay._group_bindings[group_id]
+    old_group_history = overlay._group_binding_history[group_id]
+    extra_group_binding = WorkingGroupCertificateBinding(
+        epoch_id=repository.current_point.epoch_id,
+        group_version_id=group_id,
+        valid_from_revision=repository.current_point.revision,
+        valid_to_revision=None,
+        certificate_digest=old_group_binding.certificate_digest,
+    )
+    overlay._group_bindings[group_id] = extra_group_binding
+    overlay._group_binding_history[group_id] = _history_append(
+        overlay._group_binding_history[group_id],
+        extra_group_binding,
+    )
+    false_group_result = replace(
+        result,
+        changed_group_ids=(group_id,),
+        certificate_only_group_ids=(group_id,),
+        published_group_bindings=(extra_group_binding,),
+        work=replace(
+            result.work,
+            matching=replace(
+                result.work.matching,
+                groups_touched=result.work.matching.groups_touched + 1,
+            ),
+            group_certificate_only_changes=(
+                result.work.group_certificate_only_changes + 1
+            ),
+        ),
+    )
+    with pytest.raises(AssertionError, match="group certificate surface"):
+        _assert_overlay_matches_reference(
+            repository,
+            overlay,
+            event,
+            before_audit,
+            before_certificates,
+            after_audit,
+            false_group_result,
+        )
+    overlay._group_bindings[group_id] = old_group_binding
+    overlay._group_binding_history[group_id] = old_group_history
+
+    after_certificates = _certificate_image(overlay)
+    current_artifact = after_certificates.group_artifacts[group_id]
+    selected_id = current_artifact.rows[0].selected_observation_id
+    alternative = next(
+        indexed
+        for indexed in after_audit.indexed_by_id.values()
+        if indexed.group_version_id == group_id
+        and indexed.label is VerificationLabel.SUPPORT
+        and indexed.observation_id != selected_id
+    )
+    alternative_row = replace(
+        current_artifact.rows[0],
+        text_hash=alternative.text_hash,
+        selected_observation_id=alternative.observation_id,
+    )
+    alternative_artifact = replace(
+        current_artifact,
+        rows=(alternative_row,),
+        certificate_digest="",
+    )
+    assert validate_group_certificate(repository, alternative_artifact)
+    false_artifact_image = replace(
+        after_certificates,
+        group_artifacts={
+            **after_certificates.group_artifacts,
+            group_id: alternative_artifact,
+        },
+    )
+    with pytest.raises(AssertionError, match="group artifact"):
+        _assert_certificate_surface_changes(
+            repository,
+            before_certificates,
+            false_artifact_image,
+            before_audit,
+            after_audit,
+            event,
+            repository.current_point,
+            set(),
+            set(),
+            result,
+        )
 
 
 @pytest.mark.parametrize("hash_seed", ("0", "1", "42", "8675309"))
