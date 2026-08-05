@@ -28,6 +28,23 @@ The coordinator is the only implementation owner for this restart lane:
 not be reconciled against main until both candidates have passed independent
 audit. Other agents are read-only auditors and may not edit these paths.
 
+### Step 7 ownership amendment
+
+After Step 6 received independent read-only GO at commit `9b36664`, the
+coordinator extends the same path-exclusive lane to the frozen randomized
+differential gate. No other agent may edit these paths:
+
+- `configs/m5/incremental_differential_v1.json`;
+- `configs/m5/incremental_differential_seed_20260802_manifest_v1.json`;
+- `experiments/streams/run_m5_differential.py`;
+- `tests/m5/incremental/test_m5_randomized_differential.py`;
+- `docs/workstreams/m5_incremental/STEP7_RANDOMIZED_DIFFERENTIAL_RESULT_2026-08-05.md`.
+
+The full local result may be written under ignored `results/m5/`; it is not a
+source artifact and will not be committed. The configuration, manifest, and
+short deterministic prefix must be committed before the opt-in 100,000-event
+run. The result document is added only after that frozen run completes.
+
 ## Small-commit sequence
 
 1. Add regression scaffolding for forced two-child AVL deletion, O(1) linked
