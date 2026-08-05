@@ -1,9 +1,10 @@
 # GroundLoop M5 Implementation Status
 
-Status date: 2026-08-03
+Status date: 2026-08-05
 
-Milestone status: **M5.0 and M5.1 complete; M5.2 integration active.**
-No M5.2--M5.6 implementation or evaluation gate is reported complete yet.
+Milestone status: **M5.0, M5.1, and M5.2 complete; M5.3 partially complete.**
+M5.3-01 through M5.3-06 and M5.3-08 through M5.3-09 pass. M5.3-07
+and every M5.4--M5.6 implementation/evaluation closure remain pending.
 
 ## 1. Honest current verdict
 
@@ -13,11 +14,14 @@ stateful Hall-mask delta operator, independent Python and SQL oracles,
 versioned certificate artifacts, typed runtime identities, a PostgreSQL
 upgrade/activation boundary, and a retrospective controlled WiCE evaluation.
 
-M5.1 now supplies executable pure-reference evidence. There is still no
-accepted M5 evidence for the optimized matching operator, PostgreSQL integrity,
-dynamic requirement jobs, model quality, latency, call savings, or publishing
-potential. Those claims remain blocked by the executable gates in
-`docs/m5_acceptance_matrix.md`.
+Accepted bounded evidence now covers the pure reference, optimized matching and
+incremental overlay, migration 014/PostgreSQL integrity, the independent SQL
+oracle, a 100,000-event in-memory differential, and a snapshot-per-prefix
+three-oracle history. There is still no accepted M5 evidence for durable M5.3
+failure/replay coordination, dynamic requirement jobs, M5.4 activation or
+publication, maintained-runtime model quality, production latency, call
+savings, utility, novelty, or publishing potential. Those claims remain
+blocked by the executable gates in `docs/m5_acceptance_matrix.md`.
 
 ## 2. M5.0 evidence
 
@@ -56,9 +60,9 @@ m5_multiagent_execution_plan faffae5f839623efd9e387f63e951881cf1f46c5b66f37c3db6
 ```
 
 Those hashes identify the final audited semantic candidate. Subsequent edits
-only changed candidate/freeze status labels and the M5.0 contract cells from
-`PENDING` to `PASS / PENDING`; final implementation hashes will be recorded at
-M5.6.
+have changed status and executable-evidence reporting without changing the
+frozen semantic contract. Final implementation artifact hashes and the
+decision-row cross-stage mapping will be recorded at M5.6.
 
 ## 3. Frozen M5.0 result
 
@@ -83,7 +87,7 @@ certificate repairs/rebuilds, touched states and output bytes, with
 `r <= 8`. It is not a claim of general dynamic-matching novelty or superiority
 over DBSP, F-IVM, CROWN, or another system.
 
-## 4. M5.1 result and active next stage
+## 4. M5.1 result, completed M5.2, and partial M5.3
 
 M5.1 implements the pure semantic foundation:
 
@@ -101,29 +105,43 @@ event/observation identifier collision safety, lazy epoch synchronization,
 failure-atomic currency rejection, typed prevalidation, immutable records, and
 alternative valid certificate acceptance.
 
-Two boundaries remain deliberately open. M5.1 cannot validate historical
-combined claim-certificate bindings because the preserved direct M1 oracle has
-only current state and M5.1 does not persist claim bindings. That is mandatory
-M5.2/M5.3 work. Its in-memory currency interval is a total-order reference
-abstraction; migration 014 must implement exact epoch-local working rows and
-fallback semantics. Neither full M5-D9/D12 persistence nor SQL equivalence is
-claimed here.
+Those were M5.1-only boundaries. The later integrated work closes them only at
+the following bounded stages:
 
-M5.2 integration is active. The first matching-kernel audit found its core
-mathematics credible but rejected integration until cross-epoch certificate
-carry-forward, bounded measured indexes, uncharged sorting, shared-type
-adapters, and exhaustive certificate evidence are fixed. M5.3 schema/oracle
-implementation may proceed in a disjoint worktree against the published M5.1
-contracts. M5.4 remains blocked on the audited runtime addendum and M5.2/M5.3.
+- M5.2 passes all nine incremental-algorithm gates. Exact bounded matching,
+  Hall-mask and multiplicity suites, sparse/unrelated-key assertions,
+  certificate repair/rebuild/history, failure-atomic injection, replay, and
+  every-term complexity guards pass. The frozen seed-`20260802` run records
+  100,000 committed events, 7,731 exact replays, 20,726 generator rejections,
+  1,000 audits of each maintained index/history class, and zero mismatches.
+  Its ignored artifact was revalidated against the integrated runner, config,
+  and manifest rather than regenerated.
+- M5.3-01 through M5.3-05 and M5.3-08 through M5.3-09 pass after sequential
+  integration of migration 014, the PostgreSQL repository and SQL oracle. The
+  owned live PostgreSQL suite passed 55 tests; 247 relevant live M4/pre-M5 tests
+  passed with one explicit real-model skip.
+- M5.3-06 passes at integrated executable commit `e266696`. One deterministic
+  16-checkpoint history covers all nine overlay event variants and exact
+  replay, with incremental, Python, and SQL state/certificate checks agreeing.
+  The complete live M5 suite passed 339 tests with only the explicit 100k gate
+  skipped, and the ordinary full suite passed 816 tests with 211 classified
+  skips. See
+  `docs/workstreams/m5_integration/THREE_ORACLE_RESULT_2026-08-05.md`.
+
+M5.3-06 loads fresh rollback-isolated PostgreSQL rows for each logical prefix
+and materializes derived state with `publish=False`. It is not a durable
+same-schema mutation history. M5.3-07 durable failure/replay coordination is
+still pending, and M5.4 remains blocked on that coordinator/runtime work.
 
 ## 5. Remaining closure boundary
 
-M5 completes only after M5.1--M5.6 pass. In particular, closure still requires
-the 100,000-event differential gate, exhaustive bounded matching tests, live
-013-to-014 PostgreSQL upgrade and three-oracle histories, dynamic requirement
-jobs and replay, the pinned controlled WiCE study, and final full validation.
+M5 completes only after M5.1--M5.6 pass. Closure still requires M5.3-07 durable
+rejected-declaration/failure/conflicting-replay behavior; M5.4 dynamic jobs,
+activation, publication, reconnect and exactly-once runtime gates; a real
+maintained-runtime M5.5 controlled WiCE execution; and M5.6 reproduction,
+artifact, documentation, and final acceptance audits.
 
-Without a fresh blinded independently adjudicated cohort, the strongest M5
-semantic conclusion must remain: **implementation complete with
-controlled/retrospective semantic evidence only**. A representative utility
-claim remains M6 debt.
+M5 is not complete. Even after technical closure, without a fresh blinded,
+independently adjudicated cohort the strongest permitted semantic conclusion
+will remain **implementation complete with controlled/retrospective semantic
+evidence only**. A representative utility claim remains M6 debt.

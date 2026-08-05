@@ -1,8 +1,9 @@
 # GroundLoop M5 Acceptance Matrix
 
-Status: frozen M5 falsification contract; M5.0 contract gates pass
+Status: frozen M5 falsification contract; staged evidence current through
+partial M5.3
 
-Date: 2026-08-02
+Date: 2026-08-05
 
 Authority: each row is a necessary condition, not a menu. In Section 1, the
 first status is the M5.0 contract audit and the second is implementation
@@ -39,8 +40,9 @@ design freeze is reopened and the scope change is recorded.
 
 M5.0 froze after the contract side of every row passed, three independent
 audits reported no unresolved P0/P1, and the coordinator recorded the
-decisions. The implementation side remains `PENDING` until its later gates
-execute.
+decisions. The decision-row implementation halves remain `PENDING` until the
+final cross-stage evidence mapping at M5.6; the stage tables below record the
+current executable evidence without silently remapping M5-D1 through M5-D20.
 
 ### 1.1 Mandatory adversarial cases
 
@@ -92,37 +94,61 @@ generator rejection is counted separately from committed events.
 M5.1 evidence: 73 focused tests pass, including exact enumeration of 74,958
 simple graphs through `r<=4,H<=4`; the full repository suite, Ruff and strict
 mypy pass under an independent audit. These rows cover the pure reference
-stage only. Historical combined claim-certificate bindings remain a mandatory
-M5.2/M5.3 gate, and the in-memory total-order currency history is not the
-epoch-local SQL representation required by M5.3.
+stage only. At the M5.1 checkpoint, historical combined claim-certificate
+bindings and epoch-local SQL currency remained mandatory later-stage work.
+Integrated M5.2 and partial M5.3 evidence is recorded below; it does not change
+what M5.1 alone established.
 
 ## 3. M5.2 incremental algorithm gates
 
 | Gate | Required outcome | Evidence | Status |
 |---|---|---|---|
-| M5.2-01 | Augmenting-path baseline returns exact maximum matching and deterministic valid certificate | Every graph in the frozen `r<=4,H<=4` domain | PENDING |
-| M5.2-02 | Hall-mask initialization equals relational mask/neighbor/deficiency definitions | Exhaustive state tests | PENDING |
-| M5.2-03 | Every legal old-mask to new-mask transition is exact | Every mask pair through `r=4`; seeded random transitions through `r=8` | PENDING |
-| M5.2-04 | Edge multiplicity and text-hash mask coalescing handle duplicates and supersession | Focused `0<->1`, `1<->2`, and swap tests | PENDING |
-| M5.2-05 | Certificate rebuild/repair never changes logical completeness incorrectly | Invalidation, alternate assignment, and representative-repair tests | PENDING |
-| M5.2-06 | Group overlay equals independent Python state after every mixed event | Hash-bound seed `20260802` stream with at least 100,000 committed events | PENDING |
-| M5.2-07 | Unrelated groups/claims/answers are untouched | Signed counters and state-patch assertions | PENDING |
-| M5.2-08 | Failure before commit/publication is atomic | Injection matrix | PENDING |
-| M5.2-09 | Measured work is reported against every M5-T2 term, including a zero-candidate ordered policy probe | Complexity guard/report | PENDING |
+| M5.2-01 | Augmenting-path baseline returns exact maximum matching and deterministic valid certificate | Every graph in the frozen `r<=4,H<=4` domain | PASS |
+| M5.2-02 | Hall-mask initialization equals relational mask/neighbor/deficiency definitions | Exhaustive state tests | PASS |
+| M5.2-03 | Every legal old-mask to new-mask transition is exact | Every mask pair through `r=4`; seeded random transitions through `r=8` | PASS |
+| M5.2-04 | Edge multiplicity and text-hash mask coalescing handle duplicates and supersession | Focused `0<->1`, `1<->2`, and swap tests | PASS |
+| M5.2-05 | Certificate rebuild/repair never changes logical completeness incorrectly | Invalidation, alternate assignment, and representative-repair tests | PASS |
+| M5.2-06 | Group overlay equals independent Python state after every mixed event | Hash-bound seed `20260802` stream with at least 100,000 committed events | PASS |
+| M5.2-07 | Unrelated groups/claims/answers are untouched | Signed counters and state-patch assertions | PASS |
+| M5.2-08 | Failure before commit/publication is atomic | Injection matrix | PASS |
+| M5.2-09 | Measured work is reported against every M5-T2 term, including a zero-candidate ordered policy probe | Complexity guard/report | PASS |
+
+M5.2 passed at integrated checkpoint `58f43dd`. Evidence includes the exhaustive
+bounded matching/certificate suites, sparse and failure-atomic overlay gates,
+every-term work guards, and the frozen 100,000-event seed-`20260802`
+overlay-versus-Python differential with zero mismatches. The ignored long-run
+artifact was revalidated against the integrated config, runner, and manifest.
+See `docs/workstreams/m5_matching/HANDOFF.md`,
+`docs/workstreams/m5_incremental/STEP7_RANDOMIZED_DIFFERENTIAL_RESULT_2026-08-05.md`,
+and `docs/workstreams/m5_integration/THREE_ORACLE_RESULT_2026-08-05.md`.
+This is bounded in-memory incremental evidence, not SQL or maintained-runtime
+evidence.
 
 ## 4. M5.3 PostgreSQL and third-oracle gates
 
 | Gate | Required outcome | Evidence | Status |
 |---|---|---|---|
-| M5.3-01 | The ordered schema-plus-oracle bundle table-locks all frozen writer surfaces including legacy working observation deltas, rejects open epochs, and upgrades a populated 013 database atomically through a content-hash ledger | Fresh/upgrade/rerun/hash-conflict/mid-bundle rollback/concurrent-writer test | PENDING |
-| M5.3-02 | Typed subject backfill/future maintenance/composite subtype integrity and immutable `eligible_for_currency` enforcement are exact | Constraint/backfill/future-insert/ineligible-holder tests across every currency surface | PENDING |
-| M5.3-03 | Whole-group constraints, cross-language canonical text/hash, group-only validity, lineage, retirement, and temporal semantic-duplicate exclusion reject invalid commits without consuming failed lineage | Live normalization/transaction/failure/retry tests | PENDING |
-| M5.3-04 | M5 loader orders subjects before observations; working currency preserves every same-key revision/tombstone with close-once intervals and rejects terminal mutation; every shared writer uses explicit columns and every claim-only M4 reader filters kind | Snapshot/as-of/immutability/coexistence tests plus repo-wide static reader/writer audit | PENDING |
-| M5.3-05 | Base-edge SQL Hall oracle computes exact matching; the recursive `UNION` assignment cross-check obeys `H<=16`, `E<=128`, and the 100,000-state preflight cap | SQL unit/integration/cap tests including `ASSIGNMENT_AUDIT_CAP_EXCEEDED` | PENDING |
-| M5.3-06 | Incremental, Python, and SQL states/certificates agree after every required event class | Live three-oracle history | PENDING |
+| M5.3-01 | The ordered schema-plus-oracle bundle table-locks all frozen writer surfaces including legacy working observation deltas, rejects open epochs, and upgrades a populated 013 database atomically through a content-hash ledger | Fresh/upgrade/rerun/hash-conflict/mid-bundle rollback/concurrent-writer test | PASS |
+| M5.3-02 | Typed subject backfill/future maintenance/composite subtype integrity and immutable `eligible_for_currency` enforcement are exact | Constraint/backfill/future-insert/ineligible-holder tests across every currency surface | PASS |
+| M5.3-03 | Whole-group constraints, cross-language canonical text/hash, group-only validity, lineage, retirement, and temporal semantic-duplicate exclusion reject invalid commits without consuming failed lineage | Live normalization/transaction/failure/retry tests | PASS |
+| M5.3-04 | M5 loader orders subjects before observations; working currency preserves every same-key revision/tombstone with close-once intervals and rejects terminal mutation; every shared writer uses explicit columns and every claim-only M4 reader filters kind | Snapshot/as-of/immutability/coexistence tests plus repo-wide static reader/writer audit | PASS |
+| M5.3-05 | Base-edge SQL Hall oracle computes exact matching; the recursive `UNION` assignment cross-check obeys `H<=16`, `E<=128`, and the 100,000-state preflight cap | SQL unit/integration/cap tests including `ASSIGNMENT_AUDIT_CAP_EXCEEDED` | PASS |
+| M5.3-06 | Incremental, Python, and SQL states/certificates agree after every required event class | Live three-oracle history | PASS |
 | M5.3-07 | Rejected declaration rolls back completely; durable semantic failure retains failed epoch/audit but preserves published truth; conflicting replay fails | Live rollback/fail/staged-overlay/replay tests | PENDING |
-| M5.3-08 | Relevant indexes are usable and no oracle reads Hall materialization as truth | `EXPLAIN` evidence and SQL audit | PENDING |
-| M5.3-09 | Fresh and populated installs provide `pgcrypto`/`btree_gist`; full PostgreSQL suite remains green | Extension/version evidence and exact command/result | PENDING |
+| M5.3-08 | Relevant indexes are usable and no oracle reads Hall materialization as truth | `EXPLAIN` evidence and SQL audit | PASS |
+| M5.3-09 | Fresh and populated installs provide `pgcrypto`/`btree_gist`; full PostgreSQL suite remains green | Extension/version evidence and exact command/result | PASS |
+
+Migration 014, the SQL oracle, and their prerequisite audit were integrated
+before the overlay. The integrated PostgreSQL candidate passed 55 live owned
+tests and 247 relevant live M4/pre-M5 tests with one explicit real-model skip.
+Commit `e266696` then added a bounded 16-checkpoint history covering all nine
+committed overlay event variants: overlay, Python, and SQL states agreed, and
+current certificates plus persisted mismatch counters validated. Each logical
+database checkpoint uses fresh rollback-isolated rows and writes derived state
+with `publish=False`. M5.3-06 is therefore snapshot-per-prefix evidence, not a
+durable same-schema mutation/failure/replay runtime or M5.4
+activation/publication transaction. See
+`docs/workstreams/m5_integration/THREE_ORACLE_RESULT_2026-08-05.md`.
 
 ## 5. M5.4 dynamic AI/runtime gates
 

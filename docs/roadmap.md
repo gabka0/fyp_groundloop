@@ -237,8 +237,10 @@ is explicit pre-dissertation/M6 debt, not a hidden extension of M4.
 
 Status: active. M5.0 contract freeze completed on 2026-08-02; M5.1 pure
 reference semantics completed on 2026-08-03 after an independent
-high-confidence audit GO. M5.2 integration and M5.3 PostgreSQL work are the
-current stages. See `docs/m5_implementation_status.md`.
+high-confidence audit GO. M5.2 is complete, and M5.3 is partially complete:
+M5.3-01 through M5.3-06 and M5.3-08 through M5.3-09 pass; M5.3-07 and every
+M5.4--M5.6 implementation/evaluation closure remain pending. See
+`docs/m5_implementation_status.md`.
 
 Deliverables:
 
@@ -258,13 +260,16 @@ Deliverables:
 Stages:
 
 - **M5.0:** design/theory/schema/data freeze. **Complete.** Contract rows pass;
-  implementation rows remain pending.
+  decision-row implementation halves remain pending until the M5.6 cross-stage
+  evidence mapping.
 - **M5.1:** pure records, history, structural events, and independent Python
   oracle. **Complete.**
 - **M5.2:** incremental Hall-mask engine, certificates, exhaustive bounded
-  tests, and 100,000-event differential gate. **Active.**
+  tests, and 100,000-event differential gate. **Complete.**
 - **M5.3:** transactional 013-to-014 PostgreSQL upgrade, typed persistence, and
-  independent SQL oracle. **Active in a disjoint implementation lane.**
+  independent SQL oracle. **Partially complete.** M5.3-01 through M5.3-06 and
+  M5.3-08 through M5.3-09 pass; M5.3-07 durable failure/replay coordination
+  remains pending.
 - **M5.4:** dynamic requirement retrieval/verification/publication/replay and
   bounded frozen-model diagnostic.
 - **M5.5:** controlled dataset adapter, seven qualified baselines, and
