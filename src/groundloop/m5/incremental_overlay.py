@@ -1211,6 +1211,8 @@ class M5IncrementalOverlay:
                 )
             replay = replace(
                 stored,
+                published_group_bindings=(),
+                published_claim_bindings=(),
                 work=M5OverlayWork(),
                 direct_stats=MaintenanceStats(),
                 replayed=True,
@@ -1807,7 +1809,6 @@ class M5IncrementalOverlay:
             str, _HistoryNode[WorkingClaimCertificateBinding] | None
         ] = {}
         claim_binding_rows: list[WorkingClaimCertificateBinding] = []
-        certificate_changed_claims = _OrderedKeys[str]()
         for claim_id in claim_certificate_dirty:
             claim_state = claim_states_after[claim_id]
             prior_claim_artifact = self._claim_artifacts.get(claim_id)
@@ -1832,8 +1833,6 @@ class M5IncrementalOverlay:
             claim_binding_rows.extend(claim_rows)
             if next_claim_history is not claim_history:
                 claim_history_values[claim_id] = next_claim_history
-            if claim_transition.artifact != prior_claim_artifact:
-                certificate_changed_claims.add(claim_id)
 
         requirement_state_changes = _point_changes(
             self._requirement_states, requirement_state_values
@@ -1844,8 +1843,20 @@ class M5IncrementalOverlay:
         group_artifact_changes = _point_changes(
             self._group_artifacts, group_artifact_values
         )
+        group_binding_changes = _point_changes(
+            self._group_bindings, group_binding_values
+        )
+        group_history_changes = _point_changes(
+            self._group_binding_history, group_history_values
+        )
         claim_artifact_changes = _point_changes(
             self._claim_artifacts, claim_artifact_values
+        )
+        claim_binding_changes = _point_changes(
+            self._claim_bindings, claim_binding_values
+        )
+        claim_history_changes = _point_changes(
+            self._claim_binding_history, claim_history_values
         )
 
         status_deltas: list[StatusDelta] = []
@@ -1904,24 +1915,34 @@ class M5IncrementalOverlay:
             and change.after is not None
             and change.before.status is change.after.status
         )
+        group_state_change_keys = _OrderedKeys(
+            change.key for change in group_state_changes
+        )
+        claim_state_change_keys = _OrderedKeys(
+            change.key for change in claim_state_changes
+        )
+        group_certificate_keys = _OrderedKeys(
+            change.key for change in group_artifact_changes
+        )
+        group_certificate_keys.update(change.key for change in group_binding_changes)
+        group_certificate_keys.update(change.key for change in group_history_changes)
+        claim_certificate_keys = _OrderedKeys(
+            change.key for change in claim_artifact_changes
+        )
+        claim_certificate_keys.update(change.key for change in claim_binding_changes)
+        claim_certificate_keys.update(change.key for change in claim_history_changes)
         group_certificate_only = tuple(
-            change.key
-            for change in group_artifact_changes
-            if self._group_states.get(change.key)
-            == group_state_values.get(change.key, self._group_states.get(change.key))
+            key for key in group_certificate_keys if key not in group_state_change_keys
         )
         claim_certificate_only = tuple(
-            change.key
-            for change in claim_artifact_changes
-            if self._claim_states.get(change.key)
-            == claim_state_values.get(change.key, self._claim_states.get(change.key))
+            key for key in claim_certificate_keys if key not in claim_state_change_keys
         )
 
-        changed_group_keys = _OrderedKeys(change.key for change in group_state_changes)
-        changed_group_keys.update(certificate_changed_groups)
+        changed_group_keys = _OrderedKeys(group_state_change_keys)
+        changed_group_keys.update(group_certificate_keys)
         changed_group_ids = tuple(changed_group_keys)
-        changed_claim_keys = _OrderedKeys(change.key for change in claim_state_changes)
-        changed_claim_keys.update(certificate_changed_claims)
+        changed_claim_keys = _OrderedKeys(claim_state_change_keys)
+        changed_claim_keys.update(claim_certificate_keys)
         changed_claim_ids = tuple(changed_claim_keys)
         claims_touched = _OrderedKeys(claim_state_dirty)
         claims_touched.update(claim_certificate_dirty)
@@ -2020,19 +2041,11 @@ class M5IncrementalOverlay:
             ),
             answer_state_changes=answer_state_changes,
             group_artifact_changes=group_artifact_changes,
-            group_binding_changes=_point_changes(
-                self._group_bindings, group_binding_values
-            ),
-            group_history_changes=_point_changes(
-                self._group_binding_history, group_history_values
-            ),
+            group_binding_changes=group_binding_changes,
+            group_history_changes=group_history_changes,
             claim_artifact_changes=claim_artifact_changes,
-            claim_binding_changes=_point_changes(
-                self._claim_bindings, claim_binding_values
-            ),
-            claim_history_changes=_point_changes(
-                self._claim_binding_history, claim_history_values
-            ),
+            claim_binding_changes=claim_binding_changes,
+            claim_history_changes=claim_history_changes,
             observation_changes=_point_changes(self._observations, observation_values),
             observations_by_requirement_changes=_point_changes(
                 self._observations_by_requirement, by_requirement_values
