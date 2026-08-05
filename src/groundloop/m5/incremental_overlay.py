@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import struct
 from collections import Counter
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import Enum
 from typing import Generic, TypeVar
@@ -94,7 +94,33 @@ CommittedOverlayEvent = Event | M5Event
 OverlayFailureInjector = Callable[[str], None]
 CANONICAL_REQUIREMENT_TASK = "verify_requirement_v1"
 _T = TypeVar("_T")
-_K = TypeVar("_K")
+_K = TypeVar("_K", bound=Hashable)
+
+
+class _OrderedKeys(Generic[_K]):
+    """First-touch ordered unique keys for measured event propagation."""
+
+    __slots__ = ("_values",)
+
+    def __init__(self, values: Iterable[_K] = ()) -> None:
+        self._values: dict[_K, None] = {}
+        self.update(values)
+
+    def add(self, key: _K) -> None:
+        self._values.setdefault(key, None)
+
+    def update(self, values: Iterable[_K]) -> None:
+        for value in values:
+            self.add(value)
+
+    def __iter__(self) -> Iterator[_K]:
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._values
 
 
 @dataclass(frozen=True, slots=True)
@@ -402,7 +428,7 @@ def _score_range(
     node: _ScoreNode | None,
     lower: float,
     upper: float,
-    result: set[str],
+    result: dict[str, None],
 ) -> None:
     if node is None:
         return
@@ -411,7 +437,7 @@ def _score_range(
     if node.key >= lower_key:
         _score_range(node.left, lower, upper, result)
     if lower_key <= node.key < upper_key:
-        result.add(node.key[1])
+        result.setdefault(node.key[1], None)
     if node.key < upper_key:
         _score_range(node.right, lower, upper, result)
 
@@ -452,17 +478,19 @@ class _RequirementScoreIndex:
         self,
         old: DecisionPolicy,
         new: DecisionPolicy,
-    ) -> set[str]:
+    ) -> tuple[str, ...]:
         if old.tie_rule_version != new.tie_rule_version:
             raise ValidationError("the frozen overlay supports tie rule v1 only")
-        result: set[str] = set()
+        result: dict[str, None] = {}
         if old.support_threshold != new.support_threshold:
-            lower, upper = sorted((old.support_threshold, new.support_threshold))
+            lower = min(old.support_threshold, new.support_threshold)
+            upper = max(old.support_threshold, new.support_threshold)
             _score_range(self.support, lower, upper, result)
         if old.refute_threshold != new.refute_threshold:
-            lower, upper = sorted((old.refute_threshold, new.refute_threshold))
+            lower = min(old.refute_threshold, new.refute_threshold)
+            upper = max(old.refute_threshold, new.refute_threshold)
             _score_range(self.refute, lower, upper, result)
-        return result
+        return tuple(result)
 
 
 class _AfterMapping(Mapping[str, _T]):
@@ -591,7 +619,16 @@ def _answer_status(counts: Counter[ClaimStatus], required: int) -> AnswerStatus:
 def _counter_image(
     counts: Counter[ClaimStatus],
 ) -> tuple[tuple[ClaimStatus, int], ...]:
-    return tuple(sorted(counts.items(), key=lambda item: item[0].value))
+    return tuple(
+        (status, counts[status])
+        for status in (
+            ClaimStatus.CONFLICTED,
+            ClaimStatus.REFUTED,
+            ClaimStatus.SUPPORTED,
+            ClaimStatus.UNSUPPORTED,
+        )
+        if status in counts
+    )
 
 
 def _event_digest(event: CommittedOverlayEvent) -> str:
@@ -709,29 +746,14 @@ def _logical_value_bytes(value: object) -> bytes:
 
 
 def _logical_output_image(records: Sequence[tuple[str, str, object]]) -> bytes:
-    """Canonical m5-overlay-logical-output-v1 bytes.
+    """Encode deterministic first-touch output as logical-output-v2 bytes.
 
-    Records sort by typed relation and identifier.  Repeated binding rows for
-    one object retain close-before-open order through their local ordinal.
-    Only already-produced output rows are sorted; no state registry is read.
+    Producers emit fixed relation blocks. Within each block they preserve
+    first-touch key order; repeated binding rows retain close-before-open
+    order. Empty output remains explicitly domain separated.
     """
 
-    if not records:
-        return b""
-    ordinals: dict[tuple[str, str], int] = {}
-    decorated: list[tuple[str, str, int, object]] = []
-    for kind, key, value in records:
-        pair = (kind, key)
-        ordinal = ordinals.get(pair, 0)
-        ordinals[pair] = ordinal + 1
-        decorated.append((kind, key, ordinal, value))
-    canonical = tuple(
-        (kind, key, value)
-        for kind, key, _, value in sorted(
-            decorated, key=lambda item: (item[0], item[1], item[2])
-        )
-    )
-    return _logical_value_bytes(("m5-overlay-logical-output-v1", canonical))
+    return _logical_value_bytes(("m5-overlay-logical-output-v2", tuple(records)))
 
 
 @dataclass(slots=True)
@@ -1215,7 +1237,7 @@ class M5IncrementalOverlay:
         score_point_operations = 0
         membership_by_group: dict[str, list[ObservationMembershipDelta]] = {}
         observation_changes_processed = 0
-        touched_groups: set[str] = set()
+        touched_groups = _OrderedKeys[str]()
         removed_groups: dict[str, EvidenceGroupVersion] = {}
         added_groups: dict[str, EvidenceGroupVersion] = {}
 
@@ -1373,7 +1395,7 @@ class M5IncrementalOverlay:
                 for observation_id in values.items():
                     withdraw_info(observation_id)
 
-        policy_candidates: set[str] = set()
+        policy_candidates: tuple[str, ...] = ()
         changed_threshold_dimensions = 0
         if isinstance(event, PolicyChangeEvent):
             changed_threshold_dimensions = int(
@@ -1398,7 +1420,7 @@ class M5IncrementalOverlay:
 
         requirement_local_values: dict[str, _RequirementLocal | None] = {}
         edge_count_values: dict[tuple[str, str], int | None] = {}
-        touched_requirements: set[str] = set()
+        touched_requirements = _OrderedKeys[str]()
 
         for group in added_groups.values():
             for requirement in group.requirements:
@@ -1465,7 +1487,7 @@ class M5IncrementalOverlay:
                 touched_requirements.add(requirement_id)
 
         requirement_state_values: dict[str, RequirementState | None] = {}
-        for requirement_id in sorted(touched_requirements):
+        for requirement_id in touched_requirements:
             requirement_local: _RequirementLocal | None = requirement_local_values.get(
                 requirement_id, self._requirement_locals.get(requirement_id)
             )
@@ -1489,7 +1511,7 @@ class M5IncrementalOverlay:
         hall_values: dict[str, HallMaskState | None] = {}
         hall_after_by_group: dict[str, HallMaskState] = {}
 
-        for group_id in sorted(touched_groups):
+        for group_id in touched_groups:
             if group_id in added_groups:
                 group = added_groups[group_id]
                 index = MaintainedCertificateIndex(
@@ -1531,9 +1553,9 @@ class M5IncrementalOverlay:
             str, _HistoryNode[WorkingGroupCertificateBinding] | None
         ] = {}
         group_binding_rows: list[WorkingGroupCertificateBinding] = []
-        certificate_changed_groups: set[str] = set()
+        certificate_changed_groups = _OrderedKeys[str]()
         complete_group_values: dict[str, PersistentStringSet | None] = {}
-        dirty_claims: set[str] = set(direct_patch.touched_claim_ids)
+        dirty_claims = _OrderedKeys(direct_patch.touched_claim_ids)
 
         def current_complete_groups(claim_id: str) -> PersistentStringSet:
             if claim_id in complete_group_values:
@@ -1561,7 +1583,7 @@ class M5IncrementalOverlay:
             complete_group_values[claim_id] = values
 
         group_patch_by_id = {item.group_version_id: item for item in matching_patches}
-        for group_id in sorted(touched_groups):
+        for group_id in touched_groups:
             old_state = self._group_states.get(group_id)
             if group_id in removed_groups:
                 group = removed_groups[group_id]
@@ -1665,11 +1687,11 @@ class M5IncrementalOverlay:
             direct_patch, dirty_claims
         )
         claim_state_values: dict[str, CombinedClaimState | None] = {}
-        dirty_answers: set[str] = set()
+        dirty_answers = _OrderedKeys[str]()
         answer_count_values: dict[str, tuple[tuple[ClaimStatus, int], ...] | None] = {}
         answer_counter_after: dict[str, Counter[ClaimStatus]] = {}
         claim_status_changes = 0
-        for claim_id in sorted(dirty_claims):
+        for claim_id in dirty_claims:
             next_claim_state = self._combined_claim_from_parts(
                 direct_after[claim_id], complete_groups_after[claim_id]
             )
@@ -1689,7 +1711,7 @@ class M5IncrementalOverlay:
 
         answer_state_values: dict[str, CombinedAnswerState | None] = {}
         answer_status_changes = 0
-        for answer_id in sorted(dirty_answers):
+        for answer_id in dirty_answers:
             counts = answer_counter_after[answer_id]
             answer_count_values[answer_id] = _counter_image(counts)
             next_answer_state = self._answer_from_counts(answer_id, counts)
@@ -1707,8 +1729,8 @@ class M5IncrementalOverlay:
             str, _HistoryNode[WorkingClaimCertificateBinding] | None
         ] = {}
         claim_binding_rows: list[WorkingClaimCertificateBinding] = []
-        certificate_changed_claims: set[str] = set()
-        for claim_id in sorted(dirty_claims):
+        certificate_changed_claims = _OrderedKeys[str]()
+        for claim_id in dirty_claims:
             prior_claim_artifact = self._claim_artifacts.get(claim_id)
             prior_claim_binding = self._claim_bindings.get(claim_id)
             claim_transition = transition_claim_certificate(
@@ -1816,18 +1838,12 @@ class M5IncrementalOverlay:
             == claim_state_values.get(change.key, self._claim_states.get(change.key))
         )
 
-        changed_group_ids = tuple(
-            sorted(
-                set(change.key for change in group_state_changes)
-                | certificate_changed_groups
-            )
-        )
-        changed_claim_ids = tuple(
-            sorted(
-                set(change.key for change in claim_state_changes)
-                | certificate_changed_claims
-            )
-        )
+        changed_group_keys = _OrderedKeys(change.key for change in group_state_changes)
+        changed_group_keys.update(certificate_changed_groups)
+        changed_group_ids = tuple(changed_group_keys)
+        changed_claim_keys = _OrderedKeys(change.key for change in claim_state_changes)
+        changed_claim_keys.update(certificate_changed_claims)
+        changed_claim_ids = tuple(changed_claim_keys)
         output_records: list[tuple[str, str, object]] = []
         for kind, changes in (
             ("requirement_state", requirement_state_changes),
@@ -1854,7 +1870,6 @@ class M5IncrementalOverlay:
         output_image = _logical_output_image(output_records)
         output_bytes = len(output_image)
         logical_output_digest = hashlib.sha256(output_image).hexdigest()
-        matching_work += MatchingWorkCounters(canonical_sort_items=len(output_records))
         matching_work += touched_state_work(
             groups_touched=len(touched_groups),
             claims_touched=len(dirty_claims),
@@ -1878,18 +1893,16 @@ class M5IncrementalOverlay:
             point=after_point,
             deltas=tuple(status_deltas),
             changed_requirement_ids=tuple(
-                sorted(change.key for change in requirement_state_changes)
+                change.key for change in requirement_state_changes
             ),
             changed_group_ids=changed_group_ids,
             changed_claim_ids=changed_claim_ids,
-            changed_answer_ids=tuple(
-                sorted(change.key for change in answer_state_changes)
-            ),
-            state_only_requirement_ids=tuple(sorted(requirement_state_only)),
-            state_only_group_ids=tuple(sorted(group_state_only)),
-            state_only_claim_ids=tuple(sorted(claim_state_only)),
-            certificate_only_group_ids=tuple(sorted(group_certificate_only)),
-            certificate_only_claim_ids=tuple(sorted(claim_certificate_only)),
+            changed_answer_ids=tuple(change.key for change in answer_state_changes),
+            state_only_requirement_ids=requirement_state_only,
+            state_only_group_ids=group_state_only,
+            state_only_claim_ids=claim_state_only,
+            certificate_only_group_ids=group_certificate_only,
+            certificate_only_claim_ids=claim_certificate_only,
             published_group_bindings=tuple(group_binding_rows),
             published_claim_bindings=tuple(claim_binding_rows),
             logical_output_digest=logical_output_digest,
@@ -1919,8 +1932,8 @@ class M5IncrementalOverlay:
             claim_state_changes=claim_state_changes,
             answer_count_changes=_point_changes(
                 {
-                    key: _counter_image(value)
-                    for key, value in self._answer_counts.items()
+                    key: _counter_image(self._answer_counts[key])
+                    for key in answer_count_values
                 },
                 answer_count_values,
             ),

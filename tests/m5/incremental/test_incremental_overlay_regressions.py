@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import inspect
+import json
+import os
+import subprocess
+import sys
 import textwrap
+from collections import Counter
 from copy import deepcopy
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -28,6 +35,9 @@ from .helpers import (
     make_requirement_observation,
     sha,
 )
+from .ordering_probe import run_policy_rebind_scenario
+
+ROOT = Path(__file__).resolve().parents[3]
 
 
 def _score_tree_image(
@@ -101,7 +111,14 @@ def test_score_index_two_child_delete_preserves_avl_and_range_membership(
         DecisionPolicy("range-low", 0.0, 0.0),
         DecisionPolicy("range-high", 1.0, 1.0),
     )
-    assert candidates == set(by_id) - {removed_id}
+    assert candidates == (
+        "score-3",
+        "score-1",
+        "score-4",
+        "score-5",
+        "score-2",
+        "score-6",
+    )
 
 
 def _long_group_history(
@@ -332,3 +349,119 @@ def test_measured_overlay_event_never_exports_repository_snapshot(
     assert overlay.claim_state("claim-a").status is ClaimStatus.SUPPORTED
     assert overlay.answer_state("answer-a").status is AnswerStatus.VALID
     assert overlay.point == after.current_point
+
+
+def test_policy_rebind_uses_first_touch_output_but_keeps_semantic_ids_canonical() -> (
+    None
+):
+    summary = run_policy_rebind_scenario()
+
+    assert summary["changed_requirement_ids"] == ()
+    assert summary["changed_group_ids"] == ("z-group", "a-group")
+    assert summary["changed_claim_ids"] == ("claim-a",)
+    assert summary["changed_answer_ids"] == ()
+    assert summary["certificate_only_group_ids"] == ("z-group", "a-group")
+    assert summary["certificate_only_claim_ids"] == ("claim-a",)
+    assert summary["published_group_ids"] == ("z-group", "a-group")
+    assert summary["published_claim_ids"] == ("claim-a",)
+    assert summary["complete_group_ids"] == ("a-group", "z-group")
+    assert summary["selected_group_id"] == "a-group"
+    assert summary["canonical_sort_items"] == 0
+    assert summary["public_deltas"] == 0
+    assert summary["overlapping_policy_candidates"] == (
+        "candidate-b",
+        "candidate-a",
+        "candidate-c",
+    )
+
+
+@pytest.mark.parametrize("seed", ("0", "1", "42", "8675309"))
+def test_policy_rebind_output_is_cross_hash_seed_stable(seed: str) -> None:
+    environment = os.environ.copy()
+    python_path = (str(ROOT / "src"), str(ROOT))
+    existing = environment.get("PYTHONPATH")
+    environment["PYTHONPATH"] = os.pathsep.join(
+        (*python_path, *((existing,) if existing else ()))
+    )
+    environment["PYTHONHASHSEED"] = seed
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tests.m5.incremental.ordering_probe",
+        ],
+        cwd=ROOT,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess_summary = json.loads(completed.stdout)
+    expected = json.loads(json.dumps(run_policy_rebind_scenario()))
+    assert subprocess_summary == expected
+
+
+def test_logical_output_v2_domains_empty_and_preserves_binding_row_order() -> None:
+    empty = overlay_module._logical_output_image(())
+    records: tuple[tuple[str, str, object], ...] = (
+        ("group_binding", "group-a", ("closed", 1)),
+        ("group_binding", "group-a", ("opened", 2)),
+    )
+    ordered = overlay_module._logical_output_image(records)
+    reversed_rows = overlay_module._logical_output_image(tuple(reversed(records)))
+
+    assert empty
+    assert hashlib.sha256(empty).hexdigest() == (
+        "b4e641b66a06cb7d204377c37cfe031d958ce6d959832620fc2e9441339581c3"
+    )
+    assert hashlib.sha256(ordered).hexdigest() == (
+        "53f0cb5e1327f0cbcde05c7c2963a880f7310d83f78afdb00123dd0b32f72b82"
+    )
+    assert ordered != reversed_rows
+
+
+def test_overlay_ordering_functions_have_no_local_global_sort() -> None:
+    for function in (
+        overlay_module._score_range,
+        overlay_module._RequirementScoreIndex.policy_candidates,
+        overlay_module._counter_image,
+        overlay_module._logical_output_image,
+        overlay_module.M5IncrementalOverlay.prepare_committed_event_patch,
+    ):
+        source = textwrap.dedent(inspect.getsource(function))
+        tree = ast.parse(source)
+        assert not any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"set", "sorted"}
+            for node in ast.walk(tree)
+        )
+        assert not any(
+            isinstance(node, (ast.Set, ast.SetComp)) for node in ast.walk(tree)
+        )
+    prepare_source = inspect.getsource(
+        overlay_module.M5IncrementalOverlay.prepare_committed_event_patch
+    )
+    assert "canonical_sort_items" not in prepare_source
+
+
+def test_answer_count_patch_reads_only_touched_answers() -> None:
+    class NoGlobalItems(dict[str, Counter[ClaimStatus]]):
+        def items(self):  # type: ignore[no-untyped-def]
+            raise AssertionError("measured event scanned every answer counter")
+
+    repository = make_repository()
+    overlay = overlay_module.M5IncrementalOverlay.from_repository(repository)
+    overlay._answer_counts = NoGlobalItems(overlay._answer_counts)
+    before = deepcopy(repository)
+    after = deepcopy(repository)
+    event = PolicyChangeEvent(
+        event_id="no-answer-scan",
+        policy=DecisionPolicy("policy-v2", 0.8, 0.8),
+    )
+    apply_event(after.base, event)
+    _ = after.current_point
+
+    patch = overlay.prepare_committed_event_patch(event, before, after)
+
+    assert patch.answer_count_changes == ()
