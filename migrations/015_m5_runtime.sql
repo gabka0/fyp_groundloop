@@ -49,6 +49,170 @@ AS $$
     SELECT ARRAY['f64', encode(float8send(value_to_hash), 'hex')]
 $$;
 
+CREATE FUNCTION groundloop_m5_runtime_requirement_state_artifact(
+    requirement_version_id_to_hash text,
+    witness_hashes_to_hash text[],
+    supporting_observation_ids_to_hash text[],
+    witness_count_to_hash integer,
+    satisfied_to_hash boolean,
+    decision_policy_version_to_hash text
+)
+RETURNS char(64)
+LANGUAGE plpgsql
+IMMUTABLE
+STRICT
+PARALLEL SAFE
+AS $$
+DECLARE
+    fields text[] := ARRAY[
+        'm5-requirement-state-artifact-v2',
+        'text', requirement_version_id_to_hash,
+        'sequence', 'int', cardinality(witness_hashes_to_hash)::text
+    ];
+    value_to_hash text;
+BEGIN
+    FOREACH value_to_hash IN ARRAY witness_hashes_to_hash LOOP
+        fields := fields || ARRAY['sha256', value_to_hash];
+    END LOOP;
+    fields := fields || ARRAY[
+        'sequence', 'int', cardinality(supporting_observation_ids_to_hash)::text
+    ];
+    FOREACH value_to_hash IN ARRAY supporting_observation_ids_to_hash LOOP
+        fields := fields || ARRAY['text', value_to_hash];
+    END LOOP;
+    fields := fields || ARRAY[
+        'int', witness_count_to_hash::text,
+        'bool', CASE WHEN satisfied_to_hash THEN '1' ELSE '0' END,
+        'text', decision_policy_version_to_hash
+    ];
+    RETURN groundloop_m5_digest_text_fields(fields);
+END;
+$$;
+
+CREATE FUNCTION groundloop_m5_runtime_group_state_artifact(
+    group_version_id_to_hash text,
+    requirement_count_to_hash integer,
+    satisfied_count_to_hash integer,
+    matching_size_to_hash integer,
+    complete_to_hash boolean,
+    decision_policy_version_to_hash text,
+    certificate_digest_to_hash char(64)
+)
+RETURNS char(64)
+LANGUAGE plpgsql
+IMMUTABLE
+PARALLEL SAFE
+AS $$
+DECLARE
+    fields text[] := ARRAY[
+        'm5-group-state-artifact-v2',
+        'text', group_version_id_to_hash,
+        'int', requirement_count_to_hash::text,
+        'int', satisfied_count_to_hash::text,
+        'int', matching_size_to_hash::text,
+        'bool', CASE WHEN complete_to_hash THEN '1' ELSE '0' END,
+        'text', decision_policy_version_to_hash
+    ];
+BEGIN
+    fields := fields || CASE
+        WHEN certificate_digest_to_hash IS NULL THEN ARRAY['null']
+        ELSE ARRAY['sha256', certificate_digest_to_hash::text]
+    END;
+    RETURN groundloop_m5_digest_text_fields(fields);
+END;
+$$;
+
+CREATE FUNCTION groundloop_m5_runtime_claim_state_artifact(
+    claim_id_to_hash text,
+    support_count_to_hash integer,
+    refute_count_to_hash integer,
+    best_support_score_to_hash double precision,
+    best_refute_score_to_hash double precision,
+    supporting_observation_ids_to_hash text[],
+    refuting_observation_ids_to_hash text[],
+    complete_group_count_to_hash integer,
+    complete_group_ids_to_hash text[],
+    status_to_hash text,
+    decision_policy_version_to_hash text,
+    certificate_digest_to_hash char(64)
+)
+RETURNS char(64)
+LANGUAGE plpgsql
+IMMUTABLE
+PARALLEL SAFE
+AS $$
+DECLARE
+    fields text[] := ARRAY[
+        'm5-claim-state-artifact-v2',
+        'text', claim_id_to_hash,
+        'int', support_count_to_hash::text,
+        'int', refute_count_to_hash::text
+    ];
+    value_to_hash text;
+BEGIN
+    fields := fields || CASE WHEN best_support_score_to_hash IS NULL
+        THEN ARRAY['null']
+        ELSE groundloop_m5_runtime_f64_fields(best_support_score_to_hash)
+    END;
+    fields := fields || CASE WHEN best_refute_score_to_hash IS NULL
+        THEN ARRAY['null']
+        ELSE groundloop_m5_runtime_f64_fields(best_refute_score_to_hash)
+    END;
+    fields := fields || ARRAY[
+        'sequence', 'int', cardinality(supporting_observation_ids_to_hash)::text
+    ];
+    FOREACH value_to_hash IN ARRAY supporting_observation_ids_to_hash LOOP
+        fields := fields || ARRAY['text', value_to_hash];
+    END LOOP;
+    fields := fields || ARRAY[
+        'sequence', 'int', cardinality(refuting_observation_ids_to_hash)::text
+    ];
+    FOREACH value_to_hash IN ARRAY refuting_observation_ids_to_hash LOOP
+        fields := fields || ARRAY['text', value_to_hash];
+    END LOOP;
+    fields := fields || ARRAY[
+        'int', complete_group_count_to_hash::text,
+        'sequence', 'int', cardinality(complete_group_ids_to_hash)::text
+    ];
+    FOREACH value_to_hash IN ARRAY complete_group_ids_to_hash LOOP
+        fields := fields || ARRAY['text', value_to_hash];
+    END LOOP;
+    fields := fields || ARRAY[
+        'enum', status_to_hash,
+        'text', decision_policy_version_to_hash,
+        'sha256', certificate_digest_to_hash::text
+    ];
+    RETURN groundloop_m5_digest_text_fields(fields);
+END;
+$$;
+
+CREATE FUNCTION groundloop_m5_runtime_answer_state_artifact(
+    answer_version_id_to_hash text,
+    required_claim_count_to_hash integer,
+    supported_count_to_hash integer,
+    unsupported_count_to_hash integer,
+    refuted_count_to_hash integer,
+    conflicted_count_to_hash integer,
+    status_to_hash text
+)
+RETURNS char(64)
+LANGUAGE sql
+IMMUTABLE
+STRICT
+PARALLEL SAFE
+AS $$
+    SELECT groundloop_m5_digest_text_fields(ARRAY[
+        'm5-answer-state-artifact-v2',
+        'text', answer_version_id_to_hash,
+        'int', required_claim_count_to_hash::text,
+        'int', supported_count_to_hash::text,
+        'int', unsupported_count_to_hash::text,
+        'int', refuted_count_to_hash::text,
+        'int', conflicted_count_to_hash::text,
+        'enum', status_to_hash
+    ])
+$$;
+
 CREATE FUNCTION groundloop_m5_runtime_assert_checked_write()
 RETURNS void
 LANGUAGE plpgsql
@@ -3170,6 +3334,7 @@ DECLARE
     digest_fields text[];
     child_row record;
     expected_digest char(64);
+    expected_state_hash char(64);
 BEGIN
     event_id := CASE
         WHEN TG_OP = 'DELETE' THEN OLD.structural_event_id
@@ -3394,6 +3559,94 @@ BEGIN
         ]);
         IF child_row.reference_digest <> expected_digest THEN
             RAISE EXCEPTION 'M5 changed-state reference digest is incorrect';
+        END IF;
+        expected_state_hash := NULL;
+        CASE child_row.kind
+            WHEN 'requirement_state' THEN
+                SELECT groundloop_m5_runtime_requirement_state_artifact(
+                    state.requirement_version_id,
+                    state.witness_hashes,
+                    state.supporting_observation_ids,
+                    state.witness_count,
+                    state.satisfied,
+                    state.decision_policy_version
+                )
+                INTO expected_state_hash
+                FROM groundloop_m5_published_requirement_state AS state
+                WHERE state.requirement_version_id = child_row.object_id
+                  AND state.valid_from_epoch = child_row.epoch_id
+                  AND state.sealed_revision = child_row.revision;
+            WHEN 'group_state' THEN
+                SELECT groundloop_m5_runtime_group_state_artifact(
+                    state.group_version_id,
+                    state.requirement_count,
+                    state.satisfied_count,
+                    state.matching_size,
+                    state.complete,
+                    state.decision_policy_version,
+                    state.certificate_digest
+                )
+                INTO expected_state_hash
+                FROM groundloop_m5_published_group_state AS state
+                WHERE state.group_version_id = child_row.object_id
+                  AND state.valid_from_epoch = child_row.epoch_id
+                  AND state.sealed_revision = child_row.revision;
+            WHEN 'group_certificate' THEN
+                SELECT binding.certificate_digest
+                INTO expected_state_hash
+                FROM groundloop_m5_published_group_certificate_binding AS binding
+                WHERE binding.group_version_id = child_row.object_id
+                  AND binding.valid_from_epoch = child_row.epoch_id
+                  AND binding.sealed_revision = child_row.revision;
+            WHEN 'claim_state' THEN
+                SELECT groundloop_m5_runtime_claim_state_artifact(
+                    state.claim_id,
+                    state.support_count,
+                    state.refute_count,
+                    state.best_support_score,
+                    state.best_refute_score,
+                    state.supporting_observation_ids,
+                    state.refuting_observation_ids,
+                    state.complete_group_count,
+                    state.complete_group_ids,
+                    state.status,
+                    state.decision_policy_version,
+                    state.certificate_digest
+                )
+                INTO expected_state_hash
+                FROM groundloop_m5_published_claim_state AS state
+                WHERE state.claim_id = child_row.object_id
+                  AND state.valid_from_epoch = child_row.epoch_id
+                  AND state.sealed_revision = child_row.revision;
+            WHEN 'claim_certificate' THEN
+                SELECT binding.certificate_digest
+                INTO expected_state_hash
+                FROM groundloop_m5_published_claim_certificate_binding AS binding
+                WHERE binding.claim_id = child_row.object_id
+                  AND binding.valid_from_epoch = child_row.epoch_id
+                  AND binding.sealed_revision = child_row.revision;
+            WHEN 'answer_state' THEN
+                SELECT groundloop_m5_runtime_answer_state_artifact(
+                    state.answer_version_id,
+                    state.required_claim_count,
+                    state.supported_count,
+                    state.unsupported_count,
+                    state.refuted_count,
+                    state.conflicted_count,
+                    state.status
+                )
+                INTO expected_state_hash
+                FROM groundloop_m5_published_answer_state AS state
+                WHERE state.answer_version_id = child_row.object_id
+                  AND state.valid_from_epoch = child_row.epoch_id
+                  AND state.sealed_revision = child_row.revision;
+            ELSE
+                RAISE EXCEPTION 'M5 changed-state reference kind is invalid';
+        END CASE;
+        IF expected_state_hash IS NULL
+           OR child_row.state_artifact_hash <> expected_state_hash THEN
+            RAISE EXCEPTION
+                'M5 changed-state reference does not match historical state';
         END IF;
         digest_fields := digest_fields
             || ARRAY['sha256', child_row.reference_digest];

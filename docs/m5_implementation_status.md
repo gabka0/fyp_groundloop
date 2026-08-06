@@ -1,10 +1,10 @@
 # GroundLoop M5 Implementation Status
 
-Status date: 2026-08-05
+Status date: 2026-08-06
 
-Milestone status: **M5.0, M5.1, and M5.2 complete; M5.3 partially complete.**
-M5.3-01 through M5.3-06 and M5.3-08 through M5.3-09 pass. M5.3-07
-and every M5.4--M5.6 implementation/evaluation closure remain pending.
+Milestone status: **M5.0 through M5.3 complete; M5.4 partially complete.**
+M5.4-01 passes. M5.4-02 through M5.4-09 and every M5.5--M5.6
+implementation/evaluation closure remain pending.
 
 ## 1. Honest current verdict
 
@@ -17,10 +17,11 @@ upgrade/activation boundary, and a retrospective controlled WiCE evaluation.
 Accepted bounded evidence now covers the pure reference, optimized matching and
 incremental overlay, migration 014/PostgreSQL integrity, the independent SQL
 oracle, a 100,000-event in-memory differential, and a snapshot-per-prefix
-three-oracle history. There is still no accepted M5 evidence for durable M5.3
-failure/replay coordination, dynamic requirement jobs, M5.4 activation or
-publication, maintained-runtime model quality, production latency, call
-savings, utility, novelty, or publishing potential. Those claims remain
+three-oracle history, durable failure/replay coordination, byte-total v2
+runtime contracts, and public activation/bootstrap. There is still no accepted
+M5 evidence for dynamic requirement execution, typed document composition,
+sparse publication, sealed reconnect replay, maintained-runtime model quality,
+production latency, call savings, utility, novelty, or publishing potential. Those claims remain
 blocked by the executable gates in `docs/m5_acceptance_matrix.md`.
 
 ## 2. M5.0 evidence
@@ -68,7 +69,7 @@ decision-row cross-stage mapping will be recorded at M5.6.
 
 The authoritative documents are:
 
-- `docs/m5_design_freeze.md` -- decisions M5-D1 through M5-D20 and theorems
+- `docs/m5_design_freeze.md` -- decisions M5-D1 through M5-D22 and theorems
   M5-T1/M5-T2;
 - `docs/m5_implementation_plan.md` -- stages M5.1 through M5.6;
 - `docs/m5_multiagent_execution_plan.md` -- path-exclusive ownership and
@@ -87,7 +88,7 @@ certificate repairs/rebuilds, touched states and output bytes, with
 `r <= 8`. It is not a claim of general dynamic-matching novelty or superiority
 over DBSP, F-IVM, CROWN, or another system.
 
-## 4. M5.1 result, completed M5.2, and partial M5.3
+## 4. M5.1--M5.3 result and partial M5.4
 
 M5.1 implements the pure semantic foundation:
 
@@ -130,14 +131,26 @@ the following bounded stages:
 
 M5.3-06 loads fresh rollback-isolated PostgreSQL rows for each logical prefix
 and materializes derived state with `publish=False`. It is not a durable
-same-schema mutation history. M5.3-07 durable failure/replay coordination is
-still pending, and M5.4 remains blocked on that coordinator/runtime work.
+same-schema mutation history. M5.3-07 now separately passes through the
+production persistence slice: 27 adversarial live tests cover every typed
+group open/failure injection point, REGISTER/REPLACE/RETIRE staged failure,
+exact cancellation/PENDING accounting, strict/published immutability,
+read-only reconnect replay, conflict rejection, and concurrent exact open.
+The composed migration/failure/bundle-race gate passed 67/67 tests.
+
+M5.4-01 passes through the integrated byte-total contract, digest, direction,
+shape, nullability, F64, ordering, and pure-frontier suite. M5-D22 closes the
+previously undefined inner state-artifact identity without changing M4-v1 or
+M5 semantic state. Public activation is implemented and passes 8/8 live tests,
+including all six bootstrap reference kinds, cross-language SQL/Python hashes,
+no synthetic epoch, read-only replay, conflicts, and six failure-atomic
+injection points. Activation alone does not close M5.4-05.
 
 ## 5. Remaining closure boundary
 
-M5 completes only after M5.1--M5.6 pass. Closure still requires M5.3-07 durable
-rejected-declaration/failure/conflicting-replay behavior; M5.4 dynamic jobs,
-activation, publication, reconnect and exactly-once runtime gates; a real
+M5 completes only after M5.1--M5.6 pass. Closure still requires M5.4 dynamic
+jobs, typed direct composition, sparse publication, reconnect and exactly-once
+runtime gates; a real
 maintained-runtime M5.5 controlled WiCE execution; and M5.6 reproduction,
 artifact, documentation, and final acceptance audits.
 

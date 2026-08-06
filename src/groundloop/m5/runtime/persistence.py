@@ -35,6 +35,8 @@ from groundloop.m5.events import (
 from groundloop.m5.runtime import digests
 from groundloop.m5.runtime.contracts import (
     ActiveChunkSnapshot,
+    M5ActivationReceipt,
+    M5ActivationRequest,
     M5CandidatePolicyManifest,
     M5ChangedStateReference,
     M5DiscoveryDirection,
@@ -53,6 +55,11 @@ from groundloop.m5.runtime.contracts import (
     M5TerminalReason,
     M5TypedEventPlan,
     RequirementRegistrySnapshot,
+)
+from groundloop.postgres.m5 import (
+    M5BootstrapProjection,
+    build_m5_bootstrap_projection,
+    write_m5_materialized_states,
 )
 
 RuntimeFailureInjector = Callable[[str], None]
@@ -74,6 +81,185 @@ class _PublishedGroupOwner:
 class _RootDeclaration:
     scope: M5DiscoveryScopeContract
     job: M5LogicalJobSpec
+
+
+def build_m5_bootstrap_changed_state_references(
+    projection: M5BootstrapProjection,
+) -> tuple[M5ChangedStateReference, ...]:
+    """Build the frozen six-kind activation projection from independent state."""
+
+    references: list[M5ChangedStateReference] = []
+    for requirement_id, requirement_state in sorted(
+        projection.states.requirements.items()
+    ):
+        references.append(
+            M5ChangedStateReference.build(
+                kind=M5StateReferenceKind.REQUIREMENT_STATE,
+                object_id=requirement_id,
+                epoch_id=projection.epoch_id,
+                revision=projection.revision,
+                state_artifact_hash=digests.requirement_state_artifact_digest(
+                    requirement_version_id=requirement_id,
+                    witness_hashes=requirement_state.witness_hashes,
+                    supporting_observation_ids=(
+                        requirement_state.supporting_observation_ids
+                    ),
+                    witness_count=requirement_state.witness_count,
+                    satisfied=requirement_state.satisfied,
+                    decision_policy_version=projection.decision_policy_version,
+                ),
+            )
+        )
+    for group_id, group_state in sorted(projection.states.groups.items()):
+        group_certificate = projection.group_certificates.get(group_id)
+        certificate_digest = (
+            None
+            if group_certificate is None
+            else group_certificate.certificate_digest
+        )
+        references.append(
+            M5ChangedStateReference.build(
+                kind=M5StateReferenceKind.GROUP_STATE,
+                object_id=group_id,
+                epoch_id=projection.epoch_id,
+                revision=projection.revision,
+                state_artifact_hash=digests.group_state_artifact_digest(
+                    group_version_id=group_id,
+                    requirement_count=group_state.requirement_count,
+                    satisfied_count=group_state.satisfied_count,
+                    matching_size=group_state.matching_size,
+                    complete=group_state.complete,
+                    decision_policy_version=projection.decision_policy_version,
+                    certificate_digest=certificate_digest,
+                ),
+            )
+        )
+        if group_certificate is not None:
+            references.append(
+                M5ChangedStateReference.build(
+                    kind=M5StateReferenceKind.GROUP_CERTIFICATE,
+                    object_id=group_id,
+                    epoch_id=projection.epoch_id,
+                    revision=projection.revision,
+                    state_artifact_hash=group_certificate.certificate_digest,
+                )
+            )
+    for claim_id, claim_state in sorted(projection.states.claims.items()):
+        claim_certificate = projection.claim_certificates[claim_id]
+        references.append(
+            M5ChangedStateReference.build(
+                kind=M5StateReferenceKind.CLAIM_STATE,
+                object_id=claim_id,
+                epoch_id=projection.epoch_id,
+                revision=projection.revision,
+                state_artifact_hash=digests.claim_state_artifact_digest(
+                    claim_id=claim_id,
+                    support_count=claim_state.support_count,
+                    refute_count=claim_state.refute_count,
+                    best_support_score=claim_state.best_support_score,
+                    best_refute_score=claim_state.best_refute_score,
+                    supporting_observation_ids=(
+                        claim_state.supporting_observation_ids
+                    ),
+                    refuting_observation_ids=claim_state.refuting_observation_ids,
+                    complete_group_count=claim_state.complete_group_count,
+                    complete_group_ids=claim_state.complete_group_ids,
+                    status=claim_state.status,
+                    decision_policy_version=projection.decision_policy_version,
+                    certificate_digest=claim_certificate.certificate_digest,
+                ),
+            )
+        )
+        references.append(
+            M5ChangedStateReference.build(
+                kind=M5StateReferenceKind.CLAIM_CERTIFICATE,
+                object_id=claim_id,
+                epoch_id=projection.epoch_id,
+                revision=projection.revision,
+                state_artifact_hash=claim_certificate.certificate_digest,
+            )
+        )
+    for answer_id, answer_state in sorted(projection.states.answers.items()):
+        references.append(
+            M5ChangedStateReference.build(
+                kind=M5StateReferenceKind.ANSWER_STATE,
+                object_id=answer_id,
+                epoch_id=projection.epoch_id,
+                revision=projection.revision,
+                state_artifact_hash=digests.answer_state_artifact_digest(
+                    answer_version_id=answer_id,
+                    required_claim_count=answer_state.required_claim_count,
+                    supported_count=answer_state.supported_count,
+                    unsupported_count=answer_state.unsupported_count,
+                    refuted_count=answer_state.refuted_count,
+                    conflicted_count=answer_state.conflicted_count,
+                    status=answer_state.status,
+                ),
+            )
+        )
+    return tuple(
+        sorted(
+            references,
+            key=lambda item: (
+                item.kind.value,
+                item.object_id,
+                item.reference_digest,
+            ),
+        )
+    )
+
+
+def m5_bootstrap_state_hash(projection: M5BootstrapProjection) -> str:
+    references = build_m5_bootstrap_changed_state_references(projection)
+    return digests.changed_state_set_digest(
+        reference.reference_digest for reference in references
+    )
+
+
+def _runtime_bundle_ledgers(cursor: Cursor[Any]) -> tuple[str, str]:
+    rows = cursor.execute(
+        """
+        SELECT bundle_id, bundle_sha256, prerequisite_sha256
+        FROM groundloop_m5_schema_bundle
+        WHERE bundle_id IN (
+            'm5-core-schema-bundle-v1', 'm5-runtime-schema-bundle-v2'
+        )
+        ORDER BY bundle_id COLLATE "C"
+        """
+    ).fetchall()
+    ledgers = {
+        str(row[0]): (str(row[1]).strip(), str(row[2]).strip()) for row in rows
+    }
+    core = ledgers.get("m5-core-schema-bundle-v1")
+    runtime = ledgers.get("m5-runtime-schema-bundle-v2")
+    if core is None or runtime is None or runtime[1] != core[0]:
+        raise InvalidEventError("activation requires the exact core/runtime bundles")
+    return core[0], runtime[0]
+
+
+def _activation_receipt_from_row(
+    request: M5ActivationRequest,
+    row: tuple[Any, ...],
+) -> M5ActivationReceipt:
+    activation_id = str(row[0])
+    payload_hash = str(row[1]).strip()
+    base_epoch_id = int(row[2])
+    mode = str(row[3])
+    mode_revision = int(row[4])
+    m4_head = int(row[5])
+    m5_head = int(row[6])
+    if activation_id != request.activation_id or payload_hash != request.payload_hash:
+        raise EventConflictError("M5 is already activated by another request")
+    receipt = M5ActivationReceipt.build(request, replayed=True)
+    if (
+        base_epoch_id != request.expected_base_m4_epoch_id
+        or mode != "m5_active"
+        or mode_revision != receipt.mode_revision
+        or m4_head != base_epoch_id
+        or m5_head != base_epoch_id
+    ):
+        raise ValidationError("durable M5 activation state is inconsistent")
+    return receipt
 
 
 def _inject(injector: RuntimeFailureInjector | None, point: str) -> None:
@@ -1273,6 +1459,246 @@ class PostgresM5RuntimeStore:
 
     def __init__(self, connection: Connection[Any]) -> None:
         self._connection = connection
+
+    def prepare_activation_request(self, activation_id: str) -> M5ActivationRequest:
+        """Read a stable activation candidate; ``activate`` revalidates it."""
+
+        with self._connection.transaction(), self._connection.cursor() as cursor:
+            cursor.execute("SET TRANSACTION READ ONLY")
+            activation = cursor.execute(
+                "SELECT 1 FROM groundloop_m5_activation WHERE singleton"
+            ).fetchone()
+            if activation is not None:
+                raise EventConflictError("M5 is already activated")
+            mode_row = cursor.execute(
+                """
+                SELECT mode, mode_revision
+                FROM groundloop_runtime_mode
+                WHERE singleton
+                """
+            ).fetchone()
+            m4_head_row = cursor.execute(
+                """
+                SELECT epoch_id
+                FROM groundloop_m4_publication_head
+                WHERE singleton
+                """
+            ).fetchone()
+            m5_head_row = cursor.execute(
+                """
+                SELECT epoch_id
+                FROM groundloop_m5_publication_head
+                WHERE singleton
+                """
+            ).fetchone()
+            if (
+                mode_row is None
+                or str(mode_row[0]) != "v1_only"
+                or m4_head_row is None
+                or m5_head_row is not None
+            ):
+                raise InvalidEventError("database is not activation-ready")
+            core_bundle_hash, _ = _runtime_bundle_ledgers(cursor)
+            projection = build_m5_bootstrap_projection(self._connection)
+            if projection.epoch_id != int(m4_head_row[0]):
+                raise InvalidEventError(
+                    "M5 bootstrap projection does not equal the M4 head"
+                )
+            return M5ActivationRequest.build(
+                activation_id=activation_id,
+                expected_mode_revision=int(mode_row[1]),
+                expected_base_m4_epoch_id=projection.epoch_id,
+                core_schema_bundle_sha256=core_bundle_hash,
+                bootstrap_state_hash=m5_bootstrap_state_hash(projection),
+            )
+
+    def _read_existing_activation_read_only(
+        self, request: M5ActivationRequest
+    ) -> M5ActivationReceipt | None:
+        with self._connection.transaction(), self._connection.cursor() as cursor:
+            cursor.execute("SET TRANSACTION READ ONLY")
+            row = cursor.execute(
+                """
+                SELECT activation.activation_id, activation.payload_hash,
+                       activation.base_m4_epoch_id, mode.mode,
+                       mode.mode_revision, m4_head.epoch_id, m5_head.epoch_id
+                FROM groundloop_m5_activation AS activation
+                CROSS JOIN groundloop_runtime_mode AS mode
+                CROSS JOIN groundloop_m4_publication_head AS m4_head
+                CROSS JOIN groundloop_m5_publication_head AS m5_head
+                WHERE activation.singleton AND mode.singleton
+                  AND m4_head.singleton AND m5_head.singleton
+                """
+            ).fetchone()
+            if row is None:
+                return None
+            return _activation_receipt_from_row(request, tuple(row))
+
+    def activate(
+        self,
+        request: M5ActivationRequest,
+        *,
+        failure_injector: RuntimeFailureInjector | None = None,
+    ) -> M5ActivationReceipt:
+        """Atomically bootstrap M5 at the sealed M4 head and flip the route."""
+
+        existing = self._read_existing_activation_read_only(request)
+        if existing is not None:
+            return existing
+
+        with self._connection.transaction(), self._connection.cursor() as cursor:
+            mode_row = cursor.execute(
+                """
+                SELECT mode, mode_revision
+                FROM groundloop_runtime_mode
+                WHERE singleton
+                FOR UPDATE
+                """
+            ).fetchone()
+            m4_head_row = cursor.execute(
+                """
+                SELECT epoch_id
+                FROM groundloop_m4_publication_head
+                WHERE singleton
+                FOR UPDATE
+                """
+            ).fetchone()
+            m5_head_row = cursor.execute(
+                """
+                SELECT epoch_id
+                FROM groundloop_m5_publication_head
+                WHERE singleton
+                FOR UPDATE
+                """
+            ).fetchone()
+            activation_row = cursor.execute(
+                """
+                SELECT activation_id, payload_hash, base_m4_epoch_id
+                FROM groundloop_m5_activation
+                WHERE singleton
+                FOR UPDATE
+                """
+            ).fetchone()
+            if mode_row is None or m4_head_row is None:
+                raise InvalidEventError("activation singleton/head is missing")
+            if activation_row is not None:
+                if m5_head_row is None:
+                    raise ValidationError("durable M5 activation lacks its head")
+                return _activation_receipt_from_row(
+                    request,
+                    (
+                        *tuple(activation_row),
+                        mode_row[0],
+                        mode_row[1],
+                        m4_head_row[0],
+                        m5_head_row[0],
+                    ),
+                )
+            if (
+                str(mode_row[0]) != "v1_only"
+                or int(mode_row[1]) != request.expected_mode_revision
+                or m5_head_row is not None
+            ):
+                raise EventConflictError("runtime mode is not activation-ready")
+
+            base_epoch_id = int(m4_head_row[0])
+            if base_epoch_id != request.expected_base_m4_epoch_id:
+                raise EventConflictError("M4 head changed before activation")
+            base_epoch = cursor.execute(
+                """
+                SELECT revision, structural_status, semantic_status,
+                       evaluation_state
+                FROM groundloop_epoch
+                WHERE epoch_id = %s
+                FOR UPDATE
+                """,
+                (base_epoch_id,),
+            ).fetchone()
+            if base_epoch is None or tuple(base_epoch[1:]) != (
+                "committed",
+                "sealed",
+                "complete",
+            ):
+                raise InvalidEventError("activation base is not a sealed M4 epoch")
+            live_epoch = cursor.execute(
+                """
+                SELECT epoch_id
+                FROM groundloop_epoch
+                WHERE structural_status = 'committed'
+                  AND semantic_status IN ('pending', 'complete')
+                ORDER BY epoch_id
+                FOR UPDATE
+                LIMIT 1
+                """
+            ).fetchone()
+            if live_epoch is not None:
+                raise EventConflictError("activation rejects a live mutation epoch")
+
+            core_bundle_hash, _ = _runtime_bundle_ledgers(cursor)
+            if request.core_schema_bundle_sha256 != core_bundle_hash:
+                raise InvalidEventError(
+                    "activation request does not bind the installed core bundle"
+                )
+            projection = build_m5_bootstrap_projection(self._connection)
+            if (
+                projection.epoch_id != base_epoch_id
+                or projection.revision != int(base_epoch[0])
+            ):
+                raise InvalidEventError("activation bootstrap coordinate drift")
+            actual_bootstrap_hash = m5_bootstrap_state_hash(projection)
+            if request.bootstrap_state_hash != actual_bootstrap_hash:
+                raise InvalidEventError("activation bootstrap state hash mismatch")
+            _inject(failure_injector, "activation_before_bootstrap")
+
+            write_m5_materialized_states(
+                self._connection,
+                states=projection.states,
+                decision_policy_version=projection.decision_policy_version,
+                epoch_id=projection.epoch_id,
+                revision=projection.revision,
+                group_certificates=projection.group_certificates,
+                claim_certificates=projection.claim_certificates,
+                publish=True,
+            )
+            _inject(failure_injector, "activation_after_bootstrap")
+            cursor.execute(
+                """
+                INSERT INTO groundloop_m5_publication_head (
+                    singleton, epoch_id, sealed_revision, updated_at
+                ) VALUES (true, %s, %s, now())
+                """,
+                (projection.epoch_id, projection.revision),
+            )
+            _inject(failure_injector, "activation_after_m5_head")
+            cursor.execute(
+                """
+                INSERT INTO groundloop_m5_activation (
+                    singleton, activation_id, payload_hash,
+                    base_m4_epoch_id, activated_at
+                ) VALUES (true, %s, %s, %s, now())
+                """,
+                (
+                    request.activation_id,
+                    request.payload_hash,
+                    request.expected_base_m4_epoch_id,
+                ),
+            )
+            _inject(failure_injector, "activation_after_record")
+            updated = cursor.execute(
+                """
+                UPDATE groundloop_runtime_mode
+                SET mode = 'm5_active', mode_revision = mode_revision + 1,
+                    updated_at = now()
+                WHERE singleton AND mode = 'v1_only' AND mode_revision = %s
+                """,
+                (request.expected_mode_revision,),
+            ).rowcount
+            if updated != 1:
+                raise EventConflictError("activation mode CAS failed")
+            _inject(failure_injector, "activation_after_mode")
+            cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
+            _inject(failure_injector, "activation_after_constraints")
+            return M5ActivationReceipt.build(request)
 
     def register_candidate_policy(self, manifest: M5CandidatePolicyManifest) -> None:
         expected = (

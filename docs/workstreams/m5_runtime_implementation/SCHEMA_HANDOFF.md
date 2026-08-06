@@ -1,6 +1,6 @@
 # M5 Runtime Schema Bundle Handoff
 
-Status: implementation candidate, locally validated, not integrated
+Status: integrated on main; M5-D22 state-artifact amendment locally validated
 
 Branch: `workstream/m5-runtime-schema-015`
 
@@ -9,7 +9,7 @@ Base: `d3dcc8e07094e014637016b736e87b263bd21030`
 Candidate head: the commit containing this handoff; resolve with
 `git rev-parse HEAD` before integration.
 
-Contract read: frozen M5-D1--M5-D21, including revision 2 of
+Contract read: frozen M5-D1--M5-D22, including revision 3 of
 `docs/workstreams/m5_runtime_contract/CANDIDATE_RUNTIME_ADDENDUM.md` as
 recorded on main at `40579a0` during lane execution.
 
@@ -78,6 +78,15 @@ transaction. Deferred validation enforces document/M4 bijection and forbids an
 M4 row for non-document typed updates. The outer typed coordinator remains the
 final combined-state authority.
 
+M5-D22 adds four SQL helpers whose bytes match the frozen Python
+`m5-*-state-artifact-v2` recipes for requirement, group, claim, and answer
+state. The deferred event-result validator now resolves every changed-state
+reference to the exact historical published state/certificate coordinate and
+rejects a missing or mismatched artifact hash. Certificate references use the
+immutable certificate digest directly. This amendment changes the
+content-bound migration-015 bundle identity but no migration-014 byte or
+semantic-state recipe.
+
 ## Corrections captured during review
 
 - `candidate_policy_id` is the exact `m5-candidate-policy-v2` manifest hash;
@@ -111,6 +120,12 @@ PYTHONPATH=src /home/kassym/Desktop/groundloop/.venv/bin/python -m pytest -q \
 
 Result: PASS, 39 tests (24 migration-015 acceptance tests and 15 existing
 bundle/race regressions).
+
+Post-integration M5-D22/activation composition on 2026-08-06 passed all 75
+collected live tests across migration 015, bundle/race regression,
+failure/replay, and public activation modules. The activation subset was 8/8
+and independently compared all six Python changed-state reference kinds with
+the SQL artifact functions.
 
 ```bash
 /home/kassym/Desktop/groundloop/.venv/bin/ruff check \

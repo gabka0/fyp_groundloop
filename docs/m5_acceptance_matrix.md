@@ -1,7 +1,7 @@
 # GroundLoop M5 Acceptance Matrix
 
-Status: frozen M5 falsification contract, amended by M5-D21 and M5-D22; staged evidence
-current through partial M5.3
+Status: frozen M5 falsification contract, amended by M5-D21 and M5-D22;
+staged evidence current through partial M5.4
 
 Date: 2026-08-06
 
@@ -101,7 +101,7 @@ simple graphs through `r<=4,H<=4`; the full repository suite, Ruff and strict
 mypy pass under an independent audit. These rows cover the pure reference
 stage only. At the M5.1 checkpoint, historical combined claim-certificate
 bindings and epoch-local SQL currency remained mandatory later-stage work.
-Integrated M5.2 and partial M5.3 evidence is recorded below; it does not change
+Integrated M5.2/M5.3 and partial M5.4 evidence is recorded below; it does not change
 what M5.1 alone established.
 
 ## 3. M5.2 incremental algorithm gates
@@ -139,7 +139,7 @@ evidence.
 | M5.3-04 | M5 loader orders subjects before observations; working currency preserves every same-key revision/tombstone with close-once intervals and rejects terminal mutation; every shared writer uses explicit columns and every claim-only M4 reader filters kind | Snapshot/as-of/immutability/coexistence tests plus repo-wide static reader/writer audit | PASS |
 | M5.3-05 | Base-edge SQL Hall oracle computes exact matching; the recursive `UNION` assignment cross-check obeys `H<=16`, `E<=128`, and the 100,000-state preflight cap | SQL unit/integration/cap tests including `ASSIGNMENT_AUDIT_CAP_EXCEEDED` | PASS |
 | M5.3-06 | Incremental, Python, and SQL states/certificates agree after every required event class | Live three-oracle history | PASS |
-| M5.3-07 | Rejected declaration rolls back completely; durable semantic failure retains failed epoch/audit but preserves published truth; conflicting replay fails | Live rollback/fail/staged-overlay/replay tests | PENDING |
+| M5.3-07 | Rejected declaration rolls back completely; durable semantic failure retains failed epoch/audit but preserves published truth; conflicting replay fails | Live rollback/fail/staged-overlay/replay tests | PASS |
 | M5.3-08 | Relevant indexes are usable and no oracle reads Hall materialization as truth | `EXPLAIN` evidence and SQL audit | PASS |
 | M5.3-09 | Fresh and populated installs provide `pgcrypto`/`btree_gist`; full PostgreSQL suite remains green | Extension/version evidence and exact command/result | PASS |
 
@@ -159,7 +159,7 @@ activation/publication transaction. See
 
 | Gate | Required outcome | Evidence | Status |
 |---|---|---|---|
-| M5.4-01 | Claim and requirement jobs have collision-free, byte-total typed v2 identities, exact forward/reverse target/root/pair shapes, and valid state shapes | Golden contract/digest/direction/null/F64/child-order tests | PENDING |
+| M5.4-01 | Claim and requirement jobs have collision-free, byte-total typed v2 identities, exact forward/reverse target/root/pair shapes, and valid state shapes | Golden contract/digest/direction/null/F64/child-order tests | PASS |
 | M5.4-02 | Requirement retrieval, verification, observation, withdrawal, and fallback compose through fake ports | Deterministic end-to-end tests | PENDING |
 | M5.4-03 | Requirement REFUTE/NEUTRAL never creates parent refutation | Runtime integration test | PENDING |
 | M5.4-04 | Late result checks chunk, subject/group, and epoch activity without superseding currency | In-flight replacement/retirement/failed-epoch tests | PENDING |

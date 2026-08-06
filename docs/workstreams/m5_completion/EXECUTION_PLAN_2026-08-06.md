@@ -17,7 +17,7 @@ changed-state artifact amendment required by activation.
 
 ## 1. Restart checkpoint and protected state
 
-The accepted integration checkpoint is:
+The accepted integration checkpoint at restart was:
 
 - M5.2 complete;
 - M5.3-01 through M5.3-06 and M5.3-08 through M5.3-09 PASS;
@@ -62,7 +62,8 @@ preserved; no volume recreation or database deletion is authorized.
 The current M5.3-07 tests are rollback-isolated SQL fixtures. They do not
 exercise a production typed open, terminal failure, durable event result,
 reconnect replay, conflicting replay, or complete publication-surface
-immutability. M5.3-07 therefore remains PENDING.
+immutability. M5.3-07 therefore remained PENDING at this audit point. The R3
+matrix later closed Barrier B and the acceptance matrix now records PASS.
 
 The first accepted production slice MUST use migration 015 and the frozen
 typed runtime architecture. It consists of:
@@ -194,6 +195,14 @@ completed R1 lane to the coordinator for those four recipes and their golden
 mutation tests. This does not reopen other R1 contracts or grant an active
 lane either path.
 
+The same amendment requires live reference-to-row validation. Ownership of
+`migrations/015_m5_runtime.sql`,
+`tests/m5/postgres_runtime/test_migration_015.py`, and the schema handoff is
+transferred narrowly from completed R2 to the coordinator for the four SQL
+state-artifact recipes, cross-language vectors, and the deferred historical
+reference check. The already integrated bundle contract remains closed in all
+other respects.
+
 ### Lane R3 -- production failure/replay acceptance tests
 
 Authorized after Barrier A integration at coordinator checkpoint `51a2bac`:
@@ -248,7 +257,9 @@ live PostgreSQL. PASS requires:
   writes/calls/revision change;
 - conflicting replay raises the domain conflict and changes no row.
 
-Only then may M5.3-07 become PASS.
+Barrier B passed after integration of R3 commit `1352ab4`: its 27/27 live
+tests and the 67/67 composed migration/failure/bundle-race gate exercised the
+production store without weakening a falsifier.
 
 ### Wave B -- full M5.4 runtime
 
