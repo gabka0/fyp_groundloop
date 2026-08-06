@@ -1,6 +1,6 @@
 # M5-D24 Migration 016 Handoff
 
-Status: R0-S implementation complete; ready for coordinator inspection
+Status: R0-S repair candidate complete; ready for coordinator inspection
 
 Date: 2026-08-06
 
@@ -8,8 +8,11 @@ Branch: `workstream/m5-d24-schema-016`
 
 Lane base: `101e4e6c0ed463e82f32931ab6493249edd87021`
 
-Candidate head: the commit containing this handoff; resolve with
-`git rev-parse HEAD` before integration.
+Rejected predecessor: `758c29f8f497744fb6f59148785e7acc5f5223eb`.
+
+Candidate head: the follow-up commit containing this handoff; resolve with
+`git rev-parse HEAD` before integration. Do not integrate the rejected
+predecessor by itself.
 
 Authoritative contract read in full:
 `docs/workstreams/m5_runtime_contract/RECOVERY_WORK_AMENDMENT.md` (M5-D24).
@@ -67,6 +70,23 @@ contributions, monotone event accumulators, transition and terminal timing
 coverage, expired-return closure, typed-direct late-return envelopes, and
 exclusive post-terminal audit paths.
 
+This follow-up repairs the rejected predecessor without rewriting its commit.
+The repaired schema now enforces exact runtime-epoch and current-revision
+joins, exact composite evidence/timing/anchor identities, source-closed work
+contributions, nonterminal-only pending timing anchors, and post-terminal
+exclusion from event work and event timing. Operational configuration digests
+are reusable across distinct epochs. Successful late/post-terminal audit
+dispositions are exactly `returned` or `reused_artifact`.
+
+Both successful nonexpired return paths have exact accounting closure. A
+typed-direct envelope must bind either an expired-return sidecar, a terminal
+audit in a terminal runtime, or nonexpired preterminal evidence plus execution
+and late work, attempt timing, current-revision work/timing accumulators and
+the pending late-transition anchor. A nonexpired requirement terminal-audit
+artifact has the analogous requirement-specific closure. The evidence mask
+admits the frozen external byte counters while retaining exact counter
+presence validation.
+
 ## Existing-object boundary
 
 Migration 016 replaces exactly the three M5-D24-authorized migration-015
@@ -102,15 +122,30 @@ unknown nested JSON keys and validates both disjoint branches:
   ordinal claim-registry membership and snapshot header; and the persisted
   discovery scope;
 - verifier binds the exact pair observation, recomputed admitted-pair ID, the
-  complete optional execution tuple, finite typed floats, and every field of
-  the corresponding persisted M4 verification execution when present.
+  complete optional execution tuple, canonical finite IEEE-754 binary64 hex
+  wires (including signed zero), and every field of the corresponding
+  persisted M4 verification execution when present.
 
 The SQL M4 digest helper was compared with Python `stable_m4_digest`. The SQL
-float renderer was compared with Python `format(value, ".17g")` on named edge
-vectors, including signed zero, subnormal and maximum finite values. A local
-diagnostic also compared 20,000 deterministic random finite IEEE-754 values
-without a mismatch; that diagnostic is supporting evidence, not a committed
-test count.
+binary64 decoder is executable-tested on signed zero, smallest positive and
+negative subnormals, the minimum positive normal and maximum finite value. It
+rejects malformed-width, uppercase, infinity and NaN wires and confirms exact
+`float8send` bit round trips.
+
+## Candidate ledger identity
+
+The follow-up's content-derived migration-016 identity is:
+
+```text
+bundle_id = m5-runtime-recovery-schema-bundle-v1
+bundle_sha256 = 067a9471aa13ef262eab7122d36949d54a3c464a34cd9fd65d03f6b36f8761ea
+migration_sha256 = 755ee680322f0f12c182d22538677b4497cd1f7798d8cc9389e9be0d9f6e7a5a
+oracle_sha256 = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+prerequisite_sha256 = b7b03574dc2ba62fd6ba7be22744e2fe6d9ec178ffb2b4b9b552c5ff6281dacd
+```
+
+These are candidate values until independent audit and coordinator acceptance;
+downstream activation must not pin them earlier.
 
 ## Validation evidence
 
@@ -130,11 +165,14 @@ after attempts, all five prerequisite fields, content conflict, ten injected
 rollback points, both forbidden attempt families, every committed-status
 guard branch, relation/column/index/constraint/trigger inventory, exact
 replacement boundaries, unchanged migration-015 bytes/ledger, both valid
-typed-direct envelope branches, deferred discovery/verifier falsifiers, both
-post-terminal return kinds, and pre/post-terminal `attempt_expired` check
-shapes.
+typed-direct envelope branches, the complete verifier optional-execution
+matrix, exact binary64 vectors, deferred discovery/verifier falsifiers, both
+successful post-terminal dispositions, nonexpired preterminal accounting,
+external byte counters, composite timing/evidence/anchor mix-and-match
+falsifiers, optional telemetry presence/count checks, all six source-closure
+families, and pre/post-terminal `attempt_expired` check shapes.
 
-Final result at 2026-08-06T18:00:58+01:00: PASS, 47 tests.
+Final result on 2026-08-06: PASS, 99 tests.
 
 Migration-015 regression:
 
@@ -144,7 +182,7 @@ GROUNDLOOP_TEST_DATABASE_URL="$GROUNDLOOP_TEST_DATABASE_URL" PYTHONPATH=src \
   tests/m5/postgres_runtime/test_migration_015.py
 ```
 
-Final result at 2026-08-06T18:01:25+01:00: PASS, 26 tests.
+Final result on 2026-08-06: PASS, 26 tests.
 
 Broader live PostgreSQL runtime regression:
 
@@ -154,9 +192,8 @@ GROUNDLOOP_TEST_DATABASE_URL="$GROUNDLOOP_TEST_DATABASE_URL" PYTHONPATH=src \
   tests/m5/postgres_runtime
 ```
 
-Final result from 2026-08-06T18:02:41+01:00 through
-2026-08-06T18:05:19+01:00: PASS, 139 tests. This broader count includes the
-47 migration-016 and 26 migration-015 cases above.
+Final result on 2026-08-06: PASS, 191 tests. This broader count includes the
+99 migration-016 and 26 migration-015 cases above.
 
 Static checks:
 
@@ -174,16 +211,19 @@ PYTHONPATH=src /home/kassym/Desktop/groundloop/.venv/bin/python \
 git diff --check
 ```
 
-The adversarial tests use `session_replication_role = replica` only while
-constructing minimal check-valid predecessor/support rows that are otherwise
-outside this schema lane. Every target envelope and audit falsifier is inserted
-with normal trigger execution and forced at `SET CONSTRAINTS ALL IMMEDIATE`.
+All fixtures and falsifiers execute with normal trigger semantics; the suite
+contains no `session_replication_role` bypass. Target envelope, accounting and
+audit falsifiers are forced at `SET CONSTRAINTS ALL IMMEDIATE`. A catalog
+assertion verifies the retained migration-015 trigger boundary directly.
 
 ## Integration and claim boundary
 
-Integrate only this lane's commit after reviewing the exact four-path
-name-status. Do not squash in another worktree or treat uncommitted work as
-integrated.
+Integrate only the follow-up repair commit after reviewing its exact
+three-path name-status: migration 016, its PostgreSQL acceptance test, and this
+handoff. `src/groundloop/postgres/migrations.py` remains unchanged because the
+installer content-binds the migration SQL dynamically. Do not integrate
+`758c29f8f497744fb6f59148785e7acc5f5223eb` alone, squash in another worktree,
+or treat uncommitted work as integrated.
 
 This handoff is migration/installer and executable schema-falsifier evidence
 only. It does not implement production acquisition, settlement, persistence,
