@@ -51,6 +51,28 @@ M5_RUNTIME_MIGRATION_LABEL = "migrations/015_m5_runtime.sql"
 M5_RUNTIME_MIGRATION_PATH = ROOT / M5_RUNTIME_MIGRATION_LABEL
 M5_RUNTIME_ORACLE_SHA256 = hashlib.sha256(b"").hexdigest()
 
+# M5-D24 deliberately pins the accepted migration-015 ledger bytes.  Do not
+# derive these values from the local 015 files: doing so would turn a changed
+# historical prerequisite into a new accepted prerequisite.
+M5_ACCEPTED_RUNTIME_BUNDLE_ID = "m5-runtime-schema-bundle-v2"
+M5_ACCEPTED_RUNTIME_MIGRATION_SHA256 = (
+    "85cb7f8e6a33273ce67fc6b4160e74a3aff314cd084df7ac3647cadae930185c"
+)
+M5_ACCEPTED_RUNTIME_BUNDLE_SHA256 = (
+    "b7b03574dc2ba62fd6ba7be22744e2fe6d9ec178ffb2b4b9b552c5ff6281dacd"
+)
+M5_ACCEPTED_RUNTIME_ORACLE_SHA256 = (
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+)
+M5_ACCEPTED_RUNTIME_PREREQUISITE_SHA256 = (
+    "9bce4ae68a434aefbc196b6367b77454f4ec65d531f4ff206f37fb4d69e9167a"
+)
+
+M5_RUNTIME_RECOVERY_BUNDLE_ID = "m5-runtime-recovery-schema-bundle-v1"
+M5_RUNTIME_RECOVERY_MIGRATION_LABEL = "migrations/016_m5_runtime_recovery.sql"
+M5_RUNTIME_RECOVERY_MIGRATION_PATH = ROOT / M5_RUNTIME_RECOVERY_MIGRATION_LABEL
+M5_RUNTIME_RECOVERY_ORACLE_SHA256 = hashlib.sha256(b"").hexdigest()
+
 _PREREQUISITE_RELATIONS = (
     "groundloop_epoch",
     "groundloop_semantic_observation",
@@ -282,6 +304,32 @@ M5_RUNTIME_INSTALL_LOCK_RELATIONS = (
     "groundloop_epoch",
 )
 
+M5_RUNTIME_RECOVERY_INSTALL_LOCK_RELATIONS = (
+    "groundloop_runtime_mode",
+    "groundloop_m4_publication_head",
+    "groundloop_m5_publication_head",
+    "groundloop_epoch",
+    "groundloop_m5_runtime_epoch",
+    "groundloop_semantic_job_attempt",
+    "groundloop_m5_job_attempt",
+)
+
+_M5_RUNTIME_RECOVERY_PREREQUISITE_RELATIONS = (
+    "groundloop_m5_schema_bundle",
+    "groundloop_runtime_mode",
+    "groundloop_m4_publication_head",
+    "groundloop_m5_publication_head",
+    "groundloop_epoch",
+    "groundloop_m5_runtime_epoch",
+    "groundloop_semantic_job",
+    "groundloop_semantic_job_attempt",
+    "groundloop_m5_semantic_job",
+    "groundloop_m5_job_attempt",
+    "groundloop_m5_attempt_result_artifact",
+    "groundloop_m5_runtime_work",
+    "groundloop_m5_event_result",
+)
+
 _M5_RUNTIME_PREREQUISITE_RELATIONS = (
     "groundloop_m5_schema_bundle",
     "groundloop_runtime_mode",
@@ -323,6 +371,10 @@ class M5RuntimeBundleError(M5BundleError):
     """The M5 runtime schema bundle cannot be installed or replayed safely."""
 
 
+class M5RuntimeRecoveryBundleError(M5RuntimeBundleError):
+    """Migration 016 cannot be installed or replayed safely."""
+
+
 @dataclass(frozen=True, slots=True)
 class M5BundleIdentity:
     bundle_id: str
@@ -350,6 +402,21 @@ class M5RuntimeBundleIdentity:
 @dataclass(frozen=True, slots=True)
 class M5RuntimeBundleInstallResult:
     identity: M5RuntimeBundleIdentity
+    applied: bool
+
+
+@dataclass(frozen=True, slots=True)
+class M5RuntimeRecoveryBundleIdentity:
+    bundle_id: str
+    bundle_sha256: str
+    migration_sha256: str
+    oracle_sha256: str
+    prerequisite_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class M5RuntimeRecoveryBundleInstallResult:
+    identity: M5RuntimeRecoveryBundleIdentity
     applied: bool
 
 
@@ -432,6 +499,38 @@ def m5_runtime_bundle_identity(
         migration_sha256=migration_hash,
         oracle_sha256=M5_RUNTIME_ORACLE_SHA256,
         prerequisite_sha256=accepted_core.bundle_sha256,
+    )
+
+
+def m5_runtime_recovery_bundle_identity(
+    *,
+    migration_bytes: bytes | None = None,
+) -> M5RuntimeRecoveryBundleIdentity:
+    """Return the migration-016 identity bound to the pinned accepted 015.
+
+    The prerequisite is intentionally a frozen constant rather than the local
+    migration-015 identity.  M5-D24 forbids silently accepting changed 015
+    source or ledger bytes.
+    """
+
+    migration = (
+        M5_RUNTIME_RECOVERY_MIGRATION_PATH.read_bytes()
+        if migration_bytes is None
+        else migration_bytes
+    )
+    migration_hash = _sha256(migration)
+    bundle_hash = stable_m5_digest(
+        M5_RUNTIME_RECOVERY_BUNDLE_ID,
+        text_field(M5_RUNTIME_RECOVERY_MIGRATION_LABEL),
+        hash_field(migration_hash),
+        hash_field(M5_ACCEPTED_RUNTIME_BUNDLE_SHA256),
+    )
+    return M5RuntimeRecoveryBundleIdentity(
+        bundle_id=M5_RUNTIME_RECOVERY_BUNDLE_ID,
+        bundle_sha256=bundle_hash,
+        migration_sha256=migration_hash,
+        oracle_sha256=M5_RUNTIME_RECOVERY_ORACLE_SHA256,
+        prerequisite_sha256=M5_ACCEPTED_RUNTIME_BUNDLE_SHA256,
     )
 
 
@@ -924,6 +1023,238 @@ def install_m5_runtime_bundle(
         return M5RuntimeBundleInstallResult(identity=identity, applied=True)
 
 
+def _verify_accepted_m5_runtime_bundle(connection: Connection[Any]) -> None:
+    """Require the exact five-field migration-015 ledger prerequisite."""
+
+    missing = tuple(
+        relation
+        for relation in _M5_RUNTIME_RECOVERY_PREREQUISITE_RELATIONS
+        if not _relation_exists(connection, relation)
+    )
+    if missing:
+        raise M5PrerequisiteError(
+            "M5 runtime recovery bundle requires migration-015 relations; missing: "
+            + ", ".join(missing)
+        )
+
+    row = connection.execute(
+        """
+        SELECT bundle_id, migration_sha256, bundle_sha256, oracle_sha256,
+               prerequisite_sha256
+        FROM groundloop_m5_schema_bundle
+        WHERE bundle_id = %s
+        """,
+        (M5_ACCEPTED_RUNTIME_BUNDLE_ID,),
+    ).fetchone()
+    expected = (
+        M5_ACCEPTED_RUNTIME_BUNDLE_ID,
+        M5_ACCEPTED_RUNTIME_MIGRATION_SHA256,
+        M5_ACCEPTED_RUNTIME_BUNDLE_SHA256,
+        M5_ACCEPTED_RUNTIME_ORACLE_SHA256,
+        M5_ACCEPTED_RUNTIME_PREREQUISITE_SHA256,
+    )
+    actual = None if row is None else tuple(str(value).strip() for value in row)
+    if actual != expected:
+        raise M5PrerequisiteError(
+            "M5 runtime recovery bundle requires the exact accepted "
+            "five-field migration-015 ledger row"
+        )
+
+
+def _acquire_m5_runtime_recovery_install_locks(
+    connection: Connection[Any],
+) -> None:
+    """Serialize migration 016 in the frozen M5-D24 lock order."""
+
+    for relation in M5_RUNTIME_RECOVERY_INSTALL_LOCK_RELATIONS:
+        # Names are frozen local constants, never caller input.
+        connection.execute(f"LOCK TABLE {relation} IN SHARE ROW EXCLUSIVE MODE")
+
+
+_M5_RUNTIME_RECOVERY_GROUP_PREFIX = "-- groundloop:m5-runtime-recovery-group:"
+
+
+def _m5_runtime_recovery_migration_groups(
+    migration: bytes,
+) -> tuple[tuple[str, str], ...]:
+    """Split the audited 016 source at explicit transaction test barriers."""
+
+    source = migration.decode("utf-8")
+    groups: list[tuple[str, str]] = []
+    current_name: str | None = None
+    current_lines: list[str] = []
+    preamble: list[str] = []
+    for line in source.splitlines(keepends=True):
+        if line.startswith(_M5_RUNTIME_RECOVERY_GROUP_PREFIX):
+            if current_name is not None:
+                groups.append((current_name, "".join(current_lines)))
+            elif any(
+                value.strip() and not value.lstrip().startswith("--")
+                for value in preamble
+            ):
+                raise M5RuntimeRecoveryBundleError(
+                    "migration 016 contains executable SQL before its first group"
+                )
+            current_name = line[len(_M5_RUNTIME_RECOVERY_GROUP_PREFIX) :].strip()
+            if not current_name or not current_name.replace("_", "").isalnum():
+                raise M5RuntimeRecoveryBundleError(
+                    "migration 016 has an invalid group marker"
+                )
+            current_lines = [line]
+        elif current_name is None:
+            preamble.append(line)
+        else:
+            current_lines.append(line)
+    if current_name is not None:
+        groups.append((current_name, "".join(current_lines)))
+    if not groups or any(not sql_source.strip() for _, sql_source in groups):
+        raise M5RuntimeRecoveryBundleError(
+            "migration 016 has no executable migration groups"
+        )
+    names = tuple(name for name, _ in groups)
+    if len(set(names)) != len(names):
+        raise M5RuntimeRecoveryBundleError("migration 016 group markers must be unique")
+    return tuple(groups)
+
+
+def _m5_runtime_recovery_first_install_guard(
+    connection: Connection[Any],
+) -> None:
+    live_epoch = connection.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM groundloop_epoch
+            WHERE structural_status = 'committed'
+              AND semantic_status IN ('pending', 'complete')
+        )
+        """
+    ).fetchone()
+    if live_epoch is None:
+        raise M5RuntimeRecoveryBundleError(
+            "migration-016 live-epoch guard returned no row"
+        )
+    if bool(live_epoch[0]):
+        raise M5RuntimeRecoveryBundleError(
+            "M5 runtime recovery bundle requires no committed pending/complete epoch"
+        )
+
+    if connection.execute(
+        "SELECT EXISTS (SELECT 1 FROM groundloop_m5_job_attempt)"
+    ).fetchone() != (False,):
+        raise M5RuntimeRecoveryBundleError(
+            "M5 runtime recovery bundle forbids an existing M5 attempt"
+        )
+    if connection.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM groundloop_semantic_job_attempt AS attempt
+            JOIN groundloop_semantic_job AS job ON job.job_id = attempt.job_id
+            JOIN groundloop_m5_runtime_epoch AS runtime_epoch
+              ON runtime_epoch.epoch_id = job.epoch_id
+        )
+        """
+    ).fetchone() != (False,):
+        raise M5RuntimeRecoveryBundleError(
+            "M5 runtime recovery bundle forbids an existing typed-direct attempt"
+        )
+
+
+def install_m5_runtime_recovery_bundle(
+    connection: Connection[Any],
+    *,
+    failure_injector: Callable[[str], None] | None = None,
+    migration_bytes: bytes | None = None,
+) -> M5RuntimeRecoveryBundleInstallResult:
+    """Atomically install or ledger-first replay frozen migration 016."""
+
+    identity = m5_runtime_recovery_bundle_identity(
+        migration_bytes=migration_bytes,
+    )
+    migration = (
+        M5_RUNTIME_RECOVERY_MIGRATION_PATH.read_bytes()
+        if migration_bytes is None
+        else migration_bytes
+    )
+
+    with connection.transaction():
+        # D24 requires bundle-ledger replay before the zero-attempt first-install
+        # guard.  This keeps exact rerun legal after production attempts exist.
+        ledger = _read_ledger(connection, identity.bundle_id)
+        if ledger is not None:
+            expected = (
+                identity.bundle_sha256,
+                identity.migration_sha256,
+                identity.oracle_sha256,
+                identity.prerequisite_sha256,
+            )
+            if ledger != expected:
+                raise M5BundleHashConflictError(
+                    f"bundle {identity.bundle_id} is already ledgered with "
+                    "different content"
+                )
+            _verify_accepted_m5_runtime_bundle(connection)
+            return M5RuntimeRecoveryBundleInstallResult(
+                identity=identity,
+                applied=False,
+            )
+
+        _verify_accepted_m5_runtime_bundle(connection)
+        _acquire_m5_runtime_recovery_install_locks(connection)
+        _verify_accepted_m5_runtime_bundle(connection)
+
+        # A concurrent exact installer can only become visible before these
+        # locks are acquired.  Recheck the ledger before the strict guard.
+        ledger = _read_ledger(connection, identity.bundle_id)
+        if ledger is not None:
+            expected = (
+                identity.bundle_sha256,
+                identity.migration_sha256,
+                identity.oracle_sha256,
+                identity.prerequisite_sha256,
+            )
+            if ledger != expected:
+                raise M5BundleHashConflictError(
+                    f"bundle {identity.bundle_id} is already ledgered with "
+                    "different content"
+                )
+            return M5RuntimeRecoveryBundleInstallResult(
+                identity=identity,
+                applied=False,
+            )
+
+        _m5_runtime_recovery_first_install_guard(connection)
+        for group_name, group_sql in _m5_runtime_recovery_migration_groups(migration):
+            connection.execute(group_sql)
+            if failure_injector is not None:
+                failure_injector(f"after_{group_name}")
+
+        connection.execute("SET CONSTRAINTS ALL IMMEDIATE")
+        if failure_injector is not None:
+            failure_injector("after_constraints")
+        if failure_injector is not None:
+            failure_injector("before_ledger")
+        connection.execute(
+            """
+            INSERT INTO groundloop_m5_schema_bundle (
+                bundle_id, bundle_sha256, migration_sha256, oracle_sha256,
+                prerequisite_sha256, applied_at
+            ) VALUES (%s, %s, %s, %s, %s, now())
+            """,
+            (
+                identity.bundle_id,
+                identity.bundle_sha256,
+                identity.migration_sha256,
+                identity.oracle_sha256,
+                identity.prerequisite_sha256,
+            ),
+        )
+        if failure_injector is not None:
+            failure_injector("after_ledger")
+        return M5RuntimeRecoveryBundleInstallResult(identity=identity, applied=True)
+
+
 __all__ = [
     "LEGACY_MIGRATION_NAMES",
     "LEGACY_MIGRATION_PATHS",
@@ -931,10 +1262,20 @@ __all__ = [
     "M5_CATALOG_PREFLIGHT_ROW_EXCLUSIVE_RELATIONS",
     "M5_INSTALL_LOCK_RELATIONS",
     "M5_RUNTIME_BUNDLE_ID",
+    "M5_ACCEPTED_RUNTIME_BUNDLE_ID",
+    "M5_ACCEPTED_RUNTIME_BUNDLE_SHA256",
+    "M5_ACCEPTED_RUNTIME_MIGRATION_SHA256",
+    "M5_ACCEPTED_RUNTIME_ORACLE_SHA256",
+    "M5_ACCEPTED_RUNTIME_PREREQUISITE_SHA256",
     "M5_RUNTIME_INSTALL_LOCK_RELATIONS",
     "M5_RUNTIME_MIGRATION_LABEL",
     "M5_RUNTIME_MIGRATION_PATH",
     "M5_RUNTIME_ORACLE_SHA256",
+    "M5_RUNTIME_RECOVERY_BUNDLE_ID",
+    "M5_RUNTIME_RECOVERY_INSTALL_LOCK_RELATIONS",
+    "M5_RUNTIME_RECOVERY_MIGRATION_LABEL",
+    "M5_RUNTIME_RECOVERY_MIGRATION_PATH",
+    "M5_RUNTIME_RECOVERY_ORACLE_SHA256",
     "M5BundleError",
     "M5BundleHashConflictError",
     "M5BundleIdentity",
@@ -943,10 +1284,15 @@ __all__ = [
     "M5RuntimeBundleError",
     "M5RuntimeBundleIdentity",
     "M5RuntimeBundleInstallResult",
+    "M5RuntimeRecoveryBundleError",
+    "M5RuntimeRecoveryBundleIdentity",
+    "M5RuntimeRecoveryBundleInstallResult",
     "apply_legacy_migrations",
     "install_m5_core_bundle",
     "install_m5_runtime_bundle",
+    "install_m5_runtime_recovery_bundle",
     "legacy_prerequisite_source_sha256",
     "m5_bundle_identity",
     "m5_runtime_bundle_identity",
+    "m5_runtime_recovery_bundle_identity",
 ]
