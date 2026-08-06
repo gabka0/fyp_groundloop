@@ -1,17 +1,21 @@
 # GroundLoop M5 Bounded Evidence-Group Design Freeze
 
-Status: frozen M5.0 contract, amended through M5-D24; implementation evidence
-for M5-D24 remains pending
+Status: frozen M5.0 contract, amended through accepted M5-D24-C1;
+implementation evidence for M5-D24 and M5-D24-C1 remains pending
 
-Date: 2026-08-02; M5-D21 through M5-D24 amendments 2026-08-06
+Date: 2026-08-02; M5-D21 through M5-D24-C1 amendments 2026-08-06
 
 Authority: this document specializes `docs/technical_design.md` v0.2 for M5.
 It preserves original decisions D-1 through D-20 except where the earlier
 pseudocode is mathematically inconsistent with its own stated system-of-
 distinct-representatives semantics. Those corrections and the later runtime
-decisions M5-D21 through M5-D24 are recorded in the decision log and frozen
+decisions M5-D21 through M5-D24-C1 are recorded in the decision log and frozen
 here. The byte-total M5-D24 specialization is authoritative at
 `docs/workstreams/m5_runtime_contract/RECOVERY_WORK_AMENDMENT.md`.
+`docs/workstreams/m5_runtime_contract/EXECUTION_DISPOSITION_RECEIPT_CORRECTION.md`
+is its accepted execution-disposition and return-receipt correction; its
+independently accepted pre-freeze content SHA-256 is
+`741ce0de897099164eb877684bc12209f347eb920185be5ed4c3c3d5395bf25a`.
 
 M5 implementation begins only after the M5.0 *contract* gate passes. Later
 implementation-evidence cells in the acceptance matrix remain `PENDING` until
@@ -1769,6 +1773,7 @@ regression evidence.
 | M5-D22 | Changed-state artifact identity | Four byte-total semantic-row digests bind every persisted field; certificate references reuse immutable certificate digests; epoch/revision remain in the outer reference |
 | M5-D23 | Runtime transition completeness | Retry errors have a distinct durable hash and exact receipt; cancellation has a byte-total plan; typed direct open/acquire receive the data and cursor-local transaction boundary needed to preserve M4-v1 behavior |
 | M5-D24 | Recoverable dispatch and durable accounting | Database-clock leases and total acquisition projections make lost work recoverable; immutable dispatch/execution/work/timing evidence separates confirmed calls from ambiguity; migration 016 and post-terminal sidecars preserve exact replay without changing semantic or M4-v1 identities |
+| M5-D24-C1 | Execution disposition and return receipts | Successful execution disposition is explicit; successful requirement/direct receipts separate immutable first-return outcome from current terminal projection and expose exactly one first-write outer timing anchor without changing M4-v1 bytes |
 
 ## 15. Release gate
 
@@ -1782,6 +1787,6 @@ and data/evaluation audits agree that:
 5. the public data mapping is feasible without inventing gold labels;
 6. the acceptance matrix has a falsifying test for every M5-D decision,
    including the M5-D21 typed-bridge exception, M5-D22 state-artifact
-   identity, M5-D23 transition completeness, and M5-D24 recoverable dispatch
-   and durable accounting; and
+   identity, M5-D23 transition completeness, M5-D24 recoverable dispatch and
+   durable accounting, and the M5-D24-C1 receipt correction; and
 7. path ownership prevents shared-schema or shared-contract collisions.

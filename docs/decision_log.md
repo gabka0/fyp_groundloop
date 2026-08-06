@@ -1,5 +1,35 @@
 # GroundLoop Decision Log
 
+## 2026-08-06 — M5-D24-C1 Execution Disposition and Return Receipt Accepted
+
+Decision status: narrow correction accepted after independent exact-byte
+review; implementation evidence remains pending.
+
+The M5-D24 implementation preflight found linked omissions in its otherwise
+frozen recovery/accounting contract. Successful requirement and typed-direct
+settlement must persist `returned` versus `reused_artifact`, but the named
+method inputs do not carry that non-inferable fact. Successful returns can also
+race takeover or the terminal cutoff, while the existing completion receipt
+does not identify normal application versus preterminal/post-terminal audit or
+return the sole transition timing anchor. The direct late-return receipt was
+named without a topology, cursor-local direct methods were said to return
+contribution identities while several return `None`, and replay after later
+terminalization was not separated from the immutable first-return outcome.
+
+The accepted correction requires adapters to supply an explicit successful
+execution disposition and original attempt timing, keeps failure dispositions
+method-derived, separates cursor contribution candidates from the outer
+revision/anchor, and freezes total operational receipts for requirement and
+typed-direct successful returns, including nonexpired preterminal audit and
+replay after later terminalization. It changes no semantic digest,
+migration-015 byte, M4-v1 DTO/API, or provider-exactness claim. Its
+authoritative text is
+`docs/workstreams/m5_runtime_contract/EXECUTION_DISPOSITION_RECEIPT_CORRECTION.md`.
+Independent re-audit returned exact-byte GO on pre-freeze content SHA-256
+`741ce0de897099164eb877684bc12209f347eb920185be5ed4c3c3d5395bf25a`.
+Executable evidence remains pending and must follow the committed
+path-exclusive manifest.
+
 ## 2026-08-06 — M5-D24 Recoverable Dispatch and Durable Accounting Frozen
 
 Decision status: runtime recovery/accounting amendment accepted after
