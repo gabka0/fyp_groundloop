@@ -1,9 +1,9 @@
 # GroundLoop M5 Acceptance Matrix
 
-Status: frozen M5 falsification contract; staged evidence current through
-partial M5.3
+Status: frozen M5 falsification contract, amended by M5-D21; staged evidence
+current through partial M5.3
 
-Date: 2026-08-05
+Date: 2026-08-06
 
 Authority: each row is a necessary condition, not a menu. In Section 1, the
 first status is the M5.0 contract audit and the second is implementation
@@ -37,12 +37,15 @@ design freeze is reopened and the scope change is recorded.
 | M5.0-18 | M5-D18 bounded complexity claim | Zero-candidate policy probe, high-degree stable update, provenance-only repair, certificate rebuild, or dense structural replacement | Counters fit every frozen variable including `P`; DB/neural/storage costs separate | PASS / PENDING |
 | M5.0-19 | M5-D19 canonical requirement task | Use a SUPPORT-scored observation with a noncanonical task type | Observation stored but creates no witness edge | PASS / PENDING |
 | M5.0-20 | M5-D20 semantic confirmation boundary | Close without a fresh adjudicated cohort | Status says controlled/retrospective only and records M6 debt | PASS / PENDING |
+| M5.0-21 | M5-D21 typed direct bridge and combined state | After activation, use missing/prior-committed/reordered/mismatched kind/event/base/policy/manifest/registry/revision/state sidecars, commit a typed document sidecar without its M4 row, let public M4 open/resume/fail/seal change a typed epoch, or let direct completion commit COMPLETE while M5 work remains | Current-transaction guard/deferred-constraint rejection and rollback matrix, unchanged `v1_only` bytes, exact typed document open, public-M4 terminal-path rejection, and combined-state transition tests | PASS / PENDING |
 
-M5.0 froze after the contract side of every row passed, three independent
-audits reported no unresolved P0/P1, and the coordinator recorded the
-decisions. The decision-row implementation halves remain `PENDING` until the
+M5.0 originally froze after the contract side of every row passed, three
+independent audits reported no unresolved P0/P1, and the coordinator recorded
+the decisions. The later implementation conflict followed the frozen amendment
+procedure and is now specified by M5-D21, runtime-addendum revision 2, and row
+M5.0-21. The decision-row implementation halves remain `PENDING` until the
 final cross-stage evidence mapping at M5.6; the stage tables below record the
-current executable evidence without silently remapping M5-D1 through M5-D20.
+current executable evidence without silently remapping M5-D1 through M5-D21.
 
 ### 1.1 Mandatory adversarial cases
 
@@ -71,6 +74,7 @@ claim a decision PASS while its applicable case remains absent.
 | ADV-18 | All-source-supported/no-SDR WiCE case remains source-supported and SDR-incomplete; duplicate evidence sets retain all source rows but project the least original ordinal once; a primary WiCE claim has direct `support_count=0`; report never labels SDR failure negative gold and clusters correlated events. |
 | ADV-19 | Applicable baselines share event hashes, source mapping, frozen citations, no subclaim promotion, honest zero calls, explicit baseline-3 UNAVAILABLE on WiCE, baseline-4/source truth using the same independent direct-support disjunct when available, and distinct affected/all-group recomputation. |
 | ADV-20 | Cover both receipt directions: complete-group ID/certificate changes with constant statuses publish full state and no public delta; an old document event with no direct delta but one group-derived combined delta preserves v1 payload/OpenEventReceipt/PublicationReceipt identities and exact replay adds no duplicate delta/work. |
+| ADV-21 | Preserve the existing M4 guard trigger and `v1_only` behavior; in `m5_active`, reject a public v1 open and every missing, prior-committed, reordered, or mismatched typed sidecar without consuming event/epoch state; require current-transaction document-sidecar/M4-row commit bijection; reject public M4 resume/fail/seal on typed epochs; roll back every injected partial open; and keep the shared epoch pending after last-direct completion while any M5 counter is nonzero. |
 
 The finite algorithm gate enumerates every simple bipartite graph with
 `1 <= r <= 4` and `0 <= H <= 4`, every old/new hash-mask pair for

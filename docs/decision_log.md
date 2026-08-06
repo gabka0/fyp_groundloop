@@ -1,5 +1,41 @@
 # GroundLoop Decision Log
 
+## 2026-08-06 — M5-D21 Typed Direct Bridge Frozen
+
+Decision status: narrow runtime-contract amendment accepted; implementation
+evidence remains pending.
+
+Migration 014 intentionally makes `groundloop_m5_guard_v1_open()` reject every
+`groundloop_m4_update` insert after activation. Runtime-addendum revision 1
+also required an activated typed document event to preserve the exact M4-v1
+direct declaration inside the same transaction as its M5-v2 sidecar, while
+forbidding migration 015 from changing any 014 object semantics. Those
+requirements are jointly unsatisfiable; application code cannot safely bypass
+the database guard, omit the direct declaration, or commit it separately.
+
+M5-D21 authorizes one exact exception. Migration 015 may replace only the body
+of `groundloop_m5_guard_v1_open()` while leaving its trigger installed. The
+`v1_only` branch stays unchanged. In `m5_active`, an M4 update is accepted only
+after the current SQL transaction has installed an exact matching typed
+document update and revision-1 runtime header for the same event epoch,
+update-kind mapping, prior publication head, candidate-policy manifest,
+decision policy, and M4 registry binding. A previously committed sidecar is
+insufficient. A deferred runtime-header validation requires the typed document
+sidecar and M4 row to commit as a bijection, so no committed sidecar can become
+a reusable bypass. Missing or mismatched declarations and injected failures
+roll back the epoch and all child/PENDING state; a public v1 opener still
+consumes nothing after activation.
+
+The outer typed transaction is also frozen as the final authority for the
+shared epoch state. A cursor-local M4 transition may compute direct readiness,
+but `semantic_status=complete` may commit only when the direct coordination
+surface is complete and all three M5 epoch counters are zero. Neither direct
+completion nor a subgraph helper may advance a publication head or expose
+strict state independently. Public M4 resume, completion, failure, and seal
+entrypoints reject typed epochs before changing a row. No v1 digest, DTO,
+public receipt, never-activated behavior, M5 evidence-group semantics, or
+migration-014 file byte is changed by this decision.
+
 ## 2026-08-03 — M5.1 Pure Reference Semantics Accepted
 
 Decision status: M5.1 accepted after an independent high-confidence audit GO;
@@ -85,9 +121,11 @@ three returned GO with high confidence against identical file hashes. The
 audited hashes and complete current boundary are recorded in
 `docs/m5_implementation_status.md`.
 
-This decision freezes M5-D1 through M5-D20 and the falsification contract. It
-does not mark matching, PostgreSQL, runtime, real-model, evaluation or closure
-evidence complete. Those cells remain `PENDING` until M5.1--M5.6 execute.
+This decision initially froze M5-D1 through M5-D20 and the falsification
+contract; the later M5-D21 entry records the narrow typed-runtime correction.
+Neither decision marks matching, PostgreSQL, runtime, real-model, evaluation,
+or closure evidence complete. Those cells remain `PENDING` until their
+M5.1--M5.6 gates execute.
 
 ## 2026-07-21 — M4 Closed with Negative/Preliminary Scientific Verdict; V0 Retained
 

@@ -1,12 +1,12 @@
 # GroundLoop M5.4 Byte-Total Runtime Contract Addendum
 
-Status: candidate freeze; implementation authorization **GO** after the M5.3
-014 schema bundle is integrated and validated
+Status: frozen runtime contract revision 2; implementation authorization
+**GO** after the M5.3 014 schema bundle is integrated and validated
 
-Date: 2026-08-03
+Date: 2026-08-03; revision 2 / M5-D21 amendment 2026-08-06
 
 Authority: this addendum specializes `docs/m5_design_freeze.md` M5-D1 through
-M5-D20 and M5-T1/M5-T2. It does not change those decisions. The M5 design
+M5-D21 and M5-T1/M5-T2. It does not change those decisions. The M5 design
 freeze remains authoritative for semantic truth; this addendum is authoritative
 for M5.4 runtime DTOs, identities, transition boundaries, persistence
 ownership, replay, and acceptance tests.
@@ -18,11 +18,13 @@ start only after migration 014 and its SQL oracle bundle have passed the M5.3
 fresh-install, populated-upgrade, compatibility, and three-oracle gates.
 
 This addendum MUST NOT authorize a change to an M5.0 semantic decision. An
-implementation conflict with this addendum and M5-D1 through M5-D20 MUST stop
+implementation conflict with this addendum and M5-D1 through M5-D21 MUST stop
 M5.4 as **NO-GO**. The exact amendment procedure MUST be a new numbered M5
 decision in `docs/m5_design_freeze.md`, a matching acceptance-matrix row, and a
-new runtime-addendum revision before code resumes. No such conflict is present
-in this candidate.
+new runtime-addendum revision before code resumes. The migration-014 M4-open
+guard conflict discovered during implementation is resolved only by M5-D21 and
+the exact exception in Section 16; no unresolved conflict is present in this
+revision.
 
 Normative wire values in backticks MUST be exact lowercase UTF-8. Every DTO in
 this document MUST be immutable. Every tuple MUST use the order stated here.
@@ -63,6 +65,13 @@ requirement M5 root declarations, both PENDING projections, and the durable
 epoch in one structural-open transaction. It MUST NOT invoke
 `M4Application.run_event()` or a public M4 opener that commits before the M5
 overlay is durable.
+
+For a typed document event, the declaration order inside that transaction MUST
+be the held runtime-mode/publication-head locks, `groundloop_epoch`,
+`groundloop_m5_update`, the revision-1 `groundloop_m5_runtime_epoch` header,
+and then `groundloop_m4_update`. The M4 insert is admitted only through the
+M5-D21 typed-sidecar-aware guard. Group/requirement-only typed events have no
+direct declaration and MUST NOT synthesize an M4 update.
 
 Direct and requirement worker completions MUST commit only working/audit state.
 Neither subgraph MUST advance a publication head, emit a public delta, or make
@@ -1379,6 +1388,14 @@ surface is complete and the three M5 counters are zero. A blocking failure
 MUST prevent SEMANTIC_COMPLETE. No model call MUST execute inside a database
 transaction.
 
+A cursor-local M4 transition may compute or temporarily write direct readiness
+inside the typed transaction, but it is never the final state authority. Before
+commit, the outer typed coordinator MUST overwrite/validate the shared
+`groundloop_epoch.semantic_status` and `evaluation_state` from the combined
+direct readiness and all three M5 counters at the same resulting revision.
+Last-direct-job completion while any M5 counter is nonzero MUST therefore leave
+the epoch pending; no direct-only complete state may commit or become visible.
+
 ### 14.2 Job and scope
 
 The only normal job edges MUST be:
@@ -1545,10 +1562,48 @@ Migration 014 MUST exclusively own these prerequisites consumed by 015:
   relations; and
 - all group/claim certificate artifact and binding relations.
 
-Migration 015 MUST NOT recreate, rename, add a column to, weaken a constraint
-on, or change the semantics of any object in that list. It MUST NOT alter the
-M4-v1 contract tables or digest checks. Source changes that make the v1 opener
-honor the 014 runtime-mode barrier MUST remain behavior-neutral in `v1_only`.
+Except for the exact M5-D21 bridge below, migration 015 MUST NOT recreate,
+rename, add a column to, weaken a constraint on, or change the semantics of any
+object in that list. It MUST NOT alter an M4-v1 contract table or digest check.
+Source changes that make the v1 opener honor the 014 runtime-mode barrier MUST
+remain behavior-neutral in `v1_only`.
+
+M5-D21 authorizes migration 015 to execute exactly one
+`CREATE OR REPLACE FUNCTION` against a migration-014 object: the body of
+`groundloop_m5_guard_v1_open()`. The existing
+`groundloop_m4_update_runtime_mode_guard` trigger remains installed and
+unchanged. The replacement function MUST:
+
+1. retain the exact `v1_only` acceptance branch;
+2. in `m5_active`, reject unless the same epoch already has a revision-1
+   `structural_committed` `groundloop_m5_runtime_epoch` header and a
+   `groundloop_m5_update` document declaration inserted by the current SQL
+   transaction; the epoch, M5 update, and runtime header insertion-transaction
+   identities MUST all equal the current transaction, and an earlier committed
+   matching row MUST NOT pass;
+3. require `groundloop_epoch.event_id` to equal the runtime header's structural
+   event ID; map M4 `insert/delete/replace` exactly to M5
+   `document_insert/document_delete/document_replace`; require identical prior
+   publication epochs; require the M4 and runtime candidate-policy IDs to
+   match; require the header's policy-manifest hash to equal the immutable M5
+   policy row; require the M4 and M5 candidate-policy rows and M5 update to
+   agree on decision-policy version; and require the M4 registry snapshot to
+   equal its immutable M4 candidate-policy binding; and
+4. reject every missing or mismatched sidecar without changing a row.
+
+Migration 015 MUST add a deferred checked validation rooted on its new runtime
+header. At commit, a document-kind typed declaration MUST have exactly the
+matching M4 update described above, and a non-document typed declaration MUST
+have none. This validation prevents a typed sidecar from being committed as a
+reusable guard bypass. Migration 015 MUST NOT disable or defer the existing M4
+guard, alter runtime mode during installation, or authorize any standalone M4
+write in `m5_active`.
+
+Public M4 resume, completion, failure, and seal entrypoints MUST reject any
+epoch having a `groundloop_m5_runtime_epoch` header before changing a row.
+Only cursor-local M4 helpers called by the typed coordinator under its existing
+transaction may operate on that epoch's direct subgraph, and the typed outer
+transaction retains combined failure/publication/seal authority.
 
 Migration 015 MUST create exactly these runtime-owned relation families:
 
@@ -1831,6 +1886,16 @@ call order and MUST fail if model work occurs inside a transaction.
 - fresh 014-to-015 install, populated install, exact rerun, hash-conflict
   rejection, mid-DDL rollback, and deferred validation;
 - no activation and no M4-v1 byte change from migration alone;
+- exact `v1_only` guard behavior; activated public-v1 rejection with no
+  event/epoch consumption; acceptance only after an exact typed document
+  sidecar inserted by the current transaction; and rejection of wrong order,
+  prior-committed sidecars, wrong kind, event, predecessor, candidate policy,
+  manifest, decision policy, registry snapshot, revision, or runtime state;
+- deferred rejection of a document sidecar without its matching M4 row and of
+  a non-document sidecar with one, plus injected open rollback leaving neither
+  declaration nor any child/PENDING row;
+- rejection of public M4 resume, completion, failure, and seal on an epoch with
+  a typed runtime header, with zero row/head change;
 - every SQL enum/nullability/immutability/subtype/counter/closure constraint;
   and
 - indexed point lookups for epoch, job, scope, attempt, pair, frontier,
@@ -1958,6 +2023,7 @@ database I/O MUST remain explicit.
 | M5-D18 | Section 19 composes rather than weakens M5-T2 and records every excluded physical/neural cost. |
 | M5-D19 | `verify_requirement_v1` is the only task entering witness state. |
 | M5-D20 | The pinned-model run remains diagnostic and cannot confirm semantics. |
+| M5-D21 | Sections 2, 14.1, and 16 admit the exact M4-v1 direct declaration only behind a matching same-transaction typed sidecar, preserve activated public-v1 rejection, and make the outer typed coordinator final authority for combined epoch state. |
 | M5-T1 | Section 18.6 requires incremental/Python/SQL equality after every relevant measured seal. |
 | M5-T2 | Sections 10 and 19 expose touched rows, bytes, model calls, and physical exclusions without hiding them in the affected-group bound. |
 
@@ -1978,8 +2044,9 @@ The M4/M5 identity boundary MUST remain:
 
 **Decision: GO. Confidence: high.**
 
-The addendum resolves the runtime ambiguities without changing M5.0 semantics.
-The only hard sequencing dependency is the accepted 014 schema bundle and its
-exact activation/head/core relations. M5.4 implementation MUST remain blocked
-until that dependency is merged and validated; this sequencing block MUST NOT
-be reported as a design NO-GO.
+Revision 2 resolves the runtime ambiguities under M5-D21 without changing the
+M5.0 evidence-group semantics or any v1 identity. The only hard sequencing
+dependency is the accepted 014 schema bundle and its exact
+activation/head/core relations. M5.4 implementation MUST remain blocked until
+that dependency is merged and validated; this sequencing block MUST NOT be
+reported as a design NO-GO.

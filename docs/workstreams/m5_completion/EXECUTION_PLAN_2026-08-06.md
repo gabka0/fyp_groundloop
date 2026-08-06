@@ -10,7 +10,9 @@ Authority: `docs/m5_design_freeze.md`, `docs/m5_implementation_plan.md`,
 `docs/m5_multiagent_execution_plan.md`, `docs/m5_acceptance_matrix.md`, and
 `docs/workstreams/m5_runtime_contract/CANDIDATE_RUNTIME_ADDENDUM.md`. This
 manifest changes implementation ownership and sequencing only. It does not
-amend M5-D1 through M5-D20, M5-T1/M5-T2, or any v1 identity.
+amend M5-D1 through M5-D21, M5-T1/M5-T2, or any v1 identity. M5-D21 is the
+separately recorded contract amendment that resolves the migration-014 typed
+direct-open conflict.
 
 ## 1. Restart checkpoint and protected state
 
@@ -50,9 +52,9 @@ M  pyproject.toml
 No M5 lane owns those paths. No M5 commit may stage them. Their recorded
 hashes and dirty state are rechecked before every integration and at closure.
 
-The existing Compose PostgreSQL container is currently stopped with exit code
-255. Its volume is preserved. Restart and diagnosis are non-destructive; no
-volume recreation or database deletion is authorized.
+The existing Compose PostgreSQL container was stopped with exit code 255 at
+restart and has since been restarted non-destructively. Its volume is
+preserved; no volume recreation or database deletion is authorized.
 
 ## 2. Audit verdict and first production slice
 
@@ -126,8 +128,11 @@ The lane implements exactly the 26 runtime relations enumerated in runtime
 addendum Section 16 and the
 `m5-runtime-schema-bundle-v2` install/rerun/conflict/rollback contract. It may
 not edit migration 014, its SQL oracle, the core bundle identity, M4 tables, or
-semantic-core relations owned by 014. The migration must leave mode unchanged
-and must not activate M5.
+semantic-core relations owned by 014. M5-D21 authorizes only a 015
+`CREATE OR REPLACE FUNCTION groundloop_m5_guard_v1_open()` body replacement
+plus the runtime-header deferred validation; the trigger must remain installed
+and every other 014/M4 object remains out of scope. The migration must leave
+mode unchanged and must not activate M5.
 
 ### Lane E1 -- controlled-adapter evidence hardening
 
@@ -158,6 +163,7 @@ src/groundloop/m5/runtime/application.py
 src/groundloop/m5/runtime/persistence.py
 src/groundloop/m5/runtime/direct_m4.py
 src/groundloop/m5/__init__.py
+src/groundloop/m4/evaluation_overlay.py
 src/groundloop/m4/pipeline.py
 src/groundloop/m4/persistence.py
 tests/m5/postgres_runtime/conftest.py
@@ -166,6 +172,7 @@ tests/m5/postgres_runtime/test_typed_runtime.py
 tests/m5/postgres_runtime/test_runtime_races.py
 tests/m5/postgres_runtime/test_runtime_crash_reconnect.py
 all top-level status/contract/roadmap files
+docs/workstreams/m5_runtime_contract/CANDIDATE_RUNTIME_ADDENDUM.md
 docs/workstreams/m5_completion/
 docs/workstreams/m5_integration/
 ```
@@ -186,6 +193,8 @@ The following must pass before production persistence work can claim evidence:
 - frozen M4 identity regressions after importing the runtime package;
 - fresh/populated 015 install, exact rerun, hash conflict, missing/wrong 014
   prerequisite, and mid-DDL rollback;
+- M5-D21 current-transaction guard/deferred-validation matrix, original guard
+  restoration on failed 015 install, and byte-identical `v1_only` behavior;
 - `git diff --check`, focused Ruff, strict mypy, and compileall.
 
 ### Barrier B -- M5.3-07 durable failure/replay
@@ -225,7 +234,9 @@ this document or a successor manifest before editing.
 M5.4 runs in this order:
 
 1. fake-port typed history;
-2. live typed runtime, activation, sparse seal, failure, and reconnect replay;
+2. live typed runtime, activation, the M5-D21 same-transaction bridge and
+   negative matrix, public-M4 terminal-path rejection, sparse seal, failure,
+   and reconnect replay;
 3. race and crash matrices;
 4. measured history with inline full oracles disabled and out-of-band
    incremental/Python/SQL equality after every seal;
@@ -267,7 +278,7 @@ After code and evaluation freeze, the coordinator executes and records:
 - crash/reconnect/replay and migration/backfill evidence;
 - deterministic evaluation reproduction and artifact hashes;
 - a generated-artifact/secrets/user-WIP audit;
-- cross-stage mapping for M5-D1 through M5-D20;
+- cross-stage mapping for M5-D1 through M5-D21;
 - final status, acceptance matrix, roadmap, architecture, evaluation,
   literature, README, AGENTS, and decision-log reconciliation.
 

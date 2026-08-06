@@ -1,14 +1,16 @@
 # GroundLoop M5 Bounded Evidence-Group Design Freeze
 
-Status: frozen M5.0 contract; implementation evidence remains pending
+Status: frozen M5.0 contract, amended by M5-D21; implementation evidence
+remains pending
 
-Date: 2026-08-02
+Date: 2026-08-02; M5-D21 amendment 2026-08-06
 
 Authority: this document specializes `docs/technical_design.md` v0.2 for M5.
-It preserves original decisions D-1 through D-20 except where the earlier pseudocode is
-mathematically inconsistent with its own stated system-of-distinct-
-representatives semantics. Those corrections are recorded in the decision log
-and frozen here.
+It preserves original decisions D-1 through D-20 except where the earlier
+pseudocode is mathematically inconsistent with its own stated system-of-
+distinct-representatives semantics. Those corrections and the later narrow
+typed-runtime bridge decision M5-D21 are recorded in the decision log and
+frozen here.
 
 M5 implementation begins only after the M5.0 *contract* gate passes. Later
 implementation-evidence cells in the acceptance matrix remain `PENDING` until
@@ -1077,6 +1079,70 @@ the M5 dispatcher reuses direct M4 loaders/withdrawal logic over shared
 currency and because replay/reconnect audit may run on an activated database.
 Preativation replay may return stored results but cannot create/resume v1 work.
 
+### M5-D21 -- typed sidecar authorization and combined-state authority
+
+Migration 014's `groundloop_m4_update_runtime_mode_guard` deliberately rejects
+every new M4-v1 mutation declaration after activation. The typed M5 document
+route nevertheless has to insert the exact M4-v1 direct declaration inside the
+same transaction as its M5-v2 declaration. Migration 015 is therefore
+authorized to make one, and only one, semantic change to an object installed
+by migration 014: it may use `CREATE OR REPLACE FUNCTION` to replace the body
+of `groundloop_m5_guard_v1_open()`. It must not drop, disable, defer, rename, or
+replace the trigger, alter migration 014, toggle runtime mode, or weaken any
+other v1 guard or relation.
+
+The replacement preserves the `v1_only` branch exactly. In `m5_active` it may
+accept a `groundloop_m4_update` INSERT only when rows inserted by the current
+SQL transaction establish one matching typed document declaration for the same
+epoch. Merely finding a matching row committed by an earlier transaction is
+insufficient. The guard validates insertion-transaction identity for the
+epoch, M5 update, and typed runtime header, plus all of these bindings:
+
+- the `groundloop_epoch` event ID equals the typed runtime header's structural
+  event ID, and that one epoch row remains the shared event/payload binding;
+- `groundloop_m5_update.update_kind` is respectively `document_insert`,
+  `document_delete`, or `document_replace` for M4 `insert`, `delete`, or
+  `replace`;
+- the M4 update, M5 update, and runtime header name the same previous
+  publication epoch;
+- the runtime header and M4 update name the same candidate-policy ID, the
+  header binds the stored immutable M5 candidate-policy manifest, and that
+  policy's decision-policy version equals both the M4 candidate policy and the
+  M5 update's version;
+- the M4 update's registry snapshot equals its immutable M4 candidate-policy
+  binding; and
+- the typed runtime header is the revision-1 `structural_committed`
+  declaration for that epoch.
+
+Migration 015 must also install a deferred validation on its runtime header so
+a document-kind typed declaration cannot commit without exactly that matching
+M4 update, while a non-document typed declaration cannot acquire an M4 update.
+Consequently a committed reusable bypass row cannot exist: an activated public
+v1 opener has no typed sidecar and is rejected before its transaction can
+consume an event ID or epoch, and any mismatched or injected-failure open rolls
+back the epoch and both declarations together.
+
+The typed document-open order is runtime-mode and publication-head locks,
+`groundloop_epoch`, `groundloop_m5_update`, the revision-1 typed runtime
+header, and then `groundloop_m4_update`, followed by both subgraphs, all in one
+transaction. No direct subgraph helper may commit, advance a head, or expose
+strict state independently.
+
+The shared base epoch's semantic/evaluation state is a combined projection.
+A transaction-local M4 helper may compute direct readiness, but before every
+typed runtime transaction commits the outer typed coordinator is the final
+authority: `complete` is permitted only when the direct M4 coordination
+surface is complete and M5 `open_work_count`, `open_scope_count`, and
+`blocking_failure_count` are all zero. Otherwise the active epoch remains
+`pending`, or becomes `failed` through the typed failure path. In particular,
+last-direct-job completion cannot publish a transient direct-only `complete`
+state while requirement work remains open.
+
+After activation, public M4 resume, completion, failure, and seal paths must
+reject an epoch having a typed runtime header before changing any row. Only
+cursor-local helpers invoked under the already-held typed transaction may
+mutate its direct subgraph; only the typed coordinator may fail or seal it.
+
 ## 11. Dynamic M4 integration contract
 
 ### M5-D14 -- typed v2 runtime identity
@@ -1690,6 +1756,7 @@ regression evidence.
 | M5-D18 | Complexity claim | `O(2^r)` bounded Hall maintenance plus explicit caveats; no general dynamic-matching novelty claim |
 | M5-D19 | Requirement task | Only `verify_requirement_v1` observations enter M5 witness state |
 | M5-D20 | Semantic confirmation | Without a fresh blinded adjudicated cohort, M5 closes with controlled/retrospective evidence only |
+| M5-D21 | Typed direct bridge | Migration 015 may replace only the M4-open guard function so a matching typed sidecar-backed document declaration can insert the exact M4-v1 subgraph; public v1 remains blocked after activation and combined M4/M5 state is outer-coordinator-owned |
 
 ## 15. Release gate
 
@@ -1701,5 +1768,6 @@ and data/evaluation audits agree that:
 3. certificate and v1/v2 digest semantics are total;
 4. Python and SQL oracle algorithms are independent and executable;
 5. the public data mapping is feasible without inventing gold labels;
-6. the acceptance matrix has a falsifying test for every M5-D decision; and
+6. the acceptance matrix has a falsifying test for every M5-D decision,
+   including the M5-D21 typed-bridge exception; and
 7. path ownership prevents shared-schema or shared-contract collisions.
