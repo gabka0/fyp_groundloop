@@ -238,7 +238,14 @@ Only then may M5.3-07 become PASS.
 
 ### Wave B -- full M5.4 runtime
 
-After Barrier A, one new coordinator-approved lane may own only:
+Barrier A passed at coordinator checkpoint `64352dc`. Lane A1 is authorized:
+
+```text
+branch:   workstream/m5-typed-application
+worktree: /home/kassym/Desktop/groundloop-worktrees/m5-typed-application
+```
+
+It may own only:
 
 ```text
 src/groundloop/m5/runtime/application.py
