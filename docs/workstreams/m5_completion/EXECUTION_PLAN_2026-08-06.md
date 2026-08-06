@@ -410,6 +410,36 @@ edit migrations, pure contracts/digests, structural open, discovery/barrier/
 verifier/seal/failure behavior, M4 code, shared tests/status, or user paths.
 Any missing lease-expiration contract is reported rather than invented.
 
+### Lane R7 -- PostgreSQL requirement-root transitions
+
+Authorized after activation-race checkpoint `fe13d1d`:
+
+```text
+branch:   workstream/m5-root-transitions
+worktree: /home/kassym/Desktop/groundloop-worktrees/m5-root-transitions
+```
+
+Owned paths:
+
+```text
+src/groundloop/m5/runtime/postgres_roots.py
+tests/m5/postgres_runtime/test_root_transitions.py
+docs/workstreams/m5_runtime_implementation/ROOT_TRANSITIONS_HANDOFF.md
+```
+
+R7 implements cursor-local, transaction-neutral helpers for frozen root-result
+staging and the event-wide root closure barrier. The helpers must validate the
+complete job/lease/attempt-output/result identities; archive immutable attempt
+artifacts; persist hits, selections, and result rows; perform deterministic
+cross-root deduplication; create admitted pairs, complete source rows,
+verifier child jobs/dependencies; close every root/scope once; and maintain
+runtime/PENDING counters and one revision CAS exactly. Live tests must cover
+exact replay, conflicting output, incomplete barrier, overlap ownership,
+empty/short closures, rollback injection, and concurrent final-result/barrier
+orders. R7 may not edit persistence wrappers, migrations, contracts/digests,
+frontier semantics, M4, other tests/status, or user paths. It reports any
+schema/contract blocker instead of weakening a deferred invariant.
+
 ### Wave C -- maintained evaluation bridge
 
 Only after the public M5.4 contracts and runtime are frozen may one exclusive
