@@ -17,8 +17,10 @@ from dataclasses import dataclass, field
 
 from groundloop.domain import (
     AnswerVersion,
+    ChunkVersion,
     Claim,
     DecisionPolicy,
+    DocumentVersion,
     ModelStamp,
     Question,
     StatusDelta,
@@ -40,6 +42,9 @@ from groundloop.m4.application import (
     StructuralWithdrawal,
 )
 from groundloop.m4.contracts import (
+    DiscoveryScope as M4DiscoveryScope,
+)
+from groundloop.m4.contracts import (
     JobKind,
     PairKey,
     VectorIndexKind,
@@ -48,6 +53,7 @@ from groundloop.m4.contracts import (
 from groundloop.m4.contracts import (
     LogicalJobSpec as M4LogicalJobSpec,
 )
+from groundloop.m4.pipeline import InsertedDocument, StructuralPayload
 from groundloop.m4.runtime.withdrawal import (
     ObservationDependency,
     ReverseDependencyIndex,
@@ -578,21 +584,40 @@ class FakeStructural:
     def open_typed_event_atomically(
         self,
         event: M5TypedEventPlan,
+        direct_payload: StructuralPayload | None,
         direct_withdrawal: StructuralWithdrawal | None,
         requirement_withdrawal: M5RequirementWithdrawalPlan,
         direct_roots: tuple[M4LogicalJobSpec, ...],
+        direct_scopes: tuple[M4DiscoveryScope, ...],
         requirement_roots: tuple[M5RequirementRootDeclaration, ...],
         requirement_root_set_hash: str,
     ) -> OpenEventReceipt:
         if event.direct_plan is not None:
-            if direct_withdrawal is None:
-                raise ValidationError("fake direct event lacks its withdrawal")
+            if direct_payload is None or direct_withdrawal is None:
+                raise ValidationError("fake direct event lacks payload/withdrawal")
             if (
                 direct_withdrawal.plan.deactivated_chunk_ids
                 != event.direct_plan.deactivated_chunk_version_ids
             ):
                 raise ValidationError("fake direct withdrawal drift")
-        elif direct_withdrawal is not None or direct_roots:
+            if (
+                direct_payload.inserted_chunk_ids
+                != event.direct_plan.inserted_chunk_version_ids
+            ):
+                raise ValidationError("fake direct structural payload drift")
+            impact_ids = tuple(
+                root.job_id
+                for root in direct_roots
+                if root.kind is JobKind.IMPACT_DISCOVERY
+            )
+            if tuple(scope.root_job_id for scope in direct_scopes) != impact_ids:
+                raise ValidationError("fake direct scopes drift")
+        elif (
+            direct_payload is not None
+            or direct_withdrawal is not None
+            or direct_roots
+            or direct_scopes
+        ):
             raise ValidationError("fake non-document event declared direct work")
         existing = self.world.epochs_by_event.get(event.structural_event_id)
         if existing is not None:
@@ -730,9 +755,64 @@ class FakeDirect:
             roots.append(self._root(event, JobKind.IMPACT_DISCOVERY, chunk_id))
         for claim_id in withdrawal.fallback_claim_ids:
             roots.append(self._root(event, JobKind.FRONTIER_RETRIEVE, claim_id))
+        ordered_roots = tuple(sorted(roots, key=lambda root: root.job_id))
+        scopes = tuple(
+            M4DiscoveryScope(
+                root_job_id=root.job_id,
+                registry_snapshot_id=event.direct_plan.claim_registry_snapshot_id,
+                registered_claim_ids=event.direct_plan.registered_claim_ids,
+            )
+            for root in ordered_roots
+            if root.kind is JobKind.IMPACT_DISCOVERY
+        )
         return M5DirectOpenPlan(
+            self._structural_payload(event),
             withdrawal,
-            tuple(sorted(roots, key=lambda root: root.job_id)),
+            ordered_roots,
+            scopes,
+        )
+
+    @staticmethod
+    def _structural_payload(event: M5TypedEventPlan) -> StructuralPayload:
+        typed_event = event.event
+        if isinstance(typed_event, InsertDocumentEvent):
+            document_id = typed_event.document_id
+            version_id = typed_event.document_version_id
+            content_hash = typed_event.content_hash
+            deactivated_id = None
+            chunks = typed_event.chunks
+        elif isinstance(typed_event, ReplaceDocumentVersionEvent):
+            document_id = typed_event.document_id
+            version_id = typed_event.new_document_version_id
+            content_hash = typed_event.content_hash
+            deactivated_id = typed_event.old_document_version_id
+            chunks = typed_event.chunks
+        elif isinstance(typed_event, DeleteDocumentVersionEvent):
+            return StructuralPayload(
+                deactivated_document_version_id=typed_event.document_version_id
+            )
+        else:
+            raise ValidationError("direct payload requires a document event")
+        inserted_chunks = tuple(
+            sorted(
+                (
+                    ChunkVersion(
+                        chunk_version_id=chunk.chunk_version_id,
+                        document_version_id=version_id,
+                        chunk_index=chunk.chunk_index,
+                        text=chunk.text,
+                    )
+                    for chunk in chunks
+                ),
+                key=lambda chunk: chunk.chunk_version_id,
+            )
+        )
+        return StructuralPayload(
+            inserted=InsertedDocument(
+                version=DocumentVersion(version_id, document_id, content_hash),
+                chunks=inserted_chunks,
+            ),
+            deactivated_document_version_id=deactivated_id,
         )
 
     @staticmethod

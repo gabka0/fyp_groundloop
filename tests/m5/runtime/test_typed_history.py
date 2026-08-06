@@ -19,7 +19,7 @@ from groundloop.domain import (
     SemanticObservation,
     SubjectKind,
 )
-from groundloop.errors import EventConflictError
+from groundloop.errors import EventConflictError, ValidationError
 from groundloop.events import (
     ChunkInput,
     DeleteDocumentVersionEvent,
@@ -42,6 +42,7 @@ from groundloop.m5.events import (
     legacy_event_payload_digest,
 )
 from groundloop.m5.reference import compute_reference_states
+from groundloop.m5.runtime.application import M5DirectOpenPlan
 from groundloop.m5.runtime.contracts import (
     M5DiscoveryDirection,
     M5JobKind,
@@ -53,6 +54,39 @@ from groundloop.m5.runtime.contracts import (
 )
 
 STAMP = ModelStamp("typed-history", "v1", "prompt-v1")
+
+
+def test_direct_open_plan_carries_exact_structural_payload_and_scopes() -> None:
+    harness = make_harness()
+    event = InsertDocumentEvent(
+        "direct-payload-event",
+        "direct-document",
+        "direct-version",
+        sha("direct-content"),
+        (ChunkInput("direct-chunk", 0, "direct evidence"),),
+    )
+    typed = make_typed_plan(harness.world, event)
+
+    direct = harness.direct.plan_direct_open(typed)
+
+    assert direct.structural_payload is not None
+    assert direct.structural_payload.manifest["inserted_document_id"] == (
+        "direct-document"
+    )
+    assert direct.structural_payload.manifest["inserted_chunk_ids"] == [
+        "direct-chunk"
+    ]
+    impact_ids = tuple(
+        job.job_id for job in direct.root_jobs if job.kind.value == "impact_discovery"
+    )
+    assert tuple(scope.root_job_id for scope in direct.discovery_scopes) == impact_ids
+    with pytest.raises(ValidationError, match="jointly present"):
+        M5DirectOpenPlan(
+            None,
+            direct.withdrawal,
+            direct.root_jobs,
+            direct.discovery_scopes,
+        )
 
 
 def _group(

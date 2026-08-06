@@ -20,8 +20,15 @@ from typing import Protocol
 from groundloop.errors import GroundLoopError, ValidationError
 from groundloop.m4.application import OpenEventReceipt, StructuralWithdrawal
 from groundloop.m4.contracts import (
+    DiscoveryScope as M4DiscoveryScope,
+)
+from groundloop.m4.contracts import (
+    JobKind as M4JobKind,
+)
+from groundloop.m4.contracts import (
     LogicalJobSpec as M4LogicalJobSpec,
 )
+from groundloop.m4.pipeline import StructuralPayload
 from groundloop.m5.events import RegisterGroupEvent, ReplaceGroupEvent
 from groundloop.m5.runtime import digests
 from groundloop.m5.runtime.contracts import (
@@ -68,18 +75,35 @@ def _sum_work(*items: M5RuntimeWork) -> M5RuntimeWork:
 class M5DirectOpenPlan:
     """The exact M4-v1 declaration to stage inside the typed open transaction."""
 
+    structural_payload: StructuralPayload | None
     withdrawal: StructuralWithdrawal | None
     root_jobs: tuple[M4LogicalJobSpec, ...] = ()
+    discovery_scopes: tuple[M4DiscoveryScope, ...] = ()
 
     def __post_init__(self) -> None:
         _require_tuple("direct root jobs", self.root_jobs)
+        _require_tuple("direct discovery scopes", self.discovery_scopes)
         root_ids = tuple(job.job_id for job in self.root_jobs)
         if root_ids != tuple(sorted(set(root_ids))):
             raise ValidationError("direct root jobs must be ID-sorted and unique")
+        scope_ids = tuple(scope.root_job_id for scope in self.discovery_scopes)
+        if scope_ids != tuple(sorted(set(scope_ids))):
+            raise ValidationError("direct scopes must be root-ID-sorted and unique")
+        impact_ids = tuple(
+            job.job_id
+            for job in self.root_jobs
+            if job.kind is M4JobKind.IMPACT_DISCOVERY
+        )
+        if scope_ids != impact_ids:
+            raise ValidationError("each direct impact root requires one scope")
+        if (self.structural_payload is None) != (self.withdrawal is None):
+            raise ValidationError(
+                "direct structural payload and withdrawal are jointly present"
+            )
 
     @classmethod
     def empty(cls) -> M5DirectOpenPlan:
-        return cls(None)
+        return cls(None, None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,9 +228,11 @@ class M5TypedStructuralPort(Protocol):
     def open_typed_event_atomically(
         self,
         event: M5TypedEventPlan,
+        direct_payload: StructuralPayload | None,
         direct_withdrawal: StructuralWithdrawal | None,
         requirement_withdrawal: M5RequirementWithdrawalPlan,
         direct_roots: tuple[M4LogicalJobSpec, ...],
+        direct_scopes: tuple[M4DiscoveryScope, ...],
         requirement_roots: tuple[M5RequirementRootDeclaration, ...],
         requirement_root_set_hash: str,
     ) -> OpenEventReceipt: ...
@@ -395,9 +421,11 @@ class M5TypedApplication:
         )
         opened = self.structural.open_typed_event_atomically(
             event,
+            direct_open.structural_payload,
             direct_open.withdrawal,
             requirement_withdrawal,
             direct_open.root_jobs,
+            direct_open.discovery_scopes,
             requirement_roots,
             root_set_hash,
         )

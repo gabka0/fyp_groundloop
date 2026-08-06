@@ -1844,10 +1844,17 @@ The structural port MUST expose exactly:
 ```text
 plan_exact_requirement_withdrawal(event) -> M5RequirementWithdrawalPlan
 open_typed_event_atomically(
-  event, direct_withdrawal, requirement_withdrawal,
-  direct_roots, requirement_roots, requirement_root_set_hash
+  event, direct_payload, direct_withdrawal, requirement_withdrawal,
+  direct_roots, direct_scopes, requirement_roots,
+  requirement_root_set_hash
 ) -> OpenEventReceipt
 ```
+
+`direct_payload: StructuralPayload | None`, `direct_withdrawal`, direct roots,
+and direct scopes MUST be present exactly as the document event requires and
+MUST all be absent/empty for a non-document event. `M5DirectOpenPlan` MUST
+carry that exact payload, withdrawal, root set, and impact-discovery scope set;
+the structural port MUST pass them unchanged to the cursor-local adapter.
 
 The runtime persistence port MUST expose exactly:
 
