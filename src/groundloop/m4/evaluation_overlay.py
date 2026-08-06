@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from psycopg import Connection
+from psycopg import Connection, Cursor
 
 from groundloop.errors import (
     DanglingReferenceError,
@@ -28,6 +28,8 @@ from groundloop.errors import (
     ValidationError,
 )
 from groundloop.m4.runtime.epoch import EvaluationState
+
+SqlExecutor = Connection[Any] | Cursor[Any]
 
 
 class EvaluationObjectType(StrEnum):
@@ -251,6 +253,25 @@ class PostgresEvaluationOverlayStore:
         open_discovery_scope_count: int,
     ) -> DeclarationReceipt:
         """Insert one default row; exact declaration replay is a no-op."""
+        with self._connection.transaction():
+            return self.declare_epoch_local(
+                self._connection,
+                epoch_id,
+                revision=revision,
+                confirmed_as_of_epoch=confirmed_as_of_epoch,
+                open_discovery_scope_count=open_discovery_scope_count,
+            )
+
+    def declare_epoch_local(
+        self,
+        cursor: SqlExecutor,
+        epoch_id: int,
+        *,
+        revision: int,
+        confirmed_as_of_epoch: int | None,
+        open_discovery_scope_count: int,
+    ) -> DeclarationReceipt:
+        """Declare an evaluation epoch in the caller's current transaction."""
         self._validate_non_negative("epoch_id", epoch_id)
         self._validate_non_negative("revision", revision)
         self._validate_optional_non_negative(
@@ -270,170 +291,191 @@ class PostgresEvaluationOverlayStore:
             if open_discovery_scope_count > 0
             else EvaluationState.COMPLETE
         )
-        with self._connection.transaction():
-            inserted = self._connection.execute(
-                """
-                INSERT INTO groundloop_m4_evaluation_epoch_counter (
-                    epoch_id, declaration_hash, lifecycle_state,
-                    default_evaluation_state, confirmed_as_of_epoch,
-                    open_discovery_scope_count, revision
-                ) VALUES (%s, %s, 'active', %s, %s, %s, %s)
-                ON CONFLICT (epoch_id) DO NOTHING
-                """,
-                (
-                    epoch_id,
-                    declaration_hash,
-                    default_state.value,
-                    confirmed_as_of_epoch,
-                    open_discovery_scope_count,
-                    revision,
-                ),
-            ).rowcount
-            row = self._read_epoch_row(epoch_id, for_update=True)
-            if row.declaration_hash != declaration_hash:
-                raise EventConflictError(
-                    "epoch evaluation declaration was replayed with different content"
-                )
-            return DeclarationReceipt(self._public_default(row), inserted == 0)
+        inserted = cursor.execute(
+            """
+            INSERT INTO groundloop_m4_evaluation_epoch_counter (
+                epoch_id, declaration_hash, lifecycle_state,
+                default_evaluation_state, confirmed_as_of_epoch,
+                open_discovery_scope_count, revision
+            ) VALUES (%s, %s, 'active', %s, %s, %s, %s)
+            ON CONFLICT (epoch_id) DO NOTHING
+            """,
+            (
+                epoch_id,
+                declaration_hash,
+                default_state.value,
+                confirmed_as_of_epoch,
+                open_discovery_scope_count,
+                revision,
+            ),
+        ).rowcount
+        row = self._read_epoch_row(epoch_id, for_update=True, cursor=cursor)
+        if row.declaration_hash != declaration_hash:
+            raise EventConflictError(
+                "epoch evaluation declaration was replayed with different content"
+            )
+        return DeclarationReceipt(self._public_default(row), inserted == 0)
 
     def apply_transition(
         self, epoch_id: int, transition: EvaluationTransition
     ) -> TransitionReceipt:
-        """Apply one exact-replay-safe signed transition atomically."""
+        """Apply one exact-replay-safe signed transition atomically.
+
+        The local implementation retains the per-key ``_apply_override_delta``
+        path protected by the measured-kernel complexity contract.
+        """
+        with self._connection.transaction():
+            return self.apply_transition_local(
+                self._connection, epoch_id, transition
+            )
+
+    def apply_transition_local(
+        self,
+        cursor: SqlExecutor,
+        epoch_id: int,
+        transition: EvaluationTransition,
+    ) -> TransitionReceipt:
+        """Apply one transition in the caller's current transaction."""
         self._validate_non_negative("epoch_id", epoch_id)
         canonical_deltas = _canonical_claim_deltas(transition.claim_job_deltas)
         payload_hash = _sha256_json(
             _transition_payload(transition, canonical_deltas)
         )
-        with self._connection.transaction():
-            epoch = self._read_epoch_row(epoch_id, for_update=True)
-            replay = self._read_transition(epoch_id, transition.transition_id)
-            if replay is not None:
-                stored_hash, from_revision, to_revision, override_writes = replay
-                if stored_hash != payload_hash:
-                    raise EventConflictError(
-                        "evaluation transition ID was reused with different content"
-                    )
-                return TransitionReceipt(
-                    epoch_id,
-                    transition.transition_id,
-                    from_revision,
-                    to_revision,
-                    override_writes,
-                    True,
+        epoch = self._read_epoch_row(
+            epoch_id, for_update=True, cursor=cursor
+        )
+        replay = self._read_transition(
+            epoch_id, transition.transition_id, cursor=cursor
+        )
+        if replay is not None:
+            stored_hash, from_revision, to_revision, override_writes = replay
+            if stored_hash != payload_hash:
+                raise EventConflictError(
+                    "evaluation transition ID was reused with different content"
                 )
-            if epoch.lifecycle is not EvaluationLifecycle.ACTIVE:
-                raise InvalidEventError(
-                    "evaluation transitions require an active epoch"
-                )
-            if epoch.revision != transition.expected_revision:
-                raise EvaluationRevisionConflict(
-                    "evaluation transition expected revision "
-                    f"{transition.expected_revision}, found {epoch.revision}"
-                )
-            next_revision = epoch.revision + 1
-            override_writes = 0
-            next_scope_count = epoch.open_discovery_scope_count
-            next_lifecycle: EvaluationLifecycle = epoch.lifecycle
-            next_confirmed = epoch.confirmed_as_of_epoch
-            next_default = epoch.default_state
-
-            if transition.kind is EvaluationTransitionKind.DELTA:
-                next_scope_count += transition.scope_delta
-                if next_scope_count < 0:
-                    raise ValidationError(
-                        "open discovery-scope count cannot become negative"
-                    )
-                bindings = self._claim_bindings(epoch_id, canonical_deltas)
-                answer_deltas: dict[str, int] = {}
-                for item in canonical_deltas:
-                    override_writes += self._apply_override_delta(
-                        epoch_id,
-                        EvaluationObjectType.CLAIM,
-                        item.claim_id,
-                        item.delta,
-                        next_revision,
-                    )
-                    binding = bindings[item.claim_id]
-                    if binding.required:
-                        answer_deltas[binding.answer_version_id] = (
-                            answer_deltas.get(binding.answer_version_id, 0)
-                            + item.delta
-                        )
-                for answer_id, delta in sorted(answer_deltas.items()):
-                    if delta == 0:
-                        continue
-                    override_writes += self._apply_override_delta(
-                        epoch_id,
-                        EvaluationObjectType.ANSWER,
-                        answer_id,
-                        delta,
-                        next_revision,
-                    )
-                next_default = (
-                    EvaluationState.PENDING
-                    if next_scope_count > 0
-                    else EvaluationState.COMPLETE
-                )
-            elif transition.kind is EvaluationTransitionKind.FAIL:
-                next_lifecycle = EvaluationLifecycle.FAILED
-                next_default = EvaluationState.FAILED
-            else:
-                self._assert_sealable(epoch_id, epoch.open_discovery_scope_count)
-                next_lifecycle = EvaluationLifecycle.SEALED
-                next_default = EvaluationState.COMPLETE
-                next_confirmed = epoch_id
-
-            updated = self._connection.execute(
-                """
-                UPDATE groundloop_m4_evaluation_epoch_counter
-                SET lifecycle_state = %s,
-                    default_evaluation_state = %s,
-                    confirmed_as_of_epoch = %s,
-                    open_discovery_scope_count = %s,
-                    revision = %s
-                WHERE epoch_id = %s AND revision = %s
-                  AND lifecycle_state = 'active'
-                """,
-                (
-                    next_lifecycle.value,
-                    next_default.value,
-                    next_confirmed,
-                    next_scope_count,
-                    next_revision,
-                    epoch_id,
-                    transition.expected_revision,
-                ),
-            ).rowcount
-            if updated != 1:
-                raise EvaluationRevisionConflict(
-                    "evaluation revision compare-and-swap failed"
-                )
-            self._connection.execute(
-                """
-                INSERT INTO groundloop_m4_evaluation_counter_transition (
-                    epoch_id, transition_id, payload_hash, transition_kind,
-                    from_revision, to_revision, override_rows_written
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    epoch_id,
-                    transition.transition_id,
-                    payload_hash,
-                    transition.kind.value,
-                    transition.expected_revision,
-                    next_revision,
-                    override_writes,
-                ),
-            )
             return TransitionReceipt(
                 epoch_id,
                 transition.transition_id,
+                from_revision,
+                to_revision,
+                override_writes,
+                True,
+            )
+        if epoch.lifecycle is not EvaluationLifecycle.ACTIVE:
+            raise InvalidEventError("evaluation transitions require an active epoch")
+        if epoch.revision != transition.expected_revision:
+            raise EvaluationRevisionConflict(
+                "evaluation transition expected revision "
+                f"{transition.expected_revision}, found {epoch.revision}"
+            )
+        next_revision = epoch.revision + 1
+        override_writes = 0
+        next_scope_count = epoch.open_discovery_scope_count
+        next_lifecycle: EvaluationLifecycle = epoch.lifecycle
+        next_confirmed = epoch.confirmed_as_of_epoch
+        next_default = epoch.default_state
+
+        if transition.kind is EvaluationTransitionKind.DELTA:
+            next_scope_count += transition.scope_delta
+            if next_scope_count < 0:
+                raise ValidationError(
+                    "open discovery-scope count cannot become negative"
+                )
+            bindings = self._claim_bindings(
+                epoch_id, canonical_deltas, cursor=cursor
+            )
+            answer_deltas: dict[str, int] = {}
+            for item in canonical_deltas:
+                override_writes += self._apply_override_delta(
+                    epoch_id,
+                    EvaluationObjectType.CLAIM,
+                    item.claim_id,
+                    item.delta,
+                    next_revision,
+                    cursor=cursor,
+                )
+                binding = bindings[item.claim_id]
+                if binding.required:
+                    answer_deltas[binding.answer_version_id] = (
+                        answer_deltas.get(binding.answer_version_id, 0) + item.delta
+                    )
+            for answer_id, delta in sorted(answer_deltas.items()):
+                if delta == 0:
+                    continue
+                override_writes += self._apply_override_delta(
+                    epoch_id,
+                    EvaluationObjectType.ANSWER,
+                    answer_id,
+                    delta,
+                    next_revision,
+                    cursor=cursor,
+                )
+            next_default = (
+                EvaluationState.PENDING
+                if next_scope_count > 0
+                else EvaluationState.COMPLETE
+            )
+        elif transition.kind is EvaluationTransitionKind.FAIL:
+            next_lifecycle = EvaluationLifecycle.FAILED
+            next_default = EvaluationState.FAILED
+        else:
+            self._assert_sealable(
+                epoch_id, epoch.open_discovery_scope_count, cursor=cursor
+            )
+            next_lifecycle = EvaluationLifecycle.SEALED
+            next_default = EvaluationState.COMPLETE
+            next_confirmed = epoch_id
+
+        updated = cursor.execute(
+            """
+            UPDATE groundloop_m4_evaluation_epoch_counter
+            SET lifecycle_state = %s,
+                default_evaluation_state = %s,
+                confirmed_as_of_epoch = %s,
+                open_discovery_scope_count = %s,
+                revision = %s
+            WHERE epoch_id = %s AND revision = %s
+              AND lifecycle_state = 'active'
+            """,
+            (
+                next_lifecycle.value,
+                next_default.value,
+                next_confirmed,
+                next_scope_count,
+                next_revision,
+                epoch_id,
+                transition.expected_revision,
+            ),
+        ).rowcount
+        if updated != 1:
+            raise EvaluationRevisionConflict(
+                "evaluation revision compare-and-swap failed"
+            )
+        cursor.execute(
+            """
+            INSERT INTO groundloop_m4_evaluation_counter_transition (
+                epoch_id, transition_id, payload_hash, transition_kind,
+                from_revision, to_revision, override_rows_written
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                epoch_id,
+                transition.transition_id,
+                payload_hash,
+                transition.kind.value,
                 transition.expected_revision,
                 next_revision,
                 override_writes,
-                False,
-            )
+            ),
+        )
+        return TransitionReceipt(
+            epoch_id,
+            transition.transition_id,
+            transition.expected_revision,
+            next_revision,
+            override_writes,
+            False,
+        )
 
     def read_default(self, epoch_id: int) -> EpochEvaluationDefault:
         """Return the exact epoch-wide default and scope count."""
@@ -512,9 +554,16 @@ class PostgresEvaluationOverlayStore:
                 "evaluation object is not in the epoch registry snapshot"
             )
 
-    def _read_epoch_row(self, epoch_id: int, *, for_update: bool) -> _EpochRow:
+    def _read_epoch_row(
+        self,
+        epoch_id: int,
+        *,
+        for_update: bool,
+        cursor: SqlExecutor | None = None,
+    ) -> _EpochRow:
         suffix = " FOR UPDATE" if for_update else ""
-        row = self._connection.execute(
+        executor = self._connection if cursor is None else cursor
+        row = executor.execute(
             """
             SELECT epoch_id, declaration_hash, lifecycle_state,
                    default_evaluation_state, confirmed_as_of_epoch,
@@ -538,9 +587,14 @@ class PostgresEvaluationOverlayStore:
         )
 
     def _read_transition(
-        self, epoch_id: int, transition_id: str
+        self,
+        epoch_id: int,
+        transition_id: str,
+        *,
+        cursor: SqlExecutor | None = None,
     ) -> tuple[str, int, int, int] | None:
-        row = self._connection.execute(
+        executor = self._connection if cursor is None else cursor
+        row = executor.execute(
             """
             SELECT payload_hash, from_revision, to_revision,
                    override_rows_written
@@ -554,12 +608,17 @@ class PostgresEvaluationOverlayStore:
         return str(row[0]), int(row[1]), int(row[2]), int(row[3])
 
     def _claim_bindings(
-        self, epoch_id: int, deltas: tuple[ClaimJobDelta, ...]
+        self,
+        epoch_id: int,
+        deltas: tuple[ClaimJobDelta, ...],
+        *,
+        cursor: SqlExecutor | None = None,
     ) -> dict[str, _ClaimBinding]:
         if not deltas:
             return {}
         claim_ids = [item.claim_id for item in deltas]
-        rows = self._connection.execute(
+        executor = self._connection if cursor is None else cursor
+        rows = executor.execute(
             """
             SELECT claim.claim_id, claim.answer_version_id, claim.required
             FROM groundloop_m4_update AS update_row
@@ -587,8 +646,11 @@ class PostgresEvaluationOverlayStore:
         object_id: str,
         delta: int,
         revision: int,
+        *,
+        cursor: SqlExecutor | None = None,
     ) -> int:
-        row = self._connection.execute(
+        executor = self._connection if cursor is None else cursor
+        row = executor.execute(
             """
             SELECT open_required_job_count
             FROM groundloop_m4_evaluation_override_counter
@@ -607,7 +669,7 @@ class PostgresEvaluationOverlayStore:
         if new_count == 0:
             if row is None:
                 return 0
-            self._connection.execute(
+            executor.execute(
                 """
                 DELETE FROM groundloop_m4_evaluation_override_counter
                 WHERE epoch_id = %s AND object_type = %s AND object_id = %s
@@ -616,7 +678,7 @@ class PostgresEvaluationOverlayStore:
             )
             return 1
         if row is None:
-            self._connection.execute(
+            executor.execute(
                 """
                 INSERT INTO groundloop_m4_evaluation_override_counter (
                     epoch_id, object_type, object_id,
@@ -632,7 +694,7 @@ class PostgresEvaluationOverlayStore:
                 ),
             )
         else:
-            self._connection.execute(
+            executor.execute(
                 """
                 UPDATE groundloop_m4_evaluation_override_counter
                 SET open_required_job_count = %s,
@@ -649,10 +711,17 @@ class PostgresEvaluationOverlayStore:
             )
         return 1
 
-    def _assert_sealable(self, epoch_id: int, open_scope_count: int) -> None:
+    def _assert_sealable(
+        self,
+        epoch_id: int,
+        open_scope_count: int,
+        *,
+        cursor: SqlExecutor | None = None,
+    ) -> None:
         if open_scope_count != 0:
             raise ValidationError("cannot seal with an open discovery scope")
-        open_override = self._connection.execute(
+        executor = self._connection if cursor is None else cursor
+        open_override = executor.execute(
             """
             SELECT 1 FROM groundloop_m4_evaluation_override_counter
             WHERE epoch_id = %s LIMIT 1

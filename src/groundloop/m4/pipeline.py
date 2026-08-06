@@ -84,7 +84,7 @@ from groundloop.m4.evaluation_overlay import (
 )
 from groundloop.m4.models.contracts import PairVerificationInput
 from groundloop.m4.models.ports import M4VerificationApplicationPort
-from groundloop.m4.persistence import PostgresM4RuntimeStore
+from groundloop.m4.persistence import PointEpochHeader, PostgresM4RuntimeStore
 from groundloop.m4.runtime import (
     CandidateDependency,
     CompletionPlan,
@@ -97,6 +97,8 @@ from groundloop.m4.runtime import (
 )
 from groundloop.reference import compute_all_states
 from groundloop.repository import InMemoryRepository
+
+SqlExecutor = Connection[Any] | Cursor[Any]
 
 
 def _require_autocommit(connection: Connection[Any]) -> None:
@@ -918,6 +920,47 @@ class PostgresM4ApplicationPorts:
             raise ValidationError("M4 publication is not bootstrapped")
         return int(row[0])
 
+    def _adopt_direct_working_cache(
+        self,
+        epoch_id: int,
+        repository: InMemoryRepository,
+        engine: IncrementalMaintenanceEngine,
+    ) -> None:
+        """Adopt a detached cache only after its outer transaction commits."""
+        self._working_repository = repository
+        self._working_engine = engine
+        self._active_epoch_id = epoch_id
+        self._fallback_blocked.clear()
+
+    def _hydrate_direct_working_cache(self, epoch_id: int) -> None:
+        previous = self.connection.execute(
+            """
+            SELECT previous_published_epoch_id FROM groundloop_m4_update
+            WHERE epoch_id = %s
+            """,
+            (epoch_id,),
+        ).fetchone()
+        if previous is None or previous[0] is None:
+            raise ValidationError("direct working cache lacks a published base")
+        repository, engine = _load_working_repository(
+            self.connection, epoch_id, int(previous[0])
+        )
+        self._adopt_direct_working_cache(epoch_id, repository, engine)
+
+    def _adopt_direct_failure_cache(self) -> None:
+        head = self._publication_head()
+        self._published_repository, self._published_engine = (
+            _load_published_repository(self.connection, head)
+        )
+        self._working_repository = self._published_repository
+        self._working_engine = self._published_engine
+        self._active_epoch_id = None
+
+    def _adopt_direct_seal_cache(self) -> None:
+        self._published_repository = self._working_repository
+        self._published_engine = self._working_engine
+        self._active_epoch_id = None
+
     def register_claim_registry_snapshot(
         self, snapshot_id: str, claim_ids: tuple[str, ...]
     ) -> bool:
@@ -1188,6 +1231,43 @@ class PostgresM4ApplicationPorts:
             after = deepcopy(self._published_repository)
             engine = deepcopy(self._published_engine)
         before = after if self._measured else deepcopy(after)
+        self._apply_structural_event(
+            event,
+            payload,
+            before=before,
+            after=after,
+            engine=engine,
+            measured=self._measured,
+        )
+        return after, engine
+
+    def _stage_structural_detached(
+        self, event: DynamicEventPlan, payload: StructuralPayload
+    ) -> tuple[InMemoryRepository, IncrementalMaintenanceEngine]:
+        """Prepare cache state that is adopted only after the outer commit."""
+        after = deepcopy(self._published_repository)
+        engine = deepcopy(self._published_engine)
+        before = deepcopy(after)
+        self._apply_structural_event(
+            event,
+            payload,
+            before=before,
+            after=after,
+            engine=engine,
+            measured=self._measured,
+        )
+        return after, engine
+
+    @staticmethod
+    def _apply_structural_event(
+        event: DynamicEventPlan,
+        payload: StructuralPayload,
+        *,
+        before: InMemoryRepository,
+        after: InMemoryRepository,
+        engine: IncrementalMaintenanceEngine,
+        measured: bool,
+    ) -> None:
         epoch = after.advance_epoch()
         if event.update.update_kind is UpdateKind.INSERT:
             assert payload.inserted is not None
@@ -1229,14 +1309,127 @@ class PostgresM4ApplicationPorts:
                 payload.inserted.version.content_hash,
                 (),
             )
-        if self._measured:
+        if measured:
             patch = engine.prepare_committed_event_patch(
                 semantic_event, before, after
             )
             engine.apply_state_patch(patch)
         else:
             engine.apply_committed_event(semantic_event, before, after)
-        return after, engine
+
+    def _stage_direct_open_local(
+        self,
+        cursor: Cursor[Any],
+        event: DynamicEventPlan,
+        payload: StructuralPayload,
+        withdrawal: StructuralWithdrawal,
+        root_jobs: tuple[LogicalJobSpec, ...],
+        discovery_scopes: tuple[DiscoveryScope, ...],
+    ) -> tuple[
+        OpenEventReceipt,
+        InMemoryRepository | None,
+        IncrementalMaintenanceEngine | None,
+    ]:
+        """Stage the M4-v1 declaration without owning the transaction."""
+        if not self._measured:
+            raise ValidationError(
+                "typed cursor-local M4 composition requires measured mode"
+            )
+        self._validate_payload(event, payload)
+        if withdrawal.plan.deactivated_chunk_ids != (
+            event.deactivated_chunk_version_ids
+        ):
+            raise EventConflictError("withdrawal and event deactivation differ")
+        epoch_row = cursor.execute(
+            "SELECT epoch_id FROM groundloop_epoch WHERE event_id = %s",
+            (event.update.event_id,),
+        ).fetchone()
+        if epoch_row is None:
+            raise InvalidEventError("typed direct open lacks its outer epoch")
+        epoch_id = int(epoch_row[0])
+        existing = cursor.execute(
+            "SELECT 1 FROM groundloop_m4_update WHERE epoch_id = %s",
+            (epoch_id,),
+        ).fetchone()
+        staged_repository: InMemoryRepository | None = None
+        staged_engine: IncrementalMaintenanceEngine | None = None
+        if existing is None:
+            staged_repository, staged_engine = self._stage_structural_detached(
+                event, payload
+            )
+        touched_claim_ids = withdrawal.plan.affected_claim_ids
+        touched_answer_ids = self._answer_ids_for_claims(touched_claim_ids)
+
+        def structural_action(
+            transaction_cursor: Cursor[Any], structural_epoch_id: int
+        ) -> None:
+            assert staged_engine is not None
+            self._register_execution_accounting(
+                transaction_cursor, structural_epoch_id
+            )
+            self._write_structural_rows(
+                transaction_cursor, structural_epoch_id, payload
+            )
+            self._inject("structural_versions_written")
+            self._write_withdrawal_overlay(
+                transaction_cursor, structural_epoch_id, withdrawal
+            )
+            self._inject("structural_withdrawal_written")
+            self._persist_working_states(
+                transaction_cursor,
+                structural_epoch_id,
+                1,
+                staged_engine,
+                causative_digest=None,
+                claim_ids=touched_claim_ids,
+                answer_ids=touched_answer_ids,
+            )
+            self._inject("structural_working_states_written")
+            self.evaluation_store.declare_epoch_local(
+                transaction_cursor,
+                structural_epoch_id,
+                revision=1,
+                confirmed_as_of_epoch=event.update.previous_published_epoch_id,
+                open_discovery_scope_count=len(discovery_scopes),
+            )
+            self._inject("structural_evaluation_written")
+
+        opened = self.runtime_store.stage_open_epoch_local(
+            cursor,
+            epoch_id,
+            event.update,
+            root_jobs,
+            discovery_scopes,
+            registry_snapshot_id=event.claim_registry_snapshot_id,
+            structural_action=structural_action,
+            event_manifest=payload.manifest,
+            failure_injector=(
+                lambda point: self._inject(
+                    "structural_store_" + point.removeprefix("open_")
+                )
+            ),
+        )
+        header = opened.epoch
+        if not isinstance(header, PointEpochHeader):
+            raise ValidationError("direct measured open returned an audit epoch")
+        failed = header.state is RuntimeEpochState.FAILED
+        sealed = header.state is RuntimeEpochState.SEALED
+        return (
+            OpenEventReceipt(
+                epoch_id,
+                replayed=opened.replayed,
+                already_sealed=sealed,
+                publication_id=(
+                    stable_m4_digest("m4-publication-v1", str(epoch_id))
+                    if sealed
+                    else None
+                ),
+                already_failed=failed,
+                failure_reason=header.failure_reason if failed else None,
+            ),
+            staged_repository,
+            staged_engine,
+        )
 
     def open_event(
         self,
@@ -2035,6 +2228,101 @@ class PostgresM4ApplicationPorts:
             expected_revision=epoch.revision,
         )
 
+    def _acquire_direct_job_local(
+        self,
+        cursor: Cursor[Any],
+        epoch_id: int,
+        expected_revision: int,
+        spec: LogicalJobSpec,
+        lease_token_hash: str,
+    ) -> JobLease:
+        """Persist deterministic direct dispatch in the caller's transaction."""
+        if not self._measured:
+            raise ValidationError(
+                "typed cursor-local M4 composition requires measured mode"
+            )
+        header = self.runtime_store.read_epoch_header_point(
+            epoch_id, cursor=cursor
+        )
+        if header.revision != expected_revision:
+            raise EventConflictError("stale epoch revision")
+        job = self.runtime_store.read_job_point(
+            epoch_id, spec.job_id, cursor=cursor
+        )
+        if job.spec != spec:
+            raise EventConflictError("requested job differs from persisted job")
+        if job.state in {
+            JobState.COMPLETED_ACTIVE,
+            JobState.COMPLETED_INACTIVE,
+        }:
+            return JobLease(spec.job_id, False, True)
+        if job.state in {JobState.DECLARED, JobState.RETRYABLE_FAILED}:
+            first_attempt = job.state is JobState.DECLARED
+            ordinal = (
+                1
+                if job.latest_attempt is None
+                else job.latest_attempt.attempt.attempt_ordinal + 1
+            )
+            expected_token = stable_m4_digest(
+                "m4-lease-token-v1", spec.job_id, str(ordinal)
+            )
+            if lease_token_hash != expected_token:
+                raise EventConflictError(
+                    "direct acquisition lease token is not deterministic"
+                )
+            attempt = JobAttempt(
+                attempt_id=stable_m4_digest(
+                    "m4-job-attempt-v1", spec.job_id, str(ordinal)
+                ),
+                job_id=spec.job_id,
+                execution_spec_hash=spec.execution_spec_hash,
+                attempt_ordinal=ordinal,
+                lease_token_hash=lease_token_hash,
+            )
+            started = self.runtime_store.start_attempt_point_local(
+                cursor,
+                epoch_id,
+                expected_revision,
+                attempt,
+            )
+            if not started.replayed:
+                self.evaluation_store.apply_transition_local(
+                    cursor,
+                    epoch_id,
+                    EvaluationTransition(
+                        transition_id=attempt.attempt_id,
+                        expected_revision=expected_revision,
+                        claim_job_deltas=(
+                            (
+                                ClaimJobDelta(job.spec.target_claim_id, 1),
+                            )
+                            if first_attempt
+                            and job.spec.kind is JobKind.FRONTIER_RETRIEVE
+                            and job.spec.target_claim_id is not None
+                            else ()
+                        ),
+                    ),
+                )
+            header = started.header
+        elif job.state is JobState.RUNNING:
+            if job.latest_attempt is None:
+                raise ValidationError("running job has no persisted attempt")
+            attempt = job.latest_attempt.attempt
+            if lease_token_hash != attempt.lease_token_hash:
+                raise EventConflictError(
+                    "direct acquisition lease token differs from active attempt"
+                )
+        else:
+            raise InvalidEventError("job is not executable")
+        return JobLease(
+            spec.job_id,
+            True,
+            False,
+            attempt_id=attempt.attempt_id,
+            lease_token_hash=attempt.lease_token_hash,
+            expected_revision=header.revision,
+        )
+
     def mark_retryable_failure(self, epoch_id: int, lease: JobLease) -> None:
         """Atomically retain one failed attempt as retryable semantic work.
 
@@ -2174,6 +2462,75 @@ class PostgresM4ApplicationPorts:
                 with self.connection.cursor() as cursor:
                     self._sync_evaluation(cursor, epoch_id)
                 self._inject("expansion_evaluation_synced")
+
+    def _stage_direct_expansion_local(
+        self,
+        cursor: Cursor[Any],
+        epoch_id: int,
+        expected_revision: int,
+        lease: JobLease,
+        discovery: DiscoveryResult,
+        completion: JobCompletion,
+        child_jobs: tuple[LogicalJobSpec, ...],
+    ) -> None:
+        """Stage one direct discovery completion without transaction ownership."""
+        if not self._measured:
+            raise ValidationError(
+                "typed cursor-local M4 composition requires measured mode"
+            )
+        attempt_id, lease_token_hash, lease_revision = (
+            self._completion_lease_binding(lease, completion.job_id)
+        )
+        header = self.runtime_store.read_epoch_header_point(
+            epoch_id, cursor=cursor
+        )
+        if header.revision != expected_revision:
+            raise EventConflictError("stale epoch revision")
+        parent = self.runtime_store.read_job_point(
+            epoch_id, completion.job_id, cursor=cursor
+        )
+        self._persist_discovery_result(
+            cursor, epoch_id, completion.job_id, discovery
+        )
+        self._inject("expansion_discovery_persisted")
+        point_transition = self.runtime_store.complete_point_local(
+            cursor,
+            CompletionPlan(
+                epoch_id,
+                expected_revision,
+                completion,
+                child_jobs,
+            ),
+            attempt_id=attempt_id,
+            lease_token_hash=lease_token_hash,
+            lease_expected_revision=lease_revision,
+        )
+        self._inject("expansion_runtime_completed")
+        if point_transition.replayed:
+            return
+        deltas = tuple(
+            ClaimJobDelta(child.pair.claim_id, 1)
+            for child in child_jobs
+            if child.pair is not None
+        )
+        if (
+            parent.spec.kind is JobKind.FRONTIER_RETRIEVE
+            and parent.spec.target_claim_id is not None
+        ):
+            deltas += (ClaimJobDelta(parent.spec.target_claim_id, -1),)
+        self.evaluation_store.apply_transition_local(
+            cursor,
+            epoch_id,
+            EvaluationTransition(
+                transition_id=completion.completion_digest,
+                expected_revision=expected_revision,
+                scope_delta=(
+                    -1 if parent.spec.kind is JobKind.IMPACT_DISCOVERY else 0
+                ),
+                claim_job_deltas=deltas,
+            ),
+        )
+        self._inject("expansion_evaluation_synced")
 
     @staticmethod
     def _admitted_pair_id(admitted: AdmittedPair) -> str:
@@ -2515,6 +2872,44 @@ class PostgresM4ApplicationPorts:
             with self.connection.cursor() as cursor:
                 self._sync_evaluation(cursor, epoch_id)
 
+    def _stage_direct_failure_local(
+        self,
+        cursor: Cursor[Any],
+        epoch_id: int,
+        expected_revision: int,
+        reason: str,
+    ) -> None:
+        """Stage M4 failure metadata/evaluation without owning base authority."""
+        if not self._measured:
+            raise ValidationError(
+                "typed cursor-local M4 composition requires measured mode"
+            )
+        projected = self.runtime_store.stage_failure_projection_local(
+            cursor,
+            epoch_id,
+            expected_revision,
+            reason,
+            failure_injector=(
+                lambda point: self._inject(
+                    "failure_store_" + point.removeprefix("point_")
+                )
+            ),
+        )
+        transition = EvaluationTransition(
+            transition_id=stable_m4_digest(
+                "m4-evaluation-failure-v1", str(epoch_id), reason
+            ),
+            expected_revision=expected_revision,
+            kind=EvaluationTransitionKind.FAIL,
+        )
+        receipt = self.evaluation_store.apply_transition_local(
+            cursor, epoch_id, transition
+        )
+        if projected.replayed != receipt.replayed:
+            raise EventConflictError(
+                "direct failure projections disagree on replay state"
+            )
+
     def sealing_snapshot(self, epoch_id: int) -> SealingSnapshot:
         if self._measured:
             header = self.runtime_store.read_epoch_header_point(epoch_id)
@@ -2846,13 +3241,189 @@ class PostgresM4ApplicationPorts:
             self._working_engine = staged_engine
         return ObservationCompletionReceipt(inserted, make_effective)
 
+    def _stage_direct_verifier_completion_local(
+        self,
+        cursor: Cursor[Any],
+        epoch_id: int,
+        expected_revision: int,
+        lease: JobLease,
+        verifier_job: LogicalJobSpec,
+        completion: JobCompletion,
+        observation: SemanticObservation,
+        *,
+        make_effective: bool,
+    ) -> tuple[
+        ObservationCompletionReceipt,
+        InMemoryRepository | None,
+        IncrementalMaintenanceEngine | None,
+    ]:
+        """Stage one direct verifier completion in the caller's transaction."""
+        if not self._measured:
+            raise ValidationError(
+                "typed cursor-local M4 composition requires measured mode"
+            )
+        if completion.job_id != verifier_job.job_id:
+            raise EventConflictError("completion belongs to another verifier job")
+        attempt_id, lease_token_hash, lease_revision = (
+            self._completion_lease_binding(lease, completion.job_id)
+        )
+        if observation.key != (
+            SubjectKind.CLAIM,
+            verifier_job.pair.claim_id if verifier_job.pair else "",
+            verifier_job.pair.chunk_version_id if verifier_job.pair else "",
+            observation.task_type,
+        ):
+            raise EventConflictError("observation does not match verifier job")
+        expected_effective = (
+            completion.terminal_state is JobState.COMPLETED_ACTIVE
+        )
+        if make_effective != expected_effective:
+            raise EventConflictError(
+                "observation activity and completion disagree"
+            )
+        header = self.runtime_store.read_epoch_header_point(
+            epoch_id, cursor=cursor
+        )
+        if header.revision != expected_revision:
+            raise EventConflictError("stale epoch revision")
+        point_job = self.runtime_store.read_job_point(
+            epoch_id, completion.job_id, cursor=cursor
+        )
+        if point_job.spec != verifier_job:
+            raise EventConflictError(
+                "verifier completion differs from persisted job"
+            )
+        already_completed = point_job.state in {
+            JobState.COMPLETED_ACTIVE,
+            JobState.COMPLETED_INACTIVE,
+        }
+        staged_repository: InMemoryRepository | None = None
+        staged_engine: IncrementalMaintenanceEngine | None = None
+        if make_effective and not already_completed:
+            staged_repository = deepcopy(self._working_repository)
+            staged_engine = deepcopy(self._working_engine)
+            patch = staged_engine.prepare_committed_event_patch(
+                ObserveEvent(
+                    stable_m4_digest(
+                        "m4-working-observe-event-v1",
+                        str(epoch_id),
+                        observation.observation_id,
+                    ),
+                    observation,
+                ),
+                staged_repository,
+                staged_repository,
+            )
+            staged_engine.apply_state_patch(patch)
+            staged_repository.register_observation(observation)
+
+        point_transition = self.runtime_store.complete_point_local(
+            cursor,
+            CompletionPlan(epoch_id, expected_revision, completion),
+            attempt_id=attempt_id,
+            lease_token_hash=lease_token_hash,
+            lease_expected_revision=lease_revision,
+        )
+        replayed = point_transition.replayed
+        self._inject("verifier_runtime_completed")
+        if replayed:
+            self._validate_observation(
+                observation, epoch_id, completion, cursor=cursor
+            )
+            inserted = False
+        else:
+            inserted = self._insert_observation(
+                observation, epoch_id, completion, cursor=cursor
+            )
+        self._inject("verifier_observation_archived")
+        if not replayed and verifier_job.pair is not None:
+            cursor.execute(
+                """
+                UPDATE groundloop_candidate_frontier
+                SET frontier_state = %s
+                WHERE claim_id = %s AND chunk_version_id = %s
+                  AND candidate_policy_id = %s AND valid_from_epoch = %s
+                """,
+                (
+                    "verified_current" if make_effective else "inactive",
+                    verifier_job.pair.claim_id,
+                    verifier_job.pair.chunk_version_id,
+                    verifier_job.candidate_policy_id,
+                    epoch_id,
+                ),
+            )
+        if self._verification_writer is not None:
+            self._verification_writer(
+                cursor,
+                epoch_id,
+                verifier_job,
+                completion,
+                observation,
+            )
+        if replayed:
+            self._validate_verifier_completion_replay(
+                cursor,
+                epoch_id,
+                completion.job_id,
+                observation,
+                make_effective=make_effective,
+            )
+        elif make_effective:
+            assert staged_engine is not None
+            self._insert_working_observation_delta(
+                epoch_id,
+                point_transition.header.revision,
+                observation,
+                cursor=cursor,
+            )
+            self._inject("verifier_overlay_written")
+            touched_claim_ids = (observation.subject_id,)
+            self._persist_working_states(
+                cursor,
+                epoch_id,
+                point_transition.header.revision,
+                staged_engine,
+                causative_digest=completion.completion_digest,
+                claim_ids=touched_claim_ids,
+                answer_ids=self._answer_ids_for_claims(touched_claim_ids),
+            )
+            self._inject("verifier_state_written")
+        if (
+            not replayed
+            and point_transition.header.state is not RuntimeEpochState.FAILED
+        ):
+            claim_id = (
+                verifier_job.pair.claim_id
+                if verifier_job.pair is not None
+                else observation.subject_id
+            )
+            self.evaluation_store.apply_transition_local(
+                cursor,
+                epoch_id,
+                EvaluationTransition(
+                    transition_id=completion.completion_digest,
+                    expected_revision=expected_revision,
+                    claim_job_deltas=(ClaimJobDelta(claim_id, -1),),
+                ),
+            )
+        if replayed:
+            return ObservationCompletionReceipt(False, False), None, None
+        return (
+            ObservationCompletionReceipt(inserted, make_effective),
+            staged_repository,
+            staged_engine,
+        )
+
     def _insert_observation(
         self,
         observation: SemanticObservation,
         epoch_id: int,
         completion: JobCompletion,
+        *,
+        cursor: SqlExecutor | None = None,
     ) -> bool:
-        inserted = self.connection.execute(
+        executor = self.connection if cursor is None else cursor
+        inserted = executor.execute(
             """
             INSERT INTO groundloop_semantic_observation (
                 observation_id, subject_kind, subject_id, chunk_version_id,
@@ -2885,7 +3456,9 @@ class PostgresM4ApplicationPorts:
                 ),
             ),
         ).fetchone()
-        self._validate_observation(observation, epoch_id, completion)
+        self._validate_observation(
+            observation, epoch_id, completion, cursor=cursor
+        )
         return inserted is not None
 
     def _validate_observation(
@@ -2893,13 +3466,16 @@ class PostgresM4ApplicationPorts:
         observation: SemanticObservation,
         epoch_id: int,
         completion: JobCompletion,
+        *,
+        cursor: SqlExecutor | None = None,
     ) -> None:
         raw_output_hash = (
             self._verification_writer.raw_output_hash(completion.result_artifact_id)
             if self._verification_writer is not None
             else completion.result_artifact_hash
         )
-        row = self.connection.execute(
+        executor = self.connection if cursor is None else cursor
+        row = executor.execute(
             """
             SELECT subject_kind, subject_id, chunk_version_id, task_type,
                    support_score, refute_score, neutral_score, model_id,
@@ -3014,9 +3590,15 @@ class PostgresM4ApplicationPorts:
             )
 
     def _insert_working_observation_delta(
-        self, epoch_id: int, revision: int, observation: SemanticObservation
+        self,
+        epoch_id: int,
+        revision: int,
+        observation: SemanticObservation,
+        *,
+        cursor: SqlExecutor | None = None,
     ) -> None:
-        base = self.connection.execute(
+        executor = self.connection if cursor is None else cursor
+        base = executor.execute(
             """
             SELECT observation_id
             FROM groundloop_published_observation_currency
@@ -3031,7 +3613,7 @@ class PostgresM4ApplicationPorts:
                 observation.task_type,
             ),
         ).fetchone()
-        self.connection.execute(
+        executor.execute(
             """
             INSERT INTO groundloop_working_observation_delta (
                 epoch_id, subject_kind, subject_id, chunk_version_id,
@@ -3945,6 +4527,94 @@ class PostgresM4ApplicationPorts:
         publication_id = stable_m4_digest("m4-publication-v1", str(epoch_id))
         return PublicationReceipt(epoch_id, publication_id)
 
+    def _stage_direct_seal_local(
+        self,
+        cursor: Cursor[Any],
+        epoch_id: int,
+        expected_revision: int,
+        update: CorpusUpdateIdentity,
+    ) -> PublicationReceipt:
+        """Stage direct publication while leaving heads/base state to M5."""
+        if not self._measured:
+            raise ValidationError(
+                "typed cursor-local M4 composition requires measured mode"
+            )
+        update_row = cursor.execute(
+            """
+            SELECT epoch.event_id, epoch.payload_hash, update_row.update_kind,
+                   update_row.previous_published_epoch_id,
+                   update_row.candidate_policy_id
+            FROM groundloop_epoch AS epoch
+            JOIN groundloop_m4_update AS update_row USING (epoch_id)
+            WHERE epoch.epoch_id = %s
+            """,
+            (epoch_id,),
+        ).fetchone()
+        persisted_update = (
+            None
+            if update_row is None
+            else CorpusUpdateIdentity(
+                event_id=str(update_row[0]),
+                payload_hash=str(update_row[1]).strip(),
+                update_kind=UpdateKind(str(update_row[2])),
+                previous_published_epoch_id=(
+                    None if update_row[3] is None else int(update_row[3])
+                ),
+                candidate_policy_id=str(update_row[4]),
+            )
+        )
+        if persisted_update != update:
+            raise EventConflictError(
+                "publication update differs from runtime epoch"
+            )
+        checked = self.runtime_store.validate_seal_point_local(
+            cursor,
+            epoch_id,
+            expected_revision,
+            failure_injector=(
+                lambda point: self._inject(
+                    "publication_store_" + point.removeprefix("point_")
+                )
+            ),
+        )
+        publication_id = stable_m4_digest(
+            "m4-publication-v1", str(epoch_id)
+        )
+        if checked.replayed:
+            return PublicationReceipt(epoch_id, publication_id)
+        if self._active_epoch_id != epoch_id:
+            raise InvalidEventError(
+                "direct seal requires the adopted working cache"
+            )
+        self._assert_incremental_evaluation(
+            cursor, epoch_id, require_complete=True
+        )
+        self._promote_structural_overlay(cursor, epoch_id)
+        self._inject("publication_structure_promoted")
+        self._promote_observation_currency(cursor, epoch_id)
+        self._inject("publication_currency_promoted")
+        self._publish_grounding_states(
+            cursor,
+            epoch_id,
+            expected_revision + 1,
+            update,
+            emit_public_deltas=False,
+        )
+        self._inject("publication_states_written")
+        self.evaluation_store.apply_transition_local(
+            cursor,
+            epoch_id,
+            EvaluationTransition(
+                transition_id=stable_m4_digest(
+                    "m4-evaluation-seal-v1", str(epoch_id)
+                ),
+                expected_revision=expected_revision,
+                kind=EvaluationTransitionKind.SEAL,
+            ),
+        )
+        self._inject("publication_evaluation_promoted")
+        return PublicationReceipt(epoch_id, publication_id)
+
     def _promote_evaluation_surface(
         self, cursor: Cursor[Any], epoch_id: int, final_revision: int
     ) -> None:
@@ -4265,6 +4935,8 @@ class PostgresM4ApplicationPorts:
         epoch_id: int,
         revision: int,
         update: CorpusUpdateIdentity,
+        *,
+        emit_public_deltas: bool = True,
     ) -> None:
         claim_ids = (
             tuple(sorted(self._working_engine.claim_states))
@@ -4403,7 +5075,11 @@ class PostgresM4ApplicationPorts:
                 ),
             )
             old = old_claims.get(claim_state.claim_id)
-            if old is not None and old != claim_state.status.value:
+            if (
+                emit_public_deltas
+                and old is not None
+                and old != claim_state.status.value
+            ):
                 self._insert_public_delta(
                     cursor,
                     update,
@@ -4460,7 +5136,11 @@ class PostgresM4ApplicationPorts:
                 ),
             )
             old = old_answers.get(answer_state.answer_version_id)
-            if old is not None and old != answer_state.status.value:
+            if (
+                emit_public_deltas
+                and old is not None
+                and old != answer_state.status.value
+            ):
                 self._insert_public_delta(
                     cursor,
                     update,

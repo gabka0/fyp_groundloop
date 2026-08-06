@@ -61,6 +61,7 @@ from groundloop.m4.runtime.epoch import (
 FailureInjector = Callable[[str], None]
 StructuralAction = Callable[[Cursor[Any], int], None]
 PublicationAction = Callable[[Cursor[Any], int], None]
+SqlExecutor = Connection[Any] | Cursor[Any]
 _RUNTIME_MANIFEST_KEY = "_groundloop_m4_runtime_v1"
 
 
@@ -751,6 +752,187 @@ class PostgresM4RuntimeStore:
                 self._assert_equal(expected, actual)
         return OpenEpochResult(expected, replayed=False)
 
+    def stage_open_epoch_local(
+        self,
+        cursor: Cursor[Any],
+        epoch_id: int,
+        update: CorpusUpdateIdentity,
+        root_jobs: tuple[LogicalJobSpec, ...],
+        discovery_scopes: tuple[DiscoveryScope, ...] = (),
+        *,
+        registry_snapshot_id: str,
+        structural_action: StructuralAction,
+        event_manifest: Mapping[str, object] | None = None,
+        failure_injector: FailureInjector | None = None,
+    ) -> OpenEpochResult:
+        """Stage the exact M4 declaration under an existing outer transaction."""
+        canonical_jobs = tuple(sorted(root_jobs, key=lambda item: item.job_id))
+        canonical_scopes = tuple(
+            sorted(discovery_scopes, key=lambda item: item.root_job_id)
+        )
+        self._validate_open_declaration(
+            update,
+            canonical_jobs,
+            canonical_scopes,
+            registry_snapshot_id,
+        )
+        base = cursor.execute(
+            """
+            SELECT event_id, payload_hash, revision, structural_status,
+                   semantic_status
+            FROM groundloop_epoch
+            WHERE epoch_id = %s
+            FOR UPDATE
+            """,
+            (epoch_id,),
+        ).fetchone()
+        if base is None:
+            raise InvalidEventError(f"unknown M4 epoch_id: {epoch_id}")
+        if (str(base[0]), _strip(base[1])) != (
+            update.event_id,
+            update.payload_hash,
+        ):
+            raise EventConflictError("typed epoch differs from direct M4 update")
+        if int(base[2]) != 1 or str(base[3]) != "committed":
+            raise EventConflictError(
+                "direct M4 declaration requires the revision-1 structural epoch"
+            )
+        if str(base[4]) not in {"pending", "complete"}:
+            raise InvalidEventError("terminal typed epoch cannot stage direct work")
+
+        existing = cursor.execute(
+            """
+            SELECT update_kind, previous_published_epoch_id,
+                   candidate_policy_id, registry_snapshot_id, manifest
+            FROM groundloop_m4_update
+            WHERE epoch_id = %s
+            """,
+            (epoch_id,),
+        ).fetchone()
+        if existing is not None:
+            stored_update = CorpusUpdateIdentity(
+                event_id=update.event_id,
+                payload_hash=update.payload_hash,
+                update_kind=UpdateKind(str(existing[0])),
+                previous_published_epoch_id=(
+                    None if existing[1] is None else int(existing[1])
+                ),
+                candidate_policy_id=str(existing[2]),
+            )
+            replay_metadata = _runtime_metadata(existing[4])
+            stored_manifest = replay_metadata.get("event_manifest", {})
+            scope_members = replay_metadata.get("scope_claim_ids", {})
+            if not isinstance(stored_manifest, dict) or not isinstance(
+                scope_members, dict
+            ):
+                raise ValidationError("stored direct M4 manifest is malformed")
+            root_ids = tuple(
+                str(row[0])
+                for row in cursor.execute(
+                    """
+                    SELECT job_id FROM groundloop_semantic_job
+                    WHERE epoch_id = %s AND parent_job_id IS NULL
+                    ORDER BY job_id
+                    """,
+                    (epoch_id,),
+                ).fetchall()
+            )
+            stored_jobs = tuple(
+                self.read_job_point(epoch_id, job_id, cursor=cursor).spec
+                for job_id in root_ids
+            )
+            scope_rows = cursor.execute(
+                """
+                SELECT root_job_id, registry_snapshot_id, closed_revision
+                FROM groundloop_discovery_scope
+                WHERE epoch_id = %s ORDER BY root_job_id
+                """,
+                (epoch_id,),
+            ).fetchall()
+            stored_scopes = tuple(
+                DiscoveryScope(
+                    root_job_id=str(row[0]),
+                    registry_snapshot_id=str(row[1]),
+                    registered_claim_ids=tuple(
+                        str(value)
+                        for value in scope_members.get(str(row[0]), ())
+                    ),
+                    closed=row[2] is not None,
+                )
+                for row in scope_rows
+            )
+            if (
+                stored_update != update
+                or str(existing[3]) != registry_snapshot_id
+                or stored_jobs != canonical_jobs
+                or stored_scopes != canonical_scopes
+                or {str(key): value for key, value in stored_manifest.items()}
+                != dict(event_manifest or {})
+            ):
+                raise EventConflictError(
+                    "direct M4 declaration replay changed immutable content"
+                )
+            return OpenEpochResult(
+                self.read_epoch_header_point(epoch_id, cursor=cursor),
+                replayed=True,
+            )
+
+        head = cursor.execute(
+            """
+            SELECT epoch_id FROM groundloop_m4_publication_head
+            WHERE singleton
+            FOR SHARE
+            """
+        ).fetchone()
+        actual_previous = None if head is None else int(head[0])
+        if actual_previous != update.previous_published_epoch_id:
+            raise InvalidEventError("update does not name the M4 publication head")
+        metadata: dict[str, object] = {
+            "event_manifest": dict(event_manifest or {}),
+            "scope_claim_ids": {
+                scope.root_job_id: list(scope.registered_claim_ids)
+                for scope in canonical_scopes
+            },
+            "failure_reason": None,
+        }
+        cursor.execute(
+            """
+            INSERT INTO groundloop_m4_update (
+                epoch_id, update_kind, candidate_policy_id,
+                previous_published_epoch_id, registry_snapshot_id, manifest
+            ) VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                epoch_id,
+                update.update_kind.value,
+                update.candidate_policy_id,
+                update.previous_published_epoch_id,
+                registry_snapshot_id,
+                Jsonb({_RUNTIME_MANIFEST_KEY: metadata}),
+            ),
+        )
+        structural_action(cursor, epoch_id)
+        if failure_injector is not None:
+            failure_injector("open_structural_written")
+        for spec in canonical_jobs:
+            self._insert_job(epoch_id, spec, created_revision=1, cursor=cursor)
+        for scope in canonical_scopes:
+            cursor.execute(
+                """
+                INSERT INTO groundloop_discovery_scope (
+                    root_job_id, epoch_id, registry_snapshot_id,
+                    scope_kind, explicit_claim_ids, closed_revision
+                ) VALUES (%s, %s, %s, 'all_registered_claims', NULL, NULL)
+                """,
+                (scope.root_job_id, epoch_id, scope.registry_snapshot_id),
+            )
+        if failure_injector is not None:
+            failure_injector("open_rows_written")
+        return OpenEpochResult(
+            self.read_epoch_header_point(epoch_id, cursor=cursor),
+            replayed=False,
+        )
+
     def read_epoch(self, epoch_id: int) -> RuntimeEpoch:
         row = self._connection.execute(
             """
@@ -820,7 +1002,11 @@ class PostgresM4RuntimeStore:
         )
 
     def read_epoch_header_point(
-        self, epoch_id: int, *, for_update: bool = False
+        self,
+        epoch_id: int,
+        *,
+        for_update: bool = False,
+        cursor: SqlExecutor | None = None,
     ) -> PointEpochHeader:
         """Read only the epoch header and exact open-work counters.
 
@@ -829,7 +1015,8 @@ class PostgresM4RuntimeStore:
         their maintenance triggers are defined by the M4.7 migration contract.
         """
         suffix = " FOR UPDATE OF e, u" if for_update else ""
-        row = self._connection.execute(
+        executor = self._connection if cursor is None else cursor
+        row = executor.execute(
             """
             SELECT e.epoch_id, e.event_id, e.revision, e.semantic_status,
                    e.open_job_count, e.open_scope_count, u.manifest
@@ -856,11 +1043,17 @@ class PostgresM4RuntimeStore:
         )
 
     def read_job_point(
-        self, epoch_id: int, job_id: str, *, for_update: bool = False
+        self,
+        epoch_id: int,
+        job_id: str,
+        *,
+        for_update: bool = False,
+        cursor: SqlExecutor | None = None,
     ) -> PointJobRecord:
         """Read one logical job and only its latest attempt."""
         suffix = " FOR UPDATE OF job" if for_update else ""
-        row = self._connection.execute(
+        executor = self._connection if cursor is None else cursor
+        row = executor.execute(
             """
             SELECT epoch.event_id,
                    job.job_id, job.parent_job_id, job.job_kind,
@@ -879,14 +1072,21 @@ class PostgresM4RuntimeStore:
         ).fetchone()
         if row is None:
             raise InvalidEventError(f"unknown job_id in epoch: {job_id}")
-        latest = self._read_latest_attempt_point(job_id, for_update=for_update)
+        latest = self._read_latest_attempt_point(
+            job_id, for_update=for_update, cursor=cursor
+        )
         return self._point_job_from_row(row, latest)
 
     def read_children_point(
-        self, epoch_id: int, parent_job_id: str
+        self,
+        epoch_id: int,
+        parent_job_id: str,
+        *,
+        cursor: SqlExecutor | None = None,
     ) -> tuple[LogicalJobSpec, ...]:
         """Read the exact, indexed child set for one closed parent."""
-        rows = self._connection.execute(
+        executor = self._connection if cursor is None else cursor
+        rows = executor.execute(
             """
             SELECT epoch.event_id,
                    child.job_id, child.parent_job_id, child.job_kind,
@@ -914,88 +1114,106 @@ class PostgresM4RuntimeStore:
         lease_expires_at: datetime | None = None,
     ) -> PointMutationResult:
         """Acquire one job lease with an epoch-revision compare-and-swap."""
-        expiry = lease_expires_at or datetime.now(UTC) + timedelta(minutes=5)
         with self._connection.transaction():
             self._reject_typed_epoch_mutation(epoch_id)
-            header = self.read_epoch_header_point(epoch_id, for_update=True)
-            job = self.read_job_point(epoch_id, attempt.job_id, for_update=True)
-            existing = self._connection.execute(
-                """
-                SELECT job_id, execution_spec_hash, attempt_ordinal,
-                       lease_token_hash
-                FROM groundloop_semantic_job_attempt
-                WHERE attempt_id = %s
-                """,
-                (attempt.attempt_id,),
-            ).fetchone()
-            if existing is not None:
-                stored = JobAttempt(
-                    attempt_id=attempt.attempt_id,
-                    job_id=str(existing[0]),
-                    execution_spec_hash=_strip(existing[1]),
-                    attempt_ordinal=int(existing[2]),
-                    lease_token_hash=_strip(existing[3]),
-                )
-                if stored == attempt:
-                    return PointMutationResult(header, job, replayed=True)
-                raise EventConflictError(
-                    "attempt_id was reused with different content"
-                )
-            if expiry <= datetime.now(UTC):
-                raise ValidationError("attempt lease must expire in the future")
-            self._require_point_revision(header, expected_revision)
-            if header.state in {
-                RuntimeEpochState.FAILED,
-                RuntimeEpochState.SEALED,
-            }:
-                raise InvalidEventError(
-                    "failed or sealed epochs start no new attempts"
-                )
-            if job.state not in {JobState.DECLARED, JobState.RETRYABLE_FAILED}:
-                raise InvalidEventError("job is not eligible to start an attempt")
-            if attempt.execution_spec_hash != job.spec.execution_spec_hash:
-                raise EventConflictError(
-                    "attempt execution identity differs from job"
-                )
-            expected_ordinal = (
-                1
-                if job.latest_attempt is None
-                else job.latest_attempt.attempt.attempt_ordinal + 1
+            return self.start_attempt_point_local(
+                self._connection,
+                epoch_id,
+                expected_revision,
+                attempt,
+                lease_expires_at=lease_expires_at,
             )
-            if attempt.attempt_ordinal != expected_ordinal:
-                raise InvalidEventError("attempt ordinal is not the next ordinal")
-            self._connection.execute(
-                """
-                INSERT INTO groundloop_semantic_job_attempt (
-                    attempt_id, job_id, execution_spec_hash, attempt_ordinal,
-                    lease_token_hash, attempt_state, lease_expires_at
-                ) VALUES (%s, %s, %s, %s, %s, 'leased', %s)
-                """,
-                (
-                    attempt.attempt_id,
-                    attempt.job_id,
-                    attempt.execution_spec_hash,
-                    attempt.attempt_ordinal,
-                    attempt.lease_token_hash,
-                    expiry,
-                ),
+
+    def start_attempt_point_local(
+        self,
+        cursor: SqlExecutor,
+        epoch_id: int,
+        expected_revision: int,
+        attempt: JobAttempt,
+        *,
+        lease_expires_at: datetime | None = None,
+    ) -> PointMutationResult:
+        """Acquire one point-runtime lease in the caller's transaction."""
+        expiry = lease_expires_at or datetime.now(UTC) + timedelta(minutes=5)
+        header = self.read_epoch_header_point(
+            epoch_id, for_update=True, cursor=cursor
+        )
+        job = self.read_job_point(
+            epoch_id, attempt.job_id, for_update=True, cursor=cursor
+        )
+        existing = cursor.execute(
+            """
+            SELECT job_id, execution_spec_hash, attempt_ordinal,
+                   lease_token_hash
+            FROM groundloop_semantic_job_attempt
+            WHERE attempt_id = %s
+            """,
+            (attempt.attempt_id,),
+        ).fetchone()
+        if existing is not None:
+            stored = JobAttempt(
+                attempt_id=attempt.attempt_id,
+                job_id=str(existing[0]),
+                execution_spec_hash=_strip(existing[1]),
+                attempt_ordinal=int(existing[2]),
+                lease_token_hash=_strip(existing[3]),
             )
-            changed = self._connection.execute(
-                """
-                UPDATE groundloop_semantic_job SET job_state = 'running'
-                WHERE epoch_id = %s AND job_id = %s
-                  AND job_state IN ('declared', 'retryable_failed')
-                """,
-                (epoch_id, attempt.job_id),
-            ).rowcount
-            if changed != 1:
-                raise EventConflictError("job changed before attempt acquisition")
-            next_header = self._advance_point_epoch(header, expected_revision)
-            return PointMutationResult(
-                next_header,
-                self.read_job_point(epoch_id, attempt.job_id),
-                replayed=False,
-            )
+            if stored == attempt:
+                return PointMutationResult(header, job, replayed=True)
+            raise EventConflictError("attempt_id was reused with different content")
+        if expiry <= datetime.now(UTC):
+            raise ValidationError("attempt lease must expire in the future")
+        self._require_point_revision(header, expected_revision)
+        if header.state in {
+            RuntimeEpochState.FAILED,
+            RuntimeEpochState.SEALED,
+        }:
+            raise InvalidEventError("failed or sealed epochs start no new attempts")
+        if job.state not in {JobState.DECLARED, JobState.RETRYABLE_FAILED}:
+            raise InvalidEventError("job is not eligible to start an attempt")
+        if attempt.execution_spec_hash != job.spec.execution_spec_hash:
+            raise EventConflictError("attempt execution identity differs from job")
+        expected_ordinal = (
+            1
+            if job.latest_attempt is None
+            else job.latest_attempt.attempt.attempt_ordinal + 1
+        )
+        if attempt.attempt_ordinal != expected_ordinal:
+            raise InvalidEventError("attempt ordinal is not the next ordinal")
+        cursor.execute(
+            """
+            INSERT INTO groundloop_semantic_job_attempt (
+                attempt_id, job_id, execution_spec_hash, attempt_ordinal,
+                lease_token_hash, attempt_state, lease_expires_at
+            ) VALUES (%s, %s, %s, %s, %s, 'leased', %s)
+            """,
+            (
+                attempt.attempt_id,
+                attempt.job_id,
+                attempt.execution_spec_hash,
+                attempt.attempt_ordinal,
+                attempt.lease_token_hash,
+                expiry,
+            ),
+        )
+        changed = cursor.execute(
+            """
+            UPDATE groundloop_semantic_job SET job_state = 'running'
+            WHERE epoch_id = %s AND job_id = %s
+              AND job_state IN ('declared', 'retryable_failed')
+            """,
+            (epoch_id, attempt.job_id),
+        ).rowcount
+        if changed != 1:
+            raise EventConflictError("job changed before attempt acquisition")
+        next_header = self._advance_point_epoch(
+            header, expected_revision, cursor=cursor
+        )
+        return PointMutationResult(
+            next_header,
+            self.read_job_point(epoch_id, attempt.job_id, cursor=cursor),
+            replayed=False,
+        )
 
     def mark_retryable_failure_point(
         self,
@@ -1062,132 +1280,166 @@ class PostgresM4RuntimeStore:
     ) -> PointMutationResult:
         """Complete one job without materializing its epoch or runtime history."""
         epoch_id = plan.expected_epoch_id
-        job_id = plan.completion.job_id
         with self._connection.transaction():
             self._reject_typed_epoch_mutation(epoch_id)
-            header = self.read_epoch_header_point(epoch_id, for_update=True)
-            job = self.read_job_point(epoch_id, job_id, for_update=True)
-            self._validate_point_lease(
-                header,
-                job,
+            return self.complete_point_local(
+                self._connection,
+                plan,
                 attempt_id=attempt_id,
                 lease_token_hash=lease_token_hash,
                 lease_expected_revision=lease_expected_revision,
+                failure_injector=failure_injector,
             )
-            if job.state in {
-                JobState.COMPLETED_ACTIVE,
-                JobState.COMPLETED_INACTIVE,
-            }:
-                children = self.read_children_point(epoch_id, job_id)
-                if self._point_completion_is_replay(job, plan, children):
-                    if (
-                        job.latest_attempt is None
-                        or job.latest_attempt.state != "completed"
-                    ):
-                        raise EventConflictError(
-                            "completed job lacks a completed latest attempt"
-                        )
-                    return PointMutationResult(header, job, replayed=True)
-                raise EventConflictError(
-                    "job already completed with different content"
-                )
-            self._require_point_revision(header, plan.expected_revision)
-            if job.state is not JobState.RUNNING:
-                raise InvalidEventError("only a running job can complete")
-            latest = job.latest_attempt
-            if latest is None or latest.state != "leased":
-                raise EventConflictError("completion attempt is not leased")
-            target_active = self._point_target_is_active(header, job.spec)
-            self._validate_point_completion(
-                header,
-                job.spec,
-                plan,
-                target_active=target_active,
+
+    def complete_point_local(
+        self,
+        cursor: SqlExecutor,
+        plan: CompletionPlan,
+        *,
+        attempt_id: str,
+        lease_token_hash: str,
+        lease_expected_revision: int,
+        failure_injector: FailureInjector | None = None,
+    ) -> PointMutationResult:
+        """Complete one point-runtime job in the caller's transaction."""
+        epoch_id = plan.expected_epoch_id
+        job_id = plan.completion.job_id
+        header = self.read_epoch_header_point(
+            epoch_id, for_update=True, cursor=cursor
+        )
+        job = self.read_job_point(
+            epoch_id, job_id, for_update=True, cursor=cursor
+        )
+        self._validate_point_lease(
+            header,
+            job,
+            attempt_id=attempt_id,
+            lease_token_hash=lease_token_hash,
+            lease_expected_revision=lease_expected_revision,
+        )
+        if job.state in {
+            JobState.COMPLETED_ACTIVE,
+            JobState.COMPLETED_INACTIVE,
+        }:
+            children = self.read_children_point(
+                epoch_id, job_id, cursor=cursor
             )
-            collisions = (
-                self._connection.execute(
-                    """
-                    SELECT job_id FROM groundloop_semantic_job
-                    WHERE job_id = ANY(%s)
-                    ORDER BY job_id
-                    """,
-                    ([child.job_id for child in plan.child_jobs],),
-                ).fetchall()
-                if plan.child_jobs
-                else ()
-            )
-            if collisions:
-                raise EventConflictError("completion would redeclare a child job")
-            completed_revision = header.revision + 1
-            for child in plan.child_jobs:
-                self._insert_job(epoch_id, child, created_revision=completed_revision)
-                self._connection.execute(
-                    """
-                    INSERT INTO groundloop_semantic_job_dependency
-                        (epoch_id, parent_job_id, child_job_id)
-                    VALUES (%s, %s, %s)
-                    """,
-                    (epoch_id, job_id, child.job_id),
-                )
-            if failure_injector is not None:
-                failure_injector("point_completion_children_written")
-            closure = plan.completion.child_closure
-            parent_rows = self._connection.execute(
-                """
-                UPDATE groundloop_semantic_job
-                SET job_state = %s, child_closed = %s, child_set_hash = %s,
-                    completion_digest = %s, result_artifact_id = %s,
-                    result_artifact_hash = %s, completed_revision = %s,
-                    completed_at = now()
-                WHERE job_id = %s AND epoch_id = %s AND job_state = 'running'
-                """,
-                (
-                    plan.completion.terminal_state.value,
-                    closure is not None,
-                    None if closure is None else closure.child_set_hash,
-                    plan.completion.completion_digest,
-                    plan.completion.result_artifact_id,
-                    plan.completion.result_artifact_hash,
-                    completed_revision,
-                    job_id,
-                    epoch_id,
-                ),
-            ).rowcount
-            if parent_rows != 1:
-                raise EventConflictError("completion job changed before commit")
-            attempt_rows = self._connection.execute(
-                """
-                UPDATE groundloop_semantic_job_attempt
-                SET attempt_state = 'completed', finished_at = now()
-                WHERE attempt_id = %s AND job_id = %s
-                  AND lease_token_hash = %s AND attempt_state = 'leased'
-                """,
-                (attempt_id, job_id, lease_token_hash),
-            ).rowcount
-            if attempt_rows != 1:
-                raise EventConflictError("completion lease changed before commit")
-            if job.spec.kind is JobKind.IMPACT_DISCOVERY:
-                scope_rows = self._connection.execute(
-                    """
-                    UPDATE groundloop_discovery_scope
-                    SET closed_revision = %s
-                    WHERE root_job_id = %s AND epoch_id = %s
-                      AND closed_revision IS NULL
-                    """,
-                    (completed_revision, job_id, epoch_id),
-                ).rowcount
-                if scope_rows != 1:
+            if self._point_completion_is_replay(job, plan, children):
+                if (
+                    job.latest_attempt is None
+                    or job.latest_attempt.state != "completed"
+                ):
                     raise EventConflictError(
-                        "impact-discovery scope changed before completion"
+                        "completed job lacks a completed latest attempt"
                     )
-            if failure_injector is not None:
-                failure_injector("point_completion_parent_written")
-            next_header = self._advance_point_epoch(header, plan.expected_revision)
-            return PointMutationResult(
-                next_header,
-                self.read_job_point(epoch_id, job_id),
-                replayed=False,
+                return PointMutationResult(header, job, replayed=True)
+            raise EventConflictError("job already completed with different content")
+        self._require_point_revision(header, plan.expected_revision)
+        if job.state is not JobState.RUNNING:
+            raise InvalidEventError("only a running job can complete")
+        latest = job.latest_attempt
+        if latest is None or latest.state != "leased":
+            raise EventConflictError("completion attempt is not leased")
+        target_active = self._point_target_is_active(
+            header, job.spec, cursor=cursor
+        )
+        self._validate_point_completion(
+            header,
+            job.spec,
+            plan,
+            target_active=target_active,
+        )
+        collisions = (
+            cursor.execute(
+                """
+                SELECT job_id FROM groundloop_semantic_job
+                WHERE job_id = ANY(%s)
+                ORDER BY job_id
+                """,
+                ([child.job_id for child in plan.child_jobs],),
+            ).fetchall()
+            if plan.child_jobs
+            else ()
+        )
+        if collisions:
+            raise EventConflictError("completion would redeclare a child job")
+        completed_revision = header.revision + 1
+        for child in plan.child_jobs:
+            self._insert_job(
+                epoch_id,
+                child,
+                created_revision=completed_revision,
+                cursor=cursor,
             )
+            cursor.execute(
+                """
+                INSERT INTO groundloop_semantic_job_dependency
+                    (epoch_id, parent_job_id, child_job_id)
+                VALUES (%s, %s, %s)
+                """,
+                (epoch_id, job_id, child.job_id),
+            )
+        if failure_injector is not None:
+            failure_injector("point_completion_children_written")
+        closure = plan.completion.child_closure
+        parent_rows = cursor.execute(
+            """
+            UPDATE groundloop_semantic_job
+            SET job_state = %s, child_closed = %s, child_set_hash = %s,
+                completion_digest = %s, result_artifact_id = %s,
+                result_artifact_hash = %s, completed_revision = %s,
+                completed_at = now()
+            WHERE job_id = %s AND epoch_id = %s AND job_state = 'running'
+            """,
+            (
+                plan.completion.terminal_state.value,
+                closure is not None,
+                None if closure is None else closure.child_set_hash,
+                plan.completion.completion_digest,
+                plan.completion.result_artifact_id,
+                plan.completion.result_artifact_hash,
+                completed_revision,
+                job_id,
+                epoch_id,
+            ),
+        ).rowcount
+        if parent_rows != 1:
+            raise EventConflictError("completion job changed before commit")
+        attempt_rows = cursor.execute(
+            """
+            UPDATE groundloop_semantic_job_attempt
+            SET attempt_state = 'completed', finished_at = now()
+            WHERE attempt_id = %s AND job_id = %s
+              AND lease_token_hash = %s AND attempt_state = 'leased'
+            """,
+            (attempt_id, job_id, lease_token_hash),
+        ).rowcount
+        if attempt_rows != 1:
+            raise EventConflictError("completion lease changed before commit")
+        if job.spec.kind is JobKind.IMPACT_DISCOVERY:
+            scope_rows = cursor.execute(
+                """
+                UPDATE groundloop_discovery_scope
+                SET closed_revision = %s
+                WHERE root_job_id = %s AND epoch_id = %s
+                  AND closed_revision IS NULL
+                """,
+                (completed_revision, job_id, epoch_id),
+            ).rowcount
+            if scope_rows != 1:
+                raise EventConflictError(
+                    "impact-discovery scope changed before completion"
+                )
+        if failure_injector is not None:
+            failure_injector("point_completion_parent_written")
+        next_header = self._advance_point_epoch(
+            header, plan.expected_revision, cursor=cursor
+        )
+        return PointMutationResult(
+            next_header,
+            self.read_job_point(epoch_id, job_id, cursor=cursor),
+            replayed=False,
+        )
 
     def fail_epoch_point(
         self,
@@ -1198,42 +1450,24 @@ class PostgresM4RuntimeStore:
         failure_injector: FailureInjector | None = None,
     ) -> PointMutationResult:
         """Fail one epoch through its header CAS without reading its jobs."""
-        if not reason.strip():
-            raise ValidationError("epoch failure reason must be non-empty")
         with self._connection.transaction():
             self._reject_typed_epoch_mutation(epoch_id)
-            header = self.read_epoch_header_point(epoch_id, for_update=True)
-            if header.state is RuntimeEpochState.FAILED:
-                if header.failure_reason == reason:
-                    return PointMutationResult(header, None, replayed=True)
-                raise EventConflictError(
-                    "failed epoch already records another reason"
-                )
-            if header.state is RuntimeEpochState.SEALED:
-                raise InvalidEventError("sealed epoch cannot fail")
-            self._require_point_revision(header, expected_revision)
-            self._connection.execute(
-                """
-                UPDATE groundloop_m4_update
-                SET manifest = jsonb_set(
-                    manifest,
-                    ARRAY[%s, 'failure_reason'],
-                    to_jsonb(%s::text),
-                    true
-                )
-                WHERE epoch_id = %s
-                """,
-                (_RUNTIME_MANIFEST_KEY, reason, epoch_id),
+            projected = self.stage_failure_projection_local(
+                self._connection,
+                epoch_id,
+                expected_revision,
+                reason,
+                failure_injector=failure_injector,
             )
-            if failure_injector is not None:
-                failure_injector("point_failure_reason_written")
+            if projected.replayed:
+                return projected
             row = self._connection.execute(
                 """
                 UPDATE groundloop_epoch
                 SET revision = revision + 1,
                     structural_status = 'failed', semantic_status = 'failed',
-                    evaluation_state = 'failed', publication_mode = 'provisional',
-                    sealed_at = NULL
+                    evaluation_state = 'failed',
+                    publication_mode = 'provisional', sealed_at = NULL
                 WHERE epoch_id = %s AND revision = %s
                 RETURNING revision, open_job_count, open_scope_count
                 """,
@@ -1243,7 +1477,7 @@ class PostgresM4RuntimeStore:
                 raise EventConflictError("stale epoch revision")
             return PointMutationResult(
                 replace(
-                    header,
+                    projected.header,
                     revision=int(row[0]),
                     state=RuntimeEpochState.FAILED,
                     open_job_count=int(row[1]),
@@ -1253,6 +1487,47 @@ class PostgresM4RuntimeStore:
                 None,
                 replayed=False,
             )
+
+    def stage_failure_projection_local(
+        self,
+        cursor: SqlExecutor,
+        epoch_id: int,
+        expected_revision: int,
+        reason: str,
+        *,
+        failure_injector: FailureInjector | None = None,
+    ) -> PointMutationResult:
+        """Stage only the M4 failure projection in the caller's transaction."""
+        if not reason.strip():
+            raise ValidationError("epoch failure reason must be non-empty")
+        header = self.read_epoch_header_point(
+            epoch_id, for_update=True, cursor=cursor
+        )
+        if header.state is RuntimeEpochState.FAILED:
+            if header.failure_reason == reason:
+                return PointMutationResult(header, None, replayed=True)
+            raise EventConflictError("failed epoch already records another reason")
+        if header.state is RuntimeEpochState.SEALED:
+            raise InvalidEventError("sealed epoch cannot fail")
+        self._require_point_revision(header, expected_revision)
+        changed = cursor.execute(
+            """
+            UPDATE groundloop_m4_update
+            SET manifest = jsonb_set(
+                manifest,
+                ARRAY[%s, 'failure_reason'],
+                to_jsonb(%s::text),
+                true
+            )
+            WHERE epoch_id = %s
+            """,
+            (_RUNTIME_MANIFEST_KEY, reason, epoch_id),
+        ).rowcount
+        if changed != 1:
+            raise InvalidEventError("failure projection lacks an M4 update")
+        if failure_injector is not None:
+            failure_injector("point_failure_reason_written")
+        return PointMutationResult(header, None, replayed=False)
 
     def seal_epoch_point(
         self,
@@ -1265,14 +1540,14 @@ class PostgresM4RuntimeStore:
         """Seal using exact counters rather than scanning all jobs/scopes."""
         with self._connection.transaction():
             self._reject_typed_epoch_mutation(epoch_id)
-            header = self.read_epoch_header_point(epoch_id, for_update=True)
-            if header.state is RuntimeEpochState.SEALED:
-                return PointMutationResult(header, None, replayed=True)
-            self._require_point_revision(header, expected_revision)
-            if not header.seal_ready:
-                raise InvalidEventError("SQL coordination surface is not sealable")
-            if failure_injector is not None:
-                failure_injector("point_seal_checked")
+            checked = self.validate_seal_point_local(
+                self._connection,
+                epoch_id,
+                expected_revision,
+                failure_injector=failure_injector,
+            )
+            if checked.replayed:
+                return checked
             with self._connection.cursor() as transaction_cursor:
                 publication_action(transaction_cursor, epoch_id)
             head = self._connection.execute(
@@ -1306,7 +1581,7 @@ class PostgresM4RuntimeStore:
                 failure_injector("point_seal_epoch_written")
             return PointMutationResult(
                 replace(
-                    header,
+                    checked.header,
                     revision=int(row[0]),
                     state=RuntimeEpochState.SEALED,
                     open_job_count=int(row[1]),
@@ -1315,6 +1590,27 @@ class PostgresM4RuntimeStore:
                 None,
                 replayed=False,
             )
+
+    def validate_seal_point_local(
+        self,
+        cursor: SqlExecutor,
+        epoch_id: int,
+        expected_revision: int,
+        *,
+        failure_injector: FailureInjector | None = None,
+    ) -> PointMutationResult:
+        """Validate direct point-runtime seal readiness without publishing."""
+        header = self.read_epoch_header_point(
+            epoch_id, for_update=True, cursor=cursor
+        )
+        if header.state is RuntimeEpochState.SEALED:
+            return PointMutationResult(header, None, replayed=True)
+        self._require_point_revision(header, expected_revision)
+        if not header.seal_ready:
+            raise InvalidEventError("SQL coordination surface is not sealable")
+        if failure_injector is not None:
+            failure_injector("point_seal_checked")
+        return PointMutationResult(header, None, replayed=False)
 
     def start_attempt(
         self,
@@ -1675,10 +1971,15 @@ class PostgresM4RuntimeStore:
         return expected
 
     def _read_latest_attempt_point(
-        self, job_id: str, *, for_update: bool
+        self,
+        job_id: str,
+        *,
+        for_update: bool,
+        cursor: SqlExecutor | None = None,
     ) -> PointAttemptRecord | None:
         suffix = " FOR UPDATE" if for_update else ""
-        row = self._connection.execute(
+        executor = self._connection if cursor is None else cursor
+        row = executor.execute(
             """
             SELECT attempt_id, execution_spec_hash, attempt_ordinal,
                    lease_token_hash, attempt_state, lease_expires_at
@@ -1812,7 +2113,11 @@ class PostgresM4RuntimeStore:
         )
 
     def _point_target_is_active(
-        self, header: PointEpochHeader, spec: LogicalJobSpec
+        self,
+        header: PointEpochHeader,
+        spec: LogicalJobSpec,
+        *,
+        cursor: SqlExecutor | None = None,
     ) -> bool:
         if header.state is RuntimeEpochState.FAILED:
             return False
@@ -1823,7 +2128,8 @@ class PostgresM4RuntimeStore:
         )
         if target_chunk_id is None:
             return True
-        row = self._connection.execute(
+        executor = self._connection if cursor is None else cursor
+        row = executor.execute(
             """
             SELECT 1 FROM groundloop_m4_effective_chunk_version
             WHERE epoch_id = %s AND chunk_version_id = %s
@@ -1916,9 +2222,14 @@ class PostgresM4RuntimeStore:
                 raise InvalidEventError("failed epoch cannot expand late work")
 
     def _advance_point_epoch(
-        self, header: PointEpochHeader, expected_revision: int
+        self,
+        header: PointEpochHeader,
+        expected_revision: int,
+        *,
+        cursor: SqlExecutor | None = None,
     ) -> PointEpochHeader:
-        row = self._connection.execute(
+        executor = self._connection if cursor is None else cursor
+        row = executor.execute(
             """
             UPDATE groundloop_epoch
             SET revision = revision + 1,
@@ -2186,7 +2497,12 @@ class PostgresM4RuntimeStore:
         return tuple(scopes)
 
     def _insert_job(
-        self, epoch_id: int, spec: LogicalJobSpec, *, created_revision: int
+        self,
+        epoch_id: int,
+        spec: LogicalJobSpec,
+        *,
+        created_revision: int,
+        cursor: SqlExecutor | None = None,
     ) -> None:
         claim_id = spec.pair.claim_id if spec.pair is not None else spec.target_claim_id
         chunk_id = (
@@ -2194,7 +2510,8 @@ class PostgresM4RuntimeStore:
             if spec.pair is not None
             else spec.target_chunk_version_id
         )
-        self._connection.execute(
+        executor = self._connection if cursor is None else cursor
+        executor.execute(
             """
             INSERT INTO groundloop_semantic_job (
                 job_id, epoch_id, parent_job_id, job_kind,
