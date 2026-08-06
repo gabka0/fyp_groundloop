@@ -440,6 +440,39 @@ orders. R7 may not edit persistence wrappers, migrations, contracts/digests,
 frontier semantics, M4, other tests/status, or user paths. It reports any
 schema/contract blocker instead of weakening a deferred invariant.
 
+### Lane D2 -- cursor-local direct M4 implementation
+
+Authorized after the exact direct-declaration carrier checkpoint `fda8206`:
+
+```text
+branch:   workstream/m5-direct-m4-local
+worktree: /home/kassym/Desktop/groundloop-worktrees/m5-direct-m4-local
+```
+
+Owned paths:
+
+```text
+src/groundloop/m5/runtime/direct_m4.py
+src/groundloop/m4/persistence.py
+src/groundloop/m4/pipeline.py
+src/groundloop/m4/evaluation_overlay.py
+tests/m5/postgres_runtime/test_direct_m4_composition.py
+docs/workstreams/m5_runtime_implementation/DIRECT_M4_LOCAL_HANDOFF.md
+```
+
+D2 implements the six frozen cursor-local direct operations: exact payload-
+bound structural open, deterministic acquisition/dispatch, expansion,
+verifier completion, failure projection, and seal projection. It extracts and
+reuses M4-v1 SQL/identity/evaluation logic without opening a transaction,
+committing, rolling back, advancing a publication head alone, or finalizing
+the combined M4/M5 base state. The implementation must preserve every public
+M4 barrier and `v1_only` byte/regression vector, keep external calls outside
+transactions, and expose any post-commit cache adoption as an internal
+failure-safe hook rather than semantic authority. D2 may not edit the typed
+coordinator/persistence, migration, M5 contracts/application, other tests/
+docs, or user paths. Live tests must compare cursor-local outcomes with the
+public v1 path and prove rollback at every write group.
+
 ### Wave C -- maintained evaluation bridge
 
 Only after the public M5.4 contracts and runtime are frozen may one exclusive
