@@ -134,6 +134,13 @@ plus the runtime-header deferred validation; the trigger must remain installed
 and every other 014/M4 object remains out of scope. The migration must leave
 mode unchanged and must not activate M5.
 
+R2 closed and was integrated as `05b975b`. A production root-declaration
+smoke test then exposed a deferred-trigger record-field defect not covered by
+the lane matrix. Because the R2 lane is no longer active, the coordinator owns
+the narrow correction to `migrations/015_m5_runtime.sql`, its dedicated
+`test_migration_015.py` regression, and the schema handoff. This does not
+reopen any migration-014 object or grant either active lane those paths.
+
 ### Lane E1 -- controlled-adapter evidence hardening
 
 ```text

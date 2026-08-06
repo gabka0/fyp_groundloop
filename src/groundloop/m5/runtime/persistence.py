@@ -7,6 +7,7 @@ opens database transactions spanning both surfaces.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -23,6 +24,7 @@ from groundloop.events import (
     ReplaceDocumentVersionEvent,
 )
 from groundloop.m4.application import OpenEventReceipt, PublicationReceipt
+from groundloop.m4.contracts import VectorIndexKind
 from groundloop.m5.domain import EvidenceGroupVersion
 from groundloop.m5.events import (
     ObserveRequirementEvent,
@@ -35,13 +37,20 @@ from groundloop.m5.runtime.contracts import (
     ActiveChunkSnapshot,
     M5CandidatePolicyManifest,
     M5ChangedStateReference,
+    M5DiscoveryDirection,
+    M5DiscoveryScopeContract,
     M5EventRunResult,
+    M5JobCompletion,
+    M5JobKind,
+    M5JobState,
+    M5LogicalJobSpec,
     M5ReplayedOutcome,
     M5RunFailureReason,
     M5RunState,
     M5RuntimeTiming,
     M5RuntimeWork,
     M5StateReferenceKind,
+    M5TerminalReason,
     M5TypedEventPlan,
     RequirementRegistrySnapshot,
 )
@@ -59,6 +68,12 @@ _WORK_COUNTER_COLUMNS = M5RuntimeWork.counter_names()
 class _PublishedGroupOwner:
     group_family_id: str
     claim_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class _RootDeclaration:
+    scope: M5DiscoveryScopeContract
+    job: M5LogicalJobSpec
 
 
 def _inject(injector: RuntimeFailureInjector | None, point: str) -> None:
@@ -382,6 +397,96 @@ def _m5_update_kind(
     return "observe_requirement"
 
 
+def _load_candidate_manifest(
+    cursor: Cursor[Any], candidate_policy_id: str
+) -> M5CandidatePolicyManifest:
+    row = cursor.execute(
+        """
+        SELECT candidate_policy_id, candidate_policy_manifest_hash,
+               embedding_model_artifact_id, requirement_role_template_hash,
+               chunk_role_template_hash, vector_method_version,
+               vector_index_kind, vector_index_build_config_hash,
+               vector_search_config_hash, lexical_method_version,
+               lexical_config_hash, lexical_postgres_version,
+               lexical_regconfig_identity, fusion_version,
+               reverse_budget_per_inserted_chunk,
+               forward_budget_per_requirement,
+               verifier_execution_spec_hash, decision_policy_version,
+               lineage_safety_override
+        FROM groundloop_m5_candidate_policy
+        WHERE candidate_policy_id = %s
+        """,
+        (candidate_policy_id,),
+    ).fetchone()
+    if row is None:
+        raise InvalidEventError("typed plan names an unregistered candidate policy")
+    manifest = M5CandidatePolicyManifest(
+        candidate_policy_id=str(row[0]).strip(),
+        embedding_model_artifact_id=str(row[2]),
+        requirement_role_template_hash=str(row[3]).strip(),
+        chunk_role_template_hash=str(row[4]).strip(),
+        vector_method_version=str(row[5]),
+        vector_index_kind=VectorIndexKind(str(row[6])),
+        vector_index_build_config_hash=str(row[7]).strip(),
+        vector_search_config_hash=str(row[8]).strip(),
+        lexical_method_version=str(row[9]),
+        lexical_config_hash=str(row[10]).strip(),
+        lexical_postgres_version=str(row[11]),
+        lexical_regconfig_identity=str(row[12]),
+        fusion_version=str(row[13]),
+        reverse_budget_per_inserted_chunk=int(row[14]),
+        forward_budget_per_requirement=int(row[15]),
+        verifier_execution_spec_hash=str(row[16]).strip(),
+        decision_policy_version=str(row[17]),
+        lineage_safety_override=bool(row[18]),
+    )
+    if manifest.manifest_hash != str(row[1]).strip():
+        raise ValidationError("stored candidate-policy manifest identity is corrupt")
+    return manifest
+
+
+def _build_root_declarations(
+    plan: M5TypedEventPlan, manifest: M5CandidatePolicyManifest
+) -> tuple[_RootDeclaration, ...]:
+    if isinstance(plan.event, RegisterGroupEvent):
+        requirements = plan.event.group.requirements
+    elif isinstance(plan.event, ReplaceGroupEvent):
+        requirements = plan.event.successor.requirements
+    else:
+        requirements = ()
+
+    declarations: list[_RootDeclaration] = []
+    for requirement in requirements:
+        scope = M5DiscoveryScopeContract.build(
+            direction=M5DiscoveryDirection.FORWARD_REQUIREMENT,
+            requirement_version_id=requirement.requirement_version_id,
+            inserted_chunk_version_id=None,
+            candidate_policy_id=manifest.candidate_policy_id,
+            requirement_registry_snapshot_digest=(
+                plan.requirement_registry_snapshot.requirement_registry_snapshot_digest
+            ),
+            active_chunk_snapshot_digest=(
+                plan.active_chunk_snapshot.active_chunk_snapshot_digest
+            ),
+        )
+        scope.validate_snapshots(
+            plan.requirement_registry_snapshot, plan.active_chunk_snapshot
+        )
+        job = M5LogicalJobSpec.build(
+            structural_event_id=plan.structural_event_id,
+            job_kind=M5JobKind.FORWARD_REQUIREMENT_RETRIEVAL,
+            manifest=manifest,
+            scope=scope,
+        )
+        declarations.append(_RootDeclaration(scope, job))
+    ordered = tuple(
+        sorted(declarations, key=lambda declaration: declaration.job.logical_job_id)
+    )
+    if len({declaration.job.logical_job_id for declaration in ordered}) != len(ordered):
+        raise ValidationError("typed root declaration repeats a logical job")
+    return ordered
+
+
 def _requirement_snapshot_rows(
     snapshot: RequirementRegistrySnapshot,
 ) -> tuple[tuple[object, ...], ...]:
@@ -631,12 +736,30 @@ def _persist_active_chunk_snapshot(
         raise EventConflictError("active-chunk snapshot digest has conflicting rows")
 
 
-def _persist_zero_pending_counters(
-    cursor: Cursor[Any], *, snapshot: RequirementRegistrySnapshot, epoch_id: int
+def _persist_initial_pending_counters(
+    cursor: Cursor[Any],
+    *,
+    snapshot: RequirementRegistrySnapshot,
+    epoch_id: int,
+    roots: tuple[_RootDeclaration, ...],
 ) -> None:
     owner_claim_ids = tuple(
         sorted({entry.owner_claim_id for entry in snapshot.entries})
     )
+    owner_by_requirement = {
+        entry.requirement_version_id: entry.owner_claim_id for entry in snapshot.entries
+    }
+    forward_counts: Counter[str] = Counter()
+    broad_counts: Counter[str] = Counter()
+    for declaration in roots:
+        if declaration.scope.direction is M5DiscoveryDirection.FORWARD_REQUIREMENT:
+            assert declaration.scope.requirement_version_id is not None
+            forward_counts[
+                owner_by_requirement[declaration.scope.requirement_version_id]
+            ] += 1
+        else:
+            for owner_claim_id in owner_claim_ids:
+                broad_counts[owner_claim_id] += 1
     for owner_claim_id in owner_claim_ids:
         cursor.execute(
             """
@@ -644,33 +767,251 @@ def _persist_zero_pending_counters(
                 epoch_id, owner_claim_id, broad_reverse_scope_count,
                 forward_scope_count, verifier_job_count,
                 blocking_failure_count, updated_revision
-            ) VALUES (%s, %s, 0, 0, 0, 0, 1)
+            ) VALUES (%s, %s, %s, %s, 0, 0, 1)
             """,
-            (epoch_id, owner_claim_id),
+            (
+                epoch_id,
+                owner_claim_id,
+                broad_counts[owner_claim_id],
+                forward_counts[owner_claim_id],
+            ),
         )
 
     if not owner_claim_ids:
         return
     answer_rows = cursor.execute(
         """
-        SELECT DISTINCT answer_version_id
+        SELECT claim_id, answer_version_id
         FROM groundloop_claim
         WHERE claim_id = ANY(%s) AND required
-        ORDER BY answer_version_id COLLATE "C"
+        ORDER BY answer_version_id COLLATE "C", claim_id COLLATE "C"
         """,
         (list(owner_claim_ids),),
     ).fetchall()
-    for answer_row in answer_rows:
+    answer_broad_counts: Counter[str] = Counter()
+    answer_forward_counts: Counter[str] = Counter()
+    for claim_id, answer_version_id in answer_rows:
+        answer = str(answer_version_id)
+        owner = str(claim_id)
+        answer_broad_counts[answer] += broad_counts[owner]
+        answer_forward_counts[answer] += forward_counts[owner]
+    for answer_version_id in sorted(answer_broad_counts):
         cursor.execute(
             """
             INSERT INTO groundloop_m5_answer_pending_counter (
                 epoch_id, answer_version_id, broad_reverse_scope_count,
                 forward_scope_count, verifier_job_count,
                 blocking_failure_count, updated_revision
-            ) VALUES (%s, %s, 0, 0, 0, 0, 1)
+            ) VALUES (%s, %s, %s, %s, 0, 0, 1)
             """,
-            (epoch_id, str(answer_row[0])),
+            (
+                epoch_id,
+                answer_version_id,
+                answer_broad_counts[answer_version_id],
+                answer_forward_counts[answer_version_id],
+            ),
         )
+
+
+def _persist_root_declarations(
+    cursor: Cursor[Any],
+    *,
+    structural_event_id: str,
+    epoch_id: int,
+    roots: tuple[_RootDeclaration, ...],
+) -> None:
+    for declaration in roots:
+        scope = declaration.scope
+        job = declaration.job
+        cursor.execute(
+            """
+            INSERT INTO groundloop_m5_discovery_scope (
+                root_job_id, epoch_id, direction,
+                requirement_version_id, inserted_chunk_version_id,
+                candidate_policy_id,
+                requirement_registry_snapshot_digest,
+                active_chunk_snapshot_digest, scope_contract_digest,
+                scope_state, staged_result_artifact_hash,
+                scope_closure_digest, child_set_hash, completion_digest,
+                created_revision, staged_revision, closed_revision,
+                closed_at
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                'open', NULL, NULL, NULL, NULL, 1, NULL, NULL, NULL
+            )
+            """,
+            (
+                job.logical_job_id,
+                epoch_id,
+                scope.direction.value,
+                scope.requirement_version_id,
+                scope.inserted_chunk_version_id,
+                scope.candidate_policy_id,
+                scope.requirement_registry_snapshot_digest,
+                scope.active_chunk_snapshot_digest,
+                scope.scope_contract_digest,
+            ),
+        )
+        cursor.execute(
+            """
+            INSERT INTO groundloop_m5_semantic_job (
+                logical_job_id, epoch_id, structural_event_id, job_kind,
+                candidate_policy_id, candidate_policy_manifest_hash,
+                parent_job_id, subject_kind, subject_id, chunk_version_id,
+                semantic_pair_digest, admitted_pair_digest,
+                scope_contract_digest,
+                requirement_registry_snapshot_digest,
+                active_chunk_snapshot_digest, role_template_hash,
+                execution_spec_hash, expandable, payload_hash, job_state,
+                result_artifact_id, result_artifact_hash,
+                scope_closure_digest, child_set_hash, archive_reason,
+                completion_digest, cancelled_by_event_id,
+                cancelled_by_epoch_id, cancellation_reason,
+                created_revision, completed_revision, completed_at
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s,
+                NULL, NULL, NULL, NULL, NULL, NULL,
+                %s, %s, %s, %s, %s, TRUE, %s, 'declared',
+                NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+                1, NULL, NULL
+            )
+            """,
+            (
+                job.logical_job_id,
+                epoch_id,
+                structural_event_id,
+                job.job_kind.value,
+                job.candidate_policy_id,
+                job.candidate_policy_manifest_hash,
+                job.scope_contract_digest,
+                job.requirement_registry_snapshot_digest,
+                job.active_chunk_snapshot_digest,
+                job.role_template_hash,
+                job.execution_spec_hash,
+                job.payload_hash,
+            ),
+        )
+
+
+def _load_root_declarations_for_failure(
+    cursor: Cursor[Any], *, epoch_id: int
+) -> tuple[_RootDeclaration, ...]:
+    rows = cursor.execute(
+        """
+        SELECT scope.direction, scope.requirement_version_id,
+               scope.inserted_chunk_version_id, scope.candidate_policy_id,
+               scope.requirement_registry_snapshot_digest,
+               scope.active_chunk_snapshot_digest,
+               scope.scope_contract_digest,
+               job.logical_job_id, job.structural_event_id, job.job_kind,
+               job.candidate_policy_id, job.candidate_policy_manifest_hash,
+               job.parent_job_id, job.semantic_pair_digest,
+               job.scope_contract_digest,
+               job.requirement_registry_snapshot_digest,
+               job.active_chunk_snapshot_digest, job.role_template_hash,
+               job.execution_spec_hash, job.expandable, job.payload_hash,
+               job.job_state, scope.scope_state
+        FROM groundloop_m5_semantic_job AS job
+        JOIN groundloop_m5_discovery_scope AS scope
+          ON scope.root_job_id = job.logical_job_id
+         AND scope.epoch_id = job.epoch_id
+        WHERE job.epoch_id = %s AND job.parent_job_id IS NULL
+        ORDER BY job.logical_job_id COLLATE "C"
+        FOR UPDATE OF job, scope
+        """,
+        (epoch_id,),
+    ).fetchall()
+    declarations: list[_RootDeclaration] = []
+    for row in rows:
+        if str(row[21]) != "declared" or str(row[22]) != "open":
+            raise InvalidEventError(
+                "M5.3-07 staged failure requires undelegated root declarations"
+            )
+        scope = M5DiscoveryScopeContract(
+            direction=M5DiscoveryDirection(str(row[0])),
+            requirement_version_id=(None if row[1] is None else str(row[1])),
+            inserted_chunk_version_id=(None if row[2] is None else str(row[2])),
+            candidate_policy_id=str(row[3]).strip(),
+            requirement_registry_snapshot_digest=str(row[4]).strip(),
+            active_chunk_snapshot_digest=str(row[5]).strip(),
+            scope_contract_digest=str(row[6]).strip(),
+        )
+        job = M5LogicalJobSpec(
+            logical_job_id=str(row[7]).strip(),
+            structural_event_id=str(row[8]),
+            job_kind=M5JobKind(str(row[9])),
+            candidate_policy_id=str(row[10]).strip(),
+            candidate_policy_manifest_hash=str(row[11]).strip(),
+            parent_job_id=None,
+            pair=None,
+            semantic_pair_digest=(None if row[13] is None else str(row[13]).strip()),
+            scope_contract_digest=str(row[14]).strip(),
+            requirement_registry_snapshot_digest=str(row[15]).strip(),
+            active_chunk_snapshot_digest=str(row[16]).strip(),
+            role_template_hash=str(row[17]).strip(),
+            execution_spec_hash=str(row[18]).strip(),
+            expandable=bool(row[19]),
+            payload_hash=str(row[20]).strip(),
+        )
+        if job.parent_job_id is not None or job.pair is not None:
+            raise ValidationError("failure root declaration is not a root")
+        declarations.append(_RootDeclaration(scope, job))
+    return tuple(declarations)
+
+
+def _cancel_root_declarations(
+    cursor: Cursor[Any],
+    *,
+    structural_event_id: str,
+    epoch_id: int,
+    resulting_revision: int,
+    roots: tuple[_RootDeclaration, ...],
+) -> None:
+    for declaration in roots:
+        cancelled = M5JobCompletion.build(
+            job=declaration.job,
+            terminal_state=M5JobState.CANCELLED,
+            archive_reason=M5TerminalReason.EPOCH_FAILED,
+        )
+        updated_job = cursor.execute(
+            """
+            UPDATE groundloop_m5_semantic_job
+            SET job_state = 'cancelled', archive_reason = 'epoch_failed',
+                completion_digest = %s, cancelled_by_event_id = %s,
+                cancelled_by_epoch_id = %s,
+                cancellation_reason = 'epoch_failed',
+                completed_revision = %s, completed_at = now()
+            WHERE logical_job_id = %s AND epoch_id = %s
+              AND job_state = 'declared'
+            """,
+            (
+                cancelled.completion_digest,
+                structural_event_id,
+                epoch_id,
+                resulting_revision,
+                declaration.job.logical_job_id,
+                epoch_id,
+            ),
+        ).rowcount
+        if updated_job != 1:
+            raise EventConflictError("root job changed before failure cancellation")
+        updated_scope = cursor.execute(
+            """
+            UPDATE groundloop_m5_discovery_scope
+            SET scope_state = 'cancelled', completion_digest = %s,
+                closed_revision = %s, closed_at = now()
+            WHERE root_job_id = %s AND epoch_id = %s
+              AND scope_state = 'open'
+            """,
+            (
+                cancelled.completion_digest,
+                resulting_revision,
+                declaration.job.logical_job_id,
+                epoch_id,
+            ),
+        ).rowcount
+        if updated_scope != 1:
+            raise EventConflictError("root scope changed before failure cancellation")
 
 
 def _insert_runtime_work(
@@ -1030,20 +1371,16 @@ class PostgresM5RuntimeStore:
         *,
         failure_injector: RuntimeFailureInjector | None = None,
     ) -> OpenEventReceipt:
-        """Open the first production failure/replay slice.
+        """Open the structural-group production failure/replay slice."""
 
-        Barrier B intentionally admits only a rootless group retirement. The
-        remaining event kinds require the full direct/root declaration adapter
-        and stay M5.4-PENDING rather than being partially persisted.
-        """
-
-        if not isinstance(plan.event, RetireGroupEvent):
+        if not isinstance(
+            plan.event, (RegisterGroupEvent, ReplaceGroupEvent, RetireGroupEvent)
+        ):
             raise InvalidEventError(
-                "the M5.3-07 production slice admits retire_group only"
+                "the M5.3-07 production slice admits group lifecycle events only"
             )
         if plan.direct_plan is not None:
-            raise InvalidEventError("group retirement cannot carry a direct M4 plan")
-        root_set_hash = digests.requirement_root_set_digest(())
+            raise InvalidEventError("group lifecycle events cannot carry a direct plan")
 
         existing = self._read_existing_open_read_only(plan)
         if existing is not None:
@@ -1118,21 +1455,16 @@ class PostgresM5RuntimeStore:
             if live_epoch is not None:
                 raise InvalidEventError("a structural epoch is already active")
 
-            policy_row = cursor.execute(
-                """
-                SELECT candidate_policy_manifest_hash, decision_policy_version
-                FROM groundloop_m5_candidate_policy
-                WHERE candidate_policy_id = %s
-                """,
-                (plan.candidate_policy_id,),
-            ).fetchone()
-            if policy_row is None or str(policy_row[0]).strip() != (
-                plan.candidate_policy_manifest_hash
-            ):
+            manifest = _load_candidate_manifest(cursor, plan.candidate_policy_id)
+            if manifest.manifest_hash != plan.candidate_policy_manifest_hash:
                 raise InvalidEventError(
                     "typed plan does not bind a registered candidate policy"
                 )
-            decision_policy_version = str(policy_row[1])
+            decision_policy_version = manifest.decision_policy_version
+            roots = _build_root_declarations(plan, manifest)
+            root_set_hash = digests.requirement_root_set_digest(
+                declaration.job.logical_job_id for declaration in roots
+            )
 
             epoch_row = cursor.execute(
                 """
@@ -1181,7 +1513,7 @@ class PostgresM5RuntimeStore:
                     blocking_failure_count, terminal_at
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s,
-                    'structural_committed', 1, 0, 0, 0, NULL
+                    'structural_committed', 1, %s, %s, 0, NULL
                 )
                 """,
                 (
@@ -1193,6 +1525,8 @@ class PostgresM5RuntimeStore:
                     plan.active_chunk_snapshot.active_chunk_snapshot_digest,
                     plan.expected_previous_published_epoch_id,
                     root_set_hash,
+                    len(roots),
+                    len(roots),
                 ),
             )
             _inject(failure_injector, "typed_open_runtime_header_inserted")
@@ -1215,10 +1549,18 @@ class PostgresM5RuntimeStore:
                 snapshot=plan.active_chunk_snapshot,
                 epoch_id=epoch_id,
             )
-            _persist_zero_pending_counters(
+            _persist_root_declarations(
+                cursor,
+                structural_event_id=plan.structural_event_id,
+                epoch_id=epoch_id,
+                roots=roots,
+            )
+            _inject(failure_injector, "typed_open_roots_persisted")
+            _persist_initial_pending_counters(
                 cursor,
                 snapshot=plan.requirement_registry_snapshot,
                 epoch_id=epoch_id,
+                roots=roots,
             )
             _inject(failure_injector, "typed_open_snapshots_persisted")
             _inject(failure_injector, "typed_open_before_commit")
@@ -1368,19 +1710,27 @@ class PostgresM5RuntimeStore:
                 raise InvalidEventError(
                     "M5.3-07 retire failure cannot contain direct M4 work"
                 )
+            roots = _load_root_declarations_for_failure(cursor, epoch_id=epoch_id)
             runtime_children = cursor.execute(
                 """
                 SELECT
                     (SELECT count(*) FROM groundloop_m5_semantic_job
                      WHERE epoch_id = %s),
                     (SELECT count(*) FROM groundloop_m5_discovery_scope
-                     WHERE epoch_id = %s)
+                     WHERE epoch_id = %s),
+                    (SELECT count(*) FROM groundloop_m5_job_attempt AS attempt
+                     JOIN groundloop_m5_semantic_job AS job
+                       ON job.logical_job_id = attempt.logical_job_id
+                     WHERE job.epoch_id = %s)
                 """,
-                (epoch_id, epoch_id),
+                (epoch_id, epoch_id, epoch_id),
             ).fetchone()
-            if runtime_children is None or tuple(map(int, runtime_children)) != (0, 0):
+            expected_children = (len(roots), len(roots), 0)
+            if runtime_children is None or tuple(map(int, runtime_children)) != (
+                expected_children
+            ):
                 raise InvalidEventError(
-                    "M5.3-07 retire failure cannot contain requirement work"
+                    "M5.3-07 staged failure contains non-root requirement work"
                 )
 
             cursor.execute(
@@ -1388,6 +1738,13 @@ class PostgresM5RuntimeStore:
                 (epoch_id, expected_revision),
             )
             _inject(failure_injector, "typed_fail_authorized")
+            _cancel_root_declarations(
+                cursor,
+                structural_event_id=structural_event_id,
+                epoch_id=epoch_id,
+                resulting_revision=expected_revision + 1,
+                roots=roots,
+            )
             _inject(failure_injector, "typed_fail_jobs_cancelled")
 
             cursor.execute(
@@ -1419,20 +1776,20 @@ class PostgresM5RuntimeStore:
             _mark_event_staged_structure_failed(cursor, epoch_id)
             _inject(failure_injector, "typed_fail_structure_failed")
 
-            zero_work = M5RuntimeWork()
+            event_work = M5RuntimeWork(requirement_cancelled_job_count=len(roots))
             _insert_runtime_work(
                 cursor,
                 structural_event_id=structural_event_id,
                 epoch_id=epoch_id,
                 work_kind="event",
-                work=zero_work,
+                work=event_work,
             )
             _insert_runtime_work(
                 cursor,
                 structural_event_id=structural_event_id,
                 epoch_id=epoch_id,
                 work_kind="call",
-                work=zero_work,
+                work=event_work,
             )
             _inject(failure_injector, "typed_fail_work_inserted")
 
@@ -1449,8 +1806,8 @@ class PostgresM5RuntimeStore:
                     already_sealed=False,
                 ),
                 publication_receipt=None,
-                event_work=zero_work,
-                call_work=zero_work,
+                event_work=event_work,
+                call_work=event_work,
                 event_timing=event_timing,
                 call_timing=M5RuntimeTiming(),
                 combined_deltas=(),
@@ -1491,7 +1848,7 @@ class PostgresM5RuntimeStore:
                         already_failed=False,
                         failure_reason=None,
                     ),
-                    zero_work.work_digest,
+                    event_work.work_digest,
                     digests.combined_status_delta_set_digest(()),
                     digests.changed_state_set_digest(()),
                     failure_reason.value,

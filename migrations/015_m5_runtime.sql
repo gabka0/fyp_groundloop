@@ -3932,14 +3932,17 @@ DECLARE
     owned_pair_count bigint;
     child_count bigint;
 BEGIN
-    root_id := CASE
-        WHEN TG_OP = 'DELETE' THEN
-            CASE WHEN TG_TABLE_NAME = 'groundloop_m5_discovery_scope'
-                THEN OLD.root_job_id ELSE OLD.logical_job_id END
+    IF TG_TABLE_NAME = 'groundloop_m5_discovery_scope' THEN
+        IF TG_OP = 'DELETE' THEN
+            root_id := OLD.root_job_id;
         ELSE
-            CASE WHEN TG_TABLE_NAME = 'groundloop_m5_discovery_scope'
-                THEN NEW.root_job_id ELSE NEW.logical_job_id END
-    END;
+            root_id := NEW.root_job_id;
+        END IF;
+    ELSIF TG_OP = 'DELETE' THEN
+        root_id := OLD.logical_job_id;
+    ELSE
+        root_id := NEW.logical_job_id;
+    END IF;
     SELECT * INTO scope_row
     FROM groundloop_m5_discovery_scope
     WHERE root_job_id = root_id;

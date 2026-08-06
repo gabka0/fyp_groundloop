@@ -25,6 +25,14 @@ from groundloop.m5.digests import (
     text_field,
 )
 from groundloop.m5.domain import EvidenceGroupVersion, EvidenceRequirementVersion
+from groundloop.m5.events import RegisterGroupEvent, m5_event_payload_digest
+from groundloop.m5.runtime.contracts import (
+    ActiveChunkSnapshot,
+    M5TypedEventPlan,
+    RequirementRegistrySnapshot,
+    RequirementRegistrySnapshotEntry,
+)
+from groundloop.m5.runtime.persistence import PostgresM5RuntimeStore
 from groundloop.postgres.migrations import (
     M5_BUNDLE_ID,
     M5_RUNTIME_BUNDLE_ID,
@@ -1809,6 +1817,60 @@ def test_header_first_register_group_then_snapshots_commits_and_rolls_back() -> 
             """,
             (requirement_snapshot_digest,),
         ).fetchone() == (0,)
+
+
+def test_deferred_root_bijection_accepts_production_root_declaration() -> None:
+    with _isolated_schema() as connection:
+        install_m5_runtime_bundle(connection)
+        fixture = _seed_bridge_fixture(
+            connection,
+            activate=True,
+            prefix="root-record-fields",
+            seed_snapshots=True,
+        )
+        connection.commit()
+        group, _ = _make_staged_group(
+            prefix="root-record-fields-new",
+            owner_claim_id=fixture.owner_claim_id,
+        )
+        requirement = group.requirements[0]
+        snapshot = RequirementRegistrySnapshot.build(
+            (
+                RequirementRegistrySnapshotEntry.build(
+                    requirement_version_id=requirement.requirement_version_id,
+                    group_version_id=group.group_version_id,
+                    group_family_id=group.group_family_id,
+                    owner_claim_id=group.owner_claim_id,
+                    requirement_text=requirement.requirement_text,
+                ),
+            )
+        )
+        event = RegisterGroupEvent("root-record-fields-event", group)
+        plan = M5TypedEventPlan(
+            structural_event_id=event.event_id,
+            event=event,
+            payload_hash=m5_event_payload_digest(event),
+            direct_plan=None,
+            candidate_policy_id=fixture.direct_policy_id,
+            candidate_policy_manifest_hash=fixture.typed_policy_manifest_hash,
+            requirement_registry_snapshot=snapshot,
+            active_chunk_snapshot=ActiveChunkSnapshot.build(()),
+            expected_previous_published_epoch_id=fixture.base_epoch_id,
+        )
+
+        receipt = PostgresM5RuntimeStore(connection).open_typed_event_atomically(plan)
+
+        assert connection.execute(
+            """
+            SELECT job.job_state, scope.scope_state,
+                   runtime.open_work_count, runtime.open_scope_count
+            FROM groundloop_m5_runtime_epoch AS runtime
+            JOIN groundloop_m5_semantic_job AS job USING (epoch_id)
+            JOIN groundloop_m5_discovery_scope AS scope USING (epoch_id)
+            WHERE runtime.epoch_id = %s
+            """,
+            (receipt.epoch_id,),
+        ).fetchone() == ("declared", "open", 1, 1)
 
 
 def test_failed_result_requires_call_work_and_exact_base_payload() -> None:

@@ -134,6 +134,16 @@ reordered/prior-committed rejection, document/non-document bijection,
 state-specific terminal failure, wrong-payload rejection, missing-call-work
 rejection, equal event/call work, and repeated work digest across events.
 
+## Post-integration trigger correction
+
+A coordinator production smoke test that inserted an actual discovery-scope /
+root-job pair exposed a PL/pgSQL record-field defect in the shared deferred
+root-closure trigger: a SQL `CASE` referenced fields belonging to both trigger
+table row types. Migration 015 now selects the table-specific `OLD`/`NEW`
+field through PL/pgSQL `IF` branches. The corrected migration was exercised by
+a live register-group open, durable root cancellation/failure, and exact
+terminal replay before the persistence checkpoint was accepted.
+
 ## Integration boundary
 
 This is schema/installer evidence only. It does not implement the production
