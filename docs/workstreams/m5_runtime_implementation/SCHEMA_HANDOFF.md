@@ -159,6 +159,26 @@ field through PL/pgSQL `IF` branches. The corrected migration was exercised by
 a live register-group open, durable root cancellation/failure, and exact
 terminal replay before the persistence checkpoint was accepted.
 
+A later nonempty root-barrier smoke test exposed a second PL/pgSQL name-
+resolution defect in `groundloop_m5_validate_admitted_pair_integrity()`: the
+function declared its certificate-source loop variable as `source_row` and
+also used `source_row` as a nested SQL table alias. PostgreSQL resolved the
+nested references as the as-yet-unassigned record variable and rejected every
+nonempty admitted-pair commit with `record "source_row" is not assigned yet`.
+The coordinator changed only that nested alias to `source_entry`; the loop
+variable and every SQL predicate/digest byte remain unchanged. The live R7
+nonempty/overlapping-root barrier is the executable regression for this
+correction.
+
+The same concurrent rerun exposed a test-isolation defect rather than another
+schema defect: the catalog assertion for CHECK definitions filtered relation
+names but not their namespace, so concurrent disposable schemas with the same
+table names could disappear between catalog lookup and
+`pg_get_constraintdef`, yielding `could not open relation with OID ...`.
+The query now restricts `pg_namespace.nspname = current_schema()` like the
+adjacent index query. This changes no production SQL and keeps concurrent
+schema-isolated gates independent.
+
 ## Integration boundary
 
 This is schema/installer evidence only. It does not implement the production

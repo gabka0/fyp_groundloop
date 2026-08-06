@@ -1524,11 +1524,11 @@ BEGIN
     SELECT min(source.root_job_id COLLATE "C"),
            ARRAY(
                SELECT DISTINCT reason.value
-               FROM groundloop_m5_requirement_admitted_pair_source AS source_row
+               FROM groundloop_m5_requirement_admitted_pair_source AS source_entry
                JOIN groundloop_m5_requirement_scope_selection AS selection
-                 ON selection.selection_digest = source_row.selection_digest
+                 ON selection.selection_digest = source_entry.selection_digest
                CROSS JOIN LATERAL unnest(selection.reasons) AS reason(value)
-               WHERE source_row.admitted_pair_digest = pair_digest
+               WHERE source_entry.admitted_pair_digest = pair_digest
                ORDER BY reason.value COLLATE "C"
            )
     INTO expected_owner, expected_reasons

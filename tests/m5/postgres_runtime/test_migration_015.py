@@ -1370,7 +1370,10 @@ def test_runtime_catalog_has_transition_guards_and_point_lookup_indexes() -> Non
                 FROM pg_constraint AS constraint_row
                 JOIN pg_class AS relation
                   ON relation.oid = constraint_row.conrelid
-                WHERE relation.relname = ANY(%s::text[])
+                JOIN pg_namespace AS namespace
+                  ON namespace.oid = relation.relnamespace
+                WHERE namespace.nspname = current_schema()
+                  AND relation.relname = ANY(%s::text[])
                   AND constraint_row.contype = 'c'
                 ORDER BY relation.relname, constraint_row.conname
                 """,
