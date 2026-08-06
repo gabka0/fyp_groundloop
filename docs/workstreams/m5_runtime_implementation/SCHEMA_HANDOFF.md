@@ -170,6 +170,13 @@ variable and every SQL predicate/digest byte remain unchanged. The live R7
 nonempty/overlapping-root barrier is the executable regression for this
 correction.
 
+That same live falsifier then reached the nested aggregate and exposed a
+separate PostgreSQL syntax constraint: `SELECT DISTINCT reason.value` cannot
+order by the different expression `reason.value COLLATE "C"`. The corrected
+query selects the collated value under the same `value` name and orders by
+that selected value. It preserves the bytewise `C` ordering required by the
+digest contract and does not add, remove, or rewrite any reason value.
+
 The same concurrent rerun exposed a test-isolation defect rather than another
 schema defect: the catalog assertion for CHECK definitions filtered relation
 names but not their namespace, so concurrent disposable schemas with the same

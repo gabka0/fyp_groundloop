@@ -1523,13 +1523,13 @@ BEGIN
     END IF;
     SELECT min(source.root_job_id COLLATE "C"),
            ARRAY(
-               SELECT DISTINCT reason.value
+               SELECT DISTINCT reason.value COLLATE "C" AS value
                FROM groundloop_m5_requirement_admitted_pair_source AS source_entry
                JOIN groundloop_m5_requirement_scope_selection AS selection
                  ON selection.selection_digest = source_entry.selection_digest
                CROSS JOIN LATERAL unnest(selection.reasons) AS reason(value)
                WHERE source_entry.admitted_pair_digest = pair_digest
-               ORDER BY reason.value COLLATE "C"
+               ORDER BY value
            )
     INTO expected_owner, expected_reasons
     FROM groundloop_m5_requirement_admitted_pair_source AS source
