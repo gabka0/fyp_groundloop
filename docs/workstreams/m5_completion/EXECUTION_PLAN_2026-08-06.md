@@ -168,11 +168,9 @@ The integration checkout exclusively owns:
 src/groundloop/m5/runtime/__init__.py
 src/groundloop/m5/runtime/application.py
 src/groundloop/m5/runtime/persistence.py
-src/groundloop/m5/runtime/direct_m4.py
 src/groundloop/m5/__init__.py
 src/groundloop/m4/evaluation_overlay.py
 src/groundloop/m4/pipeline.py
-src/groundloop/m4/persistence.py
 tests/m5/postgres_runtime/test_typed_runtime.py
 tests/m5/postgres_runtime/test_runtime_races.py
 tests/m5/postgres_runtime/test_runtime_crash_reconnect.py
@@ -278,6 +276,30 @@ M5.4 runs in this order:
 5. bounded pinned-model diagnostic with complete provenance.
 
 No skipped, no-match, environment-failed, or scaffold-only run becomes PASS.
+
+### Lane D1 -- typed direct-M4 bridge and public barriers
+
+Authorized after the staged-failure checkpoint `516d0ae`:
+
+```text
+branch:   workstream/m5-direct-m4-bridge
+worktree: /home/kassym/Desktop/groundloop-worktrees/m5-direct-m4-bridge
+```
+
+Owned paths:
+
+```text
+src/groundloop/m5/runtime/direct_m4.py
+src/groundloop/m4/persistence.py
+tests/m5/postgres_runtime/test_m4_typed_barrier.py
+docs/workstreams/m5_runtime_implementation/DIRECT_M4_HANDOFF.md
+```
+
+D1 may extract cursor-local M4 structural helpers without changing frozen v1
+identities or `v1_only` behavior, and must make every public M4 resume,
+completion, failure, and seal mutation reject an epoch carrying a typed M5
+runtime header before changing a row. It must not edit the typed coordinator,
+migrations, M4 application contracts, other tests, or shared status files.
 
 ### Wave C -- maintained evaluation bridge
 
