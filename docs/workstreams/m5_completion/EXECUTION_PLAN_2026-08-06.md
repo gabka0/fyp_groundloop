@@ -357,6 +357,32 @@ report a production failure rather than weakening the frozen winner/loser
 semantics. It may not edit implementation, migrations, shared fixtures, other
 tests, status files, or user-owned paths.
 
+### Lane R5 -- M5-D23 pure transition contracts
+
+Authorized after runtime-addendum revision 4 checkpoint `0160473`:
+
+```text
+branch:   workstream/m5-d23-contracts
+worktree: /home/kassym/Desktop/groundloop-worktrees/m5-d23-contracts
+```
+
+Owned paths:
+
+```text
+src/groundloop/m5/runtime/contracts.py
+src/groundloop/m5/runtime/digests.py
+tests/m5/runtime/test_contracts.py
+tests/m5/runtime/test_digests.py
+docs/workstreams/m5_runtime_implementation/D23_CONTRACTS_HANDOFF.md
+```
+
+R5 implements only the frozen `M5CancellationPlan`, its
+`m5-cancellation-plan-v2` digest, retry-error/receipt contract vectors, and
+one-field/order/shape falsifiers from M5-D23. It may not edit persistence,
+migrations, application orchestration, exports, live PostgreSQL tests, another
+handoff, status documents, or user-owned paths. Any contract conflict is
+reported to the coordinator rather than resolved by inventing a new API.
+
 ### Wave C -- maintained evaluation bridge
 
 Only after the public M5.4 contracts and runtime are frozen may one exclusive
