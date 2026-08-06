@@ -122,7 +122,8 @@ tests/m5/postgres_runtime/test_migration_015.py
 docs/workstreams/m5_runtime_implementation/SCHEMA_HANDOFF.md
 ```
 
-The lane implements exactly the 24 runtime relation families and the
+The lane implements exactly the 26 runtime relations enumerated in runtime
+addendum Section 16 and the
 `m5-runtime-schema-bundle-v2` install/rerun/conflict/rollback contract. It may
 not edit migration 014, its SQL oracle, the core bundle identity, M4 tables, or
 semantic-core relations owned by 014. The migration must leave mode unchanged
