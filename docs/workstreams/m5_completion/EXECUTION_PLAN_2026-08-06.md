@@ -166,8 +166,6 @@ src/groundloop/m5/__init__.py
 src/groundloop/m4/evaluation_overlay.py
 src/groundloop/m4/pipeline.py
 src/groundloop/m4/persistence.py
-tests/m5/postgres_runtime/conftest.py
-tests/m5/postgres_runtime/test_open_failure_replay.py
 tests/m5/postgres_runtime/test_typed_runtime.py
 tests/m5/postgres_runtime/test_runtime_races.py
 tests/m5/postgres_runtime/test_runtime_crash_reconnect.py
@@ -181,6 +179,29 @@ The coordinator owns integration, public exports, transaction-local M4
 extraction, mode barriers, activation, persistence/application composition,
 full validation, live execution, evidence classification, and final claims.
 No lane edits these paths.
+
+### Lane R3 -- production failure/replay acceptance tests
+
+Authorized after Barrier A integration at coordinator checkpoint `51a2bac`:
+
+```text
+branch:   workstream/m5-failure-replay-tests
+worktree: /home/kassym/Desktop/groundloop-worktrees/m5-failure-replay-tests
+```
+
+Owned paths:
+
+```text
+tests/m5/postgres_runtime/conftest.py
+tests/m5/postgres_runtime/test_open_failure_replay.py
+docs/workstreams/m5_runtime_implementation/FAILURE_REPLAY_TEST_HANDOFF.md
+```
+
+The lane supplies adversarial live-PostgreSQL tests for the coordinator-owned
+production persistence slice. It may read but must not edit persistence,
+migrations, contracts, other tests, status documents, or user-owned paths.
+Its evidence remains a test handoff until the coordinator inspects and
+integrates it; a failing test is reported, never weakened to fit the code.
 
 ## 4. Wave barriers and later ownership
 
