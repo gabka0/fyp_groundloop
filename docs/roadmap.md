@@ -238,8 +238,10 @@ is explicit pre-dissertation/M6 debt, not a hidden extension of M4.
 Status: active. M5.0 contract freeze completed on 2026-08-02; M5.1 pure
 reference semantics completed on 2026-08-03 after an independent
 high-confidence audit GO. M5.2 and M5.3 are complete. M5.4-01 passes; public
-activation has live evidence but does not independently close M5.4-05. Every
-remaining M5.4--M5.6 implementation/evaluation closure remains pending. See
+activation and partial root/direct transitions have live evidence but do not
+independently close M5.4-05. M5-D24's recoverable-dispatch/accounting contract
+is frozen and its implementation is active; migration 016 and every remaining
+M5.4--M5.6 implementation/evaluation closure remain pending. See
 `docs/m5_implementation_status.md`.
 
 Deliverables:
@@ -271,8 +273,9 @@ Stages:
   including production rejected-declaration, durable failure, reconnect
   replay, conflict, strict-state immutability, and concurrent exact-open
   evidence for M5.3-07.
-- **M5.4:** dynamic requirement retrieval/verification/publication/replay and
-  bounded frozen-model diagnostic.
+- **M5.4:** dynamic requirement retrieval/verification/publication/replay,
+  recoverable at-least-once dispatch with durable work/timing, persisted Hall
+  state, and bounded frozen-model diagnostic. **Active; partial only.**
 - **M5.5:** controlled dataset adapter, seven qualified baselines, and
   reproducible systems/semantic reports.
 - **M5.6:** full validation, evidence bundle, documentation and honest verdict.

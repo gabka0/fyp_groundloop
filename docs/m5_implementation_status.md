@@ -4,7 +4,8 @@ Status date: 2026-08-06
 
 Milestone status: **M5.0 through M5.3 complete; M5.4 partially complete.**
 M5.4-01 passes. M5.4-02 through M5.4-09 and every M5.5--M5.6
-implementation/evaluation closure remain pending.
+implementation/evaluation closure remain pending. M5-D24 is contract-PASS and
+implementation-PENDING.
 
 ## 1. Honest current verdict
 
@@ -18,10 +19,12 @@ Accepted bounded evidence now covers the pure reference, optimized matching and
 incremental overlay, migration 014/PostgreSQL integrity, the independent SQL
 oracle, a 100,000-event in-memory differential, and a snapshot-per-prefix
 three-oracle history, durable failure/replay coordination, byte-total v2
-runtime contracts, and public activation/bootstrap. There is still no accepted
-M5 evidence for dynamic requirement execution, typed document composition,
-sparse publication, sealed reconnect replay, maintained-runtime model quality,
-production latency, call savings, utility, novelty, or publishing potential. Those claims remain
+runtime contracts, public activation/bootstrap, requirement job/root
+transitions, and a cursor-local typed-direct slice. There is still no accepted
+M5 evidence for complete dynamic requirement execution, combined sparse seal,
+lost-worker takeover, durable event work/timing, sealed reconnect replay,
+maintained-runtime model quality, production latency, call savings, utility,
+novelty, or publishing potential. Those claims remain
 blocked by the executable gates in `docs/m5_acceptance_matrix.md`.
 
 ## 2. M5.0 evidence
@@ -69,8 +72,11 @@ decision-row cross-stage mapping will be recorded at M5.6.
 
 The authoritative documents are:
 
-- `docs/m5_design_freeze.md` -- decisions M5-D1 through M5-D23 and theorems
+- `docs/m5_design_freeze.md` -- decisions M5-D1 through M5-D24 and theorems
   M5-T1/M5-T2;
+- `docs/workstreams/m5_runtime_contract/RECOVERY_WORK_AMENDMENT.md` -- exact
+  M5-D24 lease, dispatch/evidence, work/timing, late-return, and migration-016
+  contract;
 - `docs/m5_implementation_plan.md` -- stages M5.1 through M5.6;
 - `docs/m5_multiagent_execution_plan.md` -- path-exclusive ownership and
   integration order; and
@@ -141,7 +147,7 @@ The composed migration/failure/bundle-race gate passed 67/67 tests.
 M5.4-01 passes through the integrated byte-total contract, digest, direction,
 shape, nullability, F64, ordering, and pure-frontier suite. M5-D22 closes the
 previously undefined inner state-artifact identity without changing M4-v1 or
-M5 semantic state. Runtime-addendum revision 4 and M5-D23 now freeze the
+M5 semantic state. Runtime-addendum revision 5 and M5-D23 now freeze the
 previously missing retry-error, cancellation-plan, direct-payload, direct-
 acquisition, and read-only hydration contracts; their implementation evidence
 remains pending. Public activation is implemented and passes 8/8 live tests,
@@ -149,11 +155,28 @@ including all six bootstrap reference kinds, cross-language SQL/Python hashes,
 no synthetic epoch, read-only replay, conflicts, and six failure-atomic
 injection points. Activation alone does not close M5.4-05.
 
+The subsequent production slice implements checked requirement acquisition,
+retry, root-result staging/barrier, root/result replay, typed application
+projections, and cursor-local direct open/acquire/expansion/verifier behavior.
+On the integrated main checkpoint, the live M5 PostgreSQL runtime suite passed
+92/92 and the PostgreSQL-enabled full M4 regression passed 478 tests with 7
+recorded skips. Those are intermediate implementation results, not M5.4 row
+closure: dispatched workers were not recoverable and confirmed work/timing was
+not durable.
+
+M5-D24 now freezes that missing operational boundary after independent broad
+and M4-envelope audits returned GO on the same pre-freeze SHA-256
+`7fbcb57ae8a1e71d17457409f9f864418b42cc506ebc191211f476caa59e2475`.
+Migration 016, its Python contracts, persistence, application composition, and
+all D24 race/crash/reconnect tests are still unimplemented. The proposed
+M5-D25 persisted-matching draft remains non-authoritative and has unresolved
+adversarial blockers plus literal migration-016 placeholders.
+
 ## 5. Remaining closure boundary
 
 M5 completes only after M5.1--M5.6 pass. Closure still requires M5.4 dynamic
-jobs, typed direct composition, sparse publication, reconnect and exactly-once
-runtime gates; a real
+jobs, typed direct composition, sparse publication, recoverable at-least-once
+dispatch with idempotent semantic effects, and reconnect gates; a real
 maintained-runtime M5.5 controlled WiCE execution; and M5.6 reproduction,
 artifact, documentation, and final acceptance audits.
 

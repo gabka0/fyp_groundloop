@@ -1,8 +1,9 @@
 # M5.4 Runtime-Contract Handoff
 
-Status: complete candidate contract
+Status: frozen runtime contract through revision 5 / M5-D24; D24
+implementation pending
 
-Decision: **GO**
+Decision: **GO for M5-D24 implementation; full M5.4 remains pending**
 
 Confidence: **high**
 
@@ -28,6 +29,16 @@ No source, test, migration, top-level status/contract, configuration,
 presentation, generated artifact, or user-owned file was changed.
 
 ## Contract outcome
+
+Revision 5 adds the authoritative M5-D24 amendment at
+`RECOVERY_WORK_AMENDMENT.md`. Independent broad and focused M4-envelope audits
+returned GO on pre-freeze SHA-256
+`7fbcb57ae8a1e71d17457409f9f864418b42cc506ebc191211f476caa59e2475`.
+It freezes recoverable leases/takeover, total acquisition and terminal
+projections, immutable dispatch/execution evidence, point work/timing,
+post-terminal audit isolation, exact ambiguity bounds, and migration 016.
+This GO does not cover the non-authoritative persisted-matching draft or close
+any M5.4--M5.6 execution row.
 
 The addendum resolves the M5.4 preimplementation ambiguities without changing
 M5-D1 through M5-D20 or M5-T1/M5-T2. It freezes:

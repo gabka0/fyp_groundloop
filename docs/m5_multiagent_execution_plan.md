@@ -1,8 +1,9 @@
 # GroundLoop M5 Multi-Agent Execution Plan
 
-Status: frozen M5 ownership contract; Wave 1 active
+Status: frozen M5 ownership contract; historical Waves 0--2 complete;
+M5-D24 recovery Wave R0 authorized after its contract commit
 
-Date: 2026-08-02
+Date: 2026-08-02; M5-D24 path amendment 2026-08-06
 
 Authority: `docs/m5_design_freeze.md` defines semantics and
 `docs/m5_implementation_plan.md` defines gates. This document defines only
@@ -302,3 +303,66 @@ After an initial NO-GO correction cycle, all three returned final GO with high
 confidence. Wave 1 is now active. Implementation ownership begins only after
 the coordinator creates the exact path-exclusive worktree/branch named in this
 plan; completed audit membership alone grants no edit ownership.
+
+## 11. M5-D24 recoverable-runtime path manifest
+
+This section supersedes the stale "Wave 1 is now active" sentence above for
+current work. Historical worktrees and their WIP remain preserved; none grants
+new ownership. The coordinator creates every branch from the exact committed
+M5-D24 contract barrier and validates name-status before integration.
+
+### Wave R0 -- contracts and migration 016
+
+Lane R0-C uses branch `workstream/m5-d24-contracts` and worktree
+`/home/kassym/Desktop/groundloop-worktrees/m5-d24-contracts`. It owns only:
+
+- `src/groundloop/m5/runtime/contracts.py`;
+- `src/groundloop/m5/runtime/digests.py`;
+- `tests/m5/runtime/test_contracts.py`;
+- `tests/m5/runtime/test_digests.py`; and
+- `docs/workstreams/m5_runtime_implementation/D24_CONTRACTS_HANDOFF.md`.
+
+Lane R0-S uses branch `workstream/m5-d24-schema-016` and worktree
+`/home/kassym/Desktop/groundloop-worktrees/m5-d24-schema-016`. It owns only:
+
+- `migrations/016_m5_runtime_recovery.sql`;
+- `src/groundloop/postgres/migrations.py`;
+- `tests/m5/postgres_runtime/test_migration_016.py`; and
+- `docs/workstreams/m5_runtime_implementation/D24_SCHEMA_016_HANDOFF.md`.
+
+The coordinator owns this documentation freeze and integration. R0-C must not
+edit migrations or PostgreSQL persistence. R0-S must not redefine Python DTOs
+or weaken migration 015. R0-S independently encodes SQL checks and may consume
+R0-C only after both commits are inspected and integrated.
+
+R0 exits only when golden byte/null/order vectors and the live fresh,
+populated-no-attempt, exact-rerun, five-field prerequisite-conflict,
+same-ID/content-conflict, replacement-object, and injected-rollback migration
+matrix pass on main.
+
+### Wave R1 -- requirement and typed-direct persistence
+
+Wave R1 starts only after R0 integration. Lane R1-P owns new requirement-side
+recovery persistence modules, `src/groundloop/m5/runtime/persistence.py`, new
+requirement recovery tests, and its handoff. Lane R1-D owns
+`src/groundloop/m5/runtime/direct_m4.py`, the required M4 persistence/pipeline
+cursor-local changes, new direct recovery tests, and its handoff. The
+coordinator publishes their exact filenames and branch/worktree names in a
+committed R1 activation note before either lane edits; no broad directory grant
+is implied here.
+
+R1 proves both serial orders of takeover/result/failure races, exact replay,
+dispatch-versus-evidence ambiguity, post-terminal isolation, work/timing point
+maintenance, and frozen public M4-v1 regression. Cross-lane wrappers are
+coordinator work after both lane commits.
+
+### Wave R2 -- application composition
+
+Only after R1 integration may the coordinator or one newly manifested lane
+edit `application.py`, fake ports/history, typed open/resume/failure/seal
+composition, or shared integration tests. R2 must exercise reconnect at every
+nonterminal cutoff and preserve one timing anchor per outer transaction.
+
+No D24 wave owns the untracked persisted-matching draft. M5-D25 and migration
+017 remain blocked until migration 016 is accepted, all five 016 ledger values
+are literal, and a new independent GO plus path manifest is committed.

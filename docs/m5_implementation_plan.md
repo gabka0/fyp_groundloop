@@ -1,11 +1,14 @@
 # GroundLoop M5 Implementation Plan
 
-Status: frozen M5 execution plan; M5.0 complete, M5.1 active
+Status: frozen M5 execution plan; M5.0--M5.3 complete, M5.4 active
 
-Date: 2026-08-02
+Date: 2026-08-02; M5-D24 execution amendment 2026-08-06
 
-Authority: `docs/m5_design_freeze.md` governs. Implementation stops on any
-conflict with that contract rather than silently choosing new semantics.
+Authority: `docs/m5_design_freeze.md` governs. M5-D24 recovery/accounting work
+also obeys
+`docs/workstreams/m5_runtime_contract/RECOVERY_WORK_AMENDMENT.md`.
+Implementation stops on any conflict with those contracts rather than silently
+choosing new semantics.
 
 ## 1. Outcome
 
@@ -378,9 +381,31 @@ Run a controlled insert/delete/replace history containing:
 - exact reconnect replay with zero model calls;
 - out-of-band Python/incremental/SQL equality after every measured seal.
 
+### 7.4 M5-D24 recovery and accounting barrier
+
+Before full dynamic composition, implement in order:
+
+1. immutable operational DTOs/digests plus total acquisition, terminal, direct
+   late-return, work, timing, coverage, and ambiguity-bound golden tests;
+2. exact migration 016 install/rerun/conflict/rollback/no-guess upgrade with
+   all five migration-015 prerequisite ledger fields checked literally;
+3. recoverable M5 and typed-direct database-clock leases, dense takeover,
+   dispatch/evidence records, point work/timing accumulators, and checked
+   postcommit timing anchors;
+4. retryable/terminal settlement plus expired, inactive, and post-terminal
+   audit paths with exact replay and terminal cutoff isolation; and
+5. application reconnect and both-order race/crash tests with unchanged public
+   M4-v1 behavior.
+
+The contracts and migration lanes may run in parallel only under the explicit
+path manifest in `docs/m5_multiagent_execution_plan.md`. Persistence/direct
+composition starts only after both are integrated. A green D24 lane does not
+close M5.4: durable persisted matching remains a separate numbered amendment
+and migration-017 barrier, currently non-authoritative.
+
 M5.4 exit gate: deterministic fake-port path passes first, then a bounded
-frozen-model diagnostic passes with complete provenance. Frozen-model output
-is not treated as semantic gold.
+maintained PostgreSQL history and frozen-model diagnostic pass with complete
+provenance. Frozen-model output is not treated as semantic gold.
 
 ## 8. M5.5 -- controlled data and evaluation
 

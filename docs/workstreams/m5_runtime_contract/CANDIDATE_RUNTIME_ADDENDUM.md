@@ -1,12 +1,13 @@
 # GroundLoop M5.4 Byte-Total Runtime Contract Addendum
 
-Status: frozen runtime contract revision 4; implementation authorization
-**GO** after the M5.3 014 schema bundle is integrated and validated
+Status: frozen runtime contract revision 5; M5-D24 implementation
+authorization **GO**; full M5.4 remains blocked on accepted persisted-matching
+and executable runtime evidence
 
-Date: 2026-08-03; revision 4 / M5-D21 through M5-D23 amendments 2026-08-06
+Date: 2026-08-03; revision 5 / M5-D21 through M5-D24 amendments 2026-08-06
 
 Authority: this addendum specializes `docs/m5_design_freeze.md` M5-D1 through
-M5-D23 and M5-T1/M5-T2. It does not change those decisions. The M5 design
+M5-D24 and M5-T1/M5-T2. It does not change those decisions. The M5 design
 freeze remains authoritative for semantic truth; this addendum is authoritative
 for M5.4 runtime DTOs, identities, transition boundaries, persistence
 ownership, replay, and acceptance tests.
@@ -18,7 +19,7 @@ start only after migration 014 and its SQL oracle bundle have passed the M5.3
 fresh-install, populated-upgrade, compatibility, and three-oracle gates.
 
 This addendum MUST NOT authorize a change to an M5.0 semantic decision. An
-implementation conflict with this addendum and M5-D1 through M5-D23 MUST stop
+implementation conflict with this addendum and M5-D1 through M5-D24 MUST stop
 M5.4 as **NO-GO**. The exact amendment procedure MUST be a new numbered M5
 decision in `docs/m5_design_freeze.md`, a matching acceptance-matrix row, and a
 new runtime-addendum revision before code resumes. The migration-014 M4-open
@@ -27,8 +28,14 @@ the exact exception in Section 16. The missing changed-state artifact recipe
 discovered during activation implementation is resolved only by M5-D22 and
 Section 10.1. The retry, cancellation, direct-payload, and direct-acquisition
 omissions discovered during the first production-transition audit are resolved
-only by M5-D23 and Sections 8.3, 14.2, 14.4, 16, and 17; no unresolved contract
-conflict is present in this revision.
+only by M5-D23 and Sections 8.3, 14.2, 14.4, 16, and 17. The later lease-
+recovery, dispatch/evidence, work, timing, and late-return omissions are
+resolved only by M5-D24 and
+`docs/workstreams/m5_runtime_contract/RECOVERY_WORK_AMENDMENT.md`, which
+supersedes this addendum wherever those operational surfaces differ. There is
+no unresolved blocker to implementing M5-D24. Full M5.4 completion remains
+blocked until the separately proposed persisted-matching amendment is accepted
+after migration 016; its current draft is not authority.
 
 Normative wire values in backticks MUST be exact lowercase UTF-8. Every DTO in
 this document MUST be immutable. Every tuple MUST use the order stated here.
@@ -2139,6 +2146,9 @@ database I/O MUST remain explicit.
 | M5-D19 | `verify_requirement_v1` is the only task entering witness state. |
 | M5-D20 | The pinned-model run remains diagnostic and cannot confirm semantics. |
 | M5-D21 | Sections 2, 14.1, and 16 admit the exact M4-v1 direct declaration only behind a matching same-transaction typed sidecar, preserve activated public-v1 rejection, and make the outer typed coordinator final authority for combined epoch state. |
+| M5-D22 | Section 10.1 uses the four byte-total semantic-row artifact domains and immutable certificate digests for every changed-state reference. |
+| M5-D23 | Sections 8.3, 14.2, 14.4, 16, and 17 preserve exact retry-error, cancellation-plan, direct-payload, and cursor-local acquisition identities. |
+| M5-D24 | The authoritative recovery amendment replaces lease/acquisition, dispatch/evidence, durable work/timing, late-return, terminal replay, migration-016, and route-barrier details while preserving every semantic and M4-v1 identity. |
 | M5-T1 | Section 18.6 requires incremental/Python/SQL equality after every relevant measured seal. |
 | M5-T2 | Sections 10 and 19 expose touched rows, bytes, model calls, and physical exclusions without hiding them in the affected-group bound. |
 
@@ -2155,13 +2165,23 @@ The M4/M5 identity boundary MUST remain:
 | observation | `m4-semantic-observation-v1`, task `verify` | `m5-requirement-semantic-observation-v2`, task `verify_requirement_v1` |
 | publication | `m4-publication-v1` | same preserved receipt ID plus v2 changed-state/run-result sidecars |
 
-## 21. Final decision
+## 21. M5-D24 amendment precedence
 
-**Decision: GO. Confidence: high.**
+The complete byte-total D24 contract is maintained separately at
+`RECOVERY_WORK_AMENDMENT.md`. Its accepted pre-freeze content SHA-256 is
+`7fbcb57ae8a1e71d17457409f9f864418b42cc506ebc191211f476caa59e2475`.
+Where revision 4 described one-shot acquisition, invocation-only work, timing,
+late returns, direct terminal observations, or migration 015 as the last route
+barrier, that text is superseded by M5-D24. Unchanged semantic, M4-v1,
+structural, publication, and evaluation clauses remain in force.
 
-Revision 2 resolves the runtime ambiguities under M5-D21 without changing the
-M5.0 evidence-group semantics or any v1 identity. The only hard sequencing
-dependency is the accepted 014 schema bundle and its exact
-activation/head/core relations. M5.4 implementation MUST remain blocked until
-that dependency is merged and validated; this sequencing block MUST NOT be
-reported as a design NO-GO.
+## 22. Final decision
+
+**Decision: GO for M5-D24 implementation. Confidence: high.**
+
+Revision 5 authorizes only the path-exclusive D24 contract and migration-016
+lanes. It does not declare M5.4 complete. Full production runtime and measured
+history remain **NO-GO** until persisted matching has a separately numbered,
+literal-prerequisite amendment and the executable M5.4 gates pass. This
+sequencing boundary is an honest implementation dependency, not evidence of a
+semantic result or performance claim.

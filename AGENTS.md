@@ -47,6 +47,8 @@ order:
 37. `docs/m5_multiagent_execution_plan.md` (active path-exclusive ownership)
 38. `docs/m5_acceptance_matrix.md` (contract and executable falsifiers)
 39. `docs/m5_implementation_status.md` (current M5 evidence boundary)
+40. `docs/workstreams/m5_runtime_contract/RECOVERY_WORK_AMENDMENT.md`
+    (authoritative M5-D24 recovery, accounting, and migration-016 contract)
 
 `docs/initial_technical_design.md` (v0.1) is superseded and retained for audit
 only. The M0.5 design freeze and M1.1 amendments are complete; frozen decisions
@@ -146,13 +148,18 @@ the frozen M3 verifier was weak on fine-grained revisions. M4.13 improved the
 held-out VitaminC revision metrics but failed preregistered retention gate G8,
 so it is not promoted: the frozen M3 checkpoint remains the default.
 
-M5.0 is frozen and M5.1 is active. The authoritative M5 contract replaces the
+M5.0 through M5.3 are complete and M5.4 is active. The authoritative M5
+contract replaces the
 old global-union/group-count sketch with exact bounded covering matching,
 historical currency, immutable certificate artifacts, independent Python/SQL
 oracles, typed v2 runtime identities, and a controlled WiCE mapping. Do not
 implement from the older technical-design pseudocode where it conflicts with
-`docs/m5_design_freeze.md`. Every M5.1--M5.6 implementation/evaluation gate is
-still pending until executable evidence is recorded.
+`docs/m5_design_freeze.md`. M5-D24 is frozen and authorizes migration 016 plus
+recoverable dispatch and durable work/timing accounting; its implementation
+evidence remains pending. M5-D25 persisted matching remains a non-authoritative
+draft until migration 016 is accepted and all five prerequisite ledger values
+are pinned. M5 is not complete until every remaining M5.4--M5.6 executable
+gate is recorded.
 
 A larger, independently adjudicated natural-history evaluation remains
 mandatory before dissertation-level selective-maintenance or end-to-end

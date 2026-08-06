@@ -1,5 +1,41 @@
 # GroundLoop Decision Log
 
+## 2026-08-06 — M5-D24 Recoverable Dispatch and Durable Accounting Frozen
+
+Decision status: runtime recovery/accounting amendment accepted after
+adversarial review; implementation evidence remains pending.
+
+Migration 015 can durably mark a dispatched attempt but does not give M5
+attempts a deadline, a total takeover result, or a nonterminal point record of
+confirmed work and timing. A crash after dispatch can therefore leave a job
+permanently RUNNING, while treating the dispatch marker as a confirmed provider
+call would overstate work. These are production-contract gaps, not permission
+to infer lost work or redispatch without serialization.
+
+M5-D24 freezes database-clock leases; dense checked takeover; total
+`dispatch_new`, `dispatch_takeover`, `live_lease`, `result_reserved`, and
+`terminal` projections; immutable dispatch and execution evidence; exact
+confirmed-work and timing contributions/accumulators; explicit unresolved-call
+bounds; byte-total expired and post-terminal audit sidecars; and one timing
+anchor per outer transaction. Terminal event work/timing remains frozen at the
+terminal cutoff, while later evidence is queryable separately. Typed-direct
+recovery uses M5-owned wrappers and sidecars and changes no public M4-v1 DTO,
+digest, row identity, or route behavior.
+
+Migration 016 is exactly
+`migrations/016_m5_runtime_recovery.sql` with bundle ID
+`m5-runtime-recovery-schema-bundle-v1`. It requires all five literal accepted
+migration-015 ledger fields, rejects any pre-upgrade M5 or typed-direct attempt,
+and may replace only the two named attempt-result constraints and the named
+validator function required for `attempt_expired`. The authoritative contract
+is `docs/workstreams/m5_runtime_contract/RECOVERY_WORK_AMENDMENT.md`; its
+audited pre-freeze content SHA-256 is
+`7fbcb57ae8a1e71d17457409f9f864418b42cc506ebc191211f476caa59e2475`.
+
+This decision establishes recoverable at-least-once dispatch and idempotent
+semantic effects. It does not establish exactly-once provider execution,
+objective truth, performance superiority, or a representative utility result.
+
 ## 2026-08-06 — M5-D23 Runtime Transition Completeness Frozen
 
 Decision status: narrow runtime-contract/schema completeness amendment

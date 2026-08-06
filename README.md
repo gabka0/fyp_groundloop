@@ -51,8 +51,10 @@ M4 is closed with exact conditional systems evidence and bounded negative/
 preliminary AI evidence. M5.0 has frozen the bounded evidence-group extension:
 exact distinct-representative matching, a bounded Hall-mask operator,
 versioned group/certificate/runtime contracts, independent Python/SQL oracles,
-and a retrospective controlled WiCE protocol. M5.1 implementation is active;
-later M5 gates are not yet implemented. See
+and a retrospective controlled WiCE protocol. M5.0--M5.3 are complete and
+M5.4 is partially implemented. M5-D24 now freezes recoverable dispatch and
+durable accounting, but migration 016 and later M5.4--M5.6 gates remain
+pending. See
 [the M5 status](docs/m5_implementation_status.md).
 
 ## Read First
@@ -101,8 +103,8 @@ secrets or hosted-model API keys.
 
 ## Current Milestone
 
-M4 is closed. M5.0 contract freeze is complete, and M5.1 pure reference
-semantics is active. Implementation follows the disjoint-lane plan in
+M4 is closed. M5.0--M5.3 are complete, and partial M5.4 runtime work is active
+under the M5-D24 recovery barrier. Implementation follows the disjoint-lane plan in
 [the M5 execution contract](docs/m5_multiagent_execution_plan.md). Contract
 PASS must never be reported as implementation PASS; the latter requires the
 executable evidence in [the M5 acceptance matrix](docs/m5_acceptance_matrix.md).
