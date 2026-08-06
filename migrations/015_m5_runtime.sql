@@ -2109,6 +2109,10 @@ CREATE TABLE groundloop_m5_job_attempt (
         attempt_output_digest IS NULL
         OR attempt_output_digest ~ '^[0-9a-f]{64}$'
     ),
+    error_hash char(64) CHECK (
+        error_hash IS NULL
+        OR error_hash ~ '^[0-9a-f]{64}$'
+    ),
     dispatched_at timestamptz NOT NULL DEFAULT now(),
     finished_at timestamptz,
     UNIQUE (logical_job_id, attempt_ordinal),
@@ -2116,13 +2120,26 @@ CREATE TABLE groundloop_m5_job_attempt (
     CHECK (
         (attempt_state = 'dispatched'
          AND attempt_output_digest IS NULL
+         AND error_hash IS NULL
          AND finished_at IS NULL)
         OR
         (attempt_state = 'result_reserved'
          AND attempt_output_digest IS NOT NULL
+         AND error_hash IS NULL
          AND finished_at IS NULL)
         OR
-        (attempt_state IN ('completed', 'failed', 'expired')
+        (attempt_state = 'completed'
+         AND attempt_output_digest IS NOT NULL
+         AND error_hash IS NULL
+         AND finished_at IS NOT NULL)
+        OR
+        (attempt_state = 'failed'
+         AND error_hash IS NOT NULL
+         AND finished_at IS NOT NULL)
+        OR
+        (attempt_state = 'expired'
+         AND attempt_output_digest IS NULL
+         AND error_hash IS NULL
          AND finished_at IS NOT NULL)
     )
 );

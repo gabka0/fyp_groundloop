@@ -26,6 +26,7 @@ from groundloop.m5.digests import (
 )
 from groundloop.m5.domain import EvidenceGroupVersion, EvidenceRequirementVersion
 from groundloop.m5.events import RegisterGroupEvent, m5_event_payload_digest
+from groundloop.m5.runtime import digests as runtime_digests
 from groundloop.m5.runtime.contracts import (
     ActiveChunkSnapshot,
     M5TypedEventPlan,
@@ -1871,6 +1872,190 @@ def test_deferred_root_bijection_accepts_production_root_declaration() -> None:
             """,
             (receipt.epoch_id,),
         ).fetchone() == ("declared", "open", 1, 1)
+
+
+def test_attempt_error_hash_is_separate_and_state_checked() -> None:
+    with _isolated_schema() as connection:
+        install_m5_runtime_bundle(connection)
+        fixture = _seed_bridge_fixture(
+            connection,
+            activate=True,
+            prefix="attempt-error",
+            seed_snapshots=True,
+        )
+        connection.commit()
+        group, _ = _make_staged_group(
+            prefix="attempt-error-new",
+            owner_claim_id=fixture.owner_claim_id,
+        )
+        requirement = group.requirements[0]
+        snapshot = RequirementRegistrySnapshot.build(
+            (
+                RequirementRegistrySnapshotEntry.build(
+                    requirement_version_id=requirement.requirement_version_id,
+                    group_version_id=group.group_version_id,
+                    group_family_id=group.group_family_id,
+                    owner_claim_id=group.owner_claim_id,
+                    requirement_text=requirement.requirement_text,
+                ),
+            )
+        )
+        event = RegisterGroupEvent("attempt-error-event", group)
+        plan = M5TypedEventPlan(
+            structural_event_id=event.event_id,
+            event=event,
+            payload_hash=m5_event_payload_digest(event),
+            direct_plan=None,
+            candidate_policy_id=fixture.direct_policy_id,
+            candidate_policy_manifest_hash=fixture.typed_policy_manifest_hash,
+            requirement_registry_snapshot=snapshot,
+            active_chunk_snapshot=ActiveChunkSnapshot.build(()),
+            expected_previous_published_epoch_id=fixture.base_epoch_id,
+        )
+        receipt = PostgresM5RuntimeStore(connection).open_typed_event_atomically(plan)
+        job_row = connection.execute(
+            """
+            SELECT logical_job_id, execution_spec_hash
+            FROM groundloop_m5_semantic_job
+            WHERE epoch_id = %s
+            """,
+            (receipt.epoch_id,),
+        ).fetchone()
+        assert job_row is not None
+        job_id = str(job_row[0]).strip()
+        execution_spec_hash = str(job_row[1]).strip()
+        lease_token_hash = _sha("attempt-error-lease")
+        attempt_id = runtime_digests.job_attempt_id(
+            job_id, 1, execution_spec_hash
+        )
+        connection.commit()
+
+        with connection.transaction():
+            connection.execute(
+                "SELECT groundloop_m5_authorize_checked_transition(%s, 1)",
+                (receipt.epoch_id,),
+            )
+            connection.execute(
+                """
+                UPDATE groundloop_m5_semantic_job
+                SET job_state = 'running'
+                WHERE logical_job_id = %s
+                """,
+                (job_id,),
+            )
+            connection.execute(
+                """
+                INSERT INTO groundloop_m5_job_attempt (
+                    attempt_id, logical_job_id, attempt_ordinal,
+                    execution_spec_hash, lease_token_hash, attempt_state,
+                    attempt_output_digest, error_hash, finished_at
+                ) VALUES (%s, %s, 1, %s, %s, 'dispatched', NULL, NULL, NULL)
+                """,
+                (attempt_id, job_id, execution_spec_hash, lease_token_hash),
+            )
+            connection.execute(
+                "UPDATE groundloop_epoch SET revision = 2 WHERE epoch_id = %s",
+                (receipt.epoch_id,),
+            )
+            connection.execute(
+                """
+                UPDATE groundloop_m5_owner_pending_counter
+                SET updated_revision = 2 WHERE epoch_id = %s
+                """,
+                (receipt.epoch_id,),
+            )
+            connection.execute(
+                """
+                UPDATE groundloop_m5_answer_pending_counter
+                SET updated_revision = 2 WHERE epoch_id = %s
+                """,
+                (receipt.epoch_id,),
+            )
+            connection.execute(
+                """
+                UPDATE groundloop_m5_runtime_epoch
+                SET runtime_state = 'semantic_pending', revision = 2
+                WHERE epoch_id = %s
+                """,
+                (receipt.epoch_id,),
+            )
+            connection.execute("SET CONSTRAINTS ALL IMMEDIATE")
+
+        with pytest.raises(errors.CheckViolation):
+            with connection.transaction():
+                connection.execute(
+                    "SELECT groundloop_m5_authorize_checked_transition(%s, 2)",
+                    (receipt.epoch_id,),
+                )
+                connection.execute(
+                    """
+                    UPDATE groundloop_m5_job_attempt
+                    SET attempt_state = 'failed', finished_at = now()
+                    WHERE attempt_id = %s
+                    """,
+                    (attempt_id,),
+                )
+
+        error_hash = _sha("attempt-error-value")
+        with connection.transaction():
+            connection.execute(
+                "SELECT groundloop_m5_authorize_checked_transition(%s, 2)",
+                (receipt.epoch_id,),
+            )
+            connection.execute(
+                """
+                UPDATE groundloop_m5_job_attempt
+                SET attempt_state = 'failed', error_hash = %s,
+                    finished_at = now()
+                WHERE attempt_id = %s
+                """,
+                (error_hash, attempt_id),
+            )
+            connection.execute(
+                """
+                UPDATE groundloop_m5_semantic_job
+                SET job_state = 'retryable_failed'
+                WHERE logical_job_id = %s
+                """,
+                (job_id,),
+            )
+            connection.execute(
+                "UPDATE groundloop_epoch SET revision = 3 WHERE epoch_id = %s",
+                (receipt.epoch_id,),
+            )
+            connection.execute(
+                """
+                UPDATE groundloop_m5_owner_pending_counter
+                SET updated_revision = 3 WHERE epoch_id = %s
+                """,
+                (receipt.epoch_id,),
+            )
+            connection.execute(
+                """
+                UPDATE groundloop_m5_answer_pending_counter
+                SET updated_revision = 3 WHERE epoch_id = %s
+                """,
+                (receipt.epoch_id,),
+            )
+            connection.execute(
+                """
+                UPDATE groundloop_m5_runtime_epoch
+                SET runtime_state = 'semantic_pending', revision = 3
+                WHERE epoch_id = %s
+                """,
+                (receipt.epoch_id,),
+            )
+            connection.execute("SET CONSTRAINTS ALL IMMEDIATE")
+
+        assert connection.execute(
+            """
+            SELECT attempt_state, attempt_output_digest, error_hash,
+                   finished_at IS NOT NULL
+            FROM groundloop_m5_job_attempt
+            WHERE attempt_id = %s
+            """,
+            (attempt_id,),
+        ).fetchone() == ("failed", None, error_hash, True)
 
 
 def test_failed_result_requires_call_work_and_exact_base_payload() -> None:
