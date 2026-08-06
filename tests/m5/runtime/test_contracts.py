@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import fields, replace
 from datetime import UTC, datetime, timedelta
+from inspect import signature
 
 import pytest
 
@@ -21,6 +22,15 @@ from groundloop.m4.application import (
     DynamicEventPlan,
     OpenEventReceipt,
     PublicationReceipt,
+)
+from groundloop.m4.application import (
+    JobLease as M4PublicJobLease,
+)
+from groundloop.m4.application import (
+    ObservationApplicationPort as M4ObservationApplicationPort,
+)
+from groundloop.m4.application import (
+    RuntimeTransitionPort as M4RuntimeTransitionPort,
 )
 from groundloop.m4.contracts import (
     AdmissionChannel as M4AdmissionChannel,
@@ -1272,6 +1282,14 @@ def test_d24_wire_enums_are_total_and_do_not_relabel_prior_values() -> None:
         "retryable_failure",
         "terminal_failure",
     )
+    assert tuple(item.value for item in M5TypedDirectReturnKind) == (
+        "discovery",
+        "verifier",
+    )
+    assert tuple(item.value for item in M5TypedDirectScopeKind) == (
+        "all_registered_claims",
+        "explicit_claims",
+    )
     assert tuple(item.value for item in M5RuntimeWorkContributionKind) == (
         "structural_open",
         "m5_acquisition",
@@ -1290,6 +1308,333 @@ def test_d24_wire_enums_are_total_and_do_not_relabel_prior_values() -> None:
     )
     assert M5AttemptArchiveReason.ATTEMPT_EXPIRED.value == "attempt_expired"
     assert M5RunFailureReason.WORK_IN_PROGRESS.value == "work_in_progress"
+
+
+def test_d24_public_dto_field_topology_is_exact() -> None:
+    expected_topology = {
+        M5RuntimeOperationalConfig: ("lease_duration_ms", "config_digest"),
+        M5LeaseTerminalProjection: (
+            "terminal_state",
+            "terminal_reason",
+            "completion_digest",
+            "terminal_identity_hash",
+        ),
+        M5JobAttempt: (
+            "attempt_id",
+            "logical_job_id",
+            "attempt_ordinal",
+            "execution_spec_hash",
+            "lease_token_hash",
+            "lease_expires_at",
+            "attempt_work_digest",
+        ),
+        M5JobLease: (
+            "logical_job_id",
+            "attempt",
+            "resulting_revision",
+            "should_execute",
+            "exact_replay",
+            "lease_expires_at",
+            "dispatch_record_digest",
+            "disposition",
+            "terminal_projection",
+        ),
+        M5TypedDirectTerminalProjection: (
+            "terminal_state",
+            "terminal_reason",
+            "m4_completion_digest",
+            "completed_revision",
+            "terminal_identity_hash",
+        ),
+        M5TypedDirectJobLease: (
+            "job_id",
+            "attempt_id",
+            "lease_token_hash",
+            "lease_expires_at",
+            "dispatch_record_digest",
+            "resulting_revision",
+            "disposition",
+            "should_execute",
+            "exact_replay",
+            "already_completed",
+            "terminal_projection",
+        ),
+        M5DispatchRecord: (
+            "epoch_id",
+            "subgraph",
+            "attempt_id",
+            "logical_job_id",
+            "attempt_ordinal",
+            "job_kind",
+            "fallback_required",
+            "dispatched_revision",
+            "lease_expires_at",
+            "maximum_ambiguous_call_work",
+            "record_digest",
+        ),
+        M5RequirementRootProvenance: (
+            "epoch_id",
+            "root_job_id",
+            "fallback_required",
+            "provenance_digest",
+        ),
+        M5AttemptExecutionEvidence: (
+            "epoch_id",
+            "subgraph",
+            "attempt_id",
+            "disposition",
+            "result_or_error_hash",
+            "attempt_work",
+            "attempt_timing_digest",
+            "evidence_digest",
+        ),
+        M5CallAmbiguityReport: (
+            "durable_dispatch_count",
+            "confirmed_execution_count",
+            "unresolved_dispatch_count",
+            "confirmed_call_lower",
+            "possible_call_upper",
+        ),
+        M5ExpiredAttemptReturn: (
+            "subgraph",
+            "epoch_id",
+            "attempt_id",
+            "logical_job_id",
+            "worker_output_digest",
+            "worker_artifact_hash",
+            "activity_snapshot_epoch_id",
+            "activity_snapshot_revision",
+            "received_after_terminal",
+            "expired_return_digest",
+        ),
+        M5RuntimeTimingObservation: (
+            "required_interval_observed",
+            "timing",
+            "observation_digest",
+        ),
+        M5RuntimeTiming: (
+            "coordinator_non_db_non_neural_ns",
+            "neural_wall_ns",
+            "postgres_roundtrip_wall_ns",
+            "external_io_wall_ns",
+            "end_to_end_wall_ns",
+            "postgres_server_execution_ns",
+            "postgres_lock_wait_ns",
+            "postgres_wal_bytes",
+            "postgres_shared_block_reads",
+        ),
+        M5RuntimeTimingCoverage: (
+            "required_expected_count",
+            "required_observed_count",
+            "required_missing_count",
+            "postgres_server_execution_expected_count",
+            "postgres_server_execution_observed_count",
+            "postgres_server_execution_missing_count",
+            "postgres_lock_wait_expected_count",
+            "postgres_lock_wait_observed_count",
+            "postgres_lock_wait_missing_count",
+            "postgres_wal_bytes_expected_count",
+            "postgres_wal_bytes_observed_count",
+            "postgres_wal_bytes_missing_count",
+            "postgres_shared_block_reads_expected_count",
+            "postgres_shared_block_reads_observed_count",
+            "postgres_shared_block_reads_missing_count",
+            "terminal_client_roundtrip_included",
+        ),
+        M5TransitionTimingAnchor: (
+            "epoch_id",
+            "contribution_kind",
+            "source_id",
+            "contribution_key_digest",
+            "anchor_revision",
+            "terminal_transition",
+        ),
+        M5TransitionTimingReceipt: (
+            "anchor",
+            "transition_timing_digest",
+            "event_timing",
+            "event_timing_coverage",
+            "resulting_revision",
+            "exact_replay",
+        ),
+        M5TypedDirectVerificationExecution: (
+            "observation_id",
+            "job_id",
+            "admitted_pair_id",
+            "model_artifact_id",
+            "prompt_artifact_id",
+            "execution_spec_hash",
+            "pair_input_hash",
+            "calibration_version",
+            "calibration_artifact_sha256",
+            "temperature",
+            "raw_logits",
+            "raw_output_hash",
+            "reused_from_observation_id",
+        ),
+        M5TypedDirectLateReturnEnvelope: (
+            "epoch_id",
+            "return_kind",
+            "job_id",
+            "attempt_id",
+            "result_artifact_id",
+            "result_artifact_hash",
+            "verification_execution_present",
+            "observation_eligible_for_currency",
+            "requested_make_effective",
+            "job",
+            "attempt",
+            "completion",
+            "discovery",
+            "scope",
+            "persisted_scope_kind",
+            "explicit_claim_ids",
+            "closed_revision",
+            "verification_execution",
+            "observation",
+            "observation_produced_epoch",
+            "observation_raw_output_hash",
+            "job_binding_digest",
+            "attempt_binding_digest",
+            "completion_binding_digest",
+            "discovery_binding_digest",
+            "scope_binding_digest",
+            "verifier_binding_digest",
+            "envelope_digest",
+        ),
+        M5EventRunResult: (
+            "event_id",
+            "payload_hash",
+            "epoch_id",
+            "state",
+            "replayed_outcome",
+            "open_receipt",
+            "publication_receipt",
+            "event_work",
+            "call_work",
+            "event_timing",
+            "call_timing",
+            "combined_deltas",
+            "changed_state_references",
+            "failure_reason",
+            "logical_result_hash",
+            "event_timing_coverage",
+            "call_timing_coverage",
+        ),
+    }
+    for dto, expected_fields in expected_topology.items():
+        assert tuple(field.name for field in fields(dto)) == expected_fields
+
+
+def test_d24_public_m4_dto_and_api_signature_snapshot_is_unchanged() -> None:
+    expected_topology = {
+        M4PublicJobLease: (
+            "job_id",
+            "should_execute",
+            "already_completed",
+            "attempt_id",
+            "lease_token_hash",
+            "expected_revision",
+        ),
+        M4LogicalJobSpec: (
+            "job_id",
+            "event_id",
+            "kind",
+            "candidate_policy_id",
+            "payload_hash",
+            "execution_spec_hash",
+            "parent_job_id",
+            "pair",
+            "target_claim_id",
+            "target_chunk_version_id",
+            "expandable",
+        ),
+        M4JobAttempt: (
+            "attempt_id",
+            "job_id",
+            "execution_spec_hash",
+            "attempt_ordinal",
+            "lease_token_hash",
+        ),
+        M4JobCompletion: (
+            "job_id",
+            "payload_hash",
+            "execution_spec_hash",
+            "result_artifact_id",
+            "result_artifact_hash",
+            "terminal_state",
+            "completion_digest",
+            "child_closure",
+        ),
+        M4ChildClosure: (
+            "parent_job_id",
+            "completion_digest",
+            "child_job_ids",
+            "child_set_hash",
+        ),
+        M4DiscoveryResult: (
+            "root_job_id",
+            "result_artifact_id",
+            "result_artifact_hash",
+            "admitted_pairs",
+            "fallback_satisfied",
+            "channel_hits",
+        ),
+        M4DiscoveryScope: (
+            "root_job_id",
+            "registry_snapshot_id",
+            "registered_claim_ids",
+            "closed",
+        ),
+        M4ChannelHit: (
+            "epoch_id",
+            "pair",
+            "candidate_policy_id",
+            "channel",
+            "rank",
+            "score",
+            "channel_artifact_hash",
+        ),
+        M4AdmittedPair: (
+            "epoch_id",
+            "pair",
+            "candidate_policy_id",
+            "fused_rank",
+            "reasons",
+            "mandatory_lineage",
+        ),
+        SemanticObservation: (
+            "observation_id",
+            "subject_kind",
+            "subject_id",
+            "chunk_version_id",
+            "task_type",
+            "support_score",
+            "refute_score",
+            "neutral_score",
+            "producer",
+            "input_hash",
+        ),
+    }
+    for dto, expected_fields in expected_topology.items():
+        assert tuple(field.name for field in fields(dto)) == expected_fields
+
+    assert str(signature(M4RuntimeTransitionPort.acquire_job)) == (
+        "(self, epoch_id: 'int', spec: 'LogicalJobSpec') -> 'JobLease'"
+    )
+    assert str(signature(M4RuntimeTransitionPort.complete_expansion)) == (
+        "(self, epoch_id: 'int', lease: 'JobLease', discovery: 'DiscoveryResult', "
+        "completion: 'JobCompletion', child_jobs: 'tuple[LogicalJobSpec, ...]') "
+        "-> 'None'"
+    )
+    assert str(
+        signature(M4ObservationApplicationPort.complete_verifier_atomically)
+    ) == (
+        "(self, epoch_id: 'int', lease: 'JobLease', verifier_job: "
+        "'LogicalJobSpec', completion: 'JobCompletion', observation: "
+        "'SemanticObservation', *, make_effective: 'bool') -> "
+        "'ObservationCompletionReceipt'"
+    )
 
 
 def test_d24_operational_config_and_legacy_attempt_bridge_are_explicit() -> None:
@@ -1383,6 +1728,44 @@ def test_d24_requirement_lease_dispositions_enforce_the_total_shape() -> None:
             dispatch.record_digest,
             disposition,
         )
+    settled_attempt = replace(attempt, attempt_work_digest=H4)
+    M5JobLease(
+        H1,
+        settled_attempt,
+        2,
+        False,
+        True,
+        D24_DEADLINE,
+        dispatch.record_digest,
+        M5AcquisitionDisposition.RESULT_RESERVED,
+    )
+    for disposition, should_execute, exact_replay in (
+        (M5AcquisitionDisposition.DISPATCH_NEW, True, False),
+        (M5AcquisitionDisposition.DISPATCH_TAKEOVER, True, False),
+        (M5AcquisitionDisposition.LIVE_LEASE, False, True),
+    ):
+        with pytest.raises(ValidationError):
+            M5JobLease(
+                H1,
+                settled_attempt,
+                2,
+                should_execute,
+                exact_replay,
+                D24_DEADLINE,
+                dispatch.record_digest,
+                disposition,
+            )
+    with pytest.raises(ValidationError):
+        M5JobLease(
+            H1,
+            settled_attempt,
+            2,
+            True,
+            False,
+            D24_DEADLINE,
+            dispatch.record_digest,
+            M5AcquisitionDisposition.RESULT_RESERVED,
+        )
     projection = M5LeaseTerminalProjection.build(
         logical_job_id=H1,
         terminal_state=M5JobState.CANCELLED,
@@ -1455,6 +1838,18 @@ def test_d24_requirement_lease_dispositions_enforce_the_total_shape() -> None:
         )
     with pytest.raises(ValidationError):
         replace(projection, terminal_identity_hash=H1).validate_job(H1)
+    for terminal_state, terminal_reason in (
+        (M5JobState.COMPLETED_INACTIVE, M5TerminalReason.RETRY_EXHAUSTED),
+        (M5JobState.TERMINAL_FAILED, M5TerminalReason.SUBJECT_INACTIVE),
+        (M5JobState.CANCELLED, M5TerminalReason.VERIFIER_ERROR),
+    ):
+        with pytest.raises(ValidationError):
+            M5LeaseTerminalProjection.build(
+                logical_job_id=H1,
+                terminal_state=terminal_state,
+                terminal_reason=terminal_reason,
+                completion_digest=H4,
+            )
 
 
 def test_d24_typed_direct_lease_projection_is_total() -> None:
@@ -1478,6 +1873,20 @@ def test_d24_typed_direct_lease_projection_is_total() -> None:
         already_completed=True,
         terminal_projection=active_projection,
     )
+    with pytest.raises(ValidationError):
+        M5TypedDirectJobLease(
+            job_id="direct-job",
+            attempt_id=None,
+            lease_token_hash=None,
+            lease_expires_at=None,
+            dispatch_record_digest=None,
+            resulting_revision=4,
+            disposition=M5AcquisitionDisposition.TERMINAL,
+            should_execute=False,
+            exact_replay=True,
+            already_completed=True,
+            terminal_projection=active_projection,
+        )
     for disposition, should_execute, exact_replay in (
         (M5AcquisitionDisposition.DISPATCH_NEW, True, False),
         (M5AcquisitionDisposition.DISPATCH_TAKEOVER, True, False),
@@ -1657,6 +2066,15 @@ def test_d24_timing_observation_coverage_and_anchor_do_not_confuse_zero_missing(
         replace(missing, required_interval_observed=True)
     with pytest.raises(ValidationError):
         replace(measured_zero, timing=None)
+    for required_field in (
+        "coordinator_non_db_non_neural_ns",
+        "neural_wall_ns",
+        "postgres_roundtrip_wall_ns",
+        "external_io_wall_ns",
+        "end_to_end_wall_ns",
+    ):
+        with pytest.raises(ValidationError):
+            replace(M5RuntimeTiming(), **{required_field: None})
 
     missing_coverage = M5RuntimeTimingCoverage.single_point(
         None, terminal_client_roundtrip_included=False
@@ -1664,17 +2082,30 @@ def test_d24_timing_observation_coverage_and_anchor_do_not_confuse_zero_missing(
     zero_coverage = M5RuntimeTimingCoverage.single_point(
         M5RuntimeTiming(), terminal_client_roundtrip_included=False
     )
+    with pytest.raises(ValidationError):
+        M5RuntimeTimingCoverage.single_point(
+            None, terminal_client_roundtrip_included=True
+        )
     missing_coverage.validate_aggregate(M5RuntimeTiming())
     zero_coverage.validate_aggregate(M5RuntimeTiming())
     assert missing_coverage.required_missing_count == 1
     assert zero_coverage.required_observed_count == 1
     assert missing_coverage != zero_coverage
-    with pytest.raises(ValidationError):
-        replace(
-            missing_coverage,
-            postgres_server_execution_expected_count=2,
-            postgres_server_execution_missing_count=2,
-        )
+    for family in (
+        "required",
+        "postgres_server_execution",
+        "postgres_lock_wait",
+        "postgres_wal_bytes",
+        "postgres_shared_block_reads",
+    ):
+        with pytest.raises(ValidationError):
+            replace(
+                missing_coverage,
+                **{
+                    f"{family}_expected_count": 2,
+                    f"{family}_missing_count": 2,
+                },
+            )
     with pytest.raises(ValidationError):
         replace(
             zero_coverage,
@@ -1689,6 +2120,46 @@ def test_d24_timing_observation_coverage_and_anchor_do_not_confuse_zero_missing(
         anchor_revision=2,
         terminal_transition=False,
     )
+    with pytest.raises(ValidationError):
+        M5TransitionTimingAnchor.build(
+            epoch_id=7,
+            contribution_kind=M5RuntimeWorkContributionKind.M5_ACQUISITION,
+            source_id=H1,
+            anchor_revision=2,
+            terminal_transition=True,
+        )
+    with pytest.raises(ValidationError):
+        M5TransitionTimingAnchor.build(
+            epoch_id=7,
+            contribution_kind=(M5RuntimeWorkContributionKind.TERMINAL_JOB_FAILURE),
+            source_id=H1,
+            anchor_revision=2,
+            terminal_transition=False,
+        )
+    with pytest.raises(ValidationError):
+        M5TransitionTimingAnchor.build(
+            epoch_id=7,
+            contribution_kind=M5RuntimeWorkContributionKind.EPOCH_FAILURE,
+            source_id=H1,
+            anchor_revision=2,
+            terminal_transition=False,
+        )
+    terminal_anchor = M5TransitionTimingAnchor.build(
+        epoch_id=7,
+        contribution_kind=M5RuntimeWorkContributionKind.EPOCH_FAILURE,
+        source_id=H1,
+        anchor_revision=2,
+        terminal_transition=True,
+    )
+    with pytest.raises(ValidationError):
+        M5TransitionTimingReceipt(
+            terminal_anchor,
+            H2,
+            M5RuntimeTiming(),
+            missing_coverage,
+            2,
+            False,
+        )
     transition_digest = digests.transition_call_timing_digest(
         epoch_id=anchor.epoch_id,
         contribution_kind=anchor.contribution_kind,
@@ -1765,6 +2236,33 @@ def test_d24_expired_return_and_running_audit_shape_have_exact_identity() -> Non
     assert artifact.archive_reason is M5AttemptArchiveReason.ATTEMPT_EXPIRED
     with pytest.raises(ValidationError):
         replace(artifact, job_state_after=M5JobState.COMPLETED_ACTIVE)
+
+    for terminal_state in (
+        M5JobState.COMPLETED_ACTIVE,
+        M5JobState.COMPLETED_INACTIVE,
+        M5JobState.TERMINAL_FAILED,
+        M5JobState.CANCELLED,
+    ):
+        cancelled = terminal_state is M5JobState.CANCELLED
+        terminal_artifact = M5AttemptResultArtifact.build(
+            attempt_output=output,
+            job_state_at_receipt=terminal_state,
+            job_state_after=terminal_state,
+            disposition=M5AttemptDisposition.TERMINAL_AUDIT_ONLY,
+            activity_snapshot_epoch_id=7,
+            activity_snapshot_revision=4,
+            epoch_active=False,
+            chunk_active=True,
+            requirement_active=True,
+            group_active=True,
+            archive_reason=M5AttemptArchiveReason.ATTEMPT_EXPIRED,
+            cancelled_by_event_id="cancel-event" if cancelled else None,
+            cancelled_by_epoch_id=7 if cancelled else None,
+            cancellation_reason=(M5TerminalReason.EPOCH_FAILED if cancelled else None),
+        )
+        assert terminal_artifact.job_state_after is terminal_state
+        with pytest.raises(ValidationError):
+            replace(terminal_artifact, job_state_after=M5JobState.RUNNING)
 
 
 def _m4_job(
@@ -2134,6 +2632,31 @@ def test_d24_event_result_coverage_bridge_never_fabricates_observed_zero() -> No
         call_timing_coverage=measured_zero,
     )
     assert covered.event_timing_coverage != covered.call_timing_coverage
+    zero_point = M5RuntimeTimingCoverage(
+        required_expected_count=0,
+        required_observed_count=0,
+        required_missing_count=0,
+        postgres_server_execution_expected_count=0,
+        postgres_server_execution_observed_count=0,
+        postgres_server_execution_missing_count=0,
+        postgres_lock_wait_expected_count=0,
+        postgres_lock_wait_observed_count=0,
+        postgres_lock_wait_missing_count=0,
+        postgres_wal_bytes_expected_count=0,
+        postgres_wal_bytes_observed_count=0,
+        postgres_wal_bytes_missing_count=0,
+        postgres_shared_block_reads_expected_count=0,
+        postgres_shared_block_reads_observed_count=0,
+        postgres_shared_block_reads_missing_count=0,
+        terminal_client_roundtrip_included=False,
+    )
+    with pytest.raises(ValidationError):
+        replace(covered, call_timing_coverage=zero_point)
+    terminal_call = M5RuntimeTimingCoverage.single_point(
+        M5RuntimeTiming(), terminal_client_roundtrip_included=True
+    )
+    with pytest.raises(ValidationError):
+        replace(covered, call_timing_coverage=terminal_call)
     with pytest.raises(ValidationError):
         replace(blocked, event_timing_coverage=missing)
     with pytest.raises(ValidationError):
@@ -2153,3 +2676,82 @@ def test_d24_event_result_coverage_bridge_never_fabricates_observed_zero() -> No
             changed_state_references=(),
             failure_reason=M5RunFailureReason.WORK_IN_PROGRESS,
         )
+
+    def failed_with_coverage(
+        event_coverage: M5RuntimeTimingCoverage,
+        call_coverage: M5RuntimeTimingCoverage,
+    ) -> M5EventRunResult:
+        return M5EventRunResult.build(
+            event_id="event",
+            payload_hash=H1,
+            epoch_id=5,
+            state=M5RunState.FAILED,
+            replayed_outcome=None,
+            open_receipt=OpenEventReceipt(5, False, False),
+            publication_receipt=None,
+            event_work=M5RuntimeWork(),
+            call_work=M5RuntimeWork(),
+            event_timing=M5RuntimeTiming(),
+            call_timing=M5RuntimeTiming(),
+            combined_deltas=(),
+            changed_state_references=(),
+            failure_reason=M5RunFailureReason.RETRIEVAL_ERROR,
+            event_timing_coverage=event_coverage,
+            call_timing_coverage=call_coverage,
+        )
+
+    baseline = failed_with_coverage(missing, missing)
+    event_coverage_changed = failed_with_coverage(measured_zero, missing)
+    call_coverage_changed = failed_with_coverage(missing, terminal_call)
+    assert baseline.logical_result_hash is not None
+    assert (
+        baseline.logical_result_hash
+        == event_coverage_changed.logical_result_hash
+        == call_coverage_changed.logical_result_hash
+    )
+    with pytest.raises(ValidationError):
+        failed_with_coverage(missing, measured_zero)
+
+    def replayed_with_coverage(
+        outcome: M5ReplayedOutcome,
+        call_coverage: M5RuntimeTimingCoverage,
+    ) -> M5EventRunResult:
+        publication_id = stable_m4_digest("m4-publication-v1", "5")
+        sealed = outcome is M5ReplayedOutcome.SEALED
+        return M5EventRunResult.build(
+            event_id="event",
+            payload_hash=H1,
+            epoch_id=5,
+            state=M5RunState.REPLAYED,
+            replayed_outcome=outcome,
+            open_receipt=OpenEventReceipt(
+                epoch_id=5,
+                replayed=True,
+                already_sealed=sealed,
+                publication_id=publication_id if sealed else None,
+                already_failed=not sealed,
+                failure_reason=(
+                    None if sealed else M5RunFailureReason.RETRIEVAL_ERROR.value
+                ),
+            ),
+            publication_receipt=(
+                PublicationReceipt(5, publication_id, True) if sealed else None
+            ),
+            event_work=M5RuntimeWork(),
+            call_work=M5RuntimeWork(),
+            event_timing=M5RuntimeTiming(),
+            call_timing=M5RuntimeTiming(),
+            combined_deltas=(),
+            changed_state_references=(),
+            failure_reason=(None if sealed else M5RunFailureReason.RETRIEVAL_ERROR),
+            event_timing_coverage=missing,
+            call_timing_coverage=call_coverage,
+        )
+
+    for outcome in (M5ReplayedOutcome.SEALED, M5ReplayedOutcome.FAILED):
+        observed_replay = replayed_with_coverage(outcome, terminal_call)
+        missing_replay = replayed_with_coverage(outcome, missing)
+        assert observed_replay.state is M5RunState.REPLAYED
+        assert missing_replay.state is M5RunState.REPLAYED
+        with pytest.raises(ValidationError):
+            replayed_with_coverage(outcome, measured_zero)

@@ -1,7 +1,7 @@
 # M5-D24 Recovery Runtime Contracts Handoff
 
-Status: Wave R0-C pure-contract candidate; locally validated; not integrated or
-accepted as an M5-D24 gate
+Status: Wave R0-C pure-contract follow-up candidate; locally validated; not
+integrated or accepted as an M5-D24 gate
 
 Date: 2026-08-06
 
@@ -11,6 +11,10 @@ Lane base: `101e4e6c0ed463e82f32931ab6493249edd87021`
 
 Candidate head: the commit containing this handoff; resolve with
 `git rev-parse HEAD` before integration.
+
+The initial `5c4a0f6` checkpoint received an independent `NO_GO`. The
+follow-up commit containing the current handoff supersedes that checkpoint;
+do not integrate `5c4a0f6` alone.
 
 ## Delivered scope
 
@@ -73,6 +77,40 @@ typed-direct families. Mutation vectors bind every dispatch/evidence member,
 missing versus observed-zero timing, OPTION branch presence, UTF-8 ordering,
 and F64 negative zero.
 
+## Independent-audit follow-up
+
+The follow-up closes every confirmed independent-audit blocker:
+
+- an observed `M5RuntimeTiming` now requires all five required interval fields
+  to be non-NULL; all-missing remains representable only as
+  `M5RuntimeTimingObservation.build(None)`;
+- `terminal_audit_only/attempt_expired` artifacts accept both the exact
+  preterminal `running -> running` shape and every post-terminal exact
+  terminal-state-to-same-state shape;
+- `dispatch_new`, `dispatch_takeover`, and `live_lease` require the attempt's
+  canonical-zero work digest, while `result_reserved` accepts the exact
+  already-settled attempt work digest and remains nonexecuting replay;
+- call coverage describes exactly one current-invocation point, a claimed
+  terminal client roundtrip requires that point to be observed, blocked
+  results always exclude terminal telemetry, and sealed, failed, and either
+  terminal replay outcome include it exactly when the required current-call
+  point was observed; durable event coverage remains roundtrip-free;
+- typed-direct terminal lease revisions cannot precede their immutable
+  terminal projection revision;
+- only the Section 9.2 designated work kinds can be transition anchors,
+  `epoch_failure` and `seal` are exactly the terminal kinds, and terminal
+  anchors cannot enter the postcommit append receipt path;
+- requirement terminal projections enforce the same state/reason partitions
+  as the durable M5 completion contract; and
+- executable snapshots pin the new D24 enum/DTO topology and unchanged public
+  M4 DTO and protocol signatures. Terminal failed-result vectors also prove
+  that differing event and call coverage do not enter the frozen logical
+  result hash.
+
+The independent audit found no remaining Section 8.4 field or digest omission
+and independently confirmed that the M4 application and contract source bytes
+match the lane parent.
+
 ## Explicit source-compatibility bridges
 
 Three compatibility forms exist only so this isolated contract lane can be
@@ -102,16 +140,21 @@ environment:
 /home/kassym/Desktop/groundloop/.venv/bin/python -m pytest -q \
   tests/m5/runtime/test_contracts.py \
   tests/m5/runtime/test_digests.py
-  -> 68 passed
+  -> 70 passed
 
 /home/kassym/Desktop/groundloop/.venv/bin/python -m pytest -q \
   tests/m5/runtime
-  -> 105 passed
+  -> 107 passed
 
 GROUNDLOOP_TEST_DATABASE_URL=<local test URL> \
   /home/kassym/Desktop/groundloop/.venv/bin/python -m pytest -q \
   tests/m5/postgres_runtime
   -> 92 passed against live local PostgreSQL
+
+/home/kassym/Desktop/groundloop/.venv/bin/python -m pytest -q \
+  tests/m4/test_m4_contracts.py \
+  tests/m5/reference/test_legacy_regression.py
+  -> 13 passed
 
 /home/kassym/Desktop/groundloop/.venv/bin/python -m ruff check \
   <the four owned Python files>

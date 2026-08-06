@@ -2412,13 +2412,20 @@ class M5AttemptResultArtifact:
                     "inactive verifier completion transition is invalid"
                 )
         elif self.archive_reason is M5AttemptArchiveReason.ATTEMPT_EXPIRED:
-            if (
-                self.disposition is not M5AttemptDisposition.TERMINAL_AUDIT_ONLY
-                or self.job_state_at_receipt is not M5JobState.RUNNING
-                or self.job_state_after is not M5JobState.RUNNING
+            nonterminal_successor = (
+                self.job_state_at_receipt is M5JobState.RUNNING
+                and self.job_state_after is M5JobState.RUNNING
+            )
+            terminal_snapshot = (
+                self.job_state_at_receipt.terminal
+                and self.job_state_after is self.job_state_at_receipt
+            )
+            if self.disposition is not M5AttemptDisposition.TERMINAL_AUDIT_ONLY or not (
+                nonterminal_successor or terminal_snapshot
             ):
                 raise ValidationError(
-                    "expired-attempt audit transition must remain running"
+                    "expired-attempt audit must preserve running or exact "
+                    "terminal state"
                 )
         elif (
             not self.job_state_at_receipt.terminal
@@ -3478,10 +3485,24 @@ class M5RuntimeTiming:
     postgres_shared_block_reads: int | None = None
 
     def __post_init__(self) -> None:
-        for field in fields(self):
-            value = getattr(self, field.name)
+        required_names = (
+            "coordinator_non_db_non_neural_ns",
+            "neural_wall_ns",
+            "postgres_roundtrip_wall_ns",
+            "external_io_wall_ns",
+            "end_to_end_wall_ns",
+        )
+        for name in required_names:
+            _require_int(name, getattr(self, name))
+        for name in (
+            "postgres_server_execution_ns",
+            "postgres_lock_wait_ns",
+            "postgres_wal_bytes",
+            "postgres_shared_block_reads",
+        ):
+            value = getattr(self, name)
             if value is not None:
-                _require_int(field.name, value)
+                _require_int(name, value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -3630,6 +3651,13 @@ class M5RuntimeTimingCoverage:
             "terminal_client_roundtrip_included",
             self.terminal_client_roundtrip_included,
         )
+        if (
+            self.terminal_client_roundtrip_included
+            and self.required_observed_count == 0
+        ):
+            raise ValidationError(
+                "terminal client roundtrip requires an observed current-call point"
+            )
 
     @classmethod
     def single_point(
@@ -3728,6 +3756,18 @@ class M5TransitionTimingAnchor:
             raise ValidationError(
                 "contribution_kind must be M5RuntimeWorkContributionKind"
             )
+        if self.contribution_kind is M5RuntimeWorkContributionKind.TERMINAL_JOB_FAILURE:
+            raise ValidationError(
+                "terminal_job_failure is never a designated transition anchor"
+            )
+        expected_terminal = self.contribution_kind in {
+            M5RuntimeWorkContributionKind.EPOCH_FAILURE,
+            M5RuntimeWorkContributionKind.SEAL,
+        }
+        if self.terminal_transition is not expected_terminal:
+            raise ValidationError(
+                "terminal transition flag disagrees with its contribution kind"
+            )
         _require_text("source_id", self.source_id)
         _require_identity(
             "contribution_key_digest",
@@ -3777,6 +3817,10 @@ class M5TransitionTimingReceipt:
     def __post_init__(self) -> None:
         if not isinstance(self.anchor, M5TransitionTimingAnchor):
             raise ValidationError("anchor must be M5TransitionTimingAnchor")
+        if self.anchor.terminal_transition:
+            raise ValidationError(
+                "terminal transition anchors are frozen missing and cannot append"
+            )
         _require_hash("transition_timing_digest", self.transition_timing_digest)
         self.event_timing_coverage.validate_aggregate(self.event_timing)
         if self.event_timing_coverage.terminal_client_roundtrip_included:
@@ -4804,6 +4848,21 @@ class M5EventRunResult:
                 raise ValidationError(
                     "durable event coverage cannot include terminal client roundtrip"
                 )
+            if self.call_timing_coverage.required_expected_count != 1:
+                raise ValidationError(
+                    "current-call timing coverage must describe exactly one point"
+                )
+            expected_terminal_roundtrip = (
+                self.state is not M5RunState.BLOCKED
+                and self.call_timing_coverage.required_observed_count == 1
+            )
+            if (
+                self.call_timing_coverage.terminal_client_roundtrip_included
+                is not expected_terminal_roundtrip
+            ):
+                raise ValidationError(
+                    "terminal roundtrip flag disagrees with result and call coverage"
+                )
         if self.state is M5RunState.SEALED:
             if (
                 self.open_receipt.already_sealed
@@ -5034,11 +5093,30 @@ class M5LeaseTerminalProjection:
             self.terminal_reason, M5TerminalReason
         ):
             raise ValidationError("terminal_reason must be M5TerminalReason")
-        if self.terminal_state is M5JobState.COMPLETED_ACTIVE:
-            if self.terminal_reason is not None:
-                raise ValidationError("completed_active projection has no reason")
-        elif self.terminal_reason is None:
-            raise ValidationError("non-active terminal projection requires its reason")
+        reasons_by_state: dict[M5JobState, set[M5TerminalReason | None]] = {
+            M5JobState.COMPLETED_ACTIVE: {None},
+            M5JobState.COMPLETED_INACTIVE: {
+                M5TerminalReason.CHUNK_INACTIVE,
+                M5TerminalReason.SUBJECT_INACTIVE,
+                M5TerminalReason.EPOCH_FAILED,
+            },
+            M5JobState.TERMINAL_FAILED: {
+                M5TerminalReason.RETRY_EXHAUSTED,
+                M5TerminalReason.RETRIEVAL_ERROR,
+                M5TerminalReason.VERIFIER_ERROR,
+                M5TerminalReason.INVALID_ARTIFACT,
+            },
+            M5JobState.CANCELLED: {
+                M5TerminalReason.SUBJECT_INACTIVE,
+                M5TerminalReason.SCOPE_RETIRED,
+                M5TerminalReason.EPOCH_FAILED,
+            },
+        }
+        allowed_reasons = reasons_by_state[self.terminal_state]
+        if self.terminal_reason not in allowed_reasons:
+            raise ValidationError(
+                "terminal projection reason disagrees with its durable state"
+            )
         _require_hash("completion_digest", self.completion_digest)
         _require_hash("terminal_identity_hash", self.terminal_identity_hash)
 
@@ -5145,6 +5223,12 @@ class M5JobLease:
                 raise ValidationError(
                     "acquisition execute/replay flags disagree with disposition"
                 )
+            if self.disposition is not M5AcquisitionDisposition.RESULT_RESERVED:
+                assert self.attempt.attempt_work_digest is not None
+                if self.attempt.attempt_work_digest != M5RuntimeWork().work_digest:
+                    raise ValidationError(
+                        "dispatched or live attempt must retain canonical-zero work"
+                    )
             return
 
         if (
@@ -5337,6 +5421,10 @@ class M5TypedDirectJobLease:
                 "terminal direct attempt and dispatch are jointly present"
             )
         self.terminal_projection.validate_job(self.job_id)
+        if self.resulting_revision < self.terminal_projection.completed_revision:
+            raise ValidationError(
+                "typed-direct lease revision cannot precede terminal completion"
+            )
         expected_completed = self.terminal_projection.terminal_state in {
             M4JobState.COMPLETED_ACTIVE,
             M4JobState.COMPLETED_INACTIVE,
