@@ -383,6 +383,33 @@ migrations, application orchestration, exports, live PostgreSQL tests, another
 handoff, status documents, or user-owned paths. Any contract conflict is
 reported to the coordinator rather than resolved by inventing a new API.
 
+### Lane R6 -- checked M5 job lifecycle and hydration
+
+Authorized after the M5-D23 schema checkpoint `6fbce9e`:
+
+```text
+branch:   workstream/m5-job-lifecycle
+worktree: /home/kassym/Desktop/groundloop-worktrees/m5-job-lifecycle
+```
+
+Owned paths:
+
+```text
+src/groundloop/m5/runtime/persistence.py
+tests/m5/postgres_runtime/test_job_lifecycle.py
+docs/workstreams/m5_runtime_implementation/JOB_LIFECYCLE_HANDOFF.md
+```
+
+R6 implements only production `acquire_m5_job`,
+`mark_m5_retryable_failure`, and the read-only `current_revision`,
+`verifier_jobs`, and `current_event_work` projections against migration 015.
+It must validate complete persisted job/lease identities, update base/runtime
+revision and unchanged PENDING revision bindings atomically, store M5-D23's
+separate error hash, and prove exact replay/conflict/race behavior. It may not
+edit migrations, pure contracts/digests, structural open, discovery/barrier/
+verifier/seal/failure behavior, M4 code, shared tests/status, or user paths.
+Any missing lease-expiration contract is reported rather than invented.
+
 ### Wave C -- maintained evaluation bridge
 
 Only after the public M5.4 contracts and runtime are frozen may one exclusive
