@@ -321,6 +321,30 @@ completion, failure, and seal mutation reject an epoch carrying a typed M5
 runtime header before changing a row. It must not edit the typed coordinator,
 migrations, M4 application contracts, other tests, or shared status files.
 
+### Lane R4 -- activation and route race acceptance
+
+Authorized after public activation checkpoint `187463f`:
+
+```text
+branch:   workstream/m5-runtime-races
+worktree: /home/kassym/Desktop/groundloop-worktrees/m5-runtime-races
+```
+
+Owned paths:
+
+```text
+tests/m5/postgres_runtime/test_runtime_races.py
+docs/workstreams/m5_runtime_implementation/RUNTIME_RACE_HANDOFF.md
+```
+
+R4 supplies live concurrent acceptance tests for activation versus exact
+activation replay/conflict, activation versus a v1 durable open, and activation
+versus a typed open. It must call the production activation/store paths where
+available, assert loser rollback and unchanged heads/event consumption, and
+report a production failure rather than weakening the frozen winner/loser
+semantics. It may not edit implementation, migrations, shared fixtures, other
+tests, status files, or user-owned paths.
+
 ### Wave C -- maintained evaluation bridge
 
 Only after the public M5.4 contracts and runtime are frozen may one exclusive
