@@ -1,7 +1,8 @@
 # GroundLoop M5 Multi-Agent Execution Plan
 
 Status: frozen M5 ownership contract; historical Waves 0--2 complete;
-M5-D24 recovery Wave R0 authorized after its contract commit
+M5-D24 recovery R0-C integrated, R0-S repair active, and the narrow R0-C1
+receipt-contract lane authorized below
 
 Date: 2026-08-02; M5-D24 path amendment 2026-08-06
 
@@ -330,10 +331,28 @@ Lane R0-S uses branch `workstream/m5-d24-schema-016` and worktree
 - `tests/m5/postgres_runtime/test_migration_016.py`; and
 - `docs/workstreams/m5_runtime_implementation/D24_SCHEMA_016_HANDOFF.md`.
 
+Lane R0-C1 uses branch `workstream/m5-d24-c1-contracts` and worktree
+`/home/kassym/Desktop/groundloop-worktrees/m5-d24-c1-contracts`. Its accepted
+contract input is main commit `46e7794`, and it owns only:
+
+- `src/groundloop/m5/runtime/contracts.py`;
+- `tests/m5/runtime/test_d24_c1_contracts.py`; and
+- `docs/workstreams/m5_runtime_implementation/D24_C1_CONTRACTS_HANDOFF.md`.
+
+The coordinator records the exact lane base in the next status-only commit;
+R0-C1 must not edit before that record exists. This lane implements and
+falsifies only the accepted C1 enums and receipt DTO topology. It must not edit
+`application.py`, fake ports, PostgreSQL/persistence code, direct-M4 code, or
+existing tests. Method/envelope contextual validation and atomic settlement
+remain owned by R1/R2. Acceptance of R0-C1 is therefore a pure-contract
+checkpoint, not complete C1 or D24 implementation evidence.
+
 The coordinator owns this documentation freeze and integration. R0-C must not
 edit migrations or PostgreSQL persistence. R0-S must not redefine Python DTOs
 or weaken migration 015. R0-S independently encodes SQL checks and may consume
-R0-C only after both commits are inspected and integrated.
+R0-C only after both commits are inspected and integrated. R0-C1 must preserve
+the accepted R0-C bytes except for the additive receipt contracts explicitly
+named above.
 
 R0 exits only when golden byte/null/order vectors and the live fresh,
 populated-no-attempt, exact-rerun, five-field prerequisite-conflict,
