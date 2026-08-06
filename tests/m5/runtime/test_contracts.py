@@ -1,16 +1,38 @@
 from __future__ import annotations
 
 from dataclasses import fields, replace
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from groundloop.domain import DecisionPolicy, SubjectKind, VerificationLabel
+from groundloop.domain import (
+    DecisionPolicy,
+    ModelStamp,
+    SemanticObservation,
+    SubjectKind,
+    VerificationLabel,
+)
 from groundloop.errors import ValidationError
 from groundloop.events import ChunkInput, InsertDocumentEvent
+from groundloop.m4.application import (
+    DiscoveryResult as M4DiscoveryResult,
+)
 from groundloop.m4.application import (
     DynamicEventPlan,
     OpenEventReceipt,
     PublicationReceipt,
+)
+from groundloop.m4.contracts import (
+    AdmissionChannel as M4AdmissionChannel,
+)
+from groundloop.m4.contracts import (
+    AdmittedPair as M4AdmittedPair,
+)
+from groundloop.m4.contracts import (
+    ChannelHit as M4ChannelHit,
+)
+from groundloop.m4.contracts import (
+    ChildClosure as M4ChildClosure,
 )
 from groundloop.m4.contracts import (
     CorpusUpdateIdentity,
@@ -18,31 +40,59 @@ from groundloop.m4.contracts import (
     VectorIndexKind,
     stable_m4_digest,
 )
+from groundloop.m4.contracts import (
+    DiscoveryScope as M4DiscoveryScope,
+)
+from groundloop.m4.contracts import (
+    JobAttempt as M4JobAttempt,
+)
+from groundloop.m4.contracts import (
+    JobCompletion as M4JobCompletion,
+)
+from groundloop.m4.contracts import (
+    JobKind as M4JobKind,
+)
+from groundloop.m4.contracts import (
+    JobState as M4JobState,
+)
+from groundloop.m4.contracts import (
+    LogicalJobSpec as M4LogicalJobSpec,
+)
+from groundloop.m4.contracts import (
+    PairKey as M4PairKey,
+)
 from groundloop.m5.digests import normalize_text_v1, normalized_text_hash_v1
 from groundloop.m5.events import legacy_event_payload_digest
 from groundloop.m5.runtime import digests
 from groundloop.m5.runtime.contracts import (
     ActiveChunkSnapshot,
     ActiveChunkSnapshotEntry,
+    M5AcquisitionDisposition,
     M5ActivationReceipt,
     M5ActivationRequest,
     M5AttemptArchiveReason,
     M5AttemptCompletionReceipt,
     M5AttemptDisposition,
+    M5AttemptExecutionEvidence,
     M5AttemptOutput,
     M5AttemptResultArtifact,
+    M5CallAmbiguityReport,
     M5CancellationPlan,
     M5CancellationReceipt,
     M5CandidatePolicyManifest,
     M5ChangedStateReference,
     M5DiscoveryDirection,
     M5DiscoveryScopeContract,
+    M5DispatchRecord,
     M5EventRunResult,
+    M5ExecutionEvidenceDisposition,
+    M5ExpiredAttemptReturn,
     M5JobAttempt,
     M5JobCompletion,
     M5JobKind,
     M5JobLease,
     M5JobState,
+    M5LeaseTerminalProjection,
     M5LogicalJobSpec,
     M5OwnerPendingCounter,
     M5ReplayedOutcome,
@@ -50,16 +100,30 @@ from groundloop.m5.runtime.contracts import (
     M5RequirementChannelHit,
     M5RequirementDiscoveryResult,
     M5RequirementPairInput,
+    M5RequirementRootProvenance,
     M5RequirementScopeSelection,
     M5RequirementVerifierArtifact,
     M5RetrievalTermination,
     M5RunFailureReason,
     M5RunState,
+    M5RuntimeOperationalConfig,
+    M5RuntimeSubgraph,
     M5RuntimeTiming,
+    M5RuntimeTimingCoverage,
+    M5RuntimeTimingObservation,
     M5RuntimeWork,
+    M5RuntimeWorkContributionKind,
     M5StateReferenceKind,
     M5TerminalReason,
     M5TextNormalizerProvenance,
+    M5TransitionTimingAnchor,
+    M5TransitionTimingReceipt,
+    M5TypedDirectJobLease,
+    M5TypedDirectLateReturnEnvelope,
+    M5TypedDirectReturnKind,
+    M5TypedDirectScopeKind,
+    M5TypedDirectTerminalProjection,
+    M5TypedDirectVerificationExecution,
     M5TypedEventPlan,
     RequirementRegistrySnapshot,
     RequirementRegistrySnapshotEntry,
@@ -72,6 +136,7 @@ H1 = "1" * 64
 H2 = "2" * 64
 H3 = "3" * 64
 H4 = "4" * 64
+D24_DEADLINE = datetime(2026, 8, 6, 12, 0, tzinfo=UTC)
 
 
 def make_manifest(
@@ -1187,3 +1252,904 @@ def test_retry_failure_and_cancellation_use_existing_receipt_shapes() -> None:
         M5CancellationReceipt((H2, H1), 9, False)
     with pytest.raises(ValidationError):
         M5CancellationReceipt((H1, H1), 9, False)
+
+
+def test_d24_wire_enums_are_total_and_do_not_relabel_prior_values() -> None:
+    assert tuple(item.value for item in M5AcquisitionDisposition) == (
+        "dispatch_new",
+        "dispatch_takeover",
+        "live_lease",
+        "result_reserved",
+        "terminal",
+    )
+    assert tuple(item.value for item in M5RuntimeSubgraph) == (
+        "direct",
+        "requirement",
+    )
+    assert tuple(item.value for item in M5ExecutionEvidenceDisposition) == (
+        "returned",
+        "reused_artifact",
+        "retryable_failure",
+        "terminal_failure",
+    )
+    assert tuple(item.value for item in M5RuntimeWorkContributionKind) == (
+        "structural_open",
+        "m5_acquisition",
+        "direct_acquisition",
+        "m5_attempt_execution",
+        "direct_attempt_execution",
+        "root_result_stage",
+        "root_barrier",
+        "verifier_completion",
+        "cancellation",
+        "terminal_job_failure",
+        "direct_transition",
+        "preterminal_late_return",
+        "epoch_failure",
+        "seal",
+    )
+    assert M5AttemptArchiveReason.ATTEMPT_EXPIRED.value == "attempt_expired"
+    assert M5RunFailureReason.WORK_IN_PROGRESS.value == "work_in_progress"
+
+
+def test_d24_operational_config_and_legacy_attempt_bridge_are_explicit() -> None:
+    config = M5RuntimeOperationalConfig.build(30_000)
+    assert config.config_digest == digests.runtime_operational_config_digest(30_000)
+    with pytest.raises(ValidationError):
+        M5RuntimeOperationalConfig.build(0)
+    with pytest.raises(ValidationError):
+        M5RuntimeOperationalConfig.build(86_400_001)
+    with pytest.raises(ValidationError):
+        replace(config, lease_duration_ms=30_001)
+    provenance = M5RequirementRootProvenance.build(
+        epoch_id=7, root_job_id=H1, fallback_required=True
+    )
+    assert provenance.provenance_digest == digests.requirement_root_provenance_digest(
+        epoch_id=7, root_job_id=H1, fallback_required=True
+    )
+    with pytest.raises(ValidationError):
+        replace(provenance, fallback_required=False)
+
+    legacy = M5JobAttempt.build(
+        logical_job_id=H1,
+        attempt_ordinal=1,
+        execution_spec_hash=H2,
+        lease_token_hash=H3,
+    )
+    operational = M5JobAttempt.build(
+        logical_job_id=H1,
+        attempt_ordinal=1,
+        execution_spec_hash=H2,
+        lease_token_hash=H3,
+        lease_expires_at=D24_DEADLINE,
+        attempt_work_digest=M5RuntimeWork().work_digest,
+    )
+    assert not legacy.has_operational_lease
+    assert operational.has_operational_lease
+    assert operational.attempt_id == legacy.attempt_id
+    with pytest.raises(ValidationError):
+        replace(legacy, lease_expires_at=D24_DEADLINE)
+    with pytest.raises(ValidationError):
+        replace(legacy, attempt_work_digest=M5RuntimeWork().work_digest)
+    with pytest.raises(ValidationError):
+        replace(operational, lease_expires_at=D24_DEADLINE.replace(tzinfo=None))
+
+
+def test_d24_requirement_lease_dispositions_enforce_the_total_shape() -> None:
+    attempt = M5JobAttempt.build(
+        logical_job_id=H1,
+        attempt_ordinal=1,
+        execution_spec_hash=H2,
+        lease_token_hash=H3,
+        lease_expires_at=D24_DEADLINE,
+        attempt_work_digest=M5RuntimeWork().work_digest,
+    )
+    dispatch = M5DispatchRecord.build(
+        epoch_id=7,
+        subgraph=M5RuntimeSubgraph.REQUIREMENT,
+        attempt_id=attempt.attempt_id,
+        logical_job_id=attempt.logical_job_id,
+        attempt_ordinal=attempt.attempt_ordinal,
+        job_kind=M5JobKind.FORWARD_REQUIREMENT_RETRIEVAL.value,
+        fallback_required=True,
+        dispatched_revision=2,
+        lease_expires_at=D24_DEADLINE,
+    )
+    for disposition in (
+        M5AcquisitionDisposition.DISPATCH_NEW,
+        M5AcquisitionDisposition.DISPATCH_TAKEOVER,
+    ):
+        M5JobLease(
+            H1,
+            attempt,
+            2,
+            True,
+            False,
+            D24_DEADLINE,
+            dispatch.record_digest,
+            disposition,
+        )
+    for disposition in (
+        M5AcquisitionDisposition.LIVE_LEASE,
+        M5AcquisitionDisposition.RESULT_RESERVED,
+    ):
+        M5JobLease(
+            H1,
+            attempt,
+            2,
+            False,
+            True,
+            D24_DEADLINE,
+            dispatch.record_digest,
+            disposition,
+        )
+    projection = M5LeaseTerminalProjection.build(
+        logical_job_id=H1,
+        terminal_state=M5JobState.CANCELLED,
+        terminal_reason=M5TerminalReason.EPOCH_FAILED,
+        completion_digest=H4,
+    )
+    M5JobLease(
+        H1,
+        attempt,
+        3,
+        False,
+        True,
+        D24_DEADLINE,
+        dispatch.record_digest,
+        M5AcquisitionDisposition.TERMINAL,
+        projection,
+    )
+    M5JobLease(
+        H1,
+        None,
+        3,
+        False,
+        True,
+        None,
+        None,
+        M5AcquisitionDisposition.TERMINAL,
+        projection,
+    )
+
+    legacy = M5JobAttempt.build(
+        logical_job_id=H1,
+        attempt_ordinal=1,
+        execution_spec_hash=H2,
+        lease_token_hash=H3,
+    )
+    M5JobLease(H1, legacy, 2, True, False)
+    with pytest.raises(ValidationError):
+        M5JobLease(
+            H1,
+            legacy,
+            2,
+            True,
+            False,
+            None,
+            dispatch.record_digest,
+            M5AcquisitionDisposition.DISPATCH_NEW,
+        )
+    with pytest.raises(ValidationError):
+        M5JobLease(
+            H1,
+            attempt,
+            2,
+            False,
+            True,
+            D24_DEADLINE,
+            None,
+            M5AcquisitionDisposition.TERMINAL,
+            projection,
+        )
+    with pytest.raises(ValidationError):
+        M5JobLease(
+            H1,
+            attempt,
+            2,
+            False,
+            True,
+            D24_DEADLINE + timedelta(seconds=1),
+            dispatch.record_digest,
+            M5AcquisitionDisposition.LIVE_LEASE,
+        )
+    with pytest.raises(ValidationError):
+        replace(projection, terminal_identity_hash=H1).validate_job(H1)
+
+
+def test_d24_typed_direct_lease_projection_is_total() -> None:
+    active_projection = M5TypedDirectTerminalProjection.build(
+        job_id="direct-job",
+        terminal_state=M4JobState.COMPLETED_ACTIVE,
+        terminal_reason=None,
+        m4_completion_digest=H1,
+        completed_revision=5,
+    )
+    M5TypedDirectJobLease(
+        job_id="direct-job",
+        attempt_id=None,
+        lease_token_hash=None,
+        lease_expires_at=None,
+        dispatch_record_digest=None,
+        resulting_revision=5,
+        disposition=M5AcquisitionDisposition.TERMINAL,
+        should_execute=False,
+        exact_replay=True,
+        already_completed=True,
+        terminal_projection=active_projection,
+    )
+    for disposition, should_execute, exact_replay in (
+        (M5AcquisitionDisposition.DISPATCH_NEW, True, False),
+        (M5AcquisitionDisposition.DISPATCH_TAKEOVER, True, False),
+        (M5AcquisitionDisposition.LIVE_LEASE, False, True),
+    ):
+        M5TypedDirectJobLease(
+            job_id="direct-job",
+            attempt_id="direct-attempt",
+            lease_token_hash=H2,
+            lease_expires_at=D24_DEADLINE,
+            dispatch_record_digest=H3,
+            resulting_revision=5,
+            disposition=disposition,
+            should_execute=should_execute,
+            exact_replay=exact_replay,
+            already_completed=False,
+            terminal_projection=None,
+        )
+    with pytest.raises(ValidationError):
+        M5TypedDirectJobLease(
+            "direct-job",
+            "direct-attempt",
+            H2,
+            D24_DEADLINE,
+            H3,
+            5,
+            M5AcquisitionDisposition.RESULT_RESERVED,
+            False,
+            True,
+            False,
+            None,
+        )
+    with pytest.raises(ValidationError):
+        M5TypedDirectJobLease(
+            "direct-job",
+            "direct-attempt",
+            H2,
+            D24_DEADLINE,
+            None,
+            5,
+            M5AcquisitionDisposition.TERMINAL,
+            False,
+            True,
+            True,
+            active_projection,
+        )
+    with pytest.raises(ValidationError):
+        M5TypedDirectTerminalProjection.build(
+            job_id="direct-job",
+            terminal_state=M4JobState.COMPLETED_INACTIVE,
+            terminal_reason="wrong",
+            m4_completion_digest=H1,
+            completed_revision=5,
+        )
+
+
+def test_d24_dispatch_evidence_and_ambiguity_are_separate_exact_records() -> None:
+    requirement_dispatch = M5DispatchRecord.build(
+        epoch_id=7,
+        subgraph=M5RuntimeSubgraph.REQUIREMENT,
+        attempt_id=H1,
+        logical_job_id=H2,
+        attempt_ordinal=1,
+        job_kind=M5JobKind.FORWARD_REQUIREMENT_RETRIEVAL.value,
+        fallback_required=True,
+        dispatched_revision=2,
+        lease_expires_at=D24_DEADLINE,
+    )
+    direct_dispatch = M5DispatchRecord.build(
+        epoch_id=7,
+        subgraph=M5RuntimeSubgraph.DIRECT,
+        attempt_id="direct-attempt",
+        logical_job_id="direct-job",
+        attempt_ordinal=1,
+        job_kind=M4JobKind.VERIFY_PAIR.value,
+        fallback_required=False,
+        dispatched_revision=3,
+        lease_expires_at=D24_DEADLINE,
+    )
+    assert (
+        replace(
+            requirement_dispatch,
+            lease_expires_at=D24_DEADLINE + timedelta(seconds=5),
+        ).record_digest
+        == requirement_dispatch.record_digest
+    )
+    with pytest.raises(ValidationError):
+        replace(requirement_dispatch, fallback_required=False)
+
+    timing = M5RuntimeTimingObservation.build(M5RuntimeTiming(neural_wall_ns=9))
+    timing_digest = digests.attempt_runtime_timing_digest(
+        epoch_id=7,
+        subgraph=M5RuntimeSubgraph.REQUIREMENT,
+        attempt_id=H1,
+        observation_digest=timing.observation_digest,
+    )
+    evidence = M5AttemptExecutionEvidence.build(
+        epoch_id=7,
+        subgraph=M5RuntimeSubgraph.REQUIREMENT,
+        attempt_id=H1,
+        disposition=M5ExecutionEvidenceDisposition.RETURNED,
+        result_or_error_hash=H3,
+        attempt_work=M5RuntimeWork(
+            requirement_forward_retrieval_call_count=1,
+            requirement_fallback_forward_call_count=1,
+            embedding_model_call_count=1,
+            embedding_input_token_count=12,
+        ),
+        attempt_timing_digest=timing_digest,
+    )
+    evidence.validate_dispatch(requirement_dispatch)
+    evidence.validate_timing(timing)
+    report = M5CallAmbiguityReport.build(
+        dispatches=(direct_dispatch, requirement_dispatch),
+        execution_evidence=(evidence,),
+    )
+    replay = M5CallAmbiguityReport.build(
+        dispatches=(requirement_dispatch, direct_dispatch),
+        execution_evidence=(evidence,),
+    )
+    assert report == replay
+    assert report.durable_dispatch_count == 2
+    assert report.confirmed_execution_count == 1
+    assert report.unresolved_dispatch_count == 1
+    assert report.confirmed_call_lower.requirement_forward_retrieval_call_count == 1
+    assert report.possible_call_upper.direct_verifier_call_count == 1
+    assert report.possible_call_upper.verifier_model_call_count == 1
+    assert report.confirmed_call_lower.embedding_input_token_count == 0
+
+    with pytest.raises(ValidationError):
+        M5AttemptExecutionEvidence.build(
+            epoch_id=7,
+            subgraph=M5RuntimeSubgraph.REQUIREMENT,
+            attempt_id=H1,
+            disposition=M5ExecutionEvidenceDisposition.REUSED_ARTIFACT,
+            result_or_error_hash=H3,
+            attempt_work=M5RuntimeWork(embedding_model_call_count=1),
+            attempt_timing_digest=timing_digest,
+        )
+    persistence_work = M5AttemptExecutionEvidence.build(
+        epoch_id=7,
+        subgraph=M5RuntimeSubgraph.REQUIREMENT,
+        attempt_id=H1,
+        disposition=M5ExecutionEvidenceDisposition.RETURNED,
+        result_or_error_hash=H3,
+        attempt_work=M5RuntimeWork(group_state_write_count=1),
+        attempt_timing_digest=timing_digest,
+    )
+    with pytest.raises(ValidationError):
+        persistence_work.validate_dispatch(requirement_dispatch)
+    excess_work = M5AttemptExecutionEvidence.build(
+        epoch_id=7,
+        subgraph=M5RuntimeSubgraph.REQUIREMENT,
+        attempt_id=H1,
+        disposition=M5ExecutionEvidenceDisposition.RETURNED,
+        result_or_error_hash=H3,
+        attempt_work=M5RuntimeWork(
+            requirement_forward_retrieval_call_count=2,
+            requirement_fallback_forward_call_count=2,
+            embedding_model_call_count=2,
+        ),
+        attempt_timing_digest=timing_digest,
+    )
+    with pytest.raises(ValidationError):
+        excess_work.validate_dispatch(requirement_dispatch)
+
+
+def test_d24_timing_observation_coverage_and_anchor_do_not_confuse_zero_missing() -> (
+    None
+):
+    missing = M5RuntimeTimingObservation.build(None)
+    measured_zero = M5RuntimeTimingObservation.build(M5RuntimeTiming())
+    assert not missing.required_interval_observed
+    assert measured_zero.required_interval_observed
+    assert missing.observation_digest != measured_zero.observation_digest
+    with pytest.raises(ValidationError):
+        replace(missing, required_interval_observed=True)
+    with pytest.raises(ValidationError):
+        replace(measured_zero, timing=None)
+
+    missing_coverage = M5RuntimeTimingCoverage.single_point(
+        None, terminal_client_roundtrip_included=False
+    )
+    zero_coverage = M5RuntimeTimingCoverage.single_point(
+        M5RuntimeTiming(), terminal_client_roundtrip_included=False
+    )
+    missing_coverage.validate_aggregate(M5RuntimeTiming())
+    zero_coverage.validate_aggregate(M5RuntimeTiming())
+    assert missing_coverage.required_missing_count == 1
+    assert zero_coverage.required_observed_count == 1
+    assert missing_coverage != zero_coverage
+    with pytest.raises(ValidationError):
+        replace(
+            missing_coverage,
+            postgres_server_execution_expected_count=2,
+            postgres_server_execution_missing_count=2,
+        )
+    with pytest.raises(ValidationError):
+        replace(
+            zero_coverage,
+            postgres_server_execution_observed_count=1,
+            postgres_server_execution_missing_count=0,
+        ).validate_aggregate(M5RuntimeTiming(postgres_server_execution_ns=None))
+
+    anchor = M5TransitionTimingAnchor.build(
+        epoch_id=7,
+        contribution_kind=M5RuntimeWorkContributionKind.M5_ACQUISITION,
+        source_id=H1,
+        anchor_revision=2,
+        terminal_transition=False,
+    )
+    transition_digest = digests.transition_call_timing_digest(
+        epoch_id=anchor.epoch_id,
+        contribution_kind=anchor.contribution_kind,
+        source_id=anchor.source_id,
+        contribution_key_digest=anchor.contribution_key_digest,
+        anchor_revision=anchor.anchor_revision,
+        observation_digest=measured_zero.observation_digest,
+    )
+    receipt = M5TransitionTimingReceipt(
+        anchor,
+        transition_digest,
+        M5RuntimeTiming(),
+        zero_coverage,
+        2,
+        False,
+    )
+    receipt.validate_observation(measured_zero)
+    replace(receipt, exact_replay=True).validate_observation(measured_zero)
+    with pytest.raises(ValidationError):
+        receipt.validate_observation(missing)
+
+
+def test_d24_expired_return_and_running_audit_shape_have_exact_identity() -> None:
+    expired = M5ExpiredAttemptReturn.build(
+        subgraph=M5RuntimeSubgraph.REQUIREMENT,
+        epoch_id=7,
+        attempt_id=H1,
+        logical_job_id=H2,
+        worker_output_digest=H3,
+        worker_artifact_hash=H4,
+        activity_snapshot_epoch_id=7,
+        activity_snapshot_revision=3,
+        received_after_terminal=False,
+    )
+    assert expired.expired_return_digest == digests.expired_attempt_return_digest(
+        subgraph=M5RuntimeSubgraph.REQUIREMENT,
+        epoch_id=7,
+        attempt_id=H1,
+        logical_job_id=H2,
+        worker_output_digest=H3,
+        worker_artifact_hash=H4,
+        activity_snapshot_epoch_id=7,
+        activity_snapshot_revision=3,
+        received_after_terminal=False,
+    )
+    with pytest.raises(ValidationError):
+        replace(expired, received_after_terminal=True)
+
+    output = M5AttemptOutput.build(
+        attempt=M5JobAttempt.build(
+            logical_job_id=H2,
+            attempt_ordinal=1,
+            execution_spec_hash=H3,
+            lease_token_hash=H4,
+        ),
+        job_epoch_id=7,
+        payload_hash=H1,
+        result_artifact_id=H3,
+        result_artifact_hash=H4,
+    )
+    artifact = M5AttemptResultArtifact.build(
+        attempt_output=output,
+        job_state_at_receipt=M5JobState.RUNNING,
+        job_state_after=M5JobState.RUNNING,
+        disposition=M5AttemptDisposition.TERMINAL_AUDIT_ONLY,
+        activity_snapshot_epoch_id=7,
+        activity_snapshot_revision=3,
+        epoch_active=True,
+        chunk_active=True,
+        requirement_active=True,
+        group_active=True,
+        archive_reason=M5AttemptArchiveReason.ATTEMPT_EXPIRED,
+    )
+    assert artifact.archive_reason is M5AttemptArchiveReason.ATTEMPT_EXPIRED
+    with pytest.raises(ValidationError):
+        replace(artifact, job_state_after=M5JobState.COMPLETED_ACTIVE)
+
+
+def _m4_job(
+    *,
+    kind: M4JobKind,
+    pair: M4PairKey | None = None,
+    target_claim_id: str | None = None,
+    target_chunk_version_id: str | None = None,
+    parent_job_id: str | None = None,
+) -> M4LogicalJobSpec:
+    job_id = M4LogicalJobSpec.derive_job_id(
+        event_id="event",
+        kind=kind,
+        candidate_policy_id="policy",
+        execution_spec_hash=H1,
+        parent_job_id=parent_job_id or "",
+        claim_id=(pair.claim_id if pair is not None else target_claim_id or ""),
+        chunk_version_id=(
+            pair.chunk_version_id if pair is not None else target_chunk_version_id or ""
+        ),
+    )
+    return M4LogicalJobSpec(
+        job_id=job_id,
+        event_id="event",
+        kind=kind,
+        candidate_policy_id="policy",
+        payload_hash=H2,
+        execution_spec_hash=H1,
+        parent_job_id=parent_job_id,
+        pair=pair,
+        target_claim_id=target_claim_id,
+        target_chunk_version_id=target_chunk_version_id,
+        expandable=kind is not M4JobKind.VERIFY_PAIR,
+    )
+
+
+def _m4_attempt(job: M4LogicalJobSpec) -> M4JobAttempt:
+    return M4JobAttempt(
+        stable_m4_digest("m4-job-attempt-v1", job.job_id, "1"),
+        job.job_id,
+        job.execution_spec_hash,
+        1,
+        stable_m4_digest("m4-lease-token-v1", job.job_id, "1"),
+    )
+
+
+def test_d24_typed_direct_discovery_envelope_binds_exact_epoch_policy_and_scope() -> (
+    None
+):
+    root = _m4_job(
+        kind=M4JobKind.IMPACT_DISCOVERY,
+        target_chunk_version_id="chunk-1",
+    )
+    pair = M4PairKey("claim-1", "chunk-1")
+    hit = M4ChannelHit(
+        7,
+        pair,
+        "policy",
+        M4AdmissionChannel.VECTOR,
+        1,
+        -0.0,
+        H1,
+    )
+    admitted = M4AdmittedPair(
+        7,
+        pair,
+        "policy",
+        1,
+        (M4AdmissionChannel.VECTOR,),
+        False,
+    )
+    discovery = M4DiscoveryResult(root.job_id, "result", H4, (admitted,), True, (hit,))
+    closure = M4ChildClosure.build(
+        parent_job_id=root.job_id,
+        result_artifact_hash=H4,
+        child_job_ids=("child-job",),
+    )
+    completion = M4JobCompletion.build(
+        job_id=root.job_id,
+        payload_hash=root.payload_hash,
+        execution_spec_hash=root.execution_spec_hash,
+        result_artifact_id="result",
+        result_artifact_hash=H4,
+        terminal_state=M4JobState.COMPLETED_ACTIVE,
+        child_closure=closure,
+    )
+    scope = M4DiscoveryScope(root.job_id, "registry", ("claim-1",), True)
+    envelope = M5TypedDirectLateReturnEnvelope.build_discovery(
+        epoch_id=7,
+        job=root,
+        attempt=_m4_attempt(root),
+        completion=completion,
+        discovery=discovery,
+        scope=scope,
+        persisted_scope_kind=M5TypedDirectScopeKind.ALL_REGISTERED_CLAIMS,
+        explicit_claim_ids=None,
+        closed_revision=4,
+    )
+    assert envelope.return_kind is M5TypedDirectReturnKind.DISCOVERY
+    assert envelope.verifier_binding_digest is None
+    assert envelope.discovery_binding_digest is not None
+    assert envelope.scope_binding_digest is not None
+    with pytest.raises(ValidationError):
+        replace(envelope, discovery_binding_digest=H1)
+    with pytest.raises(ValidationError):
+        M5TypedDirectLateReturnEnvelope.build_discovery(
+            epoch_id=7,
+            job=root,
+            attempt=replace(_m4_attempt(root), attempt_id="forged-attempt"),
+            completion=completion,
+            discovery=discovery,
+            scope=scope,
+            persisted_scope_kind=M5TypedDirectScopeKind.ALL_REGISTERED_CLAIMS,
+            explicit_claim_ids=None,
+            closed_revision=4,
+        )
+    with pytest.raises(ValidationError):
+        M5TypedDirectLateReturnEnvelope.build_discovery(
+            epoch_id=7,
+            job=root,
+            attempt=_m4_attempt(root),
+            completion=replace(
+                completion,
+                child_closure=replace(closure, completion_digest=H3),
+            ),
+            discovery=discovery,
+            scope=scope,
+            persisted_scope_kind=M5TypedDirectScopeKind.ALL_REGISTERED_CLAIMS,
+            explicit_claim_ids=None,
+            closed_revision=4,
+        )
+
+    with pytest.raises(ValidationError):
+        M5TypedDirectLateReturnEnvelope.build_discovery(
+            epoch_id=7,
+            job=root,
+            attempt=_m4_attempt(root),
+            completion=completion,
+            discovery=replace(discovery, channel_hits=(replace(hit, epoch_id=8),)),
+            scope=scope,
+            persisted_scope_kind=M5TypedDirectScopeKind.ALL_REGISTERED_CLAIMS,
+            explicit_claim_ids=None,
+            closed_revision=4,
+        )
+    with pytest.raises(ValidationError):
+        M5TypedDirectLateReturnEnvelope.build_discovery(
+            epoch_id=7,
+            job=root,
+            attempt=_m4_attempt(root),
+            completion=completion,
+            discovery=replace(
+                discovery,
+                admitted_pairs=(replace(admitted, candidate_policy_id="other"),),
+            ),
+            scope=scope,
+            persisted_scope_kind=M5TypedDirectScopeKind.ALL_REGISTERED_CLAIMS,
+            explicit_claim_ids=None,
+            closed_revision=4,
+        )
+    with pytest.raises(ValidationError):
+        M5TypedDirectLateReturnEnvelope.build_discovery(
+            epoch_id=7,
+            job=root,
+            attempt=_m4_attempt(root),
+            completion=completion,
+            discovery=discovery,
+            scope=scope,
+            persisted_scope_kind=M5TypedDirectScopeKind.EXPLICIT_CLAIMS,
+            explicit_claim_ids=("claim-2",),
+            closed_revision=4,
+        )
+
+
+def test_d24_typed_direct_verifier_envelope_enforces_whole_optional_tuple() -> None:
+    pair = M4PairKey("claim-1", "chunk-1")
+    job = _m4_job(
+        kind=M4JobKind.VERIFY_PAIR,
+        pair=pair,
+        parent_job_id="root-job",
+    )
+    completion = M4JobCompletion.build(
+        job_id=job.job_id,
+        payload_hash=job.payload_hash,
+        execution_spec_hash=job.execution_spec_hash,
+        result_artifact_id="verifier-result",
+        result_artifact_hash=H4,
+        terminal_state=M4JobState.COMPLETED_ACTIVE,
+    )
+    observation = SemanticObservation(
+        observation_id="observation",
+        subject_kind=SubjectKind.CLAIM,
+        subject_id=pair.claim_id,
+        chunk_version_id=pair.chunk_version_id,
+        task_type="verify_support_v1",
+        support_score=0.5,
+        refute_score=0.25,
+        neutral_score=0.25,
+        producer=ModelStamp("model", "revision", "prompt"),
+        input_hash=H2,
+    )
+    execution = M5TypedDirectVerificationExecution(
+        observation_id=observation.observation_id,
+        job_id=job.job_id,
+        admitted_pair_id=stable_m4_digest(
+            "m4-admitted-pair-v1",
+            "7",
+            pair.claim_id,
+            pair.chunk_version_id,
+            job.candidate_policy_id,
+        ),
+        model_artifact_id="model-artifact",
+        prompt_artifact_id="prompt-artifact",
+        execution_spec_hash=job.execution_spec_hash,
+        pair_input_hash=H3,
+        calibration_version="calibration",
+        calibration_artifact_sha256=H1,
+        temperature=1.0,
+        raw_logits=(-0.0, 1.0, 2.0),
+        raw_output_hash=H3,
+        reused_from_observation_id=None,
+    )
+    present = M5TypedDirectLateReturnEnvelope.build_verifier(
+        epoch_id=7,
+        job=job,
+        attempt=_m4_attempt(job),
+        completion=completion,
+        verification_execution=execution,
+        observation=observation,
+        observation_produced_epoch=7,
+        observation_raw_output_hash=H3,
+        observation_eligible_for_currency=True,
+        requested_make_effective=True,
+    )
+    reused = M5TypedDirectLateReturnEnvelope.build_verifier(
+        epoch_id=7,
+        job=job,
+        attempt=_m4_attempt(job),
+        completion=completion,
+        verification_execution=replace(
+            execution, reused_from_observation_id="prior-observation"
+        ),
+        observation=observation,
+        observation_produced_epoch=7,
+        observation_raw_output_hash=H3,
+        observation_eligible_for_currency=True,
+        requested_make_effective=True,
+    )
+    absent = M5TypedDirectLateReturnEnvelope.build_verifier(
+        epoch_id=7,
+        job=job,
+        attempt=_m4_attempt(job),
+        completion=completion,
+        verification_execution=None,
+        observation=observation,
+        observation_produced_epoch=7,
+        observation_raw_output_hash=completion.result_artifact_hash,
+        observation_eligible_for_currency=True,
+        requested_make_effective=False,
+    )
+    make_inactive = M5TypedDirectLateReturnEnvelope.build_verifier(
+        epoch_id=7,
+        job=job,
+        attempt=_m4_attempt(job),
+        completion=completion,
+        verification_execution=execution,
+        observation=observation,
+        observation_produced_epoch=7,
+        observation_raw_output_hash=H3,
+        observation_eligible_for_currency=True,
+        requested_make_effective=False,
+    )
+    assert present.verifier_binding_digest != reused.verifier_binding_digest
+    assert present.envelope_digest != absent.envelope_digest
+    assert present.verifier_binding_digest != make_inactive.verifier_binding_digest
+    assert present.job is job and present.completion is completion
+    with pytest.raises(ValidationError):
+        replace(present, verification_execution_present=False)
+    with pytest.raises(ValidationError):
+        M5TypedDirectLateReturnEnvelope.build_verifier(
+            epoch_id=7,
+            job=job,
+            attempt=_m4_attempt(job),
+            completion=completion,
+            verification_execution=None,
+            observation=observation,
+            observation_produced_epoch=7,
+            observation_raw_output_hash=H3,
+            observation_eligible_for_currency=True,
+            requested_make_effective=False,
+        )
+    with pytest.raises(ValidationError):
+        M5TypedDirectLateReturnEnvelope.build_verifier(
+            epoch_id=7,
+            job=job,
+            attempt=_m4_attempt(job),
+            completion=completion,
+            verification_execution=execution,
+            observation=observation,
+            observation_produced_epoch=7,
+            observation_raw_output_hash=H3,
+            observation_eligible_for_currency=False,
+            requested_make_effective=True,
+        )
+    with pytest.raises(ValidationError):
+        M5TypedDirectLateReturnEnvelope.build_verifier(
+            epoch_id=7,
+            job=job,
+            attempt=_m4_attempt(job),
+            completion=completion,
+            verification_execution=execution,
+            observation=observation,
+            observation_produced_epoch=8,
+            observation_raw_output_hash=H3,
+            observation_eligible_for_currency=True,
+            requested_make_effective=True,
+        )
+    for required_field in (
+        field.name
+        for field in fields(M5TypedDirectVerificationExecution)
+        if field.name != "reused_from_observation_id"
+    ):
+        with pytest.raises(ValidationError):
+            replace(execution, **{required_field: None})
+    with pytest.raises(ValidationError):
+        replace(execution, raw_logits=(1.0, 2.0))  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        replace(execution, raw_logits=(1.0, 2.0, float("nan")))
+    with pytest.raises(ValidationError):
+        replace(execution, temperature=0.0)
+    with pytest.raises(ValidationError):
+        replace(execution, temperature=-1.0)
+    with pytest.raises(ValidationError):
+        replace(
+            execution,
+            reused_from_observation_id=execution.observation_id,
+        )
+
+
+def test_d24_event_result_coverage_bridge_never_fabricates_observed_zero() -> None:
+    blocked = M5EventRunResult.build(
+        event_id="event",
+        payload_hash=H1,
+        epoch_id=5,
+        state=M5RunState.BLOCKED,
+        replayed_outcome=None,
+        open_receipt=OpenEventReceipt(5, False, False),
+        publication_receipt=None,
+        event_work=M5RuntimeWork(),
+        call_work=M5RuntimeWork(),
+        event_timing=M5RuntimeTiming(),
+        call_timing=M5RuntimeTiming(),
+        combined_deltas=(),
+        changed_state_references=(),
+        failure_reason=M5RunFailureReason.WORK_IN_PROGRESS,
+    )
+    assert blocked.event_timing_coverage is None
+    assert blocked.call_timing_coverage is None
+    measured_zero = M5RuntimeTimingCoverage.single_point(
+        M5RuntimeTiming(), terminal_client_roundtrip_included=False
+    )
+    missing = M5RuntimeTimingCoverage.single_point(
+        None, terminal_client_roundtrip_included=False
+    )
+    covered = replace(
+        blocked,
+        event_timing_coverage=missing,
+        call_timing_coverage=measured_zero,
+    )
+    assert covered.event_timing_coverage != covered.call_timing_coverage
+    with pytest.raises(ValidationError):
+        replace(blocked, event_timing_coverage=missing)
+    with pytest.raises(ValidationError):
+        M5EventRunResult.build(
+            event_id="event",
+            payload_hash=H1,
+            epoch_id=5,
+            state=M5RunState.FAILED,
+            replayed_outcome=None,
+            open_receipt=OpenEventReceipt(5, False, False),
+            publication_receipt=None,
+            event_work=M5RuntimeWork(),
+            call_work=M5RuntimeWork(),
+            event_timing=M5RuntimeTiming(),
+            call_timing=M5RuntimeTiming(),
+            combined_deltas=(),
+            changed_state_references=(),
+            failure_reason=M5RunFailureReason.WORK_IN_PROGRESS,
+        )

@@ -11,6 +11,7 @@ from collections.abc import Iterable, Sequence
 from enum import Enum
 
 from groundloop.domain import StatusDelta, SubjectKind
+from groundloop.errors import ValidationError
 from groundloop.m5.digests import (
     bool_field,
     enum_field,
@@ -45,6 +46,47 @@ AttemptResultValues = tuple[
     str | Enum | None,
 ]
 ChangedStateReferenceValues = tuple[str | Enum, str, int, int, str]
+TypedDirectChannelHitValues = tuple[
+    int,
+    str,
+    str,
+    str,
+    str | Enum,
+    int,
+    float | None,
+    str,
+]
+TypedDirectAdmittedPairValues = tuple[
+    int,
+    str,
+    str,
+    str,
+    int,
+    Sequence[str | Enum],
+    bool,
+]
+TypedDirectVerificationExecutionValues = tuple[
+    str,
+    str,
+    str,
+    str,
+    str,
+    str,
+    str,
+    str,
+    str,
+    float,
+    Sequence[float],
+    str,
+    str | None,
+]
+
+
+def _enum_wire(value: str | Enum) -> str:
+    wire_value = value.value if isinstance(value, Enum) else value
+    if not isinstance(wire_value, str) or not wire_value:
+        raise ValidationError("enum wire values must be nonempty strings")
+    return wire_value
 
 
 def text_normalizer_provenance_digest(
@@ -832,6 +874,625 @@ def runtime_work_digest(counters: Sequence[int]) -> str:
     )
 
 
+def runtime_operational_config_digest(lease_duration_ms: int) -> str:
+    return stable_m5_digest(
+        "m5-runtime-operational-config-v1", int_field(lease_duration_ms)
+    )
+
+
+def lease_terminal_projection_digest(
+    *,
+    logical_job_id: str,
+    terminal_state: str | Enum,
+    terminal_reason: str | Enum | None,
+    completion_digest: str,
+) -> str:
+    return stable_m5_digest(
+        "m5-lease-terminal-projection-v1",
+        enum_field("requirement"),
+        text_field(logical_job_id),
+        enum_field(terminal_state),
+        option_field(
+            enum_field(terminal_reason) if terminal_reason is not None else None
+        ),
+        hash_field(completion_digest),
+    )
+
+
+def typed_direct_terminal_projection_digest(
+    *,
+    job_id: str,
+    terminal_state: str | Enum,
+    terminal_reason: str | None,
+    m4_completion_digest: str | None,
+    completed_revision: int,
+) -> str:
+    return stable_m5_digest(
+        "m5-typed-direct-terminal-projection-v1",
+        enum_field("direct"),
+        text_field(job_id),
+        enum_field(terminal_state),
+        option_field(
+            text_field(terminal_reason) if terminal_reason is not None else None
+        ),
+        option_field(
+            hash_field(m4_completion_digest)
+            if m4_completion_digest is not None
+            else None
+        ),
+        int_field(completed_revision),
+    )
+
+
+def dispatch_record_digest(
+    *,
+    epoch_id: int,
+    subgraph: str | Enum,
+    attempt_id: str,
+    logical_job_id: str,
+    attempt_ordinal: int,
+    job_kind: str,
+    fallback_required: bool,
+    dispatched_revision: int,
+    maximum_ambiguous_call_work_digest: str,
+) -> str:
+    return stable_m5_digest(
+        "m5-dispatch-record-v1",
+        int_field(epoch_id),
+        enum_field(subgraph),
+        text_field(attempt_id),
+        text_field(logical_job_id),
+        int_field(attempt_ordinal),
+        text_field(job_kind),
+        bool_field(fallback_required),
+        int_field(dispatched_revision),
+        hash_field(maximum_ambiguous_call_work_digest),
+    )
+
+
+def requirement_root_provenance_digest(
+    *, epoch_id: int, root_job_id: str, fallback_required: bool
+) -> str:
+    return stable_m5_digest(
+        "m5-requirement-root-provenance-v1",
+        int_field(epoch_id),
+        text_field(root_job_id),
+        bool_field(fallback_required),
+    )
+
+
+def attempt_execution_evidence_digest(
+    *,
+    epoch_id: int,
+    subgraph: str | Enum,
+    attempt_id: str,
+    disposition: str | Enum,
+    result_or_error_hash: str,
+    attempt_work_digest: str,
+    attempt_timing_digest: str,
+) -> str:
+    return stable_m5_digest(
+        "m5-attempt-execution-evidence-v1",
+        int_field(epoch_id),
+        enum_field(subgraph),
+        text_field(attempt_id),
+        enum_field(disposition),
+        hash_field(result_or_error_hash),
+        hash_field(attempt_work_digest),
+        hash_field(attempt_timing_digest),
+    )
+
+
+def runtime_work_contribution_key_digest(
+    *, epoch_id: int, contribution_kind: str | Enum, source_id: str
+) -> str:
+    return stable_m5_digest(
+        "m5-runtime-work-contribution-key-v1",
+        int_field(epoch_id),
+        enum_field(contribution_kind),
+        text_field(source_id),
+    )
+
+
+def epoch_failure_contribution_source_digest(
+    *, structural_event_id: str, failure_reason: str | Enum
+) -> str:
+    return stable_m5_digest(
+        "m5-epoch-failure-contribution-source-v1",
+        text_field(structural_event_id),
+        enum_field(failure_reason),
+    )
+
+
+def terminal_job_failure_contribution_source_digest(
+    *, logical_job_id: str, terminal_reason: str | Enum, error_hash: str
+) -> str:
+    return stable_m5_digest(
+        "m5-terminal-job-failure-contribution-source-v1",
+        text_field(logical_job_id),
+        enum_field(terminal_reason),
+        hash_field(error_hash),
+    )
+
+
+def seal_contribution_source_digest(
+    *,
+    structural_event_id: str,
+    combined_status_delta_set_hash: str,
+    changed_state_set_hash: str,
+    publication_id: str,
+) -> str:
+    return stable_m5_digest(
+        "m5-seal-contribution-source-v1",
+        text_field(structural_event_id),
+        hash_field(combined_status_delta_set_hash),
+        hash_field(changed_state_set_hash),
+        text_field(publication_id),
+    )
+
+
+def expired_attempt_return_digest(
+    *,
+    subgraph: str | Enum,
+    epoch_id: int,
+    attempt_id: str,
+    logical_job_id: str,
+    worker_output_digest: str,
+    worker_artifact_hash: str,
+    activity_snapshot_epoch_id: int,
+    activity_snapshot_revision: int,
+    received_after_terminal: bool,
+) -> str:
+    return stable_m5_digest(
+        "m5-expired-attempt-return-v1",
+        enum_field(subgraph),
+        int_field(epoch_id),
+        text_field(attempt_id),
+        text_field(logical_job_id),
+        hash_field(worker_output_digest),
+        hash_field(worker_artifact_hash),
+        int_field(activity_snapshot_epoch_id),
+        int_field(activity_snapshot_revision),
+        enum_field("attempt_expired"),
+        bool_field(received_after_terminal),
+    )
+
+
+def runtime_timing_observation_digest(
+    *,
+    required_interval_observed: bool,
+    coordinator_non_db_non_neural_ns: int | None,
+    neural_wall_ns: int | None,
+    postgres_roundtrip_wall_ns: int | None,
+    external_io_wall_ns: int | None,
+    end_to_end_wall_ns: int | None,
+    postgres_server_execution_ns: int | None,
+    postgres_lock_wait_ns: int | None,
+    postgres_wal_bytes: int | None,
+    postgres_shared_block_reads: int | None,
+) -> str:
+    return stable_m5_digest(
+        "m5-runtime-timing-observation-v1",
+        bool_field(required_interval_observed),
+        option_field(
+            int_field(coordinator_non_db_non_neural_ns)
+            if coordinator_non_db_non_neural_ns is not None
+            else None
+        ),
+        option_field(int_field(neural_wall_ns) if neural_wall_ns is not None else None),
+        option_field(
+            int_field(postgres_roundtrip_wall_ns)
+            if postgres_roundtrip_wall_ns is not None
+            else None
+        ),
+        option_field(
+            int_field(external_io_wall_ns) if external_io_wall_ns is not None else None
+        ),
+        option_field(
+            int_field(end_to_end_wall_ns) if end_to_end_wall_ns is not None else None
+        ),
+        option_field(
+            int_field(postgres_server_execution_ns)
+            if postgres_server_execution_ns is not None
+            else None
+        ),
+        option_field(
+            int_field(postgres_lock_wait_ns)
+            if postgres_lock_wait_ns is not None
+            else None
+        ),
+        option_field(
+            int_field(postgres_wal_bytes) if postgres_wal_bytes is not None else None
+        ),
+        option_field(
+            int_field(postgres_shared_block_reads)
+            if postgres_shared_block_reads is not None
+            else None
+        ),
+    )
+
+
+def attempt_runtime_timing_digest(
+    *,
+    epoch_id: int,
+    subgraph: str | Enum,
+    attempt_id: str,
+    observation_digest: str,
+) -> str:
+    return stable_m5_digest(
+        "m5-attempt-runtime-timing-v1",
+        int_field(epoch_id),
+        enum_field(subgraph),
+        text_field(attempt_id),
+        hash_field(observation_digest),
+    )
+
+
+def transition_call_timing_digest(
+    *,
+    epoch_id: int,
+    contribution_kind: str | Enum,
+    source_id: str,
+    contribution_key_digest: str,
+    anchor_revision: int,
+    observation_digest: str,
+) -> str:
+    return stable_m5_digest(
+        "m5-transition-call-timing-v1",
+        int_field(epoch_id),
+        enum_field(contribution_kind),
+        text_field(source_id),
+        hash_field(contribution_key_digest),
+        int_field(anchor_revision),
+        hash_field(observation_digest),
+    )
+
+
+def typed_direct_late_job_binding_digest(
+    *,
+    job_id: str,
+    event_id: str,
+    job_kind: str | Enum,
+    candidate_policy_id: str,
+    payload_hash: str,
+    execution_spec_hash: str,
+    parent_job_id: str | None,
+    pair_claim_id: str | None,
+    pair_chunk_version_id: str | None,
+    target_claim_id: str | None,
+    target_chunk_version_id: str | None,
+    expandable: bool,
+) -> str:
+    return stable_m5_digest(
+        "m5-typed-direct-late-job-binding-v1",
+        text_field(job_id),
+        text_field(event_id),
+        enum_field(job_kind),
+        text_field(candidate_policy_id),
+        hash_field(payload_hash),
+        hash_field(execution_spec_hash),
+        option_field(text_field(parent_job_id) if parent_job_id is not None else None),
+        option_field(text_field(pair_claim_id) if pair_claim_id is not None else None),
+        option_field(
+            text_field(pair_chunk_version_id)
+            if pair_chunk_version_id is not None
+            else None
+        ),
+        option_field(
+            text_field(target_claim_id) if target_claim_id is not None else None
+        ),
+        option_field(
+            text_field(target_chunk_version_id)
+            if target_chunk_version_id is not None
+            else None
+        ),
+        bool_field(expandable),
+    )
+
+
+def typed_direct_late_attempt_binding_digest(
+    *,
+    attempt_id: str,
+    job_id: str,
+    execution_spec_hash: str,
+    attempt_ordinal: int,
+    lease_token_hash: str,
+) -> str:
+    return stable_m5_digest(
+        "m5-typed-direct-late-attempt-binding-v1",
+        text_field(attempt_id),
+        text_field(job_id),
+        hash_field(execution_spec_hash),
+        int_field(attempt_ordinal),
+        hash_field(lease_token_hash),
+    )
+
+
+def typed_direct_late_completion_binding_digest(
+    *,
+    job_id: str,
+    payload_hash: str,
+    execution_spec_hash: str,
+    result_artifact_id: str,
+    result_artifact_hash: str,
+    terminal_state: str | Enum,
+    completion_digest: str,
+    child_parent_job_id: str | None,
+    child_completion_digest: str | None,
+    child_set_hash: str | None,
+    child_job_ids: Iterable[str],
+) -> str:
+    canonical_child_ids = tuple(
+        sorted(child_job_ids, key=lambda value: value.encode("utf-8"))
+    )
+    return stable_m5_digest(
+        "m5-typed-direct-late-completion-binding-v1",
+        text_field(job_id),
+        hash_field(payload_hash),
+        hash_field(execution_spec_hash),
+        text_field(result_artifact_id),
+        hash_field(result_artifact_hash),
+        enum_field(terminal_state),
+        hash_field(completion_digest),
+        option_field(
+            text_field(child_parent_job_id) if child_parent_job_id is not None else None
+        ),
+        option_field(
+            hash_field(child_completion_digest)
+            if child_completion_digest is not None
+            else None
+        ),
+        option_field(
+            hash_field(child_set_hash) if child_set_hash is not None else None
+        ),
+        sequence_field(text_field(child_id) for child_id in canonical_child_ids),
+    )
+
+
+def typed_direct_late_discovery_binding_digest(
+    *,
+    root_job_id: str,
+    result_artifact_id: str,
+    result_artifact_hash: str,
+    fallback_satisfied: bool,
+    channel_hit_count: int,
+    admitted_pair_count: int,
+    channel_set_hash: str,
+    admitted_pair_set_hash: str,
+    channel_hits: Iterable[TypedDirectChannelHitValues],
+    admitted_pairs: Iterable[TypedDirectAdmittedPairValues],
+) -> str:
+    canonical_hits = tuple(
+        sorted(
+            channel_hits,
+            key=lambda hit: (
+                _enum_wire(hit[4]),
+                hit[5],
+                hit[1],
+                hit[2],
+                hit[3],
+                hit[7],
+            ),
+        )
+    )
+    canonical_pairs = tuple(
+        sorted(
+            admitted_pairs,
+            key=lambda pair: (pair[4], pair[1], pair[2], pair[3]),
+        )
+    )
+    return stable_m5_digest(
+        "m5-typed-direct-late-discovery-binding-v1",
+        text_field(root_job_id),
+        text_field(result_artifact_id),
+        hash_field(result_artifact_hash),
+        bool_field(fallback_satisfied),
+        int_field(channel_hit_count),
+        int_field(admitted_pair_count),
+        hash_field(channel_set_hash),
+        hash_field(admitted_pair_set_hash),
+        sequence_field(
+            sequence_field(
+                (
+                    int_field(epoch_id),
+                    text_field(claim_id),
+                    text_field(chunk_version_id),
+                    text_field(candidate_policy_id),
+                    enum_field(channel),
+                    int_field(rank),
+                    option_field(f64_field(score) if score is not None else None),
+                    hash_field(channel_artifact_hash),
+                )
+            )
+            for (
+                epoch_id,
+                claim_id,
+                chunk_version_id,
+                candidate_policy_id,
+                channel,
+                rank,
+                score,
+                channel_artifact_hash,
+            ) in canonical_hits
+        ),
+        sequence_field(
+            sequence_field(
+                (
+                    int_field(epoch_id),
+                    text_field(claim_id),
+                    text_field(chunk_version_id),
+                    text_field(candidate_policy_id),
+                    int_field(fused_rank),
+                    sequence_field(enum_field(reason) for reason in reasons),
+                    bool_field(mandatory_lineage),
+                )
+            )
+            for (
+                epoch_id,
+                claim_id,
+                chunk_version_id,
+                candidate_policy_id,
+                fused_rank,
+                reasons,
+                mandatory_lineage,
+            ) in canonical_pairs
+        ),
+    )
+
+
+def typed_direct_late_scope_binding_digest(
+    *,
+    root_job_id: str,
+    epoch_id: int,
+    registry_snapshot_id: str,
+    registered_claim_ids: Iterable[str],
+    closed: bool,
+    persisted_scope_kind: str | Enum,
+    explicit_claim_ids: Iterable[str] | None,
+    closed_revision: int | None,
+) -> str:
+    explicit = None if explicit_claim_ids is None else tuple(explicit_claim_ids)
+    return stable_m5_digest(
+        "m5-typed-direct-late-scope-binding-v1",
+        text_field(root_job_id),
+        int_field(epoch_id),
+        text_field(registry_snapshot_id),
+        sequence_field(text_field(claim_id) for claim_id in registered_claim_ids),
+        bool_field(closed),
+        enum_field(persisted_scope_kind),
+        option_field(
+            sequence_field(text_field(claim_id) for claim_id in explicit)
+            if explicit is not None
+            else None
+        ),
+        option_field(
+            int_field(closed_revision) if closed_revision is not None else None
+        ),
+    )
+
+
+def typed_direct_late_verifier_binding_digest(
+    *,
+    result_artifact_id: str,
+    result_artifact_hash: str,
+    verification_execution_present: bool,
+    verification_execution: TypedDirectVerificationExecutionValues | None,
+    observation_id: str,
+    observation_subject_kind: str | Enum,
+    observation_subject_id: str,
+    observation_chunk_version_id: str,
+    observation_task_type: str,
+    observation_support_score: float,
+    observation_refute_score: float,
+    observation_neutral_score: float,
+    observation_model_id: str,
+    observation_model_version: str,
+    observation_prompt_version: str,
+    observation_input_hash: str,
+    observation_produced_epoch: int,
+    observation_raw_output_hash: str,
+    observation_eligible_for_currency: bool,
+    requested_make_effective: bool,
+) -> str:
+    execution_fields = None
+    if verification_execution is not None:
+        (
+            execution_observation_id,
+            execution_job_id,
+            admitted_pair_id,
+            model_artifact_id,
+            prompt_artifact_id,
+            execution_spec_hash,
+            pair_input_hash,
+            calibration_version,
+            calibration_artifact_sha256,
+            temperature,
+            raw_logits,
+            raw_output_hash,
+            reused_from_observation_id,
+        ) = verification_execution
+        execution_fields = sequence_field(
+            (
+                text_field(execution_observation_id),
+                text_field(execution_job_id),
+                hash_field(admitted_pair_id),
+                text_field(model_artifact_id),
+                text_field(prompt_artifact_id),
+                hash_field(execution_spec_hash),
+                hash_field(pair_input_hash),
+                text_field(calibration_version),
+                hash_field(calibration_artifact_sha256),
+                f64_field(temperature),
+                sequence_field(f64_field(logit) for logit in raw_logits),
+                hash_field(raw_output_hash),
+                option_field(
+                    text_field(reused_from_observation_id)
+                    if reused_from_observation_id is not None
+                    else None
+                ),
+            )
+        )
+    return stable_m5_digest(
+        "m5-typed-direct-late-verifier-binding-v1",
+        text_field(result_artifact_id),
+        hash_field(result_artifact_hash),
+        bool_field(verification_execution_present),
+        option_field(execution_fields),
+        text_field(observation_id),
+        enum_field(observation_subject_kind),
+        text_field(observation_subject_id),
+        text_field(observation_chunk_version_id),
+        text_field(observation_task_type),
+        f64_field(observation_support_score),
+        f64_field(observation_refute_score),
+        f64_field(observation_neutral_score),
+        text_field(observation_model_id),
+        text_field(observation_model_version),
+        text_field(observation_prompt_version),
+        text_field(observation_input_hash),
+        int_field(observation_produced_epoch),
+        hash_field(observation_raw_output_hash),
+        bool_field(observation_eligible_for_currency),
+        bool_field(requested_make_effective),
+    )
+
+
+def typed_direct_late_return_envelope_digest(
+    *,
+    epoch_id: int,
+    return_kind: str | Enum,
+    job_binding_digest: str,
+    attempt_binding_digest: str,
+    completion_binding_digest: str,
+    discovery_binding_digest: str | None,
+    scope_binding_digest: str | None,
+    verifier_binding_digest: str | None,
+) -> str:
+    return stable_m5_digest(
+        "m5-typed-direct-late-return-envelope-v1",
+        int_field(epoch_id),
+        enum_field(return_kind),
+        hash_field(job_binding_digest),
+        hash_field(attempt_binding_digest),
+        hash_field(completion_binding_digest),
+        option_field(
+            hash_field(discovery_binding_digest)
+            if discovery_binding_digest is not None
+            else None
+        ),
+        option_field(
+            hash_field(scope_binding_digest)
+            if scope_binding_digest is not None
+            else None
+        ),
+        option_field(
+            hash_field(verifier_binding_digest)
+            if verifier_binding_digest is not None
+            else None
+        ),
+    )
+
+
 def combined_status_delta_set_digest(deltas: Iterable[StatusDelta]) -> str:
     return stable_m5_digest(
         "m5-combined-status-delta-set-v2",
@@ -1004,6 +1665,9 @@ def runtime_schema_bundle_digest(
 
 
 __all__ = [
+    "TypedDirectAdmittedPairValues",
+    "TypedDirectChannelHitValues",
+    "TypedDirectVerificationExecutionValues",
     "active_chunk_snapshot_digest",
     "activation_receipt_digest",
     "activation_request_digest",
@@ -1011,6 +1675,8 @@ __all__ = [
     "attempt_output_digest",
     "attempt_result_artifact_digest",
     "attempt_result_artifact_id",
+    "attempt_execution_evidence_digest",
+    "attempt_runtime_timing_digest",
     "cancellation_plan_digest",
     "candidate_policy_manifest_digest",
     "changed_state_reference_digest",
@@ -1019,7 +1685,10 @@ __all__ = [
     "combined_status_delta_set_digest",
     "discovery_scope_closure_digest",
     "discovery_scope_contract_digest",
+    "dispatch_record_digest",
+    "epoch_failure_contribution_source_digest",
     "event_run_logical_result_digest",
+    "expired_attempt_return_digest",
     "forward_retrieval_execution_spec_digest",
     "group_state_artifact_digest",
     "job_attempt_id",
@@ -1036,6 +1705,7 @@ __all__ = [
     "requirement_discovery_result_digest",
     "requirement_pair_input_digest",
     "requirement_registry_snapshot_digest",
+    "requirement_root_provenance_digest",
     "requirement_root_barrier_completion_digest",
     "requirement_root_set_digest",
     "requirement_scope_selection_digest",
@@ -1046,7 +1716,22 @@ __all__ = [
     "requirement_withdrawal_plan_digest",
     "reverse_retrieval_execution_spec_digest",
     "runtime_schema_bundle_digest",
+    "runtime_operational_config_digest",
+    "runtime_timing_observation_digest",
+    "runtime_work_contribution_key_digest",
     "runtime_work_digest",
+    "seal_contribution_source_digest",
     "semantic_pair_digest",
+    "terminal_job_failure_contribution_source_digest",
     "text_normalizer_provenance_digest",
+    "transition_call_timing_digest",
+    "typed_direct_late_attempt_binding_digest",
+    "typed_direct_late_completion_binding_digest",
+    "typed_direct_late_discovery_binding_digest",
+    "typed_direct_late_job_binding_digest",
+    "typed_direct_late_return_envelope_digest",
+    "typed_direct_late_scope_binding_digest",
+    "typed_direct_late_verifier_binding_digest",
+    "typed_direct_terminal_projection_digest",
+    "lease_terminal_projection_digest",
 ]

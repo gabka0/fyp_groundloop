@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, fields
+from datetime import datetime
 from enum import StrEnum
 from typing import Protocol
 
@@ -32,11 +33,41 @@ from groundloop.events import (
     Event as LegacyEvent,
 )
 from groundloop.m4.application import (
+    DiscoveryResult as M4DiscoveryResult,
+)
+from groundloop.m4.application import (
     DynamicEventPlan,
     OpenEventReceipt,
     PublicationReceipt,
 )
-from groundloop.m4.contracts import VectorIndexKind, stable_m4_digest
+from groundloop.m4.contracts import (
+    AdmittedPair as M4AdmittedPair,
+)
+from groundloop.m4.contracts import (
+    ChannelHit as M4ChannelHit,
+)
+from groundloop.m4.contracts import (
+    DiscoveryScope as M4DiscoveryScope,
+)
+from groundloop.m4.contracts import (
+    JobAttempt as M4JobAttempt,
+)
+from groundloop.m4.contracts import (
+    JobCompletion as M4JobCompletion,
+)
+from groundloop.m4.contracts import (
+    JobKind as M4JobKind,
+)
+from groundloop.m4.contracts import (
+    JobState as M4JobState,
+)
+from groundloop.m4.contracts import (
+    LogicalJobSpec as M4LogicalJobSpec,
+)
+from groundloop.m4.contracts import (
+    VectorIndexKind,
+    stable_m4_digest,
+)
 from groundloop.m5.digests import (
     normalize_text_v1,
     normalized_text_hash_v1,
@@ -85,6 +116,24 @@ def _require_int(name: str, value: int, *, positive: bool = False) -> None:
 def _require_bool(name: str, value: bool) -> None:
     if not isinstance(value, bool):
         raise ValidationError(f"{name} must be a boolean")
+
+
+def _require_timestamptz(name: str, value: datetime) -> None:
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() is None
+    ):
+        raise ValidationError(f"{name} must be a timezone-aware datetime")
+
+
+def _require_finite_number(name: str, value: float) -> None:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (float, int))
+        or not math.isfinite(float(value))
+    ):
+        raise ValidationError(f"{name} must be a finite number")
 
 
 def _require_tuple(name: str, value: object) -> None:
@@ -187,10 +236,58 @@ class M5AttemptDisposition(StrEnum):
 
 
 class M5AttemptArchiveReason(StrEnum):
+    ATTEMPT_EXPIRED = "attempt_expired"
     EPOCH_FAILED = "epoch_failed"
     SUBJECT_INACTIVE = "subject_inactive"
     CHUNK_INACTIVE = "chunk_inactive"
     JOB_ALREADY_TERMINAL = "job_already_terminal"
+
+
+class M5AcquisitionDisposition(StrEnum):
+    DISPATCH_NEW = "dispatch_new"
+    DISPATCH_TAKEOVER = "dispatch_takeover"
+    LIVE_LEASE = "live_lease"
+    RESULT_RESERVED = "result_reserved"
+    TERMINAL = "terminal"
+
+
+class M5RuntimeSubgraph(StrEnum):
+    DIRECT = "direct"
+    REQUIREMENT = "requirement"
+
+
+class M5ExecutionEvidenceDisposition(StrEnum):
+    RETURNED = "returned"
+    REUSED_ARTIFACT = "reused_artifact"
+    RETRYABLE_FAILURE = "retryable_failure"
+    TERMINAL_FAILURE = "terminal_failure"
+
+
+class M5RuntimeWorkContributionKind(StrEnum):
+    STRUCTURAL_OPEN = "structural_open"
+    M5_ACQUISITION = "m5_acquisition"
+    DIRECT_ACQUISITION = "direct_acquisition"
+    M5_ATTEMPT_EXECUTION = "m5_attempt_execution"
+    DIRECT_ATTEMPT_EXECUTION = "direct_attempt_execution"
+    ROOT_RESULT_STAGE = "root_result_stage"
+    ROOT_BARRIER = "root_barrier"
+    VERIFIER_COMPLETION = "verifier_completion"
+    CANCELLATION = "cancellation"
+    TERMINAL_JOB_FAILURE = "terminal_job_failure"
+    DIRECT_TRANSITION = "direct_transition"
+    PRETERMINAL_LATE_RETURN = "preterminal_late_return"
+    EPOCH_FAILURE = "epoch_failure"
+    SEAL = "seal"
+
+
+class M5TypedDirectReturnKind(StrEnum):
+    DISCOVERY = "discovery"
+    VERIFIER = "verifier"
+
+
+class M5TypedDirectScopeKind(StrEnum):
+    ALL_REGISTERED_CLAIMS = "all_registered_claims"
+    EXPLICIT_CLAIMS = "explicit_claims"
 
 
 class M5RunState(StrEnum):
@@ -206,6 +303,7 @@ class M5ReplayedOutcome(StrEnum):
 
 
 class M5RunFailureReason(StrEnum):
+    WORK_IN_PROGRESS = "work_in_progress"
     RETRIEVAL_UNAVAILABLE = "retrieval_unavailable"
     VERIFIER_UNAVAILABLE = "verifier_unavailable"
     RETRY_EXHAUSTED = "retry_exhausted"
@@ -2056,12 +2154,26 @@ class M5JobAttempt:
     attempt_ordinal: int
     execution_spec_hash: str
     lease_token_hash: str
+    lease_expires_at: datetime | None = None
+    attempt_work_digest: str | None = None
 
     def __post_init__(self) -> None:
         _require_hash("logical_job_id", self.logical_job_id)
         _require_int("attempt_ordinal", self.attempt_ordinal, positive=True)
         _require_hash("execution_spec_hash", self.execution_spec_hash)
         _require_hash("lease_token_hash", self.lease_token_hash)
+        operational_values = (self.lease_expires_at, self.attempt_work_digest)
+        if all(value is None for value in operational_values):
+            pass
+        elif any(value is None for value in operational_values):
+            raise ValidationError(
+                "attempt operational lease fields must be jointly present or absent"
+            )
+        else:
+            assert self.lease_expires_at is not None
+            assert self.attempt_work_digest is not None
+            _require_timestamptz("lease_expires_at", self.lease_expires_at)
+            _require_hash("attempt_work_digest", self.attempt_work_digest)
         _require_identity(
             "attempt_id",
             self.attempt_id,
@@ -2078,6 +2190,8 @@ class M5JobAttempt:
         attempt_ordinal: int,
         execution_spec_hash: str,
         lease_token_hash: str,
+        lease_expires_at: datetime | None = None,
+        attempt_work_digest: str | None = None,
     ) -> M5JobAttempt:
         return cls(
             digests.job_attempt_id(
@@ -2087,7 +2201,13 @@ class M5JobAttempt:
             attempt_ordinal,
             execution_spec_hash,
             lease_token_hash,
+            lease_expires_at,
+            attempt_work_digest,
         )
+
+    @property
+    def has_operational_lease(self) -> bool:
+        return self.lease_expires_at is not None
 
     def validate_previous(self, previous: M5JobAttempt | None) -> None:
         expected = 1 if previous is None else previous.attempt_ordinal + 1
@@ -2290,6 +2410,15 @@ class M5AttemptResultArtifact:
             ):
                 raise ValidationError(
                     "inactive verifier completion transition is invalid"
+                )
+        elif self.archive_reason is M5AttemptArchiveReason.ATTEMPT_EXPIRED:
+            if (
+                self.disposition is not M5AttemptDisposition.TERMINAL_AUDIT_ONLY
+                or self.job_state_at_receipt is not M5JobState.RUNNING
+                or self.job_state_after is not M5JobState.RUNNING
+            ):
+                raise ValidationError(
+                    "expired-attempt audit transition must remain running"
                 )
         elif (
             not self.job_state_at_receipt.terminal
@@ -2707,6 +2836,635 @@ class M5RuntimeWork:
         return all(value == 0 for value in self.counter_values())
 
 
+_AMBIGUOUS_CALL_COUNTERS = (
+    "direct_discovery_call_count",
+    "direct_verifier_call_count",
+    "requirement_forward_retrieval_call_count",
+    "requirement_reverse_retrieval_call_count",
+    "requirement_fallback_forward_call_count",
+    "requirement_verifier_call_count",
+    "embedding_model_call_count",
+    "verifier_model_call_count",
+)
+_MODEL_TOKEN_COUNTERS = (
+    "embedding_input_token_count",
+    "verifier_input_token_count",
+    "verifier_output_token_count",
+)
+_EXTERNAL_ATTEMPT_BYTE_COUNTERS = ("bytes_hashed", "bytes_serialized")
+
+
+def _runtime_work(**counters: int) -> M5RuntimeWork:
+    unknown = set(counters).difference(M5RuntimeWork.counter_names())
+    if unknown:
+        raise ValidationError(f"unknown runtime-work counters: {sorted(unknown)!r}")
+    return M5RuntimeWork(
+        deactivated_chunk_count=counters.get("deactivated_chunk_count", 0),
+        withdrawn_candidate_edge_count=counters.get(
+            "withdrawn_candidate_edge_count", 0
+        ),
+        withdrawn_current_observation_count=counters.get(
+            "withdrawn_current_observation_count", 0
+        ),
+        direct_discovery_call_count=counters.get("direct_discovery_call_count", 0),
+        direct_verifier_call_count=counters.get("direct_verifier_call_count", 0),
+        direct_observation_artifact_count=counters.get(
+            "direct_observation_artifact_count", 0
+        ),
+        direct_effective_observation_count=counters.get(
+            "direct_effective_observation_count", 0
+        ),
+        direct_inactive_completion_count=counters.get(
+            "direct_inactive_completion_count", 0
+        ),
+        requirement_forward_retrieval_call_count=counters.get(
+            "requirement_forward_retrieval_call_count", 0
+        ),
+        requirement_reverse_retrieval_call_count=counters.get(
+            "requirement_reverse_retrieval_call_count", 0
+        ),
+        requirement_fallback_forward_call_count=counters.get(
+            "requirement_fallback_forward_call_count", 0
+        ),
+        requirement_verifier_call_count=counters.get(
+            "requirement_verifier_call_count", 0
+        ),
+        requirement_observation_artifact_count=counters.get(
+            "requirement_observation_artifact_count", 0
+        ),
+        requirement_effective_observation_count=counters.get(
+            "requirement_effective_observation_count", 0
+        ),
+        requirement_inactive_completion_count=counters.get(
+            "requirement_inactive_completion_count", 0
+        ),
+        requirement_cancelled_job_count=counters.get(
+            "requirement_cancelled_job_count", 0
+        ),
+        requirement_late_attempt_artifact_count=counters.get(
+            "requirement_late_attempt_artifact_count", 0
+        ),
+        requirement_channel_hit_count=counters.get("requirement_channel_hit_count", 0),
+        requirement_pre_dedup_selection_count=counters.get(
+            "requirement_pre_dedup_selection_count", 0
+        ),
+        requirement_admitted_pair_count=counters.get(
+            "requirement_admitted_pair_count", 0
+        ),
+        group_state_write_count=counters.get("group_state_write_count", 0),
+        claim_state_write_count=counters.get("claim_state_write_count", 0),
+        answer_state_write_count=counters.get("answer_state_write_count", 0),
+        certificate_binding_write_count=counters.get(
+            "certificate_binding_write_count", 0
+        ),
+        public_delta_count=counters.get("public_delta_count", 0),
+        bytes_hashed=counters.get("bytes_hashed", 0),
+        bytes_serialized=counters.get("bytes_serialized", 0),
+        embedding_model_call_count=counters.get("embedding_model_call_count", 0),
+        verifier_model_call_count=counters.get("verifier_model_call_count", 0),
+        embedding_input_token_count=counters.get("embedding_input_token_count", 0),
+        verifier_input_token_count=counters.get("verifier_input_token_count", 0),
+        verifier_output_token_count=counters.get("verifier_output_token_count", 0),
+    )
+
+
+def _maximum_ambiguous_call_work(
+    *,
+    subgraph: M5RuntimeSubgraph,
+    job_kind: str,
+    fallback_required: bool,
+) -> M5RuntimeWork:
+    if subgraph is M5RuntimeSubgraph.DIRECT:
+        if fallback_required:
+            raise ValidationError("typed-direct dispatch cannot require fallback")
+        if job_kind in {
+            M4JobKind.IMPACT_DISCOVERY.value,
+            M4JobKind.FRONTIER_RETRIEVE.value,
+        }:
+            return _runtime_work(
+                direct_discovery_call_count=1,
+                embedding_model_call_count=1,
+            )
+        if job_kind == M4JobKind.VERIFY_PAIR.value:
+            return _runtime_work(
+                direct_verifier_call_count=1,
+                verifier_model_call_count=1,
+            )
+    elif job_kind == M5JobKind.FORWARD_REQUIREMENT_RETRIEVAL.value:
+        return _runtime_work(
+            requirement_forward_retrieval_call_count=1,
+            requirement_fallback_forward_call_count=int(fallback_required),
+            embedding_model_call_count=1,
+        )
+    elif job_kind == M5JobKind.REVERSE_REQUIREMENT_DISCOVERY.value:
+        if fallback_required:
+            raise ValidationError(
+                "reverse requirement dispatch cannot require fallback"
+            )
+        return _runtime_work(
+            requirement_reverse_retrieval_call_count=1,
+            embedding_model_call_count=1,
+        )
+    elif job_kind == M5JobKind.VERIFY_REQUIREMENT_PAIR.value:
+        if fallback_required:
+            raise ValidationError("requirement verifier cannot require fallback")
+        return _runtime_work(
+            requirement_verifier_call_count=1,
+            verifier_model_call_count=1,
+        )
+    raise ValidationError("dispatch subgraph and job kind are incompatible")
+
+
+@dataclass(frozen=True, slots=True)
+class M5RuntimeOperationalConfig:
+    lease_duration_ms: int
+    config_digest: str
+
+    def __post_init__(self) -> None:
+        _require_int("lease_duration_ms", self.lease_duration_ms, positive=True)
+        if self.lease_duration_ms > 86_400_000:
+            raise ValidationError("lease_duration_ms must not exceed 86400000")
+        _require_identity(
+            "config_digest",
+            self.config_digest,
+            digests.runtime_operational_config_digest(self.lease_duration_ms),
+        )
+
+    @classmethod
+    def build(cls, lease_duration_ms: int) -> M5RuntimeOperationalConfig:
+        return cls(
+            lease_duration_ms,
+            digests.runtime_operational_config_digest(lease_duration_ms),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class M5DispatchRecord:
+    epoch_id: int
+    subgraph: M5RuntimeSubgraph
+    attempt_id: str
+    logical_job_id: str
+    attempt_ordinal: int
+    job_kind: str
+    fallback_required: bool
+    dispatched_revision: int
+    lease_expires_at: datetime
+    maximum_ambiguous_call_work: M5RuntimeWork
+    record_digest: str
+
+    def __post_init__(self) -> None:
+        _require_int("epoch_id", self.epoch_id, positive=True)
+        if not isinstance(self.subgraph, M5RuntimeSubgraph):
+            raise ValidationError("subgraph must be an M5RuntimeSubgraph")
+        _require_text("attempt_id", self.attempt_id)
+        _require_text("logical_job_id", self.logical_job_id)
+        if self.subgraph is M5RuntimeSubgraph.REQUIREMENT:
+            _require_hash("requirement attempt_id", self.attempt_id)
+            _require_hash("requirement logical_job_id", self.logical_job_id)
+        _require_int("attempt_ordinal", self.attempt_ordinal, positive=True)
+        _require_text("job_kind", self.job_kind)
+        _require_bool("fallback_required", self.fallback_required)
+        _require_int("dispatched_revision", self.dispatched_revision, positive=True)
+        _require_timestamptz("lease_expires_at", self.lease_expires_at)
+        if not isinstance(self.maximum_ambiguous_call_work, M5RuntimeWork):
+            raise ValidationError("maximum_ambiguous_call_work must be M5RuntimeWork")
+        expected_maximum = _maximum_ambiguous_call_work(
+            subgraph=self.subgraph,
+            job_kind=self.job_kind,
+            fallback_required=self.fallback_required,
+        )
+        if self.maximum_ambiguous_call_work != expected_maximum:
+            raise ValidationError(
+                "dispatch maximum ambiguous work differs from its exact job vector"
+            )
+        _require_identity(
+            "record_digest",
+            self.record_digest,
+            digests.dispatch_record_digest(
+                epoch_id=self.epoch_id,
+                subgraph=self.subgraph,
+                attempt_id=self.attempt_id,
+                logical_job_id=self.logical_job_id,
+                attempt_ordinal=self.attempt_ordinal,
+                job_kind=self.job_kind,
+                fallback_required=self.fallback_required,
+                dispatched_revision=self.dispatched_revision,
+                maximum_ambiguous_call_work_digest=(
+                    self.maximum_ambiguous_call_work.work_digest
+                ),
+            ),
+        )
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        epoch_id: int,
+        subgraph: M5RuntimeSubgraph,
+        attempt_id: str,
+        logical_job_id: str,
+        attempt_ordinal: int,
+        job_kind: str,
+        fallback_required: bool,
+        dispatched_revision: int,
+        lease_expires_at: datetime,
+    ) -> M5DispatchRecord:
+        maximum = _maximum_ambiguous_call_work(
+            subgraph=subgraph,
+            job_kind=job_kind,
+            fallback_required=fallback_required,
+        )
+        return cls(
+            epoch_id=epoch_id,
+            subgraph=subgraph,
+            attempt_id=attempt_id,
+            logical_job_id=logical_job_id,
+            attempt_ordinal=attempt_ordinal,
+            job_kind=job_kind,
+            fallback_required=fallback_required,
+            dispatched_revision=dispatched_revision,
+            lease_expires_at=lease_expires_at,
+            maximum_ambiguous_call_work=maximum,
+            record_digest=digests.dispatch_record_digest(
+                epoch_id=epoch_id,
+                subgraph=subgraph,
+                attempt_id=attempt_id,
+                logical_job_id=logical_job_id,
+                attempt_ordinal=attempt_ordinal,
+                job_kind=job_kind,
+                fallback_required=fallback_required,
+                dispatched_revision=dispatched_revision,
+                maximum_ambiguous_call_work_digest=maximum.work_digest,
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class M5RequirementRootProvenance:
+    epoch_id: int
+    root_job_id: str
+    fallback_required: bool
+    provenance_digest: str
+
+    def __post_init__(self) -> None:
+        _require_int("epoch_id", self.epoch_id, positive=True)
+        _require_hash("root_job_id", self.root_job_id)
+        _require_bool("fallback_required", self.fallback_required)
+        _require_identity(
+            "provenance_digest",
+            self.provenance_digest,
+            digests.requirement_root_provenance_digest(
+                epoch_id=self.epoch_id,
+                root_job_id=self.root_job_id,
+                fallback_required=self.fallback_required,
+            ),
+        )
+
+    @classmethod
+    def build(
+        cls, *, epoch_id: int, root_job_id: str, fallback_required: bool
+    ) -> M5RequirementRootProvenance:
+        return cls(
+            epoch_id,
+            root_job_id,
+            fallback_required,
+            digests.requirement_root_provenance_digest(
+                epoch_id=epoch_id,
+                root_job_id=root_job_id,
+                fallback_required=fallback_required,
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class M5AttemptExecutionEvidence:
+    epoch_id: int
+    subgraph: M5RuntimeSubgraph
+    attempt_id: str
+    disposition: M5ExecutionEvidenceDisposition
+    result_or_error_hash: str
+    attempt_work: M5RuntimeWork
+    attempt_timing_digest: str
+    evidence_digest: str
+
+    def __post_init__(self) -> None:
+        _require_int("epoch_id", self.epoch_id, positive=True)
+        if not isinstance(self.subgraph, M5RuntimeSubgraph):
+            raise ValidationError("subgraph must be an M5RuntimeSubgraph")
+        _require_text("attempt_id", self.attempt_id)
+        if self.subgraph is M5RuntimeSubgraph.REQUIREMENT:
+            _require_hash("requirement attempt_id", self.attempt_id)
+        if not isinstance(self.disposition, M5ExecutionEvidenceDisposition):
+            raise ValidationError(
+                "disposition must be an M5ExecutionEvidenceDisposition"
+            )
+        _require_hash("result_or_error_hash", self.result_or_error_hash)
+        if not isinstance(self.attempt_work, M5RuntimeWork):
+            raise ValidationError("attempt_work must be M5RuntimeWork")
+        _require_hash("attempt_timing_digest", self.attempt_timing_digest)
+        if self.disposition is M5ExecutionEvidenceDisposition.REUSED_ARTIFACT:
+            for name in (*_AMBIGUOUS_CALL_COUNTERS, *_MODEL_TOKEN_COUNTERS):
+                if getattr(self.attempt_work, name) != 0:
+                    raise ValidationError(
+                        "reused-artifact evidence cannot charge calls or tokens"
+                    )
+        _require_identity(
+            "evidence_digest",
+            self.evidence_digest,
+            digests.attempt_execution_evidence_digest(
+                epoch_id=self.epoch_id,
+                subgraph=self.subgraph,
+                attempt_id=self.attempt_id,
+                disposition=self.disposition,
+                result_or_error_hash=self.result_or_error_hash,
+                attempt_work_digest=self.attempt_work.work_digest,
+                attempt_timing_digest=self.attempt_timing_digest,
+            ),
+        )
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        epoch_id: int,
+        subgraph: M5RuntimeSubgraph,
+        attempt_id: str,
+        disposition: M5ExecutionEvidenceDisposition,
+        result_or_error_hash: str,
+        attempt_work: M5RuntimeWork,
+        attempt_timing_digest: str,
+    ) -> M5AttemptExecutionEvidence:
+        return cls(
+            epoch_id=epoch_id,
+            subgraph=subgraph,
+            attempt_id=attempt_id,
+            disposition=disposition,
+            result_or_error_hash=result_or_error_hash,
+            attempt_work=attempt_work,
+            attempt_timing_digest=attempt_timing_digest,
+            evidence_digest=digests.attempt_execution_evidence_digest(
+                epoch_id=epoch_id,
+                subgraph=subgraph,
+                attempt_id=attempt_id,
+                disposition=disposition,
+                result_or_error_hash=result_or_error_hash,
+                attempt_work_digest=attempt_work.work_digest,
+                attempt_timing_digest=attempt_timing_digest,
+            ),
+        )
+
+    def validate_dispatch(self, dispatch: M5DispatchRecord) -> None:
+        if (
+            dispatch.epoch_id != self.epoch_id
+            or dispatch.subgraph is not self.subgraph
+            or dispatch.attempt_id != self.attempt_id
+        ):
+            raise ValidationError("execution evidence belongs to another dispatch")
+        allowed = set(_EXTERNAL_ATTEMPT_BYTE_COUNTERS)
+        if dispatch.subgraph is M5RuntimeSubgraph.DIRECT:
+            if dispatch.job_kind in {
+                M4JobKind.IMPACT_DISCOVERY.value,
+                M4JobKind.FRONTIER_RETRIEVE.value,
+            }:
+                allowed.update(
+                    {
+                        "direct_discovery_call_count",
+                        "embedding_model_call_count",
+                        "embedding_input_token_count",
+                    }
+                )
+            else:
+                allowed.update(
+                    {
+                        "direct_verifier_call_count",
+                        "verifier_model_call_count",
+                        "verifier_input_token_count",
+                        "verifier_output_token_count",
+                    }
+                )
+        elif dispatch.job_kind in {
+            M5JobKind.FORWARD_REQUIREMENT_RETRIEVAL.value,
+            M5JobKind.REVERSE_REQUIREMENT_DISCOVERY.value,
+        }:
+            allowed.update(
+                {
+                    "requirement_forward_retrieval_call_count",
+                    "requirement_reverse_retrieval_call_count",
+                    "requirement_fallback_forward_call_count",
+                    "embedding_model_call_count",
+                    "embedding_input_token_count",
+                }
+            )
+        else:
+            allowed.update(
+                {
+                    "requirement_verifier_call_count",
+                    "verifier_model_call_count",
+                    "verifier_input_token_count",
+                    "verifier_output_token_count",
+                }
+            )
+        for name in M5RuntimeWork.counter_names():
+            value = getattr(self.attempt_work, name)
+            if name not in allowed and value:
+                raise ValidationError(
+                    f"attempt_work counter {name} belongs to persistence"
+                )
+        for name in _AMBIGUOUS_CALL_COUNTERS:
+            if getattr(self.attempt_work, name) > getattr(
+                dispatch.maximum_ambiguous_call_work, name
+            ):
+                raise ValidationError(
+                    f"attempt_work counter {name} exceeds dispatch maximum"
+                )
+        forward = self.attempt_work.requirement_forward_retrieval_call_count
+        fallback = self.attempt_work.requirement_fallback_forward_call_count
+        if dispatch.fallback_required and fallback != forward:
+            raise ValidationError(
+                "fallback call count must equal confirmed forward retrieval count"
+            )
+
+    def validate_timing(self, observation: M5RuntimeTimingObservation) -> None:
+        expected = digests.attempt_runtime_timing_digest(
+            epoch_id=self.epoch_id,
+            subgraph=self.subgraph,
+            attempt_id=self.attempt_id,
+            observation_digest=observation.observation_digest,
+        )
+        _require_identity("attempt_timing_digest", self.attempt_timing_digest, expected)
+
+
+@dataclass(frozen=True, slots=True)
+class M5CallAmbiguityReport:
+    durable_dispatch_count: int
+    confirmed_execution_count: int
+    unresolved_dispatch_count: int
+    confirmed_call_lower: M5RuntimeWork
+    possible_call_upper: M5RuntimeWork
+
+    def __post_init__(self) -> None:
+        for name in (
+            "durable_dispatch_count",
+            "confirmed_execution_count",
+            "unresolved_dispatch_count",
+        ):
+            _require_int(name, getattr(self, name))
+        if (
+            self.durable_dispatch_count
+            != self.confirmed_execution_count + self.unresolved_dispatch_count
+        ):
+            raise ValidationError(
+                "dispatch count must equal confirmed plus unresolved counts"
+            )
+        for work_name in ("confirmed_call_lower", "possible_call_upper"):
+            work = getattr(self, work_name)
+            if not isinstance(work, M5RuntimeWork):
+                raise ValidationError(f"{work_name} must be M5RuntimeWork")
+            for name in M5RuntimeWork.counter_names():
+                if name not in _AMBIGUOUS_CALL_COUNTERS and getattr(work, name):
+                    raise ValidationError(
+                        f"{work_name} may contain only frozen call counters"
+                    )
+        for name in _AMBIGUOUS_CALL_COUNTERS:
+            if getattr(self.confirmed_call_lower, name) > getattr(
+                self.possible_call_upper, name
+            ):
+                raise ValidationError("confirmed call lower exceeds possible upper")
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        dispatches: tuple[M5DispatchRecord, ...],
+        execution_evidence: tuple[M5AttemptExecutionEvidence, ...],
+    ) -> M5CallAmbiguityReport:
+        _require_tuple("dispatches", dispatches)
+        _require_tuple("execution_evidence", execution_evidence)
+        dispatch_by_key: dict[tuple[M5RuntimeSubgraph, str], M5DispatchRecord] = {}
+        for dispatch in dispatches:
+            key = (dispatch.subgraph, dispatch.attempt_id)
+            if key in dispatch_by_key:
+                raise ValidationError("ambiguity input repeats a durable dispatch")
+            dispatch_by_key[key] = dispatch
+        evidence_by_key: dict[
+            tuple[M5RuntimeSubgraph, str], M5AttemptExecutionEvidence
+        ] = {}
+        for evidence in execution_evidence:
+            key = (evidence.subgraph, evidence.attempt_id)
+            if key in evidence_by_key:
+                raise ValidationError("ambiguity input repeats execution evidence")
+            stored_dispatch = dispatch_by_key.get(key)
+            if stored_dispatch is None:
+                raise ValidationError("execution evidence has no durable dispatch")
+            evidence.validate_dispatch(stored_dispatch)
+            evidence_by_key[key] = evidence
+
+        lower_values = {
+            name: sum(
+                getattr(evidence.attempt_work, name)
+                for evidence in evidence_by_key.values()
+            )
+            for name in _AMBIGUOUS_CALL_COUNTERS
+        }
+        upper_values = dict(lower_values)
+        for key, dispatch in dispatch_by_key.items():
+            if key in evidence_by_key:
+                continue
+            for name in _AMBIGUOUS_CALL_COUNTERS:
+                upper_values[name] += getattr(
+                    dispatch.maximum_ambiguous_call_work, name
+                )
+        return cls(
+            durable_dispatch_count=len(dispatch_by_key),
+            confirmed_execution_count=len(evidence_by_key),
+            unresolved_dispatch_count=(len(dispatch_by_key) - len(evidence_by_key)),
+            confirmed_call_lower=_runtime_work(**lower_values),
+            possible_call_upper=_runtime_work(**upper_values),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class M5ExpiredAttemptReturn:
+    subgraph: M5RuntimeSubgraph
+    epoch_id: int
+    attempt_id: str
+    logical_job_id: str
+    worker_output_digest: str
+    worker_artifact_hash: str
+    activity_snapshot_epoch_id: int
+    activity_snapshot_revision: int
+    received_after_terminal: bool
+    expired_return_digest: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.subgraph, M5RuntimeSubgraph):
+            raise ValidationError("subgraph must be an M5RuntimeSubgraph")
+        _require_int("epoch_id", self.epoch_id, positive=True)
+        _require_text("attempt_id", self.attempt_id)
+        _require_text("logical_job_id", self.logical_job_id)
+        for name in ("worker_output_digest", "worker_artifact_hash"):
+            _require_hash(name, getattr(self, name))
+        _require_int(
+            "activity_snapshot_epoch_id",
+            self.activity_snapshot_epoch_id,
+            positive=True,
+        )
+        _require_int("activity_snapshot_revision", self.activity_snapshot_revision)
+        _require_bool("received_after_terminal", self.received_after_terminal)
+        _require_identity(
+            "expired_return_digest",
+            self.expired_return_digest,
+            digests.expired_attempt_return_digest(
+                subgraph=self.subgraph,
+                epoch_id=self.epoch_id,
+                attempt_id=self.attempt_id,
+                logical_job_id=self.logical_job_id,
+                worker_output_digest=self.worker_output_digest,
+                worker_artifact_hash=self.worker_artifact_hash,
+                activity_snapshot_epoch_id=self.activity_snapshot_epoch_id,
+                activity_snapshot_revision=self.activity_snapshot_revision,
+                received_after_terminal=self.received_after_terminal,
+            ),
+        )
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        subgraph: M5RuntimeSubgraph,
+        epoch_id: int,
+        attempt_id: str,
+        logical_job_id: str,
+        worker_output_digest: str,
+        worker_artifact_hash: str,
+        activity_snapshot_epoch_id: int,
+        activity_snapshot_revision: int,
+        received_after_terminal: bool,
+    ) -> M5ExpiredAttemptReturn:
+        return cls(
+            subgraph=subgraph,
+            epoch_id=epoch_id,
+            attempt_id=attempt_id,
+            logical_job_id=logical_job_id,
+            worker_output_digest=worker_output_digest,
+            worker_artifact_hash=worker_artifact_hash,
+            activity_snapshot_epoch_id=activity_snapshot_epoch_id,
+            activity_snapshot_revision=activity_snapshot_revision,
+            received_after_terminal=received_after_terminal,
+            expired_return_digest=digests.expired_attempt_return_digest(
+                subgraph=subgraph,
+                epoch_id=epoch_id,
+                attempt_id=attempt_id,
+                logical_job_id=logical_job_id,
+                worker_output_digest=worker_output_digest,
+                worker_artifact_hash=worker_artifact_hash,
+                activity_snapshot_epoch_id=activity_snapshot_epoch_id,
+                activity_snapshot_revision=activity_snapshot_revision,
+                received_after_terminal=received_after_terminal,
+            ),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class M5RuntimeTiming:
     coordinator_non_db_non_neural_ns: int = 0
@@ -2724,6 +3482,1124 @@ class M5RuntimeTiming:
             value = getattr(self, field.name)
             if value is not None:
                 _require_int(field.name, value)
+
+
+@dataclass(frozen=True, slots=True)
+class M5RuntimeTimingObservation:
+    required_interval_observed: bool
+    timing: M5RuntimeTiming | None
+    observation_digest: str
+
+    def __post_init__(self) -> None:
+        _require_bool("required_interval_observed", self.required_interval_observed)
+        if self.required_interval_observed != (self.timing is not None):
+            raise ValidationError(
+                "required timing fields must be all observed or all missing"
+            )
+        if self.timing is not None and not isinstance(self.timing, M5RuntimeTiming):
+            raise ValidationError("timing must be M5RuntimeTiming when observed")
+        _require_identity(
+            "observation_digest",
+            self.observation_digest,
+            self.expected_observation_digest,
+        )
+
+    @property
+    def expected_observation_digest(self) -> str:
+        timing = self.timing
+        return digests.runtime_timing_observation_digest(
+            required_interval_observed=self.required_interval_observed,
+            coordinator_non_db_non_neural_ns=(
+                None if timing is None else timing.coordinator_non_db_non_neural_ns
+            ),
+            neural_wall_ns=None if timing is None else timing.neural_wall_ns,
+            postgres_roundtrip_wall_ns=(
+                None if timing is None else timing.postgres_roundtrip_wall_ns
+            ),
+            external_io_wall_ns=(
+                None if timing is None else timing.external_io_wall_ns
+            ),
+            end_to_end_wall_ns=(None if timing is None else timing.end_to_end_wall_ns),
+            postgres_server_execution_ns=(
+                None if timing is None else timing.postgres_server_execution_ns
+            ),
+            postgres_lock_wait_ns=(
+                None if timing is None else timing.postgres_lock_wait_ns
+            ),
+            postgres_wal_bytes=(None if timing is None else timing.postgres_wal_bytes),
+            postgres_shared_block_reads=(
+                None if timing is None else timing.postgres_shared_block_reads
+            ),
+        )
+
+    @classmethod
+    def build(cls, timing: M5RuntimeTiming | None) -> M5RuntimeTimingObservation:
+        required_interval_observed = timing is not None
+        digest = digests.runtime_timing_observation_digest(
+            required_interval_observed=required_interval_observed,
+            coordinator_non_db_non_neural_ns=(
+                None if timing is None else timing.coordinator_non_db_non_neural_ns
+            ),
+            neural_wall_ns=None if timing is None else timing.neural_wall_ns,
+            postgres_roundtrip_wall_ns=(
+                None if timing is None else timing.postgres_roundtrip_wall_ns
+            ),
+            external_io_wall_ns=(
+                None if timing is None else timing.external_io_wall_ns
+            ),
+            end_to_end_wall_ns=(None if timing is None else timing.end_to_end_wall_ns),
+            postgres_server_execution_ns=(
+                None if timing is None else timing.postgres_server_execution_ns
+            ),
+            postgres_lock_wait_ns=(
+                None if timing is None else timing.postgres_lock_wait_ns
+            ),
+            postgres_wal_bytes=(None if timing is None else timing.postgres_wal_bytes),
+            postgres_shared_block_reads=(
+                None if timing is None else timing.postgres_shared_block_reads
+            ),
+        )
+        return cls(required_interval_observed, timing, digest)
+
+
+@dataclass(frozen=True, slots=True)
+class M5RuntimeTimingCoverage:
+    required_expected_count: int
+    required_observed_count: int
+    required_missing_count: int
+    postgres_server_execution_expected_count: int
+    postgres_server_execution_observed_count: int
+    postgres_server_execution_missing_count: int
+    postgres_lock_wait_expected_count: int
+    postgres_lock_wait_observed_count: int
+    postgres_lock_wait_missing_count: int
+    postgres_wal_bytes_expected_count: int
+    postgres_wal_bytes_observed_count: int
+    postgres_wal_bytes_missing_count: int
+    postgres_shared_block_reads_expected_count: int
+    postgres_shared_block_reads_observed_count: int
+    postgres_shared_block_reads_missing_count: int
+    terminal_client_roundtrip_included: bool
+
+    def __post_init__(self) -> None:
+        triples = (
+            (
+                "required",
+                self.required_expected_count,
+                self.required_observed_count,
+                self.required_missing_count,
+            ),
+            (
+                "postgres_server_execution",
+                self.postgres_server_execution_expected_count,
+                self.postgres_server_execution_observed_count,
+                self.postgres_server_execution_missing_count,
+            ),
+            (
+                "postgres_lock_wait",
+                self.postgres_lock_wait_expected_count,
+                self.postgres_lock_wait_observed_count,
+                self.postgres_lock_wait_missing_count,
+            ),
+            (
+                "postgres_wal_bytes",
+                self.postgres_wal_bytes_expected_count,
+                self.postgres_wal_bytes_observed_count,
+                self.postgres_wal_bytes_missing_count,
+            ),
+            (
+                "postgres_shared_block_reads",
+                self.postgres_shared_block_reads_expected_count,
+                self.postgres_shared_block_reads_observed_count,
+                self.postgres_shared_block_reads_missing_count,
+            ),
+        )
+        for name, expected, observed, missing in triples:
+            _require_int(f"{name}_expected_count", expected)
+            _require_int(f"{name}_observed_count", observed)
+            _require_int(f"{name}_missing_count", missing)
+            if expected != observed + missing:
+                raise ValidationError(
+                    f"{name} expected count must equal observed plus missing"
+                )
+            if name != "required" and expected != self.required_expected_count:
+                raise ValidationError(
+                    f"{name} expected count must equal required expected count"
+                )
+        _require_bool(
+            "terminal_client_roundtrip_included",
+            self.terminal_client_roundtrip_included,
+        )
+
+    @classmethod
+    def single_point(
+        cls,
+        timing: M5RuntimeTiming | None,
+        *,
+        terminal_client_roundtrip_included: bool,
+    ) -> M5RuntimeTimingCoverage:
+        observed = int(timing is not None)
+        missing = 1 - observed
+
+        def optional_counts(value: int | None) -> tuple[int, int, int]:
+            optional_observed = int(timing is not None and value is not None)
+            return (1, optional_observed, 1 - optional_observed)
+
+        server = optional_counts(
+            None if timing is None else timing.postgres_server_execution_ns
+        )
+        lock = optional_counts(None if timing is None else timing.postgres_lock_wait_ns)
+        wal = optional_counts(None if timing is None else timing.postgres_wal_bytes)
+        blocks = optional_counts(
+            None if timing is None else timing.postgres_shared_block_reads
+        )
+        return cls(
+            1,
+            observed,
+            missing,
+            *server,
+            *lock,
+            *wal,
+            *blocks,
+            terminal_client_roundtrip_included,
+        )
+
+    def validate_aggregate(self, timing: M5RuntimeTiming) -> None:
+        if not isinstance(timing, M5RuntimeTiming):
+            raise ValidationError("timing aggregate must be M5RuntimeTiming")
+        if self.required_observed_count == 0 and any(
+            (
+                timing.coordinator_non_db_non_neural_ns,
+                timing.neural_wall_ns,
+                timing.postgres_roundtrip_wall_ns,
+                timing.external_io_wall_ns,
+                timing.end_to_end_wall_ns,
+            )
+        ):
+            raise ValidationError(
+                "missing required timing points cannot have nonzero aggregates"
+            )
+        optional_shapes = (
+            (
+                "postgres_server_execution_ns",
+                timing.postgres_server_execution_ns,
+                self.postgres_server_execution_observed_count,
+                self.postgres_server_execution_missing_count,
+            ),
+            (
+                "postgres_lock_wait_ns",
+                timing.postgres_lock_wait_ns,
+                self.postgres_lock_wait_observed_count,
+                self.postgres_lock_wait_missing_count,
+            ),
+            (
+                "postgres_wal_bytes",
+                timing.postgres_wal_bytes,
+                self.postgres_wal_bytes_observed_count,
+                self.postgres_wal_bytes_missing_count,
+            ),
+            (
+                "postgres_shared_block_reads",
+                timing.postgres_shared_block_reads,
+                self.postgres_shared_block_reads_observed_count,
+                self.postgres_shared_block_reads_missing_count,
+            ),
+        )
+        for name, value, observed, missing in optional_shapes:
+            should_be_present = observed > 0 and missing == 0
+            if should_be_present != (value is not None):
+                raise ValidationError(
+                    f"{name} aggregate presence disagrees with timing coverage"
+                )
+
+
+@dataclass(frozen=True, slots=True)
+class M5TransitionTimingAnchor:
+    epoch_id: int
+    contribution_kind: M5RuntimeWorkContributionKind
+    source_id: str
+    contribution_key_digest: str
+    anchor_revision: int
+    terminal_transition: bool
+
+    def __post_init__(self) -> None:
+        _require_int("epoch_id", self.epoch_id, positive=True)
+        if not isinstance(self.contribution_kind, M5RuntimeWorkContributionKind):
+            raise ValidationError(
+                "contribution_kind must be M5RuntimeWorkContributionKind"
+            )
+        _require_text("source_id", self.source_id)
+        _require_identity(
+            "contribution_key_digest",
+            self.contribution_key_digest,
+            digests.runtime_work_contribution_key_digest(
+                epoch_id=self.epoch_id,
+                contribution_kind=self.contribution_kind,
+                source_id=self.source_id,
+            ),
+        )
+        _require_int("anchor_revision", self.anchor_revision, positive=True)
+        _require_bool("terminal_transition", self.terminal_transition)
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        epoch_id: int,
+        contribution_kind: M5RuntimeWorkContributionKind,
+        source_id: str,
+        anchor_revision: int,
+        terminal_transition: bool,
+    ) -> M5TransitionTimingAnchor:
+        return cls(
+            epoch_id=epoch_id,
+            contribution_kind=contribution_kind,
+            source_id=source_id,
+            contribution_key_digest=digests.runtime_work_contribution_key_digest(
+                epoch_id=epoch_id,
+                contribution_kind=contribution_kind,
+                source_id=source_id,
+            ),
+            anchor_revision=anchor_revision,
+            terminal_transition=terminal_transition,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class M5TransitionTimingReceipt:
+    anchor: M5TransitionTimingAnchor
+    transition_timing_digest: str
+    event_timing: M5RuntimeTiming
+    event_timing_coverage: M5RuntimeTimingCoverage
+    resulting_revision: int
+    exact_replay: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.anchor, M5TransitionTimingAnchor):
+            raise ValidationError("anchor must be M5TransitionTimingAnchor")
+        _require_hash("transition_timing_digest", self.transition_timing_digest)
+        self.event_timing_coverage.validate_aggregate(self.event_timing)
+        if self.event_timing_coverage.terminal_client_roundtrip_included:
+            raise ValidationError(
+                "event timing coverage cannot include terminal client roundtrip"
+            )
+        _require_int("resulting_revision", self.resulting_revision, positive=True)
+        _require_bool("exact_replay", self.exact_replay)
+        if self.resulting_revision < self.anchor.anchor_revision:
+            raise ValidationError(
+                "transition timing receipt cannot precede its anchor revision"
+            )
+
+    def validate_observation(self, observation: M5RuntimeTimingObservation) -> None:
+        expected = digests.transition_call_timing_digest(
+            epoch_id=self.anchor.epoch_id,
+            contribution_kind=self.anchor.contribution_kind,
+            source_id=self.anchor.source_id,
+            contribution_key_digest=self.anchor.contribution_key_digest,
+            anchor_revision=self.anchor.anchor_revision,
+            observation_digest=observation.observation_digest,
+        )
+        _require_identity(
+            "transition_timing_digest", self.transition_timing_digest, expected
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class M5TypedDirectVerificationExecution:
+    observation_id: str
+    job_id: str
+    admitted_pair_id: str
+    model_artifact_id: str
+    prompt_artifact_id: str
+    execution_spec_hash: str
+    pair_input_hash: str
+    calibration_version: str
+    calibration_artifact_sha256: str
+    temperature: float
+    raw_logits: tuple[float, float, float]
+    raw_output_hash: str
+    reused_from_observation_id: str | None
+
+    def __post_init__(self) -> None:
+        for name in (
+            "observation_id",
+            "job_id",
+            "model_artifact_id",
+            "prompt_artifact_id",
+            "calibration_version",
+        ):
+            _require_text(name, getattr(self, name))
+        for name in (
+            "admitted_pair_id",
+            "execution_spec_hash",
+            "pair_input_hash",
+            "calibration_artifact_sha256",
+            "raw_output_hash",
+        ):
+            _require_hash(name, getattr(self, name))
+        _require_finite_number("temperature", self.temperature)
+        if self.temperature <= 0:
+            raise ValidationError("temperature must be positive")
+        _require_tuple("raw_logits", self.raw_logits)
+        if len(self.raw_logits) != 3:
+            raise ValidationError("raw_logits must contain exactly three values")
+        for index, logit in enumerate(self.raw_logits):
+            _require_finite_number(f"raw_logits[{index}]", logit)
+        if self.reused_from_observation_id is not None:
+            _require_text("reused_from_observation_id", self.reused_from_observation_id)
+            if self.reused_from_observation_id == self.observation_id:
+                raise ValidationError(
+                    "reused_from_observation_id must differ from observation_id"
+                )
+
+    @property
+    def digest_values(self) -> digests.TypedDirectVerificationExecutionValues:
+        return (
+            self.observation_id,
+            self.job_id,
+            self.admitted_pair_id,
+            self.model_artifact_id,
+            self.prompt_artifact_id,
+            self.execution_spec_hash,
+            self.pair_input_hash,
+            self.calibration_version,
+            self.calibration_artifact_sha256,
+            self.temperature,
+            self.raw_logits,
+            self.raw_output_hash,
+            self.reused_from_observation_id,
+        )
+
+
+def _m4_channel_set_hash(hits: tuple[M4ChannelHit, ...]) -> str:
+    identities: list[str] = []
+    for hit in hits:
+        identities.append(
+            stable_m4_digest(
+                "m4-discovery-channel-v1",
+                str(hit.epoch_id),
+                hit.pair.claim_id,
+                hit.pair.chunk_version_id,
+                hit.candidate_policy_id,
+                hit.channel.value,
+                str(hit.rank),
+                "" if hit.score is None else format(hit.score, ".17g"),
+                hit.channel_artifact_hash,
+            )
+        )
+    return stable_m4_digest("m4-discovery-channel-set-v1", *sorted(identities))
+
+
+def _m4_admitted_pair_id(epoch_id: int, job: M4LogicalJobSpec) -> str:
+    pair = job.pair
+    if pair is None:
+        raise ValidationError("typed-direct verifier job requires a pair")
+    return stable_m4_digest(
+        "m4-admitted-pair-v1",
+        str(epoch_id),
+        pair.claim_id,
+        pair.chunk_version_id,
+        job.candidate_policy_id,
+    )
+
+
+def _m4_admitted_pair_set_hash(pairs: tuple[M4AdmittedPair, ...]) -> str:
+    identities: list[str] = []
+    for admitted in pairs:
+        identities.append(
+            stable_m4_digest(
+                "m4-admitted-pair-v1",
+                str(admitted.epoch_id),
+                admitted.pair.claim_id,
+                admitted.pair.chunk_version_id,
+                admitted.candidate_policy_id,
+            )
+        )
+    return stable_m4_digest("m4-discovery-admitted-set-v1", *sorted(identities))
+
+
+@dataclass(frozen=True, slots=True)
+class M5TypedDirectLateReturnEnvelope:
+    epoch_id: int
+    return_kind: M5TypedDirectReturnKind
+    job_id: str
+    attempt_id: str
+    result_artifact_id: str
+    result_artifact_hash: str
+    verification_execution_present: bool | None
+    observation_eligible_for_currency: bool | None
+    requested_make_effective: bool | None
+    job: M4LogicalJobSpec
+    attempt: M4JobAttempt
+    completion: M4JobCompletion
+    discovery: M4DiscoveryResult | None
+    scope: M4DiscoveryScope | None
+    persisted_scope_kind: M5TypedDirectScopeKind | None
+    explicit_claim_ids: tuple[str, ...] | None
+    closed_revision: int | None
+    verification_execution: M5TypedDirectVerificationExecution | None
+    observation: SemanticObservation | None
+    observation_produced_epoch: int | None
+    observation_raw_output_hash: str | None
+    job_binding_digest: str
+    attempt_binding_digest: str
+    completion_binding_digest: str
+    discovery_binding_digest: str | None
+    scope_binding_digest: str | None
+    verifier_binding_digest: str | None
+    envelope_digest: str
+
+    def __post_init__(self) -> None:
+        _require_int("epoch_id", self.epoch_id, positive=True)
+        if not isinstance(self.return_kind, M5TypedDirectReturnKind):
+            raise ValidationError("return_kind must be an M5TypedDirectReturnKind")
+        if not isinstance(self.job, M4LogicalJobSpec):
+            raise ValidationError("job must be an immutable M4 LogicalJobSpec")
+        if not isinstance(self.attempt, M4JobAttempt):
+            raise ValidationError("attempt must be an immutable M4 JobAttempt")
+        if not isinstance(self.completion, M4JobCompletion):
+            raise ValidationError("completion must be an immutable M4 JobCompletion")
+        for name in ("job_id", "attempt_id", "result_artifact_id"):
+            _require_text(name, getattr(self, name))
+        _require_hash("result_artifact_hash", self.result_artifact_hash)
+        if (
+            self.job_id != self.job.job_id
+            or self.attempt_id != self.attempt.attempt_id
+            or self.attempt.job_id != self.job_id
+            or self.attempt.execution_spec_hash != self.job.execution_spec_hash
+            or self.completion.job_id != self.job_id
+            or self.completion.payload_hash != self.job.payload_hash
+            or self.completion.execution_spec_hash != self.job.execution_spec_hash
+            or self.result_artifact_id != self.completion.result_artifact_id
+            or self.result_artifact_hash != self.completion.result_artifact_hash
+        ):
+            raise ValidationError(
+                "typed-direct late return has inconsistent job/attempt/completion"
+            )
+        if self.attempt.attempt_id != stable_m4_digest(
+            "m4-job-attempt-v1", self.job_id, str(self.attempt.attempt_ordinal)
+        ) or self.attempt.lease_token_hash != stable_m4_digest(
+            "m4-lease-token-v1", self.job_id, str(self.attempt.attempt_ordinal)
+        ):
+            raise ValidationError(
+                "typed-direct late attempt violates frozen M4 identities"
+            )
+        closure = self.completion.child_closure
+        if self.job.expandable != (closure is not None):
+            raise ValidationError(
+                "typed-direct completion closure conflicts with its job kind"
+            )
+        if closure is not None and closure.completion_digest != stable_m4_digest(
+            "m4-expandable-completion-v1",
+            self.job_id,
+            self.result_artifact_hash,
+            closure.child_set_hash,
+        ):
+            raise ValidationError(
+                "typed-direct child closure violates frozen M4 identity"
+            )
+        expected_job = self._expected_job_binding_digest()
+        expected_attempt = self._expected_attempt_binding_digest()
+        expected_completion = self._expected_completion_binding_digest()
+        _require_identity("job_binding_digest", self.job_binding_digest, expected_job)
+        _require_identity(
+            "attempt_binding_digest", self.attempt_binding_digest, expected_attempt
+        )
+        _require_identity(
+            "completion_binding_digest",
+            self.completion_binding_digest,
+            expected_completion,
+        )
+        if self.return_kind is M5TypedDirectReturnKind.DISCOVERY:
+            self._validate_discovery_shape()
+        else:
+            self._validate_verifier_shape()
+        _require_identity(
+            "envelope_digest",
+            self.envelope_digest,
+            digests.typed_direct_late_return_envelope_digest(
+                epoch_id=self.epoch_id,
+                return_kind=self.return_kind,
+                job_binding_digest=self.job_binding_digest,
+                attempt_binding_digest=self.attempt_binding_digest,
+                completion_binding_digest=self.completion_binding_digest,
+                discovery_binding_digest=self.discovery_binding_digest,
+                scope_binding_digest=self.scope_binding_digest,
+                verifier_binding_digest=self.verifier_binding_digest,
+            ),
+        )
+
+    def _expected_job_binding_digest(self) -> str:
+        pair = self.job.pair
+        return digests.typed_direct_late_job_binding_digest(
+            job_id=self.job.job_id,
+            event_id=self.job.event_id,
+            job_kind=self.job.kind,
+            candidate_policy_id=self.job.candidate_policy_id,
+            payload_hash=self.job.payload_hash,
+            execution_spec_hash=self.job.execution_spec_hash,
+            parent_job_id=self.job.parent_job_id,
+            pair_claim_id=None if pair is None else pair.claim_id,
+            pair_chunk_version_id=(None if pair is None else pair.chunk_version_id),
+            target_claim_id=self.job.target_claim_id,
+            target_chunk_version_id=self.job.target_chunk_version_id,
+            expandable=self.job.expandable,
+        )
+
+    def _expected_attempt_binding_digest(self) -> str:
+        return digests.typed_direct_late_attempt_binding_digest(
+            attempt_id=self.attempt.attempt_id,
+            job_id=self.attempt.job_id,
+            execution_spec_hash=self.attempt.execution_spec_hash,
+            attempt_ordinal=self.attempt.attempt_ordinal,
+            lease_token_hash=self.attempt.lease_token_hash,
+        )
+
+    def _expected_completion_binding_digest(self) -> str:
+        closure = self.completion.child_closure
+        return digests.typed_direct_late_completion_binding_digest(
+            job_id=self.completion.job_id,
+            payload_hash=self.completion.payload_hash,
+            execution_spec_hash=self.completion.execution_spec_hash,
+            result_artifact_id=self.completion.result_artifact_id,
+            result_artifact_hash=self.completion.result_artifact_hash,
+            terminal_state=self.completion.terminal_state,
+            completion_digest=self.completion.completion_digest,
+            child_parent_job_id=(None if closure is None else closure.parent_job_id),
+            child_completion_digest=(
+                None if closure is None else closure.completion_digest
+            ),
+            child_set_hash=None if closure is None else closure.child_set_hash,
+            child_job_ids=() if closure is None else closure.child_job_ids,
+        )
+
+    def _validate_discovery_shape(self) -> None:
+        if self.job.kind not in {
+            M4JobKind.IMPACT_DISCOVERY,
+            M4JobKind.FRONTIER_RETRIEVE,
+        }:
+            raise ValidationError("discovery late return requires a discovery job")
+        if not isinstance(self.discovery, M4DiscoveryResult) or not isinstance(
+            self.scope, M4DiscoveryScope
+        ):
+            raise ValidationError("discovery late return requires result and scope")
+        verifier_only = (
+            self.verification_execution_present,
+            self.observation_eligible_for_currency,
+            self.requested_make_effective,
+            self.verification_execution,
+            self.observation,
+            self.observation_produced_epoch,
+            self.observation_raw_output_hash,
+            self.verifier_binding_digest,
+        )
+        if any(value is not None for value in verifier_only):
+            raise ValidationError(
+                "discovery late return cannot carry verifier-only fields"
+            )
+        if self.persisted_scope_kind is None:
+            raise ValidationError("discovery late return requires persisted scope kind")
+        if (
+            self.discovery.root_job_id != self.job_id
+            or self.discovery.result_artifact_id != self.result_artifact_id
+            or self.discovery.result_artifact_hash != self.result_artifact_hash
+            or self.scope.root_job_id != self.job_id
+        ):
+            raise ValidationError("discovery late return closure is inconsistent")
+        if self.persisted_scope_kind is M5TypedDirectScopeKind.EXPLICIT_CLAIMS:
+            if self.explicit_claim_ids is None:
+                raise ValidationError("explicit scope requires explicit claim IDs")
+            _require_sorted_unique_text("explicit_claim_ids", self.explicit_claim_ids)
+            if self.explicit_claim_ids != self.scope.registered_claim_ids:
+                raise ValidationError(
+                    "explicit scope IDs must match the immutable scope registry"
+                )
+        elif self.explicit_claim_ids is not None:
+            raise ValidationError("all-registered scope cannot carry explicit IDs")
+        if self.scope.closed != (self.closed_revision is not None):
+            raise ValidationError(
+                "scope closed flag and closed revision must be jointly shaped"
+            )
+        if self.closed_revision is not None:
+            _require_int("closed_revision", self.closed_revision)
+        for hit in self.discovery.channel_hits:
+            if (
+                hit.epoch_id != self.epoch_id
+                or hit.candidate_policy_id != self.job.candidate_policy_id
+            ):
+                raise ValidationError(
+                    "discovery channel hit escaped the enclosing epoch or policy"
+                )
+            if (
+                self.job.kind is M4JobKind.IMPACT_DISCOVERY
+                and hit.pair.chunk_version_id != self.job.target_chunk_version_id
+            ):
+                raise ValidationError("impact channel hit escaped its chunk scope")
+            if (
+                self.job.kind is M4JobKind.FRONTIER_RETRIEVE
+                and hit.pair.claim_id != self.job.target_claim_id
+            ):
+                raise ValidationError("frontier channel hit escaped its claim scope")
+        for admitted in self.discovery.admitted_pairs:
+            if (
+                admitted.epoch_id != self.epoch_id
+                or admitted.candidate_policy_id != self.job.candidate_policy_id
+            ):
+                raise ValidationError(
+                    "admitted pair escaped the enclosing epoch or policy"
+                )
+            if (
+                self.job.kind is M4JobKind.IMPACT_DISCOVERY
+                and admitted.pair.chunk_version_id != self.job.target_chunk_version_id
+            ):
+                raise ValidationError("impact admission escaped its chunk scope")
+            if (
+                self.job.kind is M4JobKind.FRONTIER_RETRIEVE
+                and admitted.pair.claim_id != self.job.target_claim_id
+            ):
+                raise ValidationError("frontier admission escaped its claim scope")
+        channel_set_hash = _m4_channel_set_hash(self.discovery.channel_hits)
+        admitted_pair_set_hash = _m4_admitted_pair_set_hash(
+            self.discovery.admitted_pairs
+        )
+        channel_rows: tuple[digests.TypedDirectChannelHitValues, ...] = tuple(
+            (
+                hit.epoch_id,
+                hit.pair.claim_id,
+                hit.pair.chunk_version_id,
+                hit.candidate_policy_id,
+                hit.channel,
+                hit.rank,
+                hit.score,
+                hit.channel_artifact_hash,
+            )
+            for hit in self.discovery.channel_hits
+        )
+        admitted_rows: tuple[digests.TypedDirectAdmittedPairValues, ...] = tuple(
+            (
+                admitted.epoch_id,
+                admitted.pair.claim_id,
+                admitted.pair.chunk_version_id,
+                admitted.candidate_policy_id,
+                admitted.fused_rank,
+                admitted.reasons,
+                admitted.mandatory_lineage,
+            )
+            for admitted in self.discovery.admitted_pairs
+        )
+        expected_discovery = digests.typed_direct_late_discovery_binding_digest(
+            root_job_id=self.discovery.root_job_id,
+            result_artifact_id=self.discovery.result_artifact_id,
+            result_artifact_hash=self.discovery.result_artifact_hash,
+            fallback_satisfied=self.discovery.fallback_satisfied,
+            channel_hit_count=len(self.discovery.channel_hits),
+            admitted_pair_count=len(self.discovery.admitted_pairs),
+            channel_set_hash=channel_set_hash,
+            admitted_pair_set_hash=admitted_pair_set_hash,
+            channel_hits=channel_rows,
+            admitted_pairs=admitted_rows,
+        )
+        expected_scope = digests.typed_direct_late_scope_binding_digest(
+            root_job_id=self.scope.root_job_id,
+            epoch_id=self.epoch_id,
+            registry_snapshot_id=self.scope.registry_snapshot_id,
+            registered_claim_ids=self.scope.registered_claim_ids,
+            closed=self.scope.closed,
+            persisted_scope_kind=self.persisted_scope_kind,
+            explicit_claim_ids=self.explicit_claim_ids,
+            closed_revision=self.closed_revision,
+        )
+        if self.discovery_binding_digest is None or self.scope_binding_digest is None:
+            raise ValidationError("discovery and scope binding digests are required")
+        _require_identity(
+            "discovery_binding_digest",
+            self.discovery_binding_digest,
+            expected_discovery,
+        )
+        _require_identity(
+            "scope_binding_digest", self.scope_binding_digest, expected_scope
+        )
+
+    def _validate_verifier_shape(self) -> None:
+        if self.job.kind is not M4JobKind.VERIFY_PAIR:
+            raise ValidationError("verifier late return requires a verifier job")
+        if any(
+            value is not None
+            for value in (
+                self.discovery,
+                self.scope,
+                self.persisted_scope_kind,
+                self.explicit_claim_ids,
+                self.closed_revision,
+                self.discovery_binding_digest,
+                self.scope_binding_digest,
+            )
+        ):
+            raise ValidationError(
+                "verifier late return cannot carry discovery-only fields"
+            )
+        for name in (
+            "verification_execution_present",
+            "observation_eligible_for_currency",
+            "requested_make_effective",
+        ):
+            value = getattr(self, name)
+            if value is None:
+                raise ValidationError(f"verifier late return requires {name}")
+            _require_bool(name, value)
+        if not isinstance(self.observation, SemanticObservation):
+            raise ValidationError("verifier late return requires an observation")
+        if self.observation_produced_epoch is None:
+            raise ValidationError(
+                "verifier late return requires observation_produced_epoch"
+            )
+        _require_int(
+            "observation_produced_epoch",
+            self.observation_produced_epoch,
+            positive=True,
+        )
+        if self.observation_produced_epoch != self.epoch_id:
+            raise ValidationError(
+                "observation produced epoch must equal the enclosing epoch"
+            )
+        if self.observation_raw_output_hash is None:
+            raise ValidationError(
+                "verifier late return requires observation_raw_output_hash"
+            )
+        _require_hash("observation_raw_output_hash", self.observation_raw_output_hash)
+        assert self.verification_execution_present is not None
+        if self.verification_execution_present != (
+            self.verification_execution is not None
+        ):
+            raise ValidationError(
+                "verification execution flag must match its whole optional tuple"
+            )
+        if self.observation_eligible_for_currency is not True:
+            raise ValidationError(
+                "unchanged direct insertion requires currency-eligible observation"
+            )
+        pair = self.job.pair
+        assert pair is not None
+        if (
+            self.observation.subject_kind is not SubjectKind.CLAIM
+            or self.observation.subject_id != pair.claim_id
+            or self.observation.chunk_version_id != pair.chunk_version_id
+        ):
+            raise ValidationError("late observation belongs to another semantic pair")
+        execution_values: digests.TypedDirectVerificationExecutionValues | None = None
+        if self.verification_execution is not None:
+            execution = self.verification_execution
+            if (
+                execution.observation_id != self.observation.observation_id
+                or execution.job_id != self.job_id
+                or execution.admitted_pair_id
+                != _m4_admitted_pair_id(self.epoch_id, self.job)
+                or execution.execution_spec_hash != self.job.execution_spec_hash
+                or execution.raw_output_hash != self.observation_raw_output_hash
+            ):
+                raise ValidationError(
+                    "verification execution disagrees with enclosing late return"
+                )
+            execution_values = execution.digest_values
+        elif self.observation_raw_output_hash != self.completion.result_artifact_hash:
+            raise ValidationError(
+                "absent execution requires completion artifact as raw-output hash"
+            )
+        assert self.observation_produced_epoch is not None
+        assert self.observation_raw_output_hash is not None
+        assert self.observation_eligible_for_currency is not None
+        assert self.requested_make_effective is not None
+        expected_verifier = digests.typed_direct_late_verifier_binding_digest(
+            result_artifact_id=self.result_artifact_id,
+            result_artifact_hash=self.result_artifact_hash,
+            verification_execution_present=self.verification_execution_present,
+            verification_execution=execution_values,
+            observation_id=self.observation.observation_id,
+            observation_subject_kind=self.observation.subject_kind,
+            observation_subject_id=self.observation.subject_id,
+            observation_chunk_version_id=self.observation.chunk_version_id,
+            observation_task_type=self.observation.task_type,
+            observation_support_score=self.observation.support_score,
+            observation_refute_score=self.observation.refute_score,
+            observation_neutral_score=self.observation.neutral_score,
+            observation_model_id=self.observation.producer.model_id,
+            observation_model_version=self.observation.producer.model_version,
+            observation_prompt_version=self.observation.producer.prompt_version,
+            observation_input_hash=self.observation.input_hash,
+            observation_produced_epoch=self.observation_produced_epoch,
+            observation_raw_output_hash=self.observation_raw_output_hash,
+            observation_eligible_for_currency=(self.observation_eligible_for_currency),
+            requested_make_effective=self.requested_make_effective,
+        )
+        if self.verifier_binding_digest is None:
+            raise ValidationError("verifier binding digest is required")
+        _require_identity(
+            "verifier_binding_digest",
+            self.verifier_binding_digest,
+            expected_verifier,
+        )
+
+    @classmethod
+    def build_discovery(
+        cls,
+        *,
+        epoch_id: int,
+        job: M4LogicalJobSpec,
+        attempt: M4JobAttempt,
+        completion: M4JobCompletion,
+        discovery: M4DiscoveryResult,
+        scope: M4DiscoveryScope,
+        persisted_scope_kind: M5TypedDirectScopeKind,
+        explicit_claim_ids: tuple[str, ...] | None,
+        closed_revision: int | None,
+    ) -> M5TypedDirectLateReturnEnvelope:
+        job_digest = digests.typed_direct_late_job_binding_digest(
+            job_id=job.job_id,
+            event_id=job.event_id,
+            job_kind=job.kind,
+            candidate_policy_id=job.candidate_policy_id,
+            payload_hash=job.payload_hash,
+            execution_spec_hash=job.execution_spec_hash,
+            parent_job_id=job.parent_job_id,
+            pair_claim_id=None if job.pair is None else job.pair.claim_id,
+            pair_chunk_version_id=(
+                None if job.pair is None else job.pair.chunk_version_id
+            ),
+            target_claim_id=job.target_claim_id,
+            target_chunk_version_id=job.target_chunk_version_id,
+            expandable=job.expandable,
+        )
+        attempt_digest = digests.typed_direct_late_attempt_binding_digest(
+            attempt_id=attempt.attempt_id,
+            job_id=attempt.job_id,
+            execution_spec_hash=attempt.execution_spec_hash,
+            attempt_ordinal=attempt.attempt_ordinal,
+            lease_token_hash=attempt.lease_token_hash,
+        )
+        closure = completion.child_closure
+        completion_digest = digests.typed_direct_late_completion_binding_digest(
+            job_id=completion.job_id,
+            payload_hash=completion.payload_hash,
+            execution_spec_hash=completion.execution_spec_hash,
+            result_artifact_id=completion.result_artifact_id,
+            result_artifact_hash=completion.result_artifact_hash,
+            terminal_state=completion.terminal_state,
+            completion_digest=completion.completion_digest,
+            child_parent_job_id=(None if closure is None else closure.parent_job_id),
+            child_completion_digest=(
+                None if closure is None else closure.completion_digest
+            ),
+            child_set_hash=None if closure is None else closure.child_set_hash,
+            child_job_ids=() if closure is None else closure.child_job_ids,
+        )
+        channel_set_hash = _m4_channel_set_hash(discovery.channel_hits)
+        admitted_pair_set_hash = _m4_admitted_pair_set_hash(discovery.admitted_pairs)
+        discovery_digest = digests.typed_direct_late_discovery_binding_digest(
+            root_job_id=discovery.root_job_id,
+            result_artifact_id=discovery.result_artifact_id,
+            result_artifact_hash=discovery.result_artifact_hash,
+            fallback_satisfied=discovery.fallback_satisfied,
+            channel_hit_count=len(discovery.channel_hits),
+            admitted_pair_count=len(discovery.admitted_pairs),
+            channel_set_hash=channel_set_hash,
+            admitted_pair_set_hash=admitted_pair_set_hash,
+            channel_hits=tuple(
+                (
+                    hit.epoch_id,
+                    hit.pair.claim_id,
+                    hit.pair.chunk_version_id,
+                    hit.candidate_policy_id,
+                    hit.channel,
+                    hit.rank,
+                    hit.score,
+                    hit.channel_artifact_hash,
+                )
+                for hit in discovery.channel_hits
+            ),
+            admitted_pairs=tuple(
+                (
+                    admitted.epoch_id,
+                    admitted.pair.claim_id,
+                    admitted.pair.chunk_version_id,
+                    admitted.candidate_policy_id,
+                    admitted.fused_rank,
+                    admitted.reasons,
+                    admitted.mandatory_lineage,
+                )
+                for admitted in discovery.admitted_pairs
+            ),
+        )
+        scope_digest = digests.typed_direct_late_scope_binding_digest(
+            root_job_id=scope.root_job_id,
+            epoch_id=epoch_id,
+            registry_snapshot_id=scope.registry_snapshot_id,
+            registered_claim_ids=scope.registered_claim_ids,
+            closed=scope.closed,
+            persisted_scope_kind=persisted_scope_kind,
+            explicit_claim_ids=explicit_claim_ids,
+            closed_revision=closed_revision,
+        )
+        envelope_digest = digests.typed_direct_late_return_envelope_digest(
+            epoch_id=epoch_id,
+            return_kind=M5TypedDirectReturnKind.DISCOVERY,
+            job_binding_digest=job_digest,
+            attempt_binding_digest=attempt_digest,
+            completion_binding_digest=completion_digest,
+            discovery_binding_digest=discovery_digest,
+            scope_binding_digest=scope_digest,
+            verifier_binding_digest=None,
+        )
+        return cls(
+            epoch_id=epoch_id,
+            return_kind=M5TypedDirectReturnKind.DISCOVERY,
+            job_id=job.job_id,
+            attempt_id=attempt.attempt_id,
+            result_artifact_id=completion.result_artifact_id,
+            result_artifact_hash=completion.result_artifact_hash,
+            verification_execution_present=None,
+            observation_eligible_for_currency=None,
+            requested_make_effective=None,
+            job=job,
+            attempt=attempt,
+            completion=completion,
+            discovery=discovery,
+            scope=scope,
+            persisted_scope_kind=persisted_scope_kind,
+            explicit_claim_ids=explicit_claim_ids,
+            closed_revision=closed_revision,
+            verification_execution=None,
+            observation=None,
+            observation_produced_epoch=None,
+            observation_raw_output_hash=None,
+            job_binding_digest=job_digest,
+            attempt_binding_digest=attempt_digest,
+            completion_binding_digest=completion_digest,
+            discovery_binding_digest=discovery_digest,
+            scope_binding_digest=scope_digest,
+            verifier_binding_digest=None,
+            envelope_digest=envelope_digest,
+        )
+
+    @classmethod
+    def build_verifier(
+        cls,
+        *,
+        epoch_id: int,
+        job: M4LogicalJobSpec,
+        attempt: M4JobAttempt,
+        completion: M4JobCompletion,
+        verification_execution: M5TypedDirectVerificationExecution | None,
+        observation: SemanticObservation,
+        observation_produced_epoch: int,
+        observation_raw_output_hash: str,
+        observation_eligible_for_currency: bool,
+        requested_make_effective: bool,
+    ) -> M5TypedDirectLateReturnEnvelope:
+        job_digest = digests.typed_direct_late_job_binding_digest(
+            job_id=job.job_id,
+            event_id=job.event_id,
+            job_kind=job.kind,
+            candidate_policy_id=job.candidate_policy_id,
+            payload_hash=job.payload_hash,
+            execution_spec_hash=job.execution_spec_hash,
+            parent_job_id=job.parent_job_id,
+            pair_claim_id=None if job.pair is None else job.pair.claim_id,
+            pair_chunk_version_id=(
+                None if job.pair is None else job.pair.chunk_version_id
+            ),
+            target_claim_id=job.target_claim_id,
+            target_chunk_version_id=job.target_chunk_version_id,
+            expandable=job.expandable,
+        )
+        attempt_digest = digests.typed_direct_late_attempt_binding_digest(
+            attempt_id=attempt.attempt_id,
+            job_id=attempt.job_id,
+            execution_spec_hash=attempt.execution_spec_hash,
+            attempt_ordinal=attempt.attempt_ordinal,
+            lease_token_hash=attempt.lease_token_hash,
+        )
+        closure = completion.child_closure
+        completion_digest = digests.typed_direct_late_completion_binding_digest(
+            job_id=completion.job_id,
+            payload_hash=completion.payload_hash,
+            execution_spec_hash=completion.execution_spec_hash,
+            result_artifact_id=completion.result_artifact_id,
+            result_artifact_hash=completion.result_artifact_hash,
+            terminal_state=completion.terminal_state,
+            completion_digest=completion.completion_digest,
+            child_parent_job_id=(None if closure is None else closure.parent_job_id),
+            child_completion_digest=(
+                None if closure is None else closure.completion_digest
+            ),
+            child_set_hash=None if closure is None else closure.child_set_hash,
+            child_job_ids=() if closure is None else closure.child_job_ids,
+        )
+        verifier_digest = digests.typed_direct_late_verifier_binding_digest(
+            result_artifact_id=completion.result_artifact_id,
+            result_artifact_hash=completion.result_artifact_hash,
+            verification_execution_present=verification_execution is not None,
+            verification_execution=(
+                None
+                if verification_execution is None
+                else verification_execution.digest_values
+            ),
+            observation_id=observation.observation_id,
+            observation_subject_kind=observation.subject_kind,
+            observation_subject_id=observation.subject_id,
+            observation_chunk_version_id=observation.chunk_version_id,
+            observation_task_type=observation.task_type,
+            observation_support_score=observation.support_score,
+            observation_refute_score=observation.refute_score,
+            observation_neutral_score=observation.neutral_score,
+            observation_model_id=observation.producer.model_id,
+            observation_model_version=observation.producer.model_version,
+            observation_prompt_version=observation.producer.prompt_version,
+            observation_input_hash=observation.input_hash,
+            observation_produced_epoch=observation_produced_epoch,
+            observation_raw_output_hash=observation_raw_output_hash,
+            observation_eligible_for_currency=observation_eligible_for_currency,
+            requested_make_effective=requested_make_effective,
+        )
+        envelope_digest = digests.typed_direct_late_return_envelope_digest(
+            epoch_id=epoch_id,
+            return_kind=M5TypedDirectReturnKind.VERIFIER,
+            job_binding_digest=job_digest,
+            attempt_binding_digest=attempt_digest,
+            completion_binding_digest=completion_digest,
+            discovery_binding_digest=None,
+            scope_binding_digest=None,
+            verifier_binding_digest=verifier_digest,
+        )
+        return cls(
+            epoch_id=epoch_id,
+            return_kind=M5TypedDirectReturnKind.VERIFIER,
+            job_id=job.job_id,
+            attempt_id=attempt.attempt_id,
+            result_artifact_id=completion.result_artifact_id,
+            result_artifact_hash=completion.result_artifact_hash,
+            verification_execution_present=verification_execution is not None,
+            observation_eligible_for_currency=observation_eligible_for_currency,
+            requested_make_effective=requested_make_effective,
+            job=job,
+            attempt=attempt,
+            completion=completion,
+            discovery=None,
+            scope=None,
+            persisted_scope_kind=None,
+            explicit_claim_ids=None,
+            closed_revision=None,
+            verification_execution=verification_execution,
+            observation=observation,
+            observation_produced_epoch=observation_produced_epoch,
+            observation_raw_output_hash=observation_raw_output_hash,
+            job_binding_digest=job_digest,
+            attempt_binding_digest=attempt_digest,
+            completion_binding_digest=completion_digest,
+            discovery_binding_digest=None,
+            scope_binding_digest=None,
+            verifier_binding_digest=verifier_digest,
+            envelope_digest=envelope_digest,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2800,6 +4676,8 @@ class M5EventRunResult:
     changed_state_references: tuple[M5ChangedStateReference, ...]
     failure_reason: M5RunFailureReason | None
     logical_result_hash: str | None
+    event_timing_coverage: M5RuntimeTimingCoverage | None = None
+    call_timing_coverage: M5RuntimeTimingCoverage | None = None
 
     @classmethod
     def build(
@@ -2819,6 +4697,8 @@ class M5EventRunResult:
         combined_deltas: tuple[StatusDelta, ...],
         changed_state_references: tuple[M5ChangedStateReference, ...],
         failure_reason: M5RunFailureReason | None,
+        event_timing_coverage: M5RuntimeTimingCoverage | None = None,
+        call_timing_coverage: M5RuntimeTimingCoverage | None = None,
     ) -> M5EventRunResult:
         if state is M5RunState.BLOCKED:
             logical_result_hash = None
@@ -2874,6 +4754,8 @@ class M5EventRunResult:
             changed_state_references,
             failure_reason,
             logical_result_hash,
+            event_timing_coverage,
+            call_timing_coverage,
         )
 
     def __post_init__(self) -> None:
@@ -2904,6 +4786,24 @@ class M5EventRunResult:
             raise ValidationError("publication receipt identity does not match epoch")
         validate_combined_deltas(self.combined_deltas, self.event_id)
         validate_changed_state_references(self.changed_state_references)
+        coverage_values = (
+            self.event_timing_coverage,
+            self.call_timing_coverage,
+        )
+        if any(value is None for value in coverage_values) and not all(
+            value is None for value in coverage_values
+        ):
+            raise ValidationError(
+                "event and call timing coverage are jointly present or absent"
+            )
+        if self.event_timing_coverage is not None:
+            assert self.call_timing_coverage is not None
+            self.event_timing_coverage.validate_aggregate(self.event_timing)
+            self.call_timing_coverage.validate_aggregate(self.call_timing)
+            if self.event_timing_coverage.terminal_client_roundtrip_included:
+                raise ValidationError(
+                    "durable event coverage cannot include terminal client roundtrip"
+                )
         if self.state is M5RunState.SEALED:
             if (
                 self.open_receipt.already_sealed
@@ -2922,6 +4822,7 @@ class M5EventRunResult:
                 or self.publication_receipt is not None
                 or self.replayed_outcome is not None
                 or self.failure_reason is None
+                or self.failure_reason is M5RunFailureReason.WORK_IN_PROGRESS
                 or self.logical_result_hash is None
             ):
                 raise ValidationError("failed run-result shape is invalid")
@@ -2938,6 +4839,11 @@ class M5EventRunResult:
                 raise ValidationError("blocked run-result shape is invalid")
         else:
             self._validate_replay_shape()
+        if (
+            self.failure_reason is M5RunFailureReason.WORK_IN_PROGRESS
+            and self.state is not M5RunState.BLOCKED
+        ):
+            raise ValidationError("work_in_progress is valid only for BLOCKED")
         if self.logical_result_hash is not None:
             _require_identity(
                 "logical_result_hash",
@@ -3113,27 +5019,332 @@ class M5RequirementFrontierHead:
 
 
 @dataclass(frozen=True, slots=True)
+class M5LeaseTerminalProjection:
+    terminal_state: M5JobState
+    terminal_reason: M5TerminalReason | None
+    completion_digest: str
+    terminal_identity_hash: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.terminal_state, M5JobState) or not (
+            self.terminal_state.terminal
+        ):
+            raise ValidationError("terminal projection requires a terminal job state")
+        if self.terminal_reason is not None and not isinstance(
+            self.terminal_reason, M5TerminalReason
+        ):
+            raise ValidationError("terminal_reason must be M5TerminalReason")
+        if self.terminal_state is M5JobState.COMPLETED_ACTIVE:
+            if self.terminal_reason is not None:
+                raise ValidationError("completed_active projection has no reason")
+        elif self.terminal_reason is None:
+            raise ValidationError("non-active terminal projection requires its reason")
+        _require_hash("completion_digest", self.completion_digest)
+        _require_hash("terminal_identity_hash", self.terminal_identity_hash)
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        logical_job_id: str,
+        terminal_state: M5JobState,
+        terminal_reason: M5TerminalReason | None,
+        completion_digest: str,
+    ) -> M5LeaseTerminalProjection:
+        return cls(
+            terminal_state=terminal_state,
+            terminal_reason=terminal_reason,
+            completion_digest=completion_digest,
+            terminal_identity_hash=digests.lease_terminal_projection_digest(
+                logical_job_id=logical_job_id,
+                terminal_state=terminal_state,
+                terminal_reason=terminal_reason,
+                completion_digest=completion_digest,
+            ),
+        )
+
+    def validate_job(self, logical_job_id: str) -> None:
+        _require_hash("logical_job_id", logical_job_id)
+        _require_identity(
+            "terminal_identity_hash",
+            self.terminal_identity_hash,
+            digests.lease_terminal_projection_digest(
+                logical_job_id=logical_job_id,
+                terminal_state=self.terminal_state,
+                terminal_reason=self.terminal_reason,
+                completion_digest=self.completion_digest,
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class M5JobLease:
     logical_job_id: str
     attempt: M5JobAttempt | None
     resulting_revision: int
     should_execute: bool
     exact_replay: bool
+    lease_expires_at: datetime | None = None
+    dispatch_record_digest: str | None = None
+    disposition: M5AcquisitionDisposition | None = None
+    terminal_projection: M5LeaseTerminalProjection | None = None
 
     def __post_init__(self) -> None:
         _require_hash("logical_job_id", self.logical_job_id)
         _require_int("resulting_revision", self.resulting_revision, positive=True)
         _require_bool("should_execute", self.should_execute)
         _require_bool("exact_replay", self.exact_replay)
-        if self.should_execute and self.attempt is None:
-            raise ValidationError("executable lease requires an attempt")
-        if self.exact_replay and self.should_execute:
-            raise ValidationError("exact acquisition replay cannot dispatch model work")
         if (
             self.attempt is not None
             and self.attempt.logical_job_id != self.logical_job_id
         ):
             raise ValidationError("lease attempt belongs to another job")
+        if self.disposition is None:
+            self._validate_legacy_bridge()
+            return
+        if not isinstance(self.disposition, M5AcquisitionDisposition):
+            raise ValidationError("disposition must be an M5AcquisitionDisposition")
+        if self.attempt is not None and not self.attempt.has_operational_lease:
+            raise ValidationError(
+                "D24 acquisition cannot use a legacy attempt without lease metadata"
+            )
+        if self.attempt is not None:
+            assert self.attempt.lease_expires_at is not None
+            if self.lease_expires_at != self.attempt.lease_expires_at:
+                raise ValidationError(
+                    "lease deadline must equal the attempt operational deadline"
+                )
+        elif self.lease_expires_at is not None:
+            raise ValidationError("lease without an attempt cannot carry a deadline")
+        if self.lease_expires_at is not None:
+            _require_timestamptz("lease_expires_at", self.lease_expires_at)
+        if self.dispatch_record_digest is not None:
+            _require_hash("dispatch_record_digest", self.dispatch_record_digest)
+
+        active_dispositions = {
+            M5AcquisitionDisposition.DISPATCH_NEW,
+            M5AcquisitionDisposition.DISPATCH_TAKEOVER,
+            M5AcquisitionDisposition.LIVE_LEASE,
+            M5AcquisitionDisposition.RESULT_RESERVED,
+        }
+        if self.disposition in active_dispositions:
+            if (
+                self.attempt is None
+                or self.lease_expires_at is None
+                or self.dispatch_record_digest is None
+                or self.terminal_projection is not None
+            ):
+                raise ValidationError(
+                    "nonterminal acquisition requires attempt, deadline, and dispatch"
+                )
+            executing = self.disposition in {
+                M5AcquisitionDisposition.DISPATCH_NEW,
+                M5AcquisitionDisposition.DISPATCH_TAKEOVER,
+            }
+            if self.should_execute is not executing or self.exact_replay is executing:
+                raise ValidationError(
+                    "acquisition execute/replay flags disagree with disposition"
+                )
+            return
+
+        if (
+            self.should_execute
+            or not self.exact_replay
+            or self.terminal_projection is None
+        ):
+            raise ValidationError("terminal acquisition total shape is invalid")
+        if (self.attempt is None) != (self.dispatch_record_digest is None):
+            raise ValidationError(
+                "terminal attempt and matching dispatch record are jointly present"
+            )
+        self.terminal_projection.validate_job(self.logical_job_id)
+
+    def _validate_legacy_bridge(self) -> None:
+        if any(
+            value is not None
+            for value in (
+                self.lease_expires_at,
+                self.dispatch_record_digest,
+                self.terminal_projection,
+            )
+        ):
+            raise ValidationError(
+                "legacy acquisition bridge cannot carry D24 operational fields"
+            )
+        if self.attempt is not None and self.attempt.has_operational_lease:
+            raise ValidationError(
+                "operational attempt requires an explicit D24 disposition"
+            )
+        if self.should_execute and self.attempt is None:
+            raise ValidationError("legacy executable lease requires an attempt")
+        if self.exact_replay and self.should_execute:
+            raise ValidationError("exact acquisition replay cannot dispatch model work")
+
+
+@dataclass(frozen=True, slots=True)
+class M5TypedDirectTerminalProjection:
+    terminal_state: M4JobState
+    terminal_reason: str | None
+    m4_completion_digest: str | None
+    completed_revision: int
+    terminal_identity_hash: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.terminal_state, M4JobState) or not (
+            self.terminal_state.terminal
+        ):
+            raise ValidationError(
+                "typed-direct projection requires a terminal M4 state"
+            )
+        if self.terminal_state is M4JobState.COMPLETED_ACTIVE:
+            if self.terminal_reason is not None or self.m4_completion_digest is None:
+                raise ValidationError(
+                    "completed_active direct projection has no reason and a completion"
+                )
+        elif self.terminal_state is M4JobState.COMPLETED_INACTIVE:
+            if (
+                self.terminal_reason != "inactive_at_completion"
+                or self.m4_completion_digest is None
+            ):
+                raise ValidationError(
+                    "completed_inactive direct projection requires exact reason"
+                )
+        elif self.terminal_reason is None:
+            raise ValidationError(
+                "failed or cancelled direct projection requires its exact reason"
+            )
+        if self.terminal_reason is not None:
+            _require_text("terminal_reason", self.terminal_reason)
+        if self.m4_completion_digest is not None:
+            _require_hash("m4_completion_digest", self.m4_completion_digest)
+        _require_int("completed_revision", self.completed_revision, positive=True)
+        _require_hash("terminal_identity_hash", self.terminal_identity_hash)
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        job_id: str,
+        terminal_state: M4JobState,
+        terminal_reason: str | None,
+        m4_completion_digest: str | None,
+        completed_revision: int,
+    ) -> M5TypedDirectTerminalProjection:
+        return cls(
+            terminal_state=terminal_state,
+            terminal_reason=terminal_reason,
+            m4_completion_digest=m4_completion_digest,
+            completed_revision=completed_revision,
+            terminal_identity_hash=(
+                digests.typed_direct_terminal_projection_digest(
+                    job_id=job_id,
+                    terminal_state=terminal_state,
+                    terminal_reason=terminal_reason,
+                    m4_completion_digest=m4_completion_digest,
+                    completed_revision=completed_revision,
+                )
+            ),
+        )
+
+    def validate_job(self, job_id: str) -> None:
+        _require_text("job_id", job_id)
+        _require_identity(
+            "terminal_identity_hash",
+            self.terminal_identity_hash,
+            digests.typed_direct_terminal_projection_digest(
+                job_id=job_id,
+                terminal_state=self.terminal_state,
+                terminal_reason=self.terminal_reason,
+                m4_completion_digest=self.m4_completion_digest,
+                completed_revision=self.completed_revision,
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class M5TypedDirectJobLease:
+    job_id: str
+    attempt_id: str | None
+    lease_token_hash: str | None
+    lease_expires_at: datetime | None
+    dispatch_record_digest: str | None
+    resulting_revision: int
+    disposition: M5AcquisitionDisposition
+    should_execute: bool
+    exact_replay: bool
+    already_completed: bool
+    terminal_projection: M5TypedDirectTerminalProjection | None
+
+    def __post_init__(self) -> None:
+        _require_text("job_id", self.job_id)
+        _require_int("resulting_revision", self.resulting_revision, positive=True)
+        if not isinstance(self.disposition, M5AcquisitionDisposition):
+            raise ValidationError("disposition must be an M5AcquisitionDisposition")
+        if self.disposition is M5AcquisitionDisposition.RESULT_RESERVED:
+            raise ValidationError("result_reserved is illegal for direct jobs")
+        for name in ("should_execute", "exact_replay", "already_completed"):
+            _require_bool(name, getattr(self, name))
+        attempt_binding = (
+            self.attempt_id,
+            self.lease_token_hash,
+            self.lease_expires_at,
+        )
+        if any(value is None for value in attempt_binding) and not all(
+            value is None for value in attempt_binding
+        ):
+            raise ValidationError(
+                "typed-direct attempt, token, and deadline are jointly shaped"
+            )
+        if self.attempt_id is not None:
+            _require_text("attempt_id", self.attempt_id)
+            assert self.lease_token_hash is not None
+            assert self.lease_expires_at is not None
+            _require_hash("lease_token_hash", self.lease_token_hash)
+            _require_timestamptz("lease_expires_at", self.lease_expires_at)
+        if self.dispatch_record_digest is not None:
+            _require_hash("dispatch_record_digest", self.dispatch_record_digest)
+
+        if self.disposition in {
+            M5AcquisitionDisposition.DISPATCH_NEW,
+            M5AcquisitionDisposition.DISPATCH_TAKEOVER,
+            M5AcquisitionDisposition.LIVE_LEASE,
+        }:
+            if (
+                self.attempt_id is None
+                or self.dispatch_record_digest is None
+                or self.terminal_projection is not None
+                or self.already_completed
+            ):
+                raise ValidationError("active typed-direct lease shape is invalid")
+            executing = self.disposition in {
+                M5AcquisitionDisposition.DISPATCH_NEW,
+                M5AcquisitionDisposition.DISPATCH_TAKEOVER,
+            }
+            if self.should_execute is not executing or self.exact_replay is executing:
+                raise ValidationError(
+                    "typed-direct execute/replay flags disagree with disposition"
+                )
+            return
+
+        if (
+            self.should_execute
+            or not self.exact_replay
+            or self.terminal_projection is None
+        ):
+            raise ValidationError("terminal typed-direct lease shape is invalid")
+        if (self.attempt_id is None) != (self.dispatch_record_digest is None):
+            raise ValidationError(
+                "terminal direct attempt and dispatch are jointly present"
+            )
+        self.terminal_projection.validate_job(self.job_id)
+        expected_completed = self.terminal_projection.terminal_state in {
+            M4JobState.COMPLETED_ACTIVE,
+            M4JobState.COMPLETED_INACTIVE,
+        }
+        if self.already_completed is not expected_completed:
+            raise ValidationError(
+                "already_completed must exactly project completed M4 states"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -3338,23 +5549,30 @@ __all__ = [
     "M5ActivationPort",
     "M5ActivationReceipt",
     "M5ActivationRequest",
+    "M5AcquisitionDisposition",
     "M5AttemptArchiveReason",
     "M5AttemptCompletionReceipt",
     "M5AttemptDisposition",
+    "M5AttemptExecutionEvidence",
     "M5AttemptOutput",
     "M5AttemptResultArtifact",
+    "M5CallAmbiguityReport",
     "M5CancellationPlan",
     "M5CancellationReceipt",
     "M5CandidatePolicyManifest",
     "M5ChangedStateReference",
     "M5DiscoveryDirection",
     "M5DiscoveryScopeContract",
+    "M5DispatchRecord",
     "M5EventRunResult",
+    "M5ExecutionEvidenceDisposition",
+    "M5ExpiredAttemptReturn",
     "M5JobAttempt",
     "M5JobCompletion",
     "M5JobKind",
     "M5JobLease",
     "M5JobState",
+    "M5LeaseTerminalProjection",
     "M5LogicalJobSpec",
     "M5OwnerPendingCounter",
     "M5RequirementAdmissionChannel",
@@ -3365,6 +5583,7 @@ __all__ = [
     "M5RequirementFallbackKey",
     "M5RequirementFrontierHead",
     "M5RequirementPairInput",
+    "M5RequirementRootProvenance",
     "M5RequirementScopeContract",
     "M5RequirementScopeSelection",
     "M5RequirementVerifierArtifact",
@@ -3375,14 +5594,27 @@ __all__ = [
     "M5RunFailureReason",
     "M5RunState",
     "M5RuntimeTiming",
+    "M5RuntimeTimingCoverage",
+    "M5RuntimeTimingObservation",
+    "M5RuntimeOperationalConfig",
+    "M5RuntimeSubgraph",
     "M5RuntimeWork",
+    "M5RuntimeWorkContributionKind",
     "M5ScopeState",
     "M5StateReferenceKind",
     "M5TerminalReason",
     "M5TextNormalizerProvenance",
     "M5TypedApplication",
+    "M5TypedDirectJobLease",
+    "M5TypedDirectLateReturnEnvelope",
+    "M5TypedDirectReturnKind",
+    "M5TypedDirectScopeKind",
+    "M5TypedDirectTerminalProjection",
+    "M5TypedDirectVerificationExecution",
     "M5TypedEventPlan",
     "M5TypedRuntimeEvent",
+    "M5TransitionTimingAnchor",
+    "M5TransitionTimingReceipt",
     "M5_NORMALIZER_PROVENANCE_HASH",
     "M5_REQUIREMENT_TASK",
     "RequirementRegistrySnapshot",
