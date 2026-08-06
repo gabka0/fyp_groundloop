@@ -46,6 +46,11 @@ M5_ORACLE_LABEL = "sql/m5/full_recompute_oracle.sql"
 M5_MIGRATION_PATH = ROOT / M5_MIGRATION_LABEL
 M5_ORACLE_PATH = ROOT / M5_ORACLE_LABEL
 
+M5_RUNTIME_BUNDLE_ID = "m5-runtime-schema-bundle-v2"
+M5_RUNTIME_MIGRATION_LABEL = "migrations/015_m5_runtime.sql"
+M5_RUNTIME_MIGRATION_PATH = ROOT / M5_RUNTIME_MIGRATION_LABEL
+M5_RUNTIME_ORACLE_SHA256 = hashlib.sha256(b"").hexdigest()
+
 _PREREQUISITE_RELATIONS = (
     "groundloop_epoch",
     "groundloop_semantic_observation",
@@ -270,6 +275,37 @@ M5_CATALOG_PREFLIGHT_ROW_EXCLUSIVE_RELATIONS = tuple(
     if relation not in M5_INSTALL_LOCK_RELATIONS
 )
 
+M5_RUNTIME_INSTALL_LOCK_RELATIONS = (
+    "groundloop_runtime_mode",
+    "groundloop_m4_publication_head",
+    "groundloop_m5_publication_head",
+    "groundloop_epoch",
+)
+
+_M5_RUNTIME_PREREQUISITE_RELATIONS = (
+    "groundloop_m5_schema_bundle",
+    "groundloop_runtime_mode",
+    "groundloop_m4_publication_head",
+    "groundloop_m5_publication_head",
+    "groundloop_m5_activation",
+    "groundloop_semantic_subject",
+    "groundloop_m5_update",
+    "groundloop_m5_group_family",
+    "groundloop_m5_group_version",
+    "groundloop_m5_requirement_version",
+    "groundloop_m5_working_currency_history",
+    "groundloop_m5_working_requirement_state",
+    "groundloop_m5_working_group_state",
+    "groundloop_m5_working_claim_state",
+    "groundloop_m5_working_answer_state",
+    "groundloop_m5_published_requirement_state",
+    "groundloop_m5_published_group_state",
+    "groundloop_m5_published_claim_state",
+    "groundloop_m5_published_answer_state",
+    "groundloop_m5_group_certificate_artifact",
+    "groundloop_m5_claim_certificate_artifact",
+)
+
 
 class M5BundleError(RuntimeError):
     """The M5 schema bundle cannot be installed or replayed safely."""
@@ -281,6 +317,10 @@ class M5BundleHashConflictError(M5BundleError):
 
 class M5PrerequisiteError(M5BundleError):
     """The target search path is not an intact migration-013 schema."""
+
+
+class M5RuntimeBundleError(M5BundleError):
+    """The M5 runtime schema bundle cannot be installed or replayed safely."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,6 +335,21 @@ class M5BundleIdentity:
 @dataclass(frozen=True, slots=True)
 class M5BundleInstallResult:
     identity: M5BundleIdentity
+    applied: bool
+
+
+@dataclass(frozen=True, slots=True)
+class M5RuntimeBundleIdentity:
+    bundle_id: str
+    bundle_sha256: str
+    migration_sha256: str
+    oracle_sha256: str
+    prerequisite_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class M5RuntimeBundleInstallResult:
+    identity: M5RuntimeBundleIdentity
     applied: bool
 
 
@@ -348,6 +403,35 @@ def m5_bundle_identity(
         migration_sha256=migration_hash,
         oracle_sha256=oracle_hash,
         prerequisite_source_sha256=legacy_prerequisite_source_sha256(),
+    )
+
+
+def m5_runtime_bundle_identity(
+    *,
+    migration_bytes: bytes | None = None,
+    core_identity: M5BundleIdentity | None = None,
+) -> M5RuntimeBundleIdentity:
+    """Return the exact migration-015 identity bound to the local 014 bundle."""
+
+    migration = (
+        M5_RUNTIME_MIGRATION_PATH.read_bytes()
+        if migration_bytes is None
+        else migration_bytes
+    )
+    accepted_core = m5_bundle_identity() if core_identity is None else core_identity
+    migration_hash = _sha256(migration)
+    bundle_hash = stable_m5_digest(
+        M5_RUNTIME_BUNDLE_ID,
+        text_field(M5_RUNTIME_MIGRATION_LABEL),
+        hash_field(migration_hash),
+        hash_field(accepted_core.bundle_sha256),
+    )
+    return M5RuntimeBundleIdentity(
+        bundle_id=M5_RUNTIME_BUNDLE_ID,
+        bundle_sha256=bundle_hash,
+        migration_sha256=migration_hash,
+        oracle_sha256=M5_RUNTIME_ORACLE_SHA256,
+        prerequisite_sha256=accepted_core.bundle_sha256,
     )
 
 
@@ -639,19 +723,230 @@ def install_m5_core_bundle(
         return M5BundleInstallResult(identity=identity, applied=True)
 
 
+def _verify_m5_core_bundle_prerequisite(connection: Connection[Any]) -> None:
+    missing = tuple(
+        relation
+        for relation in _M5_RUNTIME_PREREQUISITE_RELATIONS
+        if not _relation_exists(connection, relation)
+    )
+    if missing:
+        raise M5PrerequisiteError(
+            "M5 runtime bundle requires migration-014 relations; missing: "
+            + ", ".join(missing)
+        )
+
+    expected_core = m5_bundle_identity()
+    actual_core = _read_ledger(connection, expected_core.bundle_id)
+    expected_row = (
+        expected_core.bundle_sha256,
+        expected_core.migration_sha256,
+        expected_core.oracle_sha256,
+        expected_core.prerequisite_source_sha256,
+    )
+    if actual_core is None:
+        raise M5PrerequisiteError(
+            "M5 runtime bundle requires the accepted migration-014 ledger row"
+        )
+    if actual_core != expected_row:
+        raise M5PrerequisiteError(
+            "M5 runtime bundle requires the exact accepted migration-014 bundle"
+        )
+
+    immutable_trigger = connection.execute(
+        """
+        SELECT trigger_row.tgenabled, function_row.proname
+        FROM pg_trigger AS trigger_row
+        JOIN pg_proc AS function_row ON function_row.oid = trigger_row.tgfoid
+        WHERE trigger_row.tgrelid = 'groundloop_m5_schema_bundle'::regclass
+          AND trigger_row.tgname = 'groundloop_m5_schema_bundle_immutable'
+          AND NOT trigger_row.tgisinternal
+        """
+    ).fetchone()
+    if immutable_trigger != ("O", "groundloop_m5_reject_immutable_row"):
+        raise M5PrerequisiteError(
+            "migration-014 bundle ledger immutability trigger is missing or changed"
+        )
+
+    mode_rows = connection.execute(
+        """
+        SELECT singleton, mode, mode_revision
+        FROM groundloop_runtime_mode
+        ORDER BY singleton
+        """
+    ).fetchall()
+    if len(mode_rows) != 1 or tuple(mode_rows[0][:2]) not in {
+        (True, "v1_only"),
+        (True, "m5_active"),
+    }:
+        raise M5PrerequisiteError("migration-014 runtime-mode singleton is invalid")
+
+
+def _acquire_m5_runtime_install_locks(connection: Connection[Any]) -> None:
+    """Serialize 015 installation in the frozen runtime lock order."""
+
+    for relation in M5_RUNTIME_INSTALL_LOCK_RELATIONS:
+        # Names are frozen local constants, never caller input.
+        connection.execute(f"LOCK TABLE {relation} IN SHARE ROW EXCLUSIVE MODE")
+
+
+def _m5_runtime_install_guard_snapshot(
+    connection: Connection[Any],
+) -> tuple[tuple[object, ...], tuple[tuple[object, ...], ...]]:
+    mode = connection.execute(
+        """
+        SELECT singleton, mode, mode_revision, updated_at
+        FROM groundloop_runtime_mode
+        WHERE singleton
+        """
+    ).fetchone()
+    if mode is None:
+        raise M5PrerequisiteError("migration-014 runtime-mode singleton is missing")
+    singleton_rows = connection.execute(
+        """
+        SELECT surface, singleton, identity, revision, audit_time
+        FROM (
+            SELECT 'm4_head'::text AS surface,
+                   head.singleton,
+                   head.epoch_id::text AS identity,
+                   epoch.revision AS revision,
+                   head.updated_at AS audit_time
+            FROM groundloop_m4_publication_head AS head
+            JOIN groundloop_epoch AS epoch ON epoch.epoch_id = head.epoch_id
+            UNION ALL
+            SELECT 'm5_head'::text,
+                   singleton,
+                   epoch_id::text,
+                   sealed_revision,
+                   updated_at
+            FROM groundloop_m5_publication_head
+            UNION ALL
+            SELECT 'activation'::text,
+                   singleton,
+                   activation_id,
+                   base_m4_epoch_id,
+                   activated_at
+            FROM groundloop_m5_activation
+        ) AS protected_surface
+        ORDER BY surface, identity
+        """
+    ).fetchall()
+    return tuple(mode), tuple(tuple(row) for row in singleton_rows)
+
+
+def install_m5_runtime_bundle(
+    connection: Connection[Any],
+    *,
+    failure_injector: Callable[[str], None] | None = None,
+    migration_bytes: bytes | None = None,
+) -> M5RuntimeBundleInstallResult:
+    """Atomically install or exactly replay migration 015.
+
+    The runtime bundle is content-bound to the exact local 014 schema/oracle
+    identity.  It neither changes runtime mode nor activates M5.
+    """
+
+    identity = m5_runtime_bundle_identity(migration_bytes=migration_bytes)
+    migration = (
+        M5_RUNTIME_MIGRATION_PATH.read_bytes()
+        if migration_bytes is None
+        else migration_bytes
+    )
+
+    with connection.transaction():
+        # Validate the accepted 014 ledger and its consumed relations before
+        # the first statement from migration 015 can execute.
+        _verify_m5_core_bundle_prerequisite(connection)
+        _acquire_m5_runtime_install_locks(connection)
+        _verify_m5_core_bundle_prerequisite(connection)
+
+        ledger = _read_ledger(connection, identity.bundle_id)
+        if ledger is not None:
+            expected = (
+                identity.bundle_sha256,
+                identity.migration_sha256,
+                identity.oracle_sha256,
+                identity.prerequisite_sha256,
+            )
+            if ledger != expected:
+                raise M5BundleHashConflictError(
+                    f"bundle {identity.bundle_id} is already ledgered with "
+                    "different content"
+                )
+            return M5RuntimeBundleInstallResult(identity=identity, applied=False)
+
+        live_epoch_row = connection.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM groundloop_epoch
+                WHERE structural_status = 'committed'
+                  AND semantic_status IN ('pending', 'complete')
+            )
+            """
+        ).fetchone()
+        if live_epoch_row is None:
+            raise M5RuntimeBundleError("live-epoch guard returned no row")
+        if bool(live_epoch_row[0]):
+            raise M5RuntimeBundleError(
+                "M5 runtime bundle requires no committed pending/complete epoch"
+            )
+
+        protected_before = _m5_runtime_install_guard_snapshot(connection)
+        connection.execute(migration.decode("utf-8"))
+        if failure_injector is not None:
+            failure_injector("after_schema")
+        connection.execute("SET CONSTRAINTS ALL IMMEDIATE")
+        if failure_injector is not None:
+            failure_injector("after_constraints")
+        if _m5_runtime_install_guard_snapshot(connection) != protected_before:
+            raise M5RuntimeBundleError(
+                "migration 015 changed runtime mode, activation, or a publication head"
+            )
+        if failure_injector is not None:
+            failure_injector("before_ledger")
+        connection.execute(
+            """
+            INSERT INTO groundloop_m5_schema_bundle (
+                bundle_id, bundle_sha256, migration_sha256, oracle_sha256,
+                prerequisite_sha256, applied_at
+            ) VALUES (%s, %s, %s, %s, %s, now())
+            """,
+            (
+                identity.bundle_id,
+                identity.bundle_sha256,
+                identity.migration_sha256,
+                identity.oracle_sha256,
+                identity.prerequisite_sha256,
+            ),
+        )
+        if failure_injector is not None:
+            failure_injector("after_ledger")
+        return M5RuntimeBundleInstallResult(identity=identity, applied=True)
+
+
 __all__ = [
     "LEGACY_MIGRATION_NAMES",
     "LEGACY_MIGRATION_PATHS",
     "M5_BUNDLE_ID",
     "M5_CATALOG_PREFLIGHT_ROW_EXCLUSIVE_RELATIONS",
     "M5_INSTALL_LOCK_RELATIONS",
+    "M5_RUNTIME_BUNDLE_ID",
+    "M5_RUNTIME_INSTALL_LOCK_RELATIONS",
+    "M5_RUNTIME_MIGRATION_LABEL",
+    "M5_RUNTIME_MIGRATION_PATH",
+    "M5_RUNTIME_ORACLE_SHA256",
     "M5BundleError",
     "M5BundleHashConflictError",
     "M5BundleIdentity",
     "M5BundleInstallResult",
     "M5PrerequisiteError",
+    "M5RuntimeBundleError",
+    "M5RuntimeBundleIdentity",
+    "M5RuntimeBundleInstallResult",
     "apply_legacy_migrations",
     "install_m5_core_bundle",
+    "install_m5_runtime_bundle",
     "legacy_prerequisite_source_sha256",
     "m5_bundle_identity",
+    "m5_runtime_bundle_identity",
 ]
