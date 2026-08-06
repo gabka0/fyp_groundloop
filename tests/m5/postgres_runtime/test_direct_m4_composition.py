@@ -6,7 +6,7 @@ import hashlib
 import os
 import uuid
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import psycopg
@@ -20,6 +20,7 @@ from groundloop.domain import (
     SemanticObservation,
     SubjectKind,
 )
+from groundloop.errors import EventConflictError, ValidationError
 from groundloop.m4.application import (
     DiscoveryResult,
     DynamicEventPlan,
@@ -543,6 +544,326 @@ def _verifier_completion(
 
 class _RollbackOuterTransaction(RuntimeError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class _OpenedDirectEpoch:
+    event: DynamicEventPlan
+    payload: StructuralPayload
+    withdrawal: StructuralWithdrawal
+    root: LogicalJobSpec
+    scope: DiscoveryScope
+    epoch_id: int
+    adapter: PostgresM5DirectM4Adapter
+
+
+def _open_direct_epoch(database: DirectRuntimeDatabase) -> _OpenedDirectEpoch:
+    event, payload = _event_and_payload(database)
+    withdrawal = database.ports.plan_exact_withdrawal(event)
+    root = _job(
+        event,
+        kind=JobKind.IMPACT_DISCOVERY,
+        execution_hash=IMPACT_EXECUTION_HASH,
+        chunk_id=NEW_CHUNK_ID,
+    )
+    scope = DiscoveryScope(root.job_id, REGISTRY_ID, ())
+    adapter = PostgresM5DirectM4Adapter(database.ports)
+    with database.connection.transaction(), database.connection.cursor() as cursor:
+        epoch_id, requirements, active_chunks = _insert_typed_outer_declaration(
+            cursor, database, event
+        )
+        opened = adapter.stage_direct_open(
+            cursor,
+            event,
+            payload,
+            withdrawal,
+            (root,),
+            (scope,),
+        )
+        assert opened.epoch_id == epoch_id
+        assert not opened.replayed
+        _persist_typed_outer_snapshots(
+            cursor,
+            epoch_id,
+            requirements,
+            active_chunks,
+        )
+        cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
+    adapter._after_outer_commit()
+    return _OpenedDirectEpoch(
+        event,
+        payload,
+        withdrawal,
+        root,
+        scope,
+        epoch_id,
+        adapter,
+    )
+
+
+def _direct_replay_snapshot(
+    connection: Connection[Any], epoch_id: int
+) -> tuple[object, ...]:
+    return (
+        connection.execute(
+            """
+            SELECT revision, structural_status, semantic_status,
+                   evaluation_state, open_job_count, open_scope_count
+            FROM groundloop_epoch WHERE epoch_id = %s
+            """,
+            (epoch_id,),
+        ).fetchone(),
+        connection.execute(
+            """
+            SELECT revision, runtime_state, open_work_count, open_scope_count
+            FROM groundloop_m5_runtime_epoch WHERE epoch_id = %s
+            """,
+            (epoch_id,),
+        ).fetchone(),
+        tuple(
+            connection.execute(
+                """
+                SELECT job_id, job_state, parent_job_id, completed_revision
+                FROM groundloop_semantic_job
+                WHERE epoch_id = %s ORDER BY job_id
+                """,
+                (epoch_id,),
+            ).fetchall()
+        ),
+        tuple(
+            connection.execute(
+                """
+                SELECT root_job_id, registry_snapshot_id, closed_revision
+                FROM groundloop_discovery_scope
+                WHERE epoch_id = %s ORDER BY root_job_id
+                """,
+                (epoch_id,),
+            ).fetchall()
+        ),
+        connection.execute(
+            """
+            SELECT lifecycle_state, default_evaluation_state,
+                   open_discovery_scope_count, revision
+            FROM groundloop_m4_evaluation_epoch_counter
+            WHERE epoch_id = %s
+            """,
+            (epoch_id,),
+        ).fetchone(),
+        connection.execute(
+            "SELECT count(*) FROM groundloop_m4_update WHERE epoch_id = %s",
+            (epoch_id,),
+        ).fetchone(),
+    )
+
+
+def _reconnect_and_replay_open(
+    database: DirectRuntimeDatabase,
+    opened: _OpenedDirectEpoch,
+    *,
+    expected_revision: int,
+) -> tuple[PostgresM4ApplicationPorts, PostgresM5DirectM4Adapter]:
+    ports = PostgresM4ApplicationPorts(
+        database.connection,
+        structural_payloads={},
+        execution_mode=M4ExecutionMode.MEASURED,
+    )
+    adapter = PostgresM5DirectM4Adapter(ports)
+    before = _direct_replay_snapshot(database.connection, opened.epoch_id)
+
+    with database.connection.transaction(), database.connection.cursor() as cursor:
+        with pytest.raises(
+            ValidationError,
+            match="open declaration cannot supply a closed scope",
+        ):
+            adapter.stage_direct_open(
+                cursor,
+                opened.event,
+                opened.payload,
+                opened.withdrawal,
+                (opened.root,),
+                (replace(opened.scope, closed=True),),
+            )
+
+        replay = adapter.stage_direct_open(
+            cursor,
+            opened.event,
+            opened.payload,
+            opened.withdrawal,
+            (opened.root,),
+            (opened.scope,),
+        )
+        assert replay.replayed
+        assert replay.epoch_id == opened.epoch_id
+        header = ports.runtime_store.read_epoch_header_point(
+            opened.epoch_id, cursor=cursor
+        )
+        assert header.revision == expected_revision
+    adapter._after_outer_commit()
+
+    assert _direct_replay_snapshot(database.connection, opened.epoch_id) == before
+    assert ports._active_epoch_id == opened.epoch_id
+    inserted = opened.payload.inserted
+    assert inserted is not None
+    assert (
+        ports._working_repository.document_version(NEW_DOCUMENT_VERSION_ID)
+        == inserted.version
+    )
+    assert ports._working_repository.is_chunk_active(NEW_CHUNK_ID)
+    return ports, adapter
+
+
+def test_first_direct_declaration_still_requires_revision_one(
+    direct_runtime_db: DirectRuntimeDatabase,
+) -> None:
+    database = direct_runtime_db
+    event, payload = _event_and_payload(database)
+    withdrawal = database.ports.plan_exact_withdrawal(event)
+    root = _job(
+        event,
+        kind=JobKind.IMPACT_DISCOVERY,
+        execution_hash=IMPACT_EXECUTION_HASH,
+        chunk_id=NEW_CHUNK_ID,
+    )
+    scope = DiscoveryScope(root.job_id, REGISTRY_ID, ())
+    adapter = PostgresM5DirectM4Adapter(database.ports)
+
+    with pytest.raises(_RollbackOuterTransaction):
+        try:
+            with (
+                database.connection.transaction(),
+                database.connection.cursor() as cursor,
+            ):
+                epoch_id, _, _ = _insert_typed_outer_declaration(
+                    cursor, database, event
+                )
+                _authorize(cursor, epoch_id, 1)
+                cursor.execute(
+                    "UPDATE groundloop_epoch SET revision = 2 WHERE epoch_id = %s",
+                    (epoch_id,),
+                )
+                cursor.execute(
+                    """
+                    UPDATE groundloop_m5_runtime_epoch
+                    SET runtime_state = 'semantic_pending', revision = 2
+                    WHERE epoch_id = %s
+                    """,
+                    (epoch_id,),
+                )
+                with pytest.raises(
+                    EventConflictError,
+                    match="requires the revision-1 structural epoch",
+                ):
+                    adapter.stage_direct_open(
+                        cursor,
+                        event,
+                        payload,
+                        withdrawal,
+                        (root,),
+                        (scope,),
+                    )
+                raise _RollbackOuterTransaction
+        finally:
+            adapter._after_outer_rollback()
+
+    assert database.connection.execute(
+        "SELECT count(*) FROM groundloop_epoch WHERE event_id = %s",
+        (event.update.event_id,),
+    ).fetchone() == (0,)
+
+
+def test_exact_open_replay_rehydrates_after_acquire_and_scope_closure(
+    direct_runtime_db: DirectRuntimeDatabase,
+) -> None:
+    database = direct_runtime_db
+    opened = _open_direct_epoch(database)
+
+    with database.connection.transaction(), database.connection.cursor() as cursor:
+        _authorize(cursor, opened.epoch_id, 1)
+        root_lease = opened.adapter.acquire_direct_job(
+            cursor,
+            opened.epoch_id,
+            1,
+            opened.root,
+            _deterministic_lease_token(opened.root),
+        )
+        _advance_typed_runtime(cursor, opened.epoch_id, 1, "semantic_pending")
+
+    _, acquisition_adapter = _reconnect_and_replay_open(
+        database,
+        opened,
+        expected_revision=2,
+    )
+    discovery, root_completion, child = _complete_expansion(
+        opened.epoch_id,
+        opened.event,
+        opened.root,
+        database.base.claim_ids[0],
+    )
+    with database.connection.transaction(), database.connection.cursor() as cursor:
+        _authorize(cursor, opened.epoch_id, 2)
+        acquisition_adapter.stage_direct_expansion(
+            cursor,
+            opened.epoch_id,
+            2,
+            root_lease,
+            discovery,
+            root_completion,
+            (child,),
+        )
+        _advance_typed_runtime(cursor, opened.epoch_id, 2, "semantic_pending")
+
+    assert database.connection.execute(
+        """
+        SELECT closed_revision FROM groundloop_discovery_scope
+        WHERE root_job_id = %s
+        """,
+        (opened.root.job_id,),
+    ).fetchone() == (3,)
+    _, closed_scope_adapter = _reconnect_and_replay_open(
+        database,
+        opened,
+        expected_revision=3,
+    )
+
+    with database.connection.transaction(), database.connection.cursor() as cursor:
+        _authorize(cursor, opened.epoch_id, 3)
+        child_lease = closed_scope_adapter.acquire_direct_job(
+            cursor,
+            opened.epoch_id,
+            3,
+            child,
+            _deterministic_lease_token(child),
+        )
+        _advance_typed_runtime(cursor, opened.epoch_id, 3, "semantic_pending")
+
+    completion, observation = _verifier_completion(child)
+    with database.connection.transaction(), database.connection.cursor() as cursor:
+        _authorize(cursor, opened.epoch_id, 4)
+        receipt = closed_scope_adapter.stage_direct_verifier_completion(
+            cursor,
+            opened.epoch_id,
+            4,
+            child_lease,
+            child,
+            completion,
+            observation,
+            True,
+        )
+        assert receipt.artifact_stored
+        assert receipt.made_effective
+        _advance_typed_runtime(cursor, opened.epoch_id, 4, "semantic_complete")
+    closed_scope_adapter._after_outer_commit()
+
+    assert database.connection.execute(
+        """
+        SELECT base.revision, base.semantic_status,
+               runtime.revision, runtime.runtime_state
+        FROM groundloop_epoch AS base
+        JOIN groundloop_m5_runtime_epoch AS runtime USING (epoch_id)
+        WHERE base.epoch_id = %s
+        """,
+        (opened.epoch_id,),
+    ).fetchone() == (5, "complete", 5, "semantic_complete")
 
 
 def test_cursor_local_direct_subgraph_is_atomic_and_outer_authoritative(

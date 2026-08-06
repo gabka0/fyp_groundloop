@@ -933,6 +933,7 @@ class PostgresM4ApplicationPorts:
         self._fallback_blocked.clear()
 
     def _hydrate_direct_working_cache(self, epoch_id: int) -> None:
+        """Recover an unsealed direct cache from its durable working overlay."""
         previous = self.connection.execute(
             """
             SELECT previous_published_epoch_id FROM groundloop_m4_update

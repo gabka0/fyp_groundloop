@@ -770,6 +770,10 @@ class PostgresM4RuntimeStore:
         canonical_scopes = tuple(
             sorted(discovery_scopes, key=lambda item: item.root_job_id)
         )
+        if any(scope.closed for scope in canonical_scopes):
+            raise ValidationError(
+                "direct M4 open declaration cannot supply a closed scope"
+            )
         self._validate_open_declaration(
             update,
             canonical_jobs,
@@ -793,13 +797,6 @@ class PostgresM4RuntimeStore:
             update.payload_hash,
         ):
             raise EventConflictError("typed epoch differs from direct M4 update")
-        if int(base[2]) != 1 or str(base[3]) != "committed":
-            raise EventConflictError(
-                "direct M4 declaration requires the revision-1 structural epoch"
-            )
-        if str(base[4]) not in {"pending", "complete"}:
-            raise InvalidEventError("terminal typed epoch cannot stage direct work")
-
         existing = cursor.execute(
             """
             SELECT update_kind, previous_published_epoch_id,
@@ -857,7 +854,9 @@ class PostgresM4RuntimeStore:
                         str(value)
                         for value in scope_members.get(str(row[0]), ())
                     ),
-                    closed=row[2] is not None,
+                    # Scope closure is mutable runtime state, not part of the
+                    # immutable open declaration replay identity.
+                    closed=False,
                 )
                 for row in scope_rows
             )
@@ -876,6 +875,13 @@ class PostgresM4RuntimeStore:
                 self.read_epoch_header_point(epoch_id, cursor=cursor),
                 replayed=True,
             )
+
+        if int(base[2]) != 1 or str(base[3]) != "committed":
+            raise EventConflictError(
+                "direct M4 declaration requires the revision-1 structural epoch"
+            )
+        if str(base[4]) not in {"pending", "complete"}:
+            raise InvalidEventError("terminal typed epoch cannot stage direct work")
 
         head = cursor.execute(
             """

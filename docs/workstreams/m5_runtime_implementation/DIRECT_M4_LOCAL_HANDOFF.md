@@ -1,13 +1,16 @@
 # M5 Cursor-Local Direct-M4 Handoff
 
-Status: integration-ready Lane D2 cursor-local adapter; outer typed coordinator
-composition remains intentionally outside this lane
+Status: integration-ready Lane D2 cursor-local adapter after the reconnect
+audit; outer typed coordinator composition remains intentionally outside this
+lane
 
 Date: 2026-08-06
 
 Branch: `workstream/m5-direct-m4-local`
 
 Exact base: `a66d29fa44e2eeaede7759b09a9fda36c5f8729e`
+
+Reconnect-audit parent: `efd975cf13eb76d188de60fd77262873ab83d817`
 
 Authority read: M5-D21, M5-D23, runtime addendum revision 4, the D1 public-M4
 barrier handoff, and the coordinator's D2 path manifest.
@@ -34,6 +37,15 @@ replay, structural-row, working-state, and compact-evaluation recipes. It is
 therefore the migration-015 current-transaction sidecar route authorized by
 M5-D21; it does not reconstruct or synthesize structural content from the
 smaller event DTO.
+
+Exact open replay is valid at the current shared revision, including after a
+job has been acquired and after a discovery scope has closed. Replay compares
+the immutable update, policy/registry, root jobs, original open-scope
+declarations, scope membership, and structural manifest. It normalizes only
+the stored mutable `closed_revision` to the original open declaration. A
+caller-supplied `DiscoveryScope(closed=True)` remains invalid. The
+revision-1/committed guard remains mandatory whenever no M4 declaration exists;
+it is not incorrectly reapplied to an exact existing declaration.
 
 Acquisition preserves the exact M4-v1 logical attempt ID and requires the
 caller-supplied lease hash to equal the deterministic
@@ -89,6 +101,17 @@ isolated activated migration-015 PostgreSQL schema and proves:
   version, or adopted working cache;
 - injected post-commit cache adoption failure cannot erase durable SQL and is
   recoverable through exact replay hydration;
+- a missing first M4 declaration is still rejected if the shared typed epoch
+  has already advanced beyond revision 1;
+- caller-supplied closed-scope declarations are rejected rather than
+  normalized into an accepted identity;
+- a fresh ports/adapter instance accepts exact replay after root acquisition
+  at shared revision 2, returns that current header, and hydrates the durable
+  structural working overlay without changing SQL;
+- another fresh instance accepts the same immutable declaration after the
+  scope has durably closed at revision 3, keeps the closure intact, hydrates
+  the working overlay, and successfully continues child acquisition and
+  effective verifier completion to shared revision 5;
 - direct acquisition, expansion, child acquisition, and verifier completion
   stay synchronized with explicit outer base/typed revision reconciliation;
 - failure projection changes neither the shared base revision/state nor a
@@ -108,7 +131,7 @@ Executed on PostgreSQL 16.14 with
 ```text
 python -m pytest -o addopts='' -q \
   tests/m5/postgres_runtime/test_direct_m4_composition.py
-  -> 1 passed
+  -> 3 passed
 
 python -m pytest -o addopts='' -q \
   tests/m5/postgres_runtime/test_direct_m4_composition.py \
@@ -116,7 +139,7 @@ python -m pytest -o addopts='' -q \
   tests/m4/point_runtime/test_point_runtime.py \
   tests/m4/evaluation_overlay \
   tests/m4/persistence/test_runtime_store.py
-  -> 30 passed
+  -> 32 passed
 
 python -m pytest -o addopts='' -q tests/m4
   -> 478 passed, 7 skipped
