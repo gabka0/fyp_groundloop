@@ -201,6 +201,34 @@ def _runtime_metadata(manifest: object) -> dict[str, object]:
     return {str(key): value for key, value in runtime.items()}
 
 
+def _reject_public_typed_epoch_mutation(cursor: Cursor[Any], epoch_id: int) -> None:
+    """Keep public M4 mutations outside the typed M5 authority boundary.
+
+    Migration 015 is additive, so legacy schemas cannot be assumed to have the
+    runtime-header relation.  The catalog probe keeps those schemas working,
+    while an installed typed header is an unconditional routing error: only
+    the cursor-local M5 adapter may mutate that epoch's direct subgraph.
+    """
+
+    relation = cursor.execute(
+        "SELECT to_regclass('groundloop_m5_runtime_epoch')"
+    ).fetchone()
+    if relation is None or relation[0] is None:
+        return
+    typed = cursor.execute(
+        """
+        SELECT 1
+        FROM groundloop_m5_runtime_epoch
+        WHERE epoch_id = %s
+        """,
+        (epoch_id,),
+    ).fetchone()
+    if typed is not None:
+        raise InvalidEventError(
+            "typed M5 epochs can be mutated only by the typed coordinator"
+        )
+
+
 class PostgresM4RuntimeStore:
     """Conflict-detecting SQL mirror of :mod:`groundloop.m4.runtime.epoch`."""
 
@@ -209,6 +237,10 @@ class PostgresM4RuntimeStore:
     ) -> None:
         self._connection = connection
         self._audit_transitions = audit_transitions
+
+    def _reject_typed_epoch_mutation(self, epoch_id: int) -> None:
+        with self._connection.cursor() as cursor:
+            _reject_public_typed_epoch_mutation(cursor, epoch_id)
 
     def _transition_book(self, epoch_id: int) -> RuntimeBook:
         target = self.read_epoch(epoch_id)
@@ -521,6 +553,7 @@ class PostgresM4RuntimeStore:
         ).fetchone()
         if existing is not None:
             epoch_id = int(existing[0])
+            self._reject_typed_epoch_mutation(epoch_id)
             if self._audit_transitions:
                 epoch = self.read_epoch(epoch_id)
                 epoch_projection: RuntimeEpoch | PointEpochHeader = epoch
@@ -883,6 +916,7 @@ class PostgresM4RuntimeStore:
         """Acquire one job lease with an epoch-revision compare-and-swap."""
         expiry = lease_expires_at or datetime.now(UTC) + timedelta(minutes=5)
         with self._connection.transaction():
+            self._reject_typed_epoch_mutation(epoch_id)
             header = self.read_epoch_header_point(epoch_id, for_update=True)
             job = self.read_job_point(epoch_id, attempt.job_id, for_update=True)
             existing = self._connection.execute(
@@ -972,6 +1006,7 @@ class PostgresM4RuntimeStore:
     ) -> PointMutationResult:
         """Fail only the named latest attempt while retaining the logical job."""
         with self._connection.transaction():
+            self._reject_typed_epoch_mutation(epoch_id)
             header = self.read_epoch_header_point(epoch_id, for_update=True)
             job = self.read_job_point(epoch_id, job_id, for_update=True)
             latest = job.latest_attempt
@@ -1029,6 +1064,7 @@ class PostgresM4RuntimeStore:
         epoch_id = plan.expected_epoch_id
         job_id = plan.completion.job_id
         with self._connection.transaction():
+            self._reject_typed_epoch_mutation(epoch_id)
             header = self.read_epoch_header_point(epoch_id, for_update=True)
             job = self.read_job_point(epoch_id, job_id, for_update=True)
             self._validate_point_lease(
@@ -1165,6 +1201,7 @@ class PostgresM4RuntimeStore:
         if not reason.strip():
             raise ValidationError("epoch failure reason must be non-empty")
         with self._connection.transaction():
+            self._reject_typed_epoch_mutation(epoch_id)
             header = self.read_epoch_header_point(epoch_id, for_update=True)
             if header.state is RuntimeEpochState.FAILED:
                 if header.failure_reason == reason:
@@ -1227,6 +1264,7 @@ class PostgresM4RuntimeStore:
     ) -> PointMutationResult:
         """Seal using exact counters rather than scanning all jobs/scopes."""
         with self._connection.transaction():
+            self._reject_typed_epoch_mutation(epoch_id)
             header = self.read_epoch_header_point(epoch_id, for_update=True)
             if header.state is RuntimeEpochState.SEALED:
                 return PointMutationResult(header, None, replayed=True)
@@ -1285,6 +1323,7 @@ class PostgresM4RuntimeStore:
         *,
         lease_expires_at: datetime | None = None,
     ) -> TransitionResult:
+        self._reject_typed_epoch_mutation(epoch_id)
         before = self._before_transition(epoch_id)
         expected = start_pure_attempt(before, epoch_id, attempt)
         if expected.replayed:
@@ -1325,6 +1364,7 @@ class PostgresM4RuntimeStore:
     def mark_retryable_failure(
         self, epoch_id: int, job_id: str, attempt_id: str
     ) -> TransitionResult:
+        self._reject_typed_epoch_mutation(epoch_id)
         before = self._before_transition(epoch_id)
         expected = mark_pure_retryable_failure(before, epoch_id, job_id, attempt_id)
         if expected.replayed:
@@ -1361,6 +1401,7 @@ class PostgresM4RuntimeStore:
         lease_expected_revision: int,
         failure_injector: FailureInjector | None = None,
     ) -> TransitionResult:
+        self._reject_typed_epoch_mutation(plan.expected_epoch_id)
         before = self._before_transition(plan.expected_epoch_id)
         before_epoch = self._epoch(before, plan.expected_epoch_id)
         before_job = next(
@@ -1538,6 +1579,7 @@ class PostgresM4RuntimeStore:
         *,
         failure_injector: FailureInjector | None = None,
     ) -> TransitionResult:
+        self._reject_typed_epoch_mutation(epoch_id)
         before = self._before_transition(epoch_id)
         expected = fail_pure_epoch(before, epoch_id, expected_revision, reason)
         if expected.replayed:
@@ -1584,6 +1626,7 @@ class PostgresM4RuntimeStore:
         connection.  This store never mutates M2 observation currency or
         claim/answer publication tables itself.
         """
+        self._reject_typed_epoch_mutation(epoch_id)
         before = self._before_transition(epoch_id)
         expected = seal_pure_epoch(before, epoch_id, expected_revision)
         if expected.replayed:
