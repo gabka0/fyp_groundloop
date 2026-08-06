@@ -945,6 +945,22 @@ def requirement_withdrawal_plan_digest(
     )
 
 
+def cancellation_plan_digest(
+    *,
+    structural_event_id: str,
+    epoch_id: int,
+    cancelled_job_ids: Iterable[str],
+    reason: str | Enum,
+) -> str:
+    return stable_m5_digest(
+        "m5-cancellation-plan-v2",
+        text_field(structural_event_id),
+        int_field(epoch_id),
+        sequence_field(hash_field(value) for value in cancelled_job_ids),
+        enum_field(reason),
+    )
+
+
 def requirement_root_set_digest(root_job_ids: Iterable[str]) -> str:
     canonical = tuple(sorted(set(root_job_ids)))
     return stable_m5_digest(
@@ -995,6 +1011,7 @@ __all__ = [
     "attempt_output_digest",
     "attempt_result_artifact_digest",
     "attempt_result_artifact_id",
+    "cancellation_plan_digest",
     "candidate_policy_manifest_digest",
     "changed_state_reference_digest",
     "changed_state_set_digest",

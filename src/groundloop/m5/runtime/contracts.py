@@ -3151,6 +3151,72 @@ class M5AttemptCompletionReceipt:
 
 
 @dataclass(frozen=True, slots=True)
+class M5CancellationPlan:
+    structural_event_id: str
+    epoch_id: int
+    cancelled_job_ids: tuple[str, ...]
+    reason: M5TerminalReason
+    plan_digest: str
+
+    def __post_init__(self) -> None:
+        _require_text("structural_event_id", self.structural_event_id)
+        _require_int("epoch_id", self.epoch_id, positive=True)
+        _require_tuple("cancelled_job_ids", self.cancelled_job_ids)
+        if not self.cancelled_job_ids:
+            raise ValidationError("cancelled_job_ids must be nonempty")
+        for job_id in self.cancelled_job_ids:
+            _require_hash("cancelled job ID", job_id)
+        encoded_job_ids = tuple(
+            job_id.encode("utf-8") for job_id in self.cancelled_job_ids
+        )
+        if any(
+            left >= right
+            for left, right in zip(encoded_job_ids, encoded_job_ids[1:], strict=False)
+        ):
+            raise ValidationError(
+                "cancelled_job_ids must be strictly increasing by UTF-8 byte order"
+            )
+        if not isinstance(self.reason, M5TerminalReason) or self.reason not in {
+            M5TerminalReason.SUBJECT_INACTIVE,
+            M5TerminalReason.SCOPE_RETIRED,
+            M5TerminalReason.EPOCH_FAILED,
+        }:
+            raise ValidationError("cancellation plan reason is invalid")
+        _require_identity(
+            "plan_digest",
+            self.plan_digest,
+            digests.cancellation_plan_digest(
+                structural_event_id=self.structural_event_id,
+                epoch_id=self.epoch_id,
+                cancelled_job_ids=self.cancelled_job_ids,
+                reason=self.reason,
+            ),
+        )
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        structural_event_id: str,
+        epoch_id: int,
+        cancelled_job_ids: tuple[str, ...],
+        reason: M5TerminalReason,
+    ) -> M5CancellationPlan:
+        return cls(
+            structural_event_id=structural_event_id,
+            epoch_id=epoch_id,
+            cancelled_job_ids=cancelled_job_ids,
+            reason=reason,
+            plan_digest=digests.cancellation_plan_digest(
+                structural_event_id=structural_event_id,
+                epoch_id=epoch_id,
+                cancelled_job_ids=cancelled_job_ids,
+                reason=reason,
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class M5RootBarrierReceipt:
     requirement_root_set_hash: str
     barrier_completion_hash: str
@@ -3277,6 +3343,7 @@ __all__ = [
     "M5AttemptDisposition",
     "M5AttemptOutput",
     "M5AttemptResultArtifact",
+    "M5CancellationPlan",
     "M5CancellationReceipt",
     "M5CandidatePolicyManifest",
     "M5ChangedStateReference",

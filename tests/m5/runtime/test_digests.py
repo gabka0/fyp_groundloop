@@ -66,6 +66,117 @@ def test_semantic_pair_recipe_matches_independent_framing() -> None:
     assert actual == expected
 
 
+def test_cancellation_plan_recipe_matches_independent_framing_and_goldens() -> None:
+    subject_inactive = digests.cancellation_plan_digest(
+        structural_event_id="event-λ",
+        epoch_id=7,
+        cancelled_job_ids=(H1, H2),
+        reason=M5TerminalReason.SUBJECT_INACTIVE,
+    )
+    scope_retired = digests.cancellation_plan_digest(
+        structural_event_id="event-λ",
+        epoch_id=7,
+        cancelled_job_ids=(H1, H2),
+        reason=M5TerminalReason.SCOPE_RETIRED,
+    )
+    epoch_failed = digests.cancellation_plan_digest(
+        structural_event_id="event-λ",
+        epoch_id=7,
+        cancelled_job_ids=(H1, H2),
+        reason=M5TerminalReason.EPOCH_FAILED,
+    )
+
+    assert scope_retired == _framed_sha256(
+        "m5-cancellation-plan-v2",
+        "text",
+        "event-λ",
+        "int",
+        "7",
+        "sequence",
+        "int",
+        "2",
+        "sha256",
+        H1,
+        "sha256",
+        H2,
+        "enum",
+        "scope_retired",
+    )
+    assert (
+        subject_inactive,
+        scope_retired,
+        epoch_failed,
+    ) == (
+        "fc138b8971e2dcc1f540e96149404bf7ded8f595307a1bdc7f109508b289317a",
+        "e80e49a4e500ae84f44c35c066726572e84e87eb00c7cb3ec61754d41b78a8f6",
+        "1110b91294ebd76349b14f0e3c2e48c72e8d8e546c02f4598655f09d3ff7db16",
+    )
+
+
+def test_cancellation_plan_digest_binds_every_field_and_job_order() -> None:
+    base = digests.cancellation_plan_digest(
+        structural_event_id="event",
+        epoch_id=7,
+        cancelled_job_ids=(H1, H2),
+        reason=M5TerminalReason.SUBJECT_INACTIVE,
+    )
+
+    assert base != digests.cancellation_plan_digest(
+        structural_event_id="another-event",
+        epoch_id=7,
+        cancelled_job_ids=(H1, H2),
+        reason=M5TerminalReason.SUBJECT_INACTIVE,
+    )
+    assert base != digests.cancellation_plan_digest(
+        structural_event_id="event",
+        epoch_id=8,
+        cancelled_job_ids=(H1, H2),
+        reason=M5TerminalReason.SUBJECT_INACTIVE,
+    )
+    assert base != digests.cancellation_plan_digest(
+        structural_event_id="event",
+        epoch_id=7,
+        cancelled_job_ids=(H1, H3),
+        reason=M5TerminalReason.SUBJECT_INACTIVE,
+    )
+    assert base != digests.cancellation_plan_digest(
+        structural_event_id="event",
+        epoch_id=7,
+        cancelled_job_ids=(H2, H1),
+        reason=M5TerminalReason.SUBJECT_INACTIVE,
+    )
+    assert base != digests.cancellation_plan_digest(
+        structural_event_id="event",
+        epoch_id=7,
+        cancelled_job_ids=(H1, H2),
+        reason=M5TerminalReason.SCOPE_RETIRED,
+    )
+
+
+def test_cancellation_plan_digest_rejects_invalid_framed_values() -> None:
+    with pytest.raises(ValidationError):
+        digests.cancellation_plan_digest(
+            structural_event_id="",
+            epoch_id=7,
+            cancelled_job_ids=(H1,),
+            reason=M5TerminalReason.SUBJECT_INACTIVE,
+        )
+    with pytest.raises(ValidationError):
+        digests.cancellation_plan_digest(
+            structural_event_id="event",
+            epoch_id=True,
+            cancelled_job_ids=(H1,),
+            reason=M5TerminalReason.SUBJECT_INACTIVE,
+        )
+    with pytest.raises(ValidationError):
+        digests.cancellation_plan_digest(
+            structural_event_id="event",
+            epoch_id=7,
+            cancelled_job_ids=("not-a-hash",),
+            reason=M5TerminalReason.SUBJECT_INACTIVE,
+        )
+
+
 def test_frozen_runtime_golden_vector_bundle() -> None:
     vectors = {
         "pair": digests.semantic_pair_digest(

@@ -27,9 +27,12 @@ from groundloop.m5.runtime.contracts import (
     M5ActivationReceipt,
     M5ActivationRequest,
     M5AttemptArchiveReason,
+    M5AttemptCompletionReceipt,
     M5AttemptDisposition,
     M5AttemptOutput,
     M5AttemptResultArtifact,
+    M5CancellationPlan,
+    M5CancellationReceipt,
     M5CandidatePolicyManifest,
     M5ChangedStateReference,
     M5DiscoveryDirection,
@@ -291,6 +294,24 @@ def test_normative_dto_field_topology_is_exact() -> None:
         "embedding_input_token_count",
         "verifier_input_token_count",
         "verifier_output_token_count",
+    )
+    assert tuple(field.name for field in fields(M5CancellationPlan)) == (
+        "structural_event_id",
+        "epoch_id",
+        "cancelled_job_ids",
+        "reason",
+        "plan_digest",
+    )
+    assert tuple(field.name for field in fields(M5AttemptCompletionReceipt)) == (
+        "logical_job_id",
+        "attempt_id",
+        "resulting_revision",
+        "exact_replay",
+    )
+    assert tuple(field.name for field in fields(M5CancellationReceipt)) == (
+        "cancelled_job_ids",
+        "resulting_revision",
+        "exact_replay",
     )
 
 
@@ -998,3 +1019,171 @@ def test_job_lease_replay_cannot_redispatch() -> None:
     M5JobLease(H1, attempt, 2, False, True)
     with pytest.raises(ValidationError):
         M5JobLease(H1, attempt, 2, True, True)
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        M5TerminalReason.SUBJECT_INACTIVE,
+        M5TerminalReason.SCOPE_RETIRED,
+        M5TerminalReason.EPOCH_FAILED,
+    ),
+)
+def test_cancellation_plan_accepts_exact_frozen_reasons(
+    reason: M5TerminalReason,
+) -> None:
+    plan = M5CancellationPlan.build(
+        structural_event_id="event-λ",
+        epoch_id=7,
+        cancelled_job_ids=(H1, H2),
+        reason=reason,
+    )
+
+    assert plan == M5CancellationPlan(
+        structural_event_id="event-λ",
+        epoch_id=7,
+        cancelled_job_ids=(H1, H2),
+        reason=reason,
+        plan_digest=digests.cancellation_plan_digest(
+            structural_event_id="event-λ",
+            epoch_id=7,
+            cancelled_job_ids=(H1, H2),
+            reason=reason,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    tuple(
+        reason
+        for reason in M5TerminalReason
+        if reason
+        not in {
+            M5TerminalReason.SUBJECT_INACTIVE,
+            M5TerminalReason.SCOPE_RETIRED,
+            M5TerminalReason.EPOCH_FAILED,
+        }
+    ),
+)
+def test_cancellation_plan_rejects_every_other_terminal_reason(
+    reason: M5TerminalReason,
+) -> None:
+    with pytest.raises(ValidationError):
+        M5CancellationPlan.build(
+            structural_event_id="event",
+            epoch_id=7,
+            cancelled_job_ids=(H1,),
+            reason=reason,
+        )
+
+
+def test_cancellation_plan_rejects_empty_noncanonical_or_invalid_shape() -> None:
+    with pytest.raises(ValidationError):
+        M5CancellationPlan.build(
+            structural_event_id="event",
+            epoch_id=7,
+            cancelled_job_ids=(),
+            reason=M5TerminalReason.SUBJECT_INACTIVE,
+        )
+    with pytest.raises(ValidationError):
+        M5CancellationPlan.build(
+            structural_event_id="event",
+            epoch_id=7,
+            cancelled_job_ids=(H2, H1),
+            reason=M5TerminalReason.SUBJECT_INACTIVE,
+        )
+    with pytest.raises(ValidationError):
+        M5CancellationPlan.build(
+            structural_event_id="event",
+            epoch_id=7,
+            cancelled_job_ids=(H1, H1),
+            reason=M5TerminalReason.SUBJECT_INACTIVE,
+        )
+    with pytest.raises(ValidationError):
+        M5CancellationPlan.build(
+            structural_event_id="event",
+            epoch_id=7,
+            cancelled_job_ids=[H1],  # type: ignore[arg-type]
+            reason=M5TerminalReason.SUBJECT_INACTIVE,
+        )
+    with pytest.raises(ValidationError):
+        M5CancellationPlan.build(
+            structural_event_id="event",
+            epoch_id=7,
+            cancelled_job_ids=("A" * 64,),
+            reason=M5TerminalReason.SUBJECT_INACTIVE,
+        )
+    with pytest.raises(ValidationError):
+        M5CancellationPlan.build(
+            structural_event_id="",
+            epoch_id=7,
+            cancelled_job_ids=(H1,),
+            reason=M5TerminalReason.SUBJECT_INACTIVE,
+        )
+    with pytest.raises(ValidationError):
+        M5CancellationPlan.build(
+            structural_event_id="event",
+            epoch_id=0,
+            cancelled_job_ids=(H1,),
+            reason=M5TerminalReason.SUBJECT_INACTIVE,
+        )
+    with pytest.raises(ValidationError):
+        M5CancellationPlan.build(
+            structural_event_id="event",
+            epoch_id=True,
+            cancelled_job_ids=(H1,),
+            reason=M5TerminalReason.SUBJECT_INACTIVE,
+        )
+    with pytest.raises(ValidationError):
+        M5CancellationPlan.build(
+            structural_event_id="event",
+            epoch_id=7,
+            cancelled_job_ids=(H1,),
+            reason="subject_inactive",  # type: ignore[arg-type]
+        )
+
+
+def test_cancellation_plan_rejects_every_stale_one_field_identity() -> None:
+    plan = M5CancellationPlan.build(
+        structural_event_id="event",
+        epoch_id=7,
+        cancelled_job_ids=(H1, H2),
+        reason=M5TerminalReason.SUBJECT_INACTIVE,
+    )
+
+    with pytest.raises(ValidationError):
+        replace(plan, structural_event_id="another-event")
+    with pytest.raises(ValidationError):
+        replace(plan, epoch_id=8)
+    with pytest.raises(ValidationError):
+        replace(plan, cancelled_job_ids=(H1, H3))
+    with pytest.raises(ValidationError):
+        replace(plan, reason=M5TerminalReason.SCOPE_RETIRED)
+    with pytest.raises(ValidationError):
+        replace(plan, plan_digest=H4)
+
+
+def test_retry_failure_and_cancellation_use_existing_receipt_shapes() -> None:
+    fresh_retry = M5AttemptCompletionReceipt(H1, H2, 8, False)
+    replayed_retry = M5AttemptCompletionReceipt(H1, H2, 8, True)
+    fresh_cancellation = M5CancellationReceipt((H1, H2), 9, False)
+    replayed_cancellation = M5CancellationReceipt((H1, H2), 9, True)
+
+    assert fresh_retry.exact_replay is False
+    assert replayed_retry.exact_replay is True
+    assert fresh_cancellation.cancelled_job_ids == (H1, H2)
+    assert replayed_cancellation.exact_replay is True
+
+    with pytest.raises(ValidationError):
+        M5AttemptCompletionReceipt("not-a-hash", H2, 8, False)
+    with pytest.raises(ValidationError):
+        M5AttemptCompletionReceipt(H1, "not-a-hash", 8, False)
+    with pytest.raises(ValidationError):
+        M5AttemptCompletionReceipt(H1, H2, 0, False)
+    with pytest.raises(ValidationError):
+        M5AttemptCompletionReceipt(H1, H2, 8, 1)  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        M5CancellationReceipt((H2, H1), 9, False)
+    with pytest.raises(ValidationError):
+        M5CancellationReceipt((H1, H1), 9, False)
