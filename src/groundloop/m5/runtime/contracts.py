@@ -40,6 +40,9 @@ from groundloop.m4.application import (
     OpenEventReceipt,
     PublicationReceipt,
 )
+from groundloop.m4.application import (
+    ObservationCompletionReceipt as M4ObservationCompletionReceipt,
+)
 from groundloop.m4.contracts import (
     AdmittedPair as M4AdmittedPair,
 )
@@ -261,6 +264,21 @@ class M5ExecutionEvidenceDisposition(StrEnum):
     REUSED_ARTIFACT = "reused_artifact"
     RETRYABLE_FAILURE = "retryable_failure"
     TERMINAL_FAILURE = "terminal_failure"
+
+
+class M5RequirementReturnDisposition(StrEnum):
+    APPLIED = "applied"
+    EXPIRED_PRETERMINAL = "expired_preterminal"
+    EXPIRED_POSTTERMINAL = "expired_postterminal"
+    TERMINAL_AUDIT_PRETERMINAL = "terminal_audit_preterminal"
+    TERMINAL_AUDIT_POSTTERMINAL = "terminal_audit_postterminal"
+
+
+class M5DirectLateReturnDisposition(StrEnum):
+    EXPIRED_PRETERMINAL = "expired_preterminal"
+    EXPIRED_POSTTERMINAL = "expired_postterminal"
+    TERMINAL_AUDIT_PRETERMINAL = "terminal_audit_preterminal"
+    TERMINAL_AUDIT_POSTTERMINAL = "terminal_audit_postterminal"
 
 
 class M5RuntimeWorkContributionKind(StrEnum):
@@ -5435,6 +5453,505 @@ class M5TypedDirectJobLease:
             )
 
 
+_REQUIREMENT_POSTTERMINAL_RETURN_DISPOSITIONS = frozenset(
+    {
+        M5RequirementReturnDisposition.EXPIRED_POSTTERMINAL,
+        M5RequirementReturnDisposition.TERMINAL_AUDIT_POSTTERMINAL,
+    }
+)
+_DIRECT_EXPIRED_RETURN_DISPOSITIONS = frozenset(
+    {
+        M5DirectLateReturnDisposition.EXPIRED_PRETERMINAL,
+        M5DirectLateReturnDisposition.EXPIRED_POSTTERMINAL,
+    }
+)
+_DIRECT_PRETERMINAL_RETURN_DISPOSITIONS = frozenset(
+    {
+        M5DirectLateReturnDisposition.EXPIRED_PRETERMINAL,
+        M5DirectLateReturnDisposition.TERMINAL_AUDIT_PRETERMINAL,
+    }
+)
+_DIRECT_POSTTERMINAL_RETURN_DISPOSITIONS = frozenset(
+    {
+        M5DirectLateReturnDisposition.EXPIRED_POSTTERMINAL,
+        M5DirectLateReturnDisposition.TERMINAL_AUDIT_POSTTERMINAL,
+    }
+)
+
+
+def _validate_optional_hash(name: str, value: str | None) -> None:
+    if value is not None:
+        _require_hash(name, value)
+
+
+def _validate_receipt_anchor(
+    anchor: M5TransitionTimingAnchor,
+    *,
+    epoch_id: int | None,
+    allowed_kinds: frozenset[M5RuntimeWorkContributionKind],
+    source_id: str,
+    resulting_revision: int,
+    contribution_key_digest: str | None = None,
+) -> None:
+    if epoch_id is not None and anchor.epoch_id != epoch_id:
+        raise ValidationError("transition anchor belongs to another epoch")
+    if anchor.contribution_kind not in allowed_kinds:
+        raise ValidationError("transition anchor kind disagrees with return branch")
+    if anchor.source_id != source_id:
+        raise ValidationError("transition anchor belongs to another source")
+    if anchor.anchor_revision != resulting_revision:
+        raise ValidationError("transition anchor revision disagrees with receipt")
+    if (
+        contribution_key_digest is not None
+        and anchor.contribution_key_digest != contribution_key_digest
+    ):
+        raise ValidationError(
+            "transition anchor contribution key disagrees with receipt"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class M5RequirementAttemptReturnReceipt:
+    disposition: M5RequirementReturnDisposition
+    logical_job_id: str
+    attempt_id: str
+    resulting_revision: int
+    exact_replay: bool
+    execution_evidence_digest: str
+    return_artifact_digest: str
+    current_terminal_logical_result_hash: str | None
+    transition_anchor: M5TransitionTimingAnchor | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.disposition, M5RequirementReturnDisposition):
+            raise ValidationError(
+                "disposition must be an M5RequirementReturnDisposition"
+            )
+        _require_hash("logical_job_id", self.logical_job_id)
+        _require_hash("attempt_id", self.attempt_id)
+        _require_int("resulting_revision", self.resulting_revision, positive=True)
+        _require_bool("exact_replay", self.exact_replay)
+        _require_hash("execution_evidence_digest", self.execution_evidence_digest)
+        _require_hash("return_artifact_digest", self.return_artifact_digest)
+        _validate_optional_hash(
+            "current_terminal_logical_result_hash",
+            self.current_terminal_logical_result_hash,
+        )
+        if self.transition_anchor is not None and not isinstance(
+            self.transition_anchor, M5TransitionTimingAnchor
+        ):
+            raise ValidationError(
+                "transition_anchor must be M5TransitionTimingAnchor or None"
+            )
+
+        postterminal = self.disposition in _REQUIREMENT_POSTTERMINAL_RETURN_DISPOSITIONS
+        if postterminal:
+            if self.current_terminal_logical_result_hash is None:
+                raise ValidationError(
+                    "postterminal requirement return requires terminal result hash"
+                )
+            if self.transition_anchor is not None:
+                raise ValidationError(
+                    "postterminal requirement return cannot carry an anchor"
+                )
+            return
+
+        if self.exact_replay:
+            if self.transition_anchor is not None:
+                raise ValidationError("exact replay cannot carry a transition anchor")
+            return
+
+        if self.current_terminal_logical_result_hash is not None:
+            raise ValidationError(
+                "first nonterminal requirement return cannot project a terminal result"
+            )
+        if self.transition_anchor is None:
+            raise ValidationError(
+                "first nonterminal requirement return requires a transition anchor"
+            )
+        allowed_kinds = (
+            frozenset(
+                {
+                    M5RuntimeWorkContributionKind.ROOT_RESULT_STAGE,
+                    M5RuntimeWorkContributionKind.VERIFIER_COMPLETION,
+                }
+            )
+            if self.disposition is M5RequirementReturnDisposition.APPLIED
+            else frozenset({M5RuntimeWorkContributionKind.PRETERMINAL_LATE_RETURN})
+        )
+        _validate_receipt_anchor(
+            self.transition_anchor,
+            epoch_id=None,
+            allowed_kinds=allowed_kinds,
+            source_id=self.attempt_id,
+            resulting_revision=self.resulting_revision,
+        )
+
+    def validate_anchor_context(
+        self,
+        *,
+        epoch_id: int,
+        expected_kind: M5RuntimeWorkContributionKind,
+    ) -> None:
+        """Validate a present anchor against method-owned epoch/kind context."""
+
+        _require_int("epoch_id", epoch_id, positive=True)
+        if not isinstance(expected_kind, M5RuntimeWorkContributionKind):
+            raise ValidationError(
+                "expected_kind must be an M5RuntimeWorkContributionKind"
+            )
+        if self.transition_anchor is None:
+            return
+        allowed_kinds = (
+            frozenset(
+                {
+                    M5RuntimeWorkContributionKind.ROOT_RESULT_STAGE,
+                    M5RuntimeWorkContributionKind.VERIFIER_COMPLETION,
+                }
+            )
+            if self.disposition is M5RequirementReturnDisposition.APPLIED
+            else frozenset({M5RuntimeWorkContributionKind.PRETERMINAL_LATE_RETURN})
+        )
+        if expected_kind not in allowed_kinds:
+            raise ValidationError(
+                "method-owned anchor kind disagrees with requirement disposition"
+            )
+        _validate_receipt_anchor(
+            self.transition_anchor,
+            epoch_id=epoch_id,
+            allowed_kinds=frozenset({expected_kind}),
+            source_id=self.attempt_id,
+            resulting_revision=self.resulting_revision,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class M5DirectCursorContributionReceipt:
+    epoch_id: int
+    job_id: str
+    attempt_id: str
+    execution_evidence_digest: str
+    attempt_execution_contribution_key_digest: str
+    direct_transition_source_id: str | None
+    direct_transition_source_identity_hash: str | None
+    direct_transition_contribution_key_digest: str | None
+    observation_completion: M4ObservationCompletionReceipt | None
+
+    def __post_init__(self) -> None:
+        _require_int("epoch_id", self.epoch_id, positive=True)
+        _require_text("job_id", self.job_id)
+        _require_text("attempt_id", self.attempt_id)
+        _require_hash("execution_evidence_digest", self.execution_evidence_digest)
+        _require_identity(
+            "attempt_execution_contribution_key_digest",
+            self.attempt_execution_contribution_key_digest,
+            digests.runtime_work_contribution_key_digest(
+                epoch_id=self.epoch_id,
+                contribution_kind=(
+                    M5RuntimeWorkContributionKind.DIRECT_ATTEMPT_EXECUTION
+                ),
+                source_id=self.attempt_id,
+            ),
+        )
+        transition_values = (
+            self.direct_transition_source_id,
+            self.direct_transition_source_identity_hash,
+            self.direct_transition_contribution_key_digest,
+        )
+        if any(value is None for value in transition_values) and not all(
+            value is None for value in transition_values
+        ):
+            raise ValidationError(
+                "direct-transition receipt fields must be jointly present or absent"
+            )
+        if self.direct_transition_source_id is None:
+            if self.observation_completion is not None:
+                raise ValidationError(
+                    "attempt failure cannot carry an observation completion"
+                )
+            return
+        _require_text("direct_transition_source_id", self.direct_transition_source_id)
+        assert self.direct_transition_source_identity_hash is not None
+        assert self.direct_transition_contribution_key_digest is not None
+        _require_hash(
+            "direct_transition_source_identity_hash",
+            self.direct_transition_source_identity_hash,
+        )
+        _require_identity(
+            "direct_transition_contribution_key_digest",
+            self.direct_transition_contribution_key_digest,
+            digests.runtime_work_contribution_key_digest(
+                epoch_id=self.epoch_id,
+                contribution_kind=M5RuntimeWorkContributionKind.DIRECT_TRANSITION,
+                source_id=self.direct_transition_source_id,
+            ),
+        )
+        if self.observation_completion is not None and not isinstance(
+            self.observation_completion, M4ObservationCompletionReceipt
+        ):
+            raise ValidationError(
+                "observation_completion must be the unchanged M4 receipt or None"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class M5DirectLateCursorContributionReceipt:
+    disposition: M5DirectLateReturnDisposition
+    epoch_id: int
+    job_id: str
+    attempt_id: str
+    envelope_digest: str
+    execution_evidence_digest: str
+    expired_return_digest: str | None
+    attempt_execution_contribution_key_digest: str | None
+    preterminal_late_contribution_key_digest: str | None
+    postterminal_logical_result_hash: str | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.disposition, M5DirectLateReturnDisposition):
+            raise ValidationError(
+                "disposition must be an M5DirectLateReturnDisposition"
+            )
+        _require_int("epoch_id", self.epoch_id, positive=True)
+        _require_text("job_id", self.job_id)
+        _require_text("attempt_id", self.attempt_id)
+        _require_hash("envelope_digest", self.envelope_digest)
+        _require_hash("execution_evidence_digest", self.execution_evidence_digest)
+        _validate_optional_hash("expired_return_digest", self.expired_return_digest)
+        _validate_optional_hash(
+            "postterminal_logical_result_hash",
+            self.postterminal_logical_result_hash,
+        )
+        expired = self.disposition in _DIRECT_EXPIRED_RETURN_DISPOSITIONS
+        if expired != (self.expired_return_digest is not None):
+            raise ValidationError(
+                "expired-return digest presence disagrees with direct disposition"
+            )
+        preterminal = self.disposition in _DIRECT_PRETERMINAL_RETURN_DISPOSITIONS
+        contribution_values = (
+            self.attempt_execution_contribution_key_digest,
+            self.preterminal_late_contribution_key_digest,
+        )
+        if preterminal != all(value is not None for value in contribution_values):
+            raise ValidationError(
+                "preterminal contribution keys disagree with direct disposition"
+            )
+        if not preterminal and any(value is not None for value in contribution_values):
+            raise ValidationError(
+                "postterminal direct return cannot carry event-work contribution keys"
+            )
+        postterminal = self.disposition in _DIRECT_POSTTERMINAL_RETURN_DISPOSITIONS
+        if postterminal != (self.postterminal_logical_result_hash is not None):
+            raise ValidationError(
+                "postterminal result hash presence disagrees with direct disposition"
+            )
+        if preterminal:
+            assert self.attempt_execution_contribution_key_digest is not None
+            assert self.preterminal_late_contribution_key_digest is not None
+            _require_identity(
+                "attempt_execution_contribution_key_digest",
+                self.attempt_execution_contribution_key_digest,
+                digests.runtime_work_contribution_key_digest(
+                    epoch_id=self.epoch_id,
+                    contribution_kind=(
+                        M5RuntimeWorkContributionKind.DIRECT_ATTEMPT_EXECUTION
+                    ),
+                    source_id=self.attempt_id,
+                ),
+            )
+            _require_identity(
+                "preterminal_late_contribution_key_digest",
+                self.preterminal_late_contribution_key_digest,
+                digests.runtime_work_contribution_key_digest(
+                    epoch_id=self.epoch_id,
+                    contribution_kind=(
+                        M5RuntimeWorkContributionKind.PRETERMINAL_LATE_RETURN
+                    ),
+                    source_id=self.attempt_id,
+                ),
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class M5DirectLateReturnReceipt:
+    disposition: M5DirectLateReturnDisposition
+    epoch_id: int
+    job_id: str
+    attempt_id: str
+    resulting_revision: int
+    exact_replay: bool
+    envelope_digest: str
+    execution_evidence_digest: str
+    expired_return_digest: str | None
+    current_terminal_logical_result_hash: str | None
+    transition_anchor: M5TransitionTimingAnchor | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.disposition, M5DirectLateReturnDisposition):
+            raise ValidationError(
+                "disposition must be an M5DirectLateReturnDisposition"
+            )
+        _require_int("epoch_id", self.epoch_id, positive=True)
+        _require_text("job_id", self.job_id)
+        _require_text("attempt_id", self.attempt_id)
+        _require_int("resulting_revision", self.resulting_revision, positive=True)
+        _require_bool("exact_replay", self.exact_replay)
+        _require_hash("envelope_digest", self.envelope_digest)
+        _require_hash("execution_evidence_digest", self.execution_evidence_digest)
+        _validate_optional_hash("expired_return_digest", self.expired_return_digest)
+        _validate_optional_hash(
+            "current_terminal_logical_result_hash",
+            self.current_terminal_logical_result_hash,
+        )
+        if self.transition_anchor is not None and not isinstance(
+            self.transition_anchor, M5TransitionTimingAnchor
+        ):
+            raise ValidationError(
+                "transition_anchor must be M5TransitionTimingAnchor or None"
+            )
+        expired = self.disposition in _DIRECT_EXPIRED_RETURN_DISPOSITIONS
+        if expired != (self.expired_return_digest is not None):
+            raise ValidationError(
+                "expired-return digest presence disagrees with direct disposition"
+            )
+        postterminal = self.disposition in _DIRECT_POSTTERMINAL_RETURN_DISPOSITIONS
+        if postterminal:
+            if self.current_terminal_logical_result_hash is None:
+                raise ValidationError(
+                    "postterminal direct return requires terminal result hash"
+                )
+            if self.transition_anchor is not None:
+                raise ValidationError(
+                    "postterminal direct return cannot carry an anchor"
+                )
+            return
+        if self.exact_replay:
+            if self.transition_anchor is not None:
+                raise ValidationError("exact replay cannot carry a transition anchor")
+            return
+        if self.current_terminal_logical_result_hash is not None:
+            raise ValidationError(
+                "first preterminal direct return cannot project a terminal result"
+            )
+        if self.transition_anchor is None:
+            raise ValidationError(
+                "first preterminal direct return requires a transition anchor"
+            )
+        _validate_receipt_anchor(
+            self.transition_anchor,
+            epoch_id=self.epoch_id,
+            allowed_kinds=frozenset(
+                {M5RuntimeWorkContributionKind.PRETERMINAL_LATE_RETURN}
+            ),
+            source_id=self.attempt_id,
+            resulting_revision=self.resulting_revision,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class M5DirectNormalReturnReceipt:
+    epoch_id: int
+    job_id: str
+    attempt_id: str
+    resulting_revision: int
+    exact_replay: bool
+    execution_evidence_digest: str
+    return_artifact_digest: str
+    direct_transition_source_id: str
+    direct_transition_source_identity_hash: str
+    direct_transition_contribution_key_digest: str
+    observation_completion: M4ObservationCompletionReceipt | None
+    current_terminal_logical_result_hash: str | None
+    transition_anchor: M5TransitionTimingAnchor | None
+
+    def __post_init__(self) -> None:
+        _require_int("epoch_id", self.epoch_id, positive=True)
+        _require_text("job_id", self.job_id)
+        _require_text("attempt_id", self.attempt_id)
+        _require_int("resulting_revision", self.resulting_revision, positive=True)
+        _require_bool("exact_replay", self.exact_replay)
+        _require_hash("execution_evidence_digest", self.execution_evidence_digest)
+        _require_hash("return_artifact_digest", self.return_artifact_digest)
+        _require_text("direct_transition_source_id", self.direct_transition_source_id)
+        _require_hash(
+            "direct_transition_source_identity_hash",
+            self.direct_transition_source_identity_hash,
+        )
+        _require_identity(
+            "direct_transition_contribution_key_digest",
+            self.direct_transition_contribution_key_digest,
+            digests.runtime_work_contribution_key_digest(
+                epoch_id=self.epoch_id,
+                contribution_kind=M5RuntimeWorkContributionKind.DIRECT_TRANSITION,
+                source_id=self.direct_transition_source_id,
+            ),
+        )
+        if self.observation_completion is not None and not isinstance(
+            self.observation_completion, M4ObservationCompletionReceipt
+        ):
+            raise ValidationError(
+                "observation_completion must be the unchanged M4 receipt or None"
+            )
+        _validate_optional_hash(
+            "current_terminal_logical_result_hash",
+            self.current_terminal_logical_result_hash,
+        )
+        if self.transition_anchor is not None and not isinstance(
+            self.transition_anchor, M5TransitionTimingAnchor
+        ):
+            raise ValidationError(
+                "transition_anchor must be M5TransitionTimingAnchor or None"
+            )
+        if self.exact_replay:
+            if self.transition_anchor is not None:
+                raise ValidationError("exact replay cannot carry a transition anchor")
+            return
+        if self.current_terminal_logical_result_hash is not None:
+            raise ValidationError(
+                "first normal direct return cannot project a terminal result"
+            )
+        if self.transition_anchor is None:
+            raise ValidationError(
+                "first normal direct return requires a transition anchor"
+            )
+        _validate_receipt_anchor(
+            self.transition_anchor,
+            epoch_id=self.epoch_id,
+            allowed_kinds=frozenset({M5RuntimeWorkContributionKind.DIRECT_TRANSITION}),
+            source_id=self.direct_transition_source_id,
+            resulting_revision=self.resulting_revision,
+            contribution_key_digest=(self.direct_transition_contribution_key_digest),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class M5DirectAttemptReturnReceipt:
+    return_kind: M5TypedDirectReturnKind
+    normal: M5DirectNormalReturnReceipt | None
+    late: M5DirectLateReturnReceipt | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.return_kind, M5TypedDirectReturnKind):
+            raise ValidationError("return_kind must be an M5TypedDirectReturnKind")
+        if (self.normal is None) == (self.late is None):
+            raise ValidationError(
+                "exactly one normal or late direct return branch is required"
+            )
+        if self.normal is not None:
+            if not isinstance(self.normal, M5DirectNormalReturnReceipt):
+                raise ValidationError(
+                    "normal must be M5DirectNormalReturnReceipt or None"
+                )
+            has_observation = self.normal.observation_completion is not None
+            expected_observation = self.return_kind is M5TypedDirectReturnKind.VERIFIER
+            if has_observation is not expected_observation:
+                raise ValidationError(
+                    "normal direct observation receipt disagrees with return kind"
+                )
+        elif not isinstance(self.late, M5DirectLateReturnReceipt):
+            raise ValidationError("late must be M5DirectLateReturnReceipt or None")
+
+
 @dataclass(frozen=True, slots=True)
 class M5AttemptCompletionReceipt:
     logical_job_id: str
@@ -5651,6 +6168,12 @@ __all__ = [
     "M5ChangedStateReference",
     "M5DiscoveryDirection",
     "M5DiscoveryScopeContract",
+    "M5DirectAttemptReturnReceipt",
+    "M5DirectCursorContributionReceipt",
+    "M5DirectLateCursorContributionReceipt",
+    "M5DirectLateReturnDisposition",
+    "M5DirectLateReturnReceipt",
+    "M5DirectNormalReturnReceipt",
     "M5DispatchRecord",
     "M5EventRunResult",
     "M5ExecutionEvidenceDisposition",
@@ -5671,6 +6194,8 @@ __all__ = [
     "M5RequirementFallbackKey",
     "M5RequirementFrontierHead",
     "M5RequirementPairInput",
+    "M5RequirementAttemptReturnReceipt",
+    "M5RequirementReturnDisposition",
     "M5RequirementRootProvenance",
     "M5RequirementScopeContract",
     "M5RequirementScopeSelection",
