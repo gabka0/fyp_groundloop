@@ -1,5 +1,38 @@
 # GroundLoop Decision Log
 
+## 2026-08-06 — M5-D23 Runtime Transition Completeness Frozen
+
+Decision status: narrow runtime-contract/schema completeness amendment
+accepted; implementation evidence remains pending.
+
+The first production transition audit found three omissions in runtime-
+addendum revision 3. `mark_m5_retryable_failure` accepted an `error_hash` but
+migration 015 had no durable error field and the API named no receipt. The
+cancellation mutator referred to an undefined `cancellation_plan`. Finally,
+the cursor-local M4 open adapter received `DynamicEventPlan` but not the
+`StructuralPayload` containing the document/chunk/metadata bytes it must stage,
+and the five-method adapter had no transaction-local acquisition operation.
+Overloading `attempt_output_digest`, reconstructing missing document metadata,
+or calling the public M4 store would violate audit fidelity, M4-v1 stability,
+or atomic typed composition.
+
+M5-D23 freezes the missing pieces. A failed attempt stores a separate nullable
+lowercase SHA-256 `error_hash`; retryable failure returns
+`M5AttemptCompletionReceipt` and exact replay validates that hash with zero
+writes. `M5CancellationPlan` binds the structural event, target epoch, sorted
+nonempty job-ID set and one allowed cancellation reason under
+`m5-cancellation-plan-v2`. The direct open helper now receives the exact
+payload-bound `StructuralPayload`, and the internal direct adapter adds a
+cursor-local acquisition method so its dispatch marker commits under the
+outer typed transaction. Public M4 mutation entrypoints remain forbidden on a
+typed epoch.
+
+The typed application may use a read-only hydration port for current revision,
+canonical verifier jobs, and persisted work. These reads own no transaction
+spanning an external call and cannot mutate or reconstruct terminal semantic
+results. No legacy digest/DTO, M4 never-activated behavior, M5 semantic state,
+or migration-014 byte changes under this amendment.
+
 ## 2026-08-06 — M5-D22 Changed-State Artifact Digests Frozen
 
 Decision status: narrow runtime-contract completeness amendment accepted;

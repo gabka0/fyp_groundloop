@@ -1766,6 +1766,7 @@ regression evidence.
 | M5-D20 | Semantic confirmation | Without a fresh blinded adjudicated cohort, M5 closes with controlled/retrospective evidence only |
 | M5-D21 | Typed direct bridge | Migration 015 may replace only the M4-open guard function so a matching typed sidecar-backed document declaration can insert the exact M4-v1 subgraph; public v1 remains blocked after activation and combined M4/M5 state is outer-coordinator-owned |
 | M5-D22 | Changed-state artifact identity | Four byte-total semantic-row digests bind every persisted field; certificate references reuse immutable certificate digests; epoch/revision remain in the outer reference |
+| M5-D23 | Runtime transition completeness | Retry errors have a distinct durable hash and exact receipt; cancellation has a byte-total plan; typed direct open/acquire receive the data and cursor-local transaction boundary needed to preserve M4-v1 behavior |
 
 ## 15. Release gate
 
@@ -1778,6 +1779,6 @@ and data/evaluation audits agree that:
 4. Python and SQL oracle algorithms are independent and executable;
 5. the public data mapping is feasible without inventing gold labels;
 6. the acceptance matrix has a falsifying test for every M5-D decision,
-   including the M5-D21 typed-bridge exception and M5-D22 state-artifact
-   identity; and
+   including the M5-D21 typed-bridge exception, M5-D22 state-artifact
+   identity, and M5-D23 transition completeness; and
 7. path ownership prevents shared-schema or shared-contract collisions.

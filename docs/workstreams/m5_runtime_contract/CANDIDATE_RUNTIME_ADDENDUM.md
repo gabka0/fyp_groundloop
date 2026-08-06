@@ -1,12 +1,12 @@
 # GroundLoop M5.4 Byte-Total Runtime Contract Addendum
 
-Status: frozen runtime contract revision 3; implementation authorization
+Status: frozen runtime contract revision 4; implementation authorization
 **GO** after the M5.3 014 schema bundle is integrated and validated
 
-Date: 2026-08-03; revision 3 / M5-D21 and M5-D22 amendments 2026-08-06
+Date: 2026-08-03; revision 4 / M5-D21 through M5-D23 amendments 2026-08-06
 
 Authority: this addendum specializes `docs/m5_design_freeze.md` M5-D1 through
-M5-D22 and M5-T1/M5-T2. It does not change those decisions. The M5 design
+M5-D23 and M5-T1/M5-T2. It does not change those decisions. The M5 design
 freeze remains authoritative for semantic truth; this addendum is authoritative
 for M5.4 runtime DTOs, identities, transition boundaries, persistence
 ownership, replay, and acceptance tests.
@@ -18,14 +18,17 @@ start only after migration 014 and its SQL oracle bundle have passed the M5.3
 fresh-install, populated-upgrade, compatibility, and three-oracle gates.
 
 This addendum MUST NOT authorize a change to an M5.0 semantic decision. An
-implementation conflict with this addendum and M5-D1 through M5-D22 MUST stop
+implementation conflict with this addendum and M5-D1 through M5-D23 MUST stop
 M5.4 as **NO-GO**. The exact amendment procedure MUST be a new numbered M5
 decision in `docs/m5_design_freeze.md`, a matching acceptance-matrix row, and a
 new runtime-addendum revision before code resumes. The migration-014 M4-open
 guard conflict discovered during implementation is resolved only by M5-D21 and
 the exact exception in Section 16. The missing changed-state artifact recipe
 discovered during activation implementation is resolved only by M5-D22 and
-Section 10.1; no unresolved conflict is present in this revision.
+Section 10.1. The retry, cancellation, direct-payload, and direct-acquisition
+omissions discovered during the first production-transition audit are resolved
+only by M5-D23 and Sections 8.3, 14.2, 14.4, 16, and 17; no unresolved contract
+conflict is present in this revision.
 
 Normative wire values in backticks MUST be exact lowercase UTF-8. Every DTO in
 this document MUST be immutable. Every tuple MUST use the order stated here.
@@ -718,6 +721,19 @@ The attempt ID MUST be the idempotency key for worker return. The first return
 MUST reserve `(attempt_id, attempt_output_digest)`. An exact digest replay MUST
 return the stored receipt with zero writes and zero epoch revision change. The
 same attempt ID with another digest MUST conflict and MUST change no row.
+
+A retryable external-call failure MUST store a separate nullable `error_hash`
+on `groundloop_m5_job_attempt`; it MUST NOT invent an attempt output or overload
+`attempt_output_digest`. The field MUST be NULL while the attempt is
+`dispatched`, `result_reserved`, `completed`, or `expired`, and MUST contain
+exactly one lowercase SHA-256 when the attempt is `failed`. The retryable-
+failure transition MUST validate the epoch/job/attempt/lease tuple, store the
+caller-supplied hash, move the job `running -> retryable_failed`, increment the
+epoch revision exactly once, and return `M5AttemptCompletionReceipt`. Exact
+replay with the same error hash MUST validate the complete tuple and return the
+stored receipt with zero writes; the same attempt or lease with a different
+error hash MUST conflict and change no row. `error_hash` MUST NOT enter
+`attempt_id`, `attempt_output_digest`, or another semantic-result identity.
 
 ### 8.4 Persisted attempt-result artifact
 
@@ -1489,6 +1505,27 @@ this state machine.
 
 ### 14.4 Cancellation and durable failure
 
+```text
+M5CancellationPlan(
+  structural_event_id: str,
+  epoch_id: int,
+  cancelled_job_ids: tuple[SHA256, ...],
+  reason: M5TerminalReason,
+  plan_digest: SHA256
+)
+```
+
+`cancelled_job_ids` MUST be nonempty, strictly increasing by UTF-8 byte order,
+and duplicate-free. `reason` MUST be exactly one of `subject_inactive`,
+`scope_retired`, or `epoch_failed`. `plan_digest` MUST be:
+
+```text
+stable_m5_digest(
+  "m5-cancellation-plan-v2", *TEXT(structural_event_id), *INT(epoch_id),
+  *SEQ(HASH(cancelled_job_id) for cancelled_job_id in cancelled_job_ids),
+  *ENUM(reason))
+```
+
 Cancellation MUST be a sorted batch CAS over all selected open jobs/scopes.
 It MUST record `cancelled_by_event_id`, `cancelled_by_epoch_id`, and the exact
 terminal reason on every job. It MUST decrement open/PENDING contributions
@@ -1678,6 +1715,11 @@ groundloop_m5_event_result_delta
 groundloop_m5_event_result_state_reference
 ```
 
+`groundloop_m5_job_attempt` MUST contain the M5-D23 `error_hash` separately
+from `attempt_output_digest`. Its checked state shape MUST enforce NULL for
+`dispatched`, `result_reserved`, `completed`, and `expired`, and presence for
+`failed`; only the checked retryable-failure procedure may populate it.
+
 The SQL checks and foreign keys MUST enforce every enum, nullable-shape,
 digest-width, positive/nonnegative, parent/root, snapshot membership,
 subject-kind, one-row, uniqueness, and terminal-state invariant in this
@@ -1811,7 +1853,9 @@ The runtime persistence port MUST expose exactly:
 
 ```text
 acquire_m5_job(epoch_id, expected_revision, job) -> M5JobLease
-mark_m5_retryable_failure(epoch_id, expected_revision, lease, error_hash)
+mark_m5_retryable_failure(
+  epoch_id, expected_revision, lease, error_hash
+) -> M5AttemptCompletionReceipt
 stage_m5_discovery_result_atomically(
   epoch_id, expected_revision, lease, job, result, attempt_output
 ) -> M5AttemptCompletionReceipt
@@ -1840,13 +1884,31 @@ expected revision. `M5JobLease`, `M5AttemptCompletionReceipt`,
 revision and an exact-replay boolean. The replay boolean MUST be false after a
 state change and true only after complete payload validation with zero writes.
 
+Reconnect/application orchestration MAY use this read-only hydration port in
+addition to the exact mutator surface above:
+
+```text
+current_revision(epoch_id) -> int
+verifier_jobs(epoch_id) -> tuple[M5LogicalJobSpec, ...]
+current_event_work(epoch_id) -> M5RuntimeWork
+```
+
+These methods MUST read only committed rows, MUST NOT hold a transaction across
+an external call, and MUST NOT reconstruct or mutate a terminal event result.
+
 The direct-M4 transaction adapter MUST expose exactly:
 
 ```text
 stage_direct_open(
-  cursor, event: DynamicEventPlan, withdrawal: StructuralWithdrawal,
+  cursor, event: DynamicEventPlan, payload: StructuralPayload,
+  withdrawal: StructuralWithdrawal,
   roots: tuple[LogicalJobSpec, ...], scopes: tuple[DiscoveryScope, ...]
 ) -> OpenEventReceipt
+
+acquire_direct_job(
+  cursor, epoch_id: int, expected_revision: int,
+  job: LogicalJobSpec, lease_token_hash: SHA256
+) -> JobLease
 
 stage_direct_expansion(
   cursor, epoch_id: int, expected_revision: int, lease: JobLease,
@@ -1873,7 +1935,11 @@ stage_direct_seal(
 Each method MUST receive the typed transaction's cursor and held-lock context,
 MUST execute the same SQL/state logic as the existing M4 path, and MUST NOT
 commit, roll back, open a nested transaction, advance a head alone, or alter a
-v1 DTO/digest.
+v1 DTO/digest. `stage_direct_open` MUST validate and stage the exact supplied
+`StructuralPayload`; document/chunk/metadata bytes MUST NOT be reconstructed
+from `DynamicEventPlan`. `acquire_direct_job` MUST persist the v1 dispatch
+marker and dense attempt under the caller's typed transaction so the marker
+commits before external work begins.
 
 ## 18. Falsifying acceptance matrix
 

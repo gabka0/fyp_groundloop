@@ -1,6 +1,6 @@
 # GroundLoop M5 Acceptance Matrix
 
-Status: frozen M5 falsification contract, amended by M5-D21 and M5-D22;
+Status: frozen M5 falsification contract, amended by M5-D21 through M5-D23;
 staged evidence current through partial M5.4
 
 Date: 2026-08-06
@@ -39,14 +39,15 @@ design freeze is reopened and the scope change is recorded.
 | M5.0-20 | M5-D20 semantic confirmation boundary | Close without a fresh adjudicated cohort | Status says controlled/retrospective only and records M6 debt | PASS / PENDING |
 | M5.0-21 | M5-D21 typed direct bridge and combined state | After activation, use missing/prior-committed/reordered/mismatched kind/event/base/policy/manifest/registry/revision/state sidecars, commit a typed document sidecar without its M4 row, let public M4 open/resume/fail/seal change a typed epoch, or let direct completion commit COMPLETE while M5 work remains | Current-transaction guard/deferred-constraint rejection and rollback matrix, unchanged `v1_only` bytes, exact typed document open, public-M4 terminal-path rejection, and combined-state transition tests | PASS / PENDING |
 | M5.0-22 | M5-D22 byte-total changed-state artifacts | Mutate any state field, optional F64/null, sequence order, policy/certificate binding, coordinate, or certificate digest; supply a bootstrap/reference hash that does not match the named historical row | Golden one-field vectors, independent activation recomputation, live reference-to-row rejection, and exact replay | PASS / PENDING |
+| M5.0-23 | M5-D23 runtime transition completeness | Lose/change a retry error hash, mutate/reorder a cancellation target/reason, omit or reconstruct direct structural payload, or acquire direct work through a public typed-forbidden M4 path | Retry/cancellation golden vectors and replay tests; exact payload-bound typed direct open; cursor-local direct acquisition; public-route rejection | PASS / PENDING |
 
 M5.0 originally froze after the contract side of every row passed, three
 independent audits reported no unresolved P0/P1, and the coordinator recorded
 the decisions. The later implementation conflict followed the frozen amendment
-procedure and is now specified by M5-D21/M5-D22, runtime-addendum revision 3,
-and rows M5.0-21/M5.0-22. The decision-row implementation halves remain `PENDING` until the
+procedure and is now specified by M5-D21 through M5-D23, runtime-addendum
+revision 4, and rows M5.0-21 through M5.0-23. The decision-row implementation halves remain `PENDING` until the
 final cross-stage evidence mapping at M5.6; the stage tables below record the
-current executable evidence without silently remapping M5-D1 through M5-D22.
+current executable evidence without silently remapping M5-D1 through M5-D23.
 
 ### 1.1 Mandatory adversarial cases
 

@@ -10,10 +10,12 @@ Authority: `docs/m5_design_freeze.md`, `docs/m5_implementation_plan.md`,
 `docs/m5_multiagent_execution_plan.md`, `docs/m5_acceptance_matrix.md`, and
 `docs/workstreams/m5_runtime_contract/CANDIDATE_RUNTIME_ADDENDUM.md`. This
 manifest changes implementation ownership and sequencing only. It does not
-amend M5-D1 through M5-D22, M5-T1/M5-T2, or any v1 identity. M5-D21 is the
+amend M5-D1 through M5-D23, M5-T1/M5-T2, or any v1 identity. M5-D21 is the
 separately recorded contract amendment that resolves the migration-014 typed
 direct-open conflict. M5-D22 is the separately recorded byte-total
 changed-state artifact amendment required by activation.
+M5-D23 is the separately recorded runtime-transition completeness amendment
+required by retry, cancellation, and cursor-local direct composition.
 
 ## 1. Restart checkpoint and protected state
 
@@ -203,6 +205,16 @@ state-artifact recipes, cross-language vectors, and the deferred historical
 reference check. The already integrated bundle contract remains closed in all
 other respects.
 
+The first production-transition audit then exposed the omissions resolved by
+M5-D23. Ownership of `src/groundloop/m5/runtime/contracts.py`,
+`src/groundloop/m5/runtime/digests.py`, `tests/m5/runtime/test_contracts.py`,
+`tests/m5/runtime/test_digests.py`, `migrations/015_m5_runtime.sql`, and the
+coordinator-owned live runtime tests is transferred narrowly from completed R1
+and R2 to the coordinator for the retry-error shape, cancellation plan/digest,
+exact receipt, direct structural payload, cursor-local acquisition, and
+read-only hydration contracts. Existing M4-v1 and migration-014 identities
+remain closed.
+
 ### Lane R3 -- production failure/replay acceptance tests
 
 Authorized after Barrier A integration at coordinator checkpoint `51a2bac`:
@@ -379,7 +391,7 @@ After code and evaluation freeze, the coordinator executes and records:
 - crash/reconnect/replay and migration/backfill evidence;
 - deterministic evaluation reproduction and artifact hashes;
 - a generated-artifact/secrets/user-WIP audit;
-- cross-stage mapping for M5-D1 through M5-D22;
+- cross-stage mapping for M5-D1 through M5-D23;
 - final status, acceptance matrix, roadmap, architecture, evaluation,
   literature, README, AGENTS, and decision-log reconciliation.
 

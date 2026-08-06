@@ -69,7 +69,7 @@ decision-row cross-stage mapping will be recorded at M5.6.
 
 The authoritative documents are:
 
-- `docs/m5_design_freeze.md` -- decisions M5-D1 through M5-D22 and theorems
+- `docs/m5_design_freeze.md` -- decisions M5-D1 through M5-D23 and theorems
   M5-T1/M5-T2;
 - `docs/m5_implementation_plan.md` -- stages M5.1 through M5.6;
 - `docs/m5_multiagent_execution_plan.md` -- path-exclusive ownership and
@@ -141,7 +141,10 @@ The composed migration/failure/bundle-race gate passed 67/67 tests.
 M5.4-01 passes through the integrated byte-total contract, digest, direction,
 shape, nullability, F64, ordering, and pure-frontier suite. M5-D22 closes the
 previously undefined inner state-artifact identity without changing M4-v1 or
-M5 semantic state. Public activation is implemented and passes 8/8 live tests,
+M5 semantic state. Runtime-addendum revision 4 and M5-D23 now freeze the
+previously missing retry-error, cancellation-plan, direct-payload, direct-
+acquisition, and read-only hydration contracts; their implementation evidence
+remains pending. Public activation is implemented and passes 8/8 live tests,
 including all six bootstrap reference kinds, cross-language SQL/Python hashes,
 no synthetic epoch, read-only replay, conflicts, and six failure-atomic
 injection points. Activation alone does not close M5.4-05.
