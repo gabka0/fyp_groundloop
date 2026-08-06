@@ -10,9 +10,10 @@ Authority: `docs/m5_design_freeze.md`, `docs/m5_implementation_plan.md`,
 `docs/m5_multiagent_execution_plan.md`, `docs/m5_acceptance_matrix.md`, and
 `docs/workstreams/m5_runtime_contract/CANDIDATE_RUNTIME_ADDENDUM.md`. This
 manifest changes implementation ownership and sequencing only. It does not
-amend M5-D1 through M5-D21, M5-T1/M5-T2, or any v1 identity. M5-D21 is the
+amend M5-D1 through M5-D22, M5-T1/M5-T2, or any v1 identity. M5-D21 is the
 separately recorded contract amendment that resolves the migration-014 typed
-direct-open conflict.
+direct-open conflict. M5-D22 is the separately recorded byte-total
+changed-state artifact amendment required by activation.
 
 ## 1. Restart checkpoint and protected state
 
@@ -185,6 +186,14 @@ extraction, mode barriers, activation, persistence/application composition,
 full validation, live execution, evidence classification, and final claims.
 No lane edits these paths.
 
+After R1 closed, activation review exposed the missing inner state-artifact
+recipes resolved by M5-D22. Ownership of
+`src/groundloop/m5/runtime/digests.py` and
+`tests/m5/runtime/test_digests.py` is therefore transferred narrowly from the
+completed R1 lane to the coordinator for those four recipes and their golden
+mutation tests. This does not reopen other R1 contracts or grant an active
+lane either path.
+
 ### Lane R3 -- production failure/replay acceptance tests
 
 Authorized after Barrier A integration at coordinator checkpoint `51a2bac`:
@@ -335,7 +344,7 @@ After code and evaluation freeze, the coordinator executes and records:
 - crash/reconnect/replay and migration/backfill evidence;
 - deterministic evaluation reproduction and artifact hashes;
 - a generated-artifact/secrets/user-WIP audit;
-- cross-stage mapping for M5-D1 through M5-D21;
+- cross-stage mapping for M5-D1 through M5-D22;
 - final status, acceptance matrix, roadmap, architecture, evaluation,
   literature, README, AGENTS, and decision-log reconciliation.
 

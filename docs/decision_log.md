@@ -1,5 +1,36 @@
 # GroundLoop Decision Log
 
+## 2026-08-06 — M5-D22 Changed-State Artifact Digests Frozen
+
+Decision status: narrow runtime-contract completeness amendment accepted;
+implementation evidence remains pending.
+
+Runtime-addendum revision 2 required activation and every sealed typed result
+to bind a canonical `m5-changed-state-set-v2`, but specified only the outer
+reference/set recipes. It did not define how the referenced requirement,
+group, claim, or answer row becomes `state_artifact_hash`. The activation
+request therefore could not be independently constructed or verified without
+an implementation-private serialization. Guessing that serialization would
+violate the byte-total M5-D14 boundary.
+
+M5-D22 freezes four semantic-row artifact domains. Each digest binds the
+object ID and every persisted semantic field in schema order, including the
+decision-policy version and certificate binding where those columns exist;
+optional scores use exact `OPTION(F64)`, sequences retain their already
+canonical order, and NULL remains the typed NULL. Requirement, group, claim,
+and answer artifact hashes exclude publication coordinates because the outer
+changed-state reference already binds epoch and revision. A
+`group_certificate` or `claim_certificate` reference uses the immutable
+certificate's already byte-total `certificate_digest` directly as its
+`state_artifact_hash`; it is not hashed again under another domain.
+
+Activation must derive all six reference kinds from the independently built
+base-head projection and reject a request whose bootstrap set differs. Typed
+publication must use the same recipes, and live persistence validation must
+reject a reference whose hash does not match the named historical state or
+certificate. No M4-v1 identity, M5 semantic state, certificate recipe, or
+migration-014 byte changes under this amendment.
+
 ## 2026-08-06 — M5-D21 Typed Direct Bridge Frozen
 
 Decision status: narrow runtime-contract amendment accepted; implementation

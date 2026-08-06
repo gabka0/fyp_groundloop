@@ -347,6 +347,145 @@ def test_combined_delta_and_changed_state_recipes_bind_complete_rows() -> None:
     )
 
 
+def test_requirement_state_artifact_matches_independent_framing() -> None:
+    actual = digests.requirement_state_artifact_digest(
+        requirement_version_id="requirement-1",
+        witness_hashes=(H1,),
+        supporting_observation_ids=("observation-1",),
+        witness_count=1,
+        satisfied=True,
+        decision_policy_version="policy-1",
+    )
+
+    assert actual == _framed_sha256(
+        "m5-requirement-state-artifact-v2",
+        "text",
+        "requirement-1",
+        "sequence",
+        "int",
+        "1",
+        "sha256",
+        H1,
+        "sequence",
+        "int",
+        "1",
+        "text",
+        "observation-1",
+        "int",
+        "1",
+        "bool",
+        "1",
+        "text",
+        "policy-1",
+    )
+
+
+def test_state_artifact_recipes_bind_every_persisted_field() -> None:
+    requirement = {
+        "requirement_version_id": "requirement-1",
+        "witness_hashes": (H1, H2),
+        "supporting_observation_ids": ("observation-1", "observation-2"),
+        "witness_count": 2,
+        "satisfied": True,
+        "decision_policy_version": "policy-1",
+    }
+    requirement_hash = digests.requirement_state_artifact_digest(**requirement)
+    requirement_mutations = (
+        {"requirement_version_id": "requirement-2"},
+        {"witness_hashes": (H2, H1)},
+        {"supporting_observation_ids": ("observation-2", "observation-1")},
+        {"witness_count": 3},
+        {"satisfied": False},
+        {"decision_policy_version": "policy-2"},
+    )
+    for mutation in requirement_mutations:
+        assert digests.requirement_state_artifact_digest(
+            **(requirement | mutation)
+        ) != requirement_hash
+
+    group = {
+        "group_version_id": "group-1",
+        "requirement_count": 2,
+        "satisfied_count": 2,
+        "matching_size": 2,
+        "complete": True,
+        "decision_policy_version": "policy-1",
+        "certificate_digest": H1,
+    }
+    group_hash = digests.group_state_artifact_digest(**group)
+    group_mutations = (
+        {"group_version_id": "group-2"},
+        {"requirement_count": 3},
+        {"satisfied_count": 1},
+        {"matching_size": 1},
+        {"complete": False},
+        {"decision_policy_version": "policy-2"},
+        {"certificate_digest": H2},
+        {"certificate_digest": None},
+    )
+    for mutation in group_mutations:
+        assert digests.group_state_artifact_digest(**(group | mutation)) != group_hash
+
+    claim = {
+        "claim_id": "claim-1",
+        "support_count": 2,
+        "refute_count": 1,
+        "best_support_score": 0.75,
+        "best_refute_score": -0.0,
+        "supporting_observation_ids": ("observation-1", "observation-2"),
+        "refuting_observation_ids": ("observation-3", "observation-4"),
+        "complete_group_count": 2,
+        "complete_group_ids": ("group-1", "group-2"),
+        "status": "conflicted",
+        "decision_policy_version": "policy-1",
+        "certificate_digest": H3,
+    }
+    claim_hash = digests.claim_state_artifact_digest(**claim)
+    claim_mutations = (
+        {"claim_id": "claim-2"},
+        {"support_count": 3},
+        {"refute_count": 2},
+        {"best_support_score": 0.5},
+        {"best_support_score": None},
+        {"best_refute_score": 0.0},
+        {"best_refute_score": None},
+        {"supporting_observation_ids": ("observation-2", "observation-1")},
+        {"refuting_observation_ids": ("observation-4", "observation-3")},
+        {"complete_group_count": 3},
+        {"complete_group_ids": ("group-2", "group-1")},
+        {"status": "supported"},
+        {"decision_policy_version": "policy-2"},
+        {"certificate_digest": H4},
+    )
+    for mutation in claim_mutations:
+        assert digests.claim_state_artifact_digest(**(claim | mutation)) != claim_hash
+
+    answer = {
+        "answer_version_id": "answer-1",
+        "required_claim_count": 4,
+        "supported_count": 1,
+        "unsupported_count": 1,
+        "refuted_count": 1,
+        "conflicted_count": 1,
+        "status": "conflicted",
+    }
+    answer_hash = digests.answer_state_artifact_digest(**answer)
+    answer_mutations = (
+        {"answer_version_id": "answer-2"},
+        {"required_claim_count": 5},
+        {"supported_count": 2},
+        {"unsupported_count": 2},
+        {"refuted_count": 2},
+        {"conflicted_count": 2},
+        {"status": "valid"},
+    )
+    for mutation in answer_mutations:
+        assert (
+            digests.answer_state_artifact_digest(**(answer | mutation))
+            != answer_hash
+        )
+
+
 def test_completion_reason_and_verifier_negative_zero_mutate_identity() -> None:
     inactive = digests.job_completion_digest(
         logical_job_id_value=H1,

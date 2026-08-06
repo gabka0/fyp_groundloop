@@ -1,12 +1,12 @@
 # GroundLoop M5.4 Byte-Total Runtime Contract Addendum
 
-Status: frozen runtime contract revision 2; implementation authorization
+Status: frozen runtime contract revision 3; implementation authorization
 **GO** after the M5.3 014 schema bundle is integrated and validated
 
-Date: 2026-08-03; revision 2 / M5-D21 amendment 2026-08-06
+Date: 2026-08-03; revision 3 / M5-D21 and M5-D22 amendments 2026-08-06
 
 Authority: this addendum specializes `docs/m5_design_freeze.md` M5-D1 through
-M5-D21 and M5-T1/M5-T2. It does not change those decisions. The M5 design
+M5-D22 and M5-T1/M5-T2. It does not change those decisions. The M5 design
 freeze remains authoritative for semantic truth; this addendum is authoritative
 for M5.4 runtime DTOs, identities, transition boundaries, persistence
 ownership, replay, and acceptance tests.
@@ -18,13 +18,14 @@ start only after migration 014 and its SQL oracle bundle have passed the M5.3
 fresh-install, populated-upgrade, compatibility, and three-oracle gates.
 
 This addendum MUST NOT authorize a change to an M5.0 semantic decision. An
-implementation conflict with this addendum and M5-D1 through M5-D21 MUST stop
+implementation conflict with this addendum and M5-D1 through M5-D22 MUST stop
 M5.4 as **NO-GO**. The exact amendment procedure MUST be a new numbered M5
 decision in `docs/m5_design_freeze.md`, a matching acceptance-matrix row, and a
 new runtime-addendum revision before code resumes. The migration-014 M4-open
 guard conflict discovered during implementation is resolved only by M5-D21 and
-the exact exception in Section 16; no unresolved conflict is present in this
-revision.
+the exact exception in Section 16. The missing changed-state artifact recipe
+discovered during activation implementation is resolved only by M5-D22 and
+Section 10.1; no unresolved conflict is present in this revision.
 
 Normative wire values in backticks MUST be exact lowercase UTF-8. Every DTO in
 this document MUST be immutable. Every tuple MUST use the order stated here.
@@ -923,6 +924,47 @@ stable_m5_digest(
   "m5-changed-state-reference-v2", *ENUM(kind), *TEXT(object_id),
   *INT(epoch_id), *INT(revision), *HASH(state_artifact_hash))
 ```
+
+For semantic-state kinds, `state_artifact_hash` MUST use exactly one of these
+recipes over the complete persisted state payload. Publication coordinates do
+not enter these inner hashes because `epoch_id` and `revision` are already
+bound by the outer reference. Every sequence shown below MUST already be
+unique and sorted under the frozen state contract.
+
+```text
+stable_m5_digest(
+  "m5-requirement-state-artifact-v2", *TEXT(requirement_version_id),
+  *SEQ(HASH(witness_hash) for witness_hash in witness_hashes),
+  *SEQ(TEXT(observation_id) for observation_id in supporting_observation_ids),
+  *INT(witness_count), *BOOL(satisfied), *TEXT(decision_policy_version))
+
+stable_m5_digest(
+  "m5-group-state-artifact-v2", *TEXT(group_version_id),
+  *INT(requirement_count), *INT(satisfied_count), *INT(matching_size),
+  *BOOL(complete), *TEXT(decision_policy_version),
+  *OPTION(HASH(certificate_digest)))
+
+stable_m5_digest(
+  "m5-claim-state-artifact-v2", *TEXT(claim_id), *INT(support_count),
+  *INT(refute_count), *OPTION(F64(best_support_score)),
+  *OPTION(F64(best_refute_score)),
+  *SEQ(TEXT(observation_id) for observation_id in supporting_observation_ids),
+  *SEQ(TEXT(observation_id) for observation_id in refuting_observation_ids),
+  *INT(complete_group_count),
+  *SEQ(TEXT(group_version_id) for group_version_id in complete_group_ids),
+  *ENUM(status), *TEXT(decision_policy_version), *HASH(certificate_digest))
+
+stable_m5_digest(
+  "m5-answer-state-artifact-v2", *TEXT(answer_version_id),
+  *INT(required_claim_count), *INT(supported_count),
+  *INT(unsupported_count), *INT(refuted_count), *INT(conflicted_count),
+  *ENUM(status))
+```
+
+For `group_certificate` and `claim_certificate`, `state_artifact_hash` MUST
+equal the referenced immutable artifact's existing `certificate_digest`
+exactly. It MUST NOT be digested again. The artifact tables' existing frozen
+recipes remain authoritative for certificate bytes.
 
 References MUST be sorted by `(kind.value, object_id, reference_digest)` and
 unique by `(kind, object_id)`. The set hash MUST be:

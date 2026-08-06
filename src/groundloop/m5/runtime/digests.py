@@ -717,6 +717,108 @@ def changed_state_reference_digest(
     )
 
 
+def requirement_state_artifact_digest(
+    *,
+    requirement_version_id: str,
+    witness_hashes: Iterable[str],
+    supporting_observation_ids: Iterable[str],
+    witness_count: int,
+    satisfied: bool,
+    decision_policy_version: str,
+) -> str:
+    return stable_m5_digest(
+        "m5-requirement-state-artifact-v2",
+        text_field(requirement_version_id),
+        sequence_field(hash_field(value) for value in witness_hashes),
+        sequence_field(text_field(value) for value in supporting_observation_ids),
+        int_field(witness_count),
+        bool_field(satisfied),
+        text_field(decision_policy_version),
+    )
+
+
+def group_state_artifact_digest(
+    *,
+    group_version_id: str,
+    requirement_count: int,
+    satisfied_count: int,
+    matching_size: int,
+    complete: bool,
+    decision_policy_version: str,
+    certificate_digest: str | None,
+) -> str:
+    return stable_m5_digest(
+        "m5-group-state-artifact-v2",
+        text_field(group_version_id),
+        int_field(requirement_count),
+        int_field(satisfied_count),
+        int_field(matching_size),
+        bool_field(complete),
+        text_field(decision_policy_version),
+        option_field(
+            None if certificate_digest is None else hash_field(certificate_digest)
+        ),
+    )
+
+
+def claim_state_artifact_digest(
+    *,
+    claim_id: str,
+    support_count: int,
+    refute_count: int,
+    best_support_score: float | None,
+    best_refute_score: float | None,
+    supporting_observation_ids: Iterable[str],
+    refuting_observation_ids: Iterable[str],
+    complete_group_count: int,
+    complete_group_ids: Iterable[str],
+    status: str | Enum,
+    decision_policy_version: str,
+    certificate_digest: str,
+) -> str:
+    return stable_m5_digest(
+        "m5-claim-state-artifact-v2",
+        text_field(claim_id),
+        int_field(support_count),
+        int_field(refute_count),
+        option_field(
+            None if best_support_score is None else f64_field(best_support_score)
+        ),
+        option_field(
+            None if best_refute_score is None else f64_field(best_refute_score)
+        ),
+        sequence_field(text_field(value) for value in supporting_observation_ids),
+        sequence_field(text_field(value) for value in refuting_observation_ids),
+        int_field(complete_group_count),
+        sequence_field(text_field(value) for value in complete_group_ids),
+        enum_field(status),
+        text_field(decision_policy_version),
+        hash_field(certificate_digest),
+    )
+
+
+def answer_state_artifact_digest(
+    *,
+    answer_version_id: str,
+    required_claim_count: int,
+    supported_count: int,
+    unsupported_count: int,
+    refuted_count: int,
+    conflicted_count: int,
+    status: str | Enum,
+) -> str:
+    return stable_m5_digest(
+        "m5-answer-state-artifact-v2",
+        text_field(answer_version_id),
+        int_field(required_claim_count),
+        int_field(supported_count),
+        int_field(unsupported_count),
+        int_field(refuted_count),
+        int_field(conflicted_count),
+        enum_field(status),
+    )
+
+
 def changed_state_set_digest(reference_digests: Iterable[str]) -> str:
     return stable_m5_digest(
         "m5-changed-state-set-v2",
@@ -889,6 +991,7 @@ __all__ = [
     "active_chunk_snapshot_digest",
     "activation_receipt_digest",
     "activation_request_digest",
+    "answer_state_artifact_digest",
     "attempt_output_digest",
     "attempt_result_artifact_digest",
     "attempt_result_artifact_id",
@@ -901,13 +1004,16 @@ __all__ = [
     "discovery_scope_contract_digest",
     "event_run_logical_result_digest",
     "forward_retrieval_execution_spec_digest",
+    "group_state_artifact_digest",
     "job_attempt_id",
     "job_completion_digest",
     "job_payload_digest",
     "logical_job_id",
     "open_event_receipt_binding_digest",
     "publication_receipt_binding_digest",
+    "claim_state_artifact_digest",
     "requirement_admitted_pair_digest",
+    "requirement_state_artifact_digest",
     "requirement_channel_hit_digest",
     "requirement_discovery_artifact_id",
     "requirement_discovery_result_digest",

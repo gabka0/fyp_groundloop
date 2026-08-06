@@ -1716,6 +1716,14 @@ replay returns the stored combined logical deltas/state references with a
 REPLAYED marker and zero new calls/writes; it does not append duplicate public
 deltas. Preactivation v1 history replay remains untouched.
 
+Every changed-state reference is byte-total. Requirement, group, claim, and
+answer state artifact hashes use the four exact `m5-*-state-artifact-v2`
+recipes frozen in runtime-addendum Section 10.1; the outer reference binds the
+publication epoch and revision. Group- and claim-certificate references use
+their immutable certificate digest directly as `state_artifact_hash` rather
+than applying a second digest. Activation and later sparse publication use the
+same six-kind construction and independently reject a mismatched state hash.
+
 The M5 dispatcher stages the base mutation and M5 overlay in one transaction;
 it must not call the old dispatcher to commit first and then rewrite its
 receipt. On a never-activated database, feature-disabled code continues to call
@@ -1757,6 +1765,7 @@ regression evidence.
 | M5-D19 | Requirement task | Only `verify_requirement_v1` observations enter M5 witness state |
 | M5-D20 | Semantic confirmation | Without a fresh blinded adjudicated cohort, M5 closes with controlled/retrospective evidence only |
 | M5-D21 | Typed direct bridge | Migration 015 may replace only the M4-open guard function so a matching typed sidecar-backed document declaration can insert the exact M4-v1 subgraph; public v1 remains blocked after activation and combined M4/M5 state is outer-coordinator-owned |
+| M5-D22 | Changed-state artifact identity | Four byte-total semantic-row digests bind every persisted field; certificate references reuse immutable certificate digests; epoch/revision remain in the outer reference |
 
 ## 15. Release gate
 
@@ -1769,5 +1778,6 @@ and data/evaluation audits agree that:
 4. Python and SQL oracle algorithms are independent and executable;
 5. the public data mapping is feasible without inventing gold labels;
 6. the acceptance matrix has a falsifying test for every M5-D decision,
-   including the M5-D21 typed-bridge exception; and
+   including the M5-D21 typed-bridge exception and M5-D22 state-artifact
+   identity; and
 7. path ownership prevents shared-schema or shared-contract collisions.
