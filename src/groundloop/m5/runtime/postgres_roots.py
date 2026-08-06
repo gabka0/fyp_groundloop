@@ -316,9 +316,7 @@ def _job_from_row(row: tuple[Any, ...]) -> _StoredJob:
     elif any(value is None for value in pair_values):
         raise ValidationError("stored semantic job has a partial pair identity")
     else:
-        pair = SemanticPairKey(
-            SubjectKind(str(row[7])), str(row[8]), str(row[9])
-        )
+        pair = SemanticPairKey(SubjectKind(str(row[7])), str(row[8]), str(row[9]))
         pair_digest = _text(row[10])
     return _StoredJob(
         spec=M5LogicalJobSpec(
@@ -345,9 +343,7 @@ def _job_from_row(row: tuple[Any, ...]) -> _StoredJob:
         result_artifact_hash=_optional_text(row[21]),
         scope_closure_digest=_optional_text(row[22]),
         child_set_hash=_optional_text(row[23]),
-        archive_reason=(
-            None if row[24] is None else M5TerminalReason(str(row[24]))
-        ),
+        archive_reason=(None if row[24] is None else M5TerminalReason(str(row[24]))),
         completion_digest=_optional_text(row[25]),
         created_revision=int(row[26]),
         completed_revision=None if row[27] is None else int(row[27]),
@@ -417,8 +413,7 @@ def _validate_header_bindings(
         != header.active_chunk_snapshot_digest
         or job.spec.requirement_registry_snapshot_digest
         != header.requirement_registry_snapshot_digest
-        or job.spec.active_chunk_snapshot_digest
-        != header.active_chunk_snapshot_digest
+        or job.spec.active_chunk_snapshot_digest != header.active_chunk_snapshot_digest
         or job.spec.structural_event_id != header.structural_event_id
     ):
         raise ValidationError("root identity is outside its frozen runtime epoch")
@@ -523,9 +518,7 @@ def _load_discovery_result(
             epoch_id=int(row[0]),
             root_job_id=root_job_id,
             scope_contract_digest=_text(row[1]),
-            pair=SemanticPairKey(
-                SubjectKind(str(row[2])), str(row[3]), str(row[4])
-            ),
+            pair=SemanticPairKey(SubjectKind(str(row[2])), str(row[3]), str(row[4])),
             semantic_pair_digest=_text(row[5]),
             candidate_policy_id=_text(row[6]),
             channel=M5RequirementAdmissionChannel(str(row[7])),
@@ -551,9 +544,7 @@ def _load_discovery_result(
         M5RequirementScopeSelection(
             root_job_id=root_job_id,
             scope_contract_digest=_text(row[0]),
-            pair=SemanticPairKey(
-                SubjectKind(str(row[1])), str(row[2]), str(row[3])
-            ),
+            pair=SemanticPairKey(SubjectKind(str(row[1])), str(row[2]), str(row[3])),
             semantic_pair_digest=_text(row[4]),
             fused_rank=int(row[5]),
             reasons=tuple(M5RequirementAdmissionChannel(value) for value in row[6]),
@@ -663,8 +654,7 @@ def _lock_activity_snapshot(
         header.structural_status == "committed"
         and header.semantic_status == "pending"
         and header.evaluation_state == "pending"
-        and header.runtime_state
-        in {"structural_committed", "semantic_pending"}
+        and header.runtime_state in {"structural_committed", "semantic_pending"}
     )
     if scope.direction is M5DiscoveryDirection.FORWARD_REQUIREMENT:
         assert scope.requirement_version_id is not None
@@ -697,10 +687,15 @@ def _lock_activity_snapshot(
             raise ValidationError("forward root target has no durable requirement")
         in_snapshot = bool(row[3])
         requirement_active = in_snapshot and str(row[0]) in {"STAGED", "PUBLISHED"}
-        group_active = in_snapshot and str(row[1]) in {
-            "STAGED",
-            "PUBLISHED",
-        } and str(row[2]) in {"STAGED", "PUBLISHED"}
+        group_active = (
+            in_snapshot
+            and str(row[1])
+            in {
+                "STAGED",
+                "PUBLISHED",
+            }
+            and str(row[2]) in {"STAGED", "PUBLISHED"}
+        )
         return epoch_active, None, requirement_active, group_active
 
     assert scope.inserted_chunk_version_id is not None
@@ -729,9 +724,7 @@ def _lock_activity_snapshot(
     return epoch_active, chunk_active, None, None
 
 
-def _lock_snapshot_headers(
-    cursor: Cursor[Any], *, header: _EpochHeader
-) -> None:
+def _lock_snapshot_headers(cursor: Cursor[Any], *, header: _EpochHeader) -> None:
     requirement = cursor.execute(
         """
         SELECT requirement_count
@@ -787,9 +780,7 @@ def _validate_stage_replay(
     stored_artifact = _load_attempt_result(
         cursor, attempt_id=attempt.attempt.attempt_id
     )
-    stored_result = _load_discovery_result(
-        cursor, root_job_id=job.spec.logical_job_id
-    )
+    stored_result = _load_discovery_result(cursor, root_job_id=job.spec.logical_job_id)
     if stored_artifact is None and stored_result is None:
         return None
     if stored_artifact is None or stored_result is None:
@@ -996,9 +987,7 @@ def stage_m5_discovery_result(
     scope_hint = _read_scope(
         cursor, epoch_id=epoch_id, root_job_id=job.logical_job_id, for_update=False
     )
-    activity = _lock_activity_snapshot(
-        cursor, header=header, scope=scope_hint.contract
-    )
+    activity = _lock_activity_snapshot(cursor, header=header, scope=scope_hint.contract)
     _lock_snapshot_headers(cursor, header=header)
     scope = _read_scope(
         cursor, epoch_id=epoch_id, root_job_id=job.logical_job_id, for_update=True
@@ -1237,9 +1226,7 @@ def stage_m5_discovery_result(
     if completed_attempt != 1:
         raise EventConflictError("root attempt completion lost its reservation")
     _inject(failure_injector, "root_stage_attempt_completed")
-    _advance_revision(
-        cursor, header=header, resulting_revision=resulting_revision
-    )
+    _advance_revision(cursor, header=header, resulting_revision=resulting_revision)
     _inject(failure_injector, "root_stage_revision_advanced")
     _force_deferred_validation(cursor)
     _inject(failure_injector, "root_stage_constraints_validated")
@@ -1256,7 +1243,7 @@ def _read_all_root_scopes(
 ) -> tuple[_StoredScope, ...]:
     rows = cursor.execute(
         _SCOPE_SELECT
-        + " WHERE epoch_id = %s ORDER BY root_job_id COLLATE \"C\" FOR UPDATE",
+        + ' WHERE epoch_id = %s ORDER BY root_job_id COLLATE "C" FOR UPDATE',
         (epoch_id,),
     ).fetchall()
     return tuple(_scope_from_row(tuple(row)) for row in rows)
@@ -1268,7 +1255,7 @@ def _read_all_root_jobs(
     rows = cursor.execute(
         _JOB_SELECT
         + " WHERE epoch_id = %s AND parent_job_id IS NULL"
-        + " ORDER BY logical_job_id COLLATE \"C\" FOR UPDATE",
+        + ' ORDER BY logical_job_id COLLATE "C" FOR UPDATE',
         (epoch_id,),
     ).fetchall()
     return tuple(_job_from_row(tuple(row)) for row in rows)
@@ -1298,8 +1285,7 @@ def _root_attempt_result(
     assert stored is not None
     if (
         stored.artifact.logical_job_id != root_job_id
-        or stored.artifact.disposition
-        is not M5AttemptDisposition.ROOT_RESULT_STAGED
+        or stored.artifact.disposition is not M5AttemptDisposition.ROOT_RESULT_STAGED
         or stored.output.result_artifact_id != result.result_artifact_id
         or stored.output.result_artifact_hash != result.result_artifact_hash
     ):
@@ -1373,9 +1359,7 @@ def _build_barrier(
         deduplication=deduplication,
         child_jobs=child_jobs,
     )
-    closure_by_root = {
-        closure.root_job_id: closure for closure in plan.root_closures
-    }
+    closure_by_root = {closure.root_job_id: closure for closure in plan.root_closures}
     result_by_root = {result.root_job_id: result for result in results}
     completion_by_root: dict[str, M5JobCompletion] = {}
     for job in jobs:
@@ -1577,7 +1561,7 @@ def _validate_barrier_replay(
     child_rows = cursor.execute(
         _JOB_SELECT
         + " WHERE epoch_id = %s AND parent_job_id IS NOT NULL"
-        + " ORDER BY logical_job_id COLLATE \"C\"",
+        + ' ORDER BY logical_job_id COLLATE "C"',
         (header.epoch_id,),
     ).fetchall()
     stored_children = tuple(_job_from_row(tuple(row)) for row in child_rows)
@@ -1585,9 +1569,7 @@ def _validate_barrier_replay(
         child.spec.logical_job_id for child in stored_children
     }:
         raise EventConflictError("durable verifier child set differs on replay")
-    admitted_by_pair = {
-        pair.semantic_pair_digest: pair for pair in plan.admitted_pairs
-    }
+    admitted_by_pair = {pair.semantic_pair_digest: pair for pair in plan.admitted_pairs}
     for child in stored_children:
         expected_child = expected_child_by_id[child.spec.logical_job_id]
         assert expected_child.semantic_pair_digest is not None
@@ -1636,8 +1618,7 @@ def _validate_barrier_replay(
         )
         if (
             scope.state is not expected_scope_state
-            or scope.scope_closure_digest
-            != expected_completion.scope_closure_digest
+            or scope.scope_closure_digest != expected_completion.scope_closure_digest
             or scope.child_set_hash != expected_completion.child_set_hash
             or scope.completion_digest != expected_completion.completion_digest
             or scope.closed_revision != job.completed_revision
@@ -1920,9 +1901,7 @@ def close_m5_requirement_roots(
             )
     _inject(failure_injector, "root_barrier_admitted_pairs_inserted")
 
-    admitted_by_pair = {
-        pair.semantic_pair_digest: pair for pair in plan.admitted_pairs
-    }
+    admitted_by_pair = {pair.semantic_pair_digest: pair for pair in plan.admitted_pairs}
     for child in child_jobs:
         assert child.pair is not None
         assert child.semantic_pair_digest is not None

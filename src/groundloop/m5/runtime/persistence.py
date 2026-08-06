@@ -40,6 +40,7 @@ from groundloop.m5.runtime.contracts import (
     M5ActivationReceipt,
     M5ActivationRequest,
     M5AttemptCompletionReceipt,
+    M5AttemptOutput,
     M5CandidatePolicyManifest,
     M5ChangedStateReference,
     M5DiscoveryDirection,
@@ -52,6 +53,8 @@ from groundloop.m5.runtime.contracts import (
     M5JobState,
     M5LogicalJobSpec,
     M5ReplayedOutcome,
+    M5RequirementDiscoveryResult,
+    M5RootBarrierReceipt,
     M5RunFailureReason,
     M5RunState,
     M5RuntimeTiming,
@@ -61,6 +64,10 @@ from groundloop.m5.runtime.contracts import (
     M5TypedEventPlan,
     RequirementRegistrySnapshot,
     SemanticPairKey,
+)
+from groundloop.m5.runtime.postgres_roots import (
+    close_m5_requirement_roots,
+    stage_m5_discovery_result,
 )
 from groundloop.postgres.m5 import (
     M5BootstrapProjection,
@@ -2426,6 +2433,50 @@ class PostgresM5RuntimeStore:
                 attempt.attempt_id,
                 resulting_revision,
                 False,
+            )
+
+    def stage_m5_discovery_result_atomically(
+        self,
+        epoch_id: int,
+        expected_revision: int,
+        lease: M5JobLease,
+        job: M5LogicalJobSpec,
+        result: M5RequirementDiscoveryResult,
+        attempt_output: M5AttemptOutput,
+        *,
+        failure_injector: RuntimeFailureInjector | None = None,
+    ) -> M5AttemptCompletionReceipt:
+        """Stage one root result inside exactly one owned transaction."""
+
+        with self._connection.transaction(), self._connection.cursor() as cursor:
+            return stage_m5_discovery_result(
+                cursor,
+                epoch_id,
+                expected_revision,
+                lease,
+                job,
+                result,
+                attempt_output,
+                failure_injector=failure_injector,
+            )
+
+    def close_m5_requirement_roots_atomically(
+        self,
+        epoch_id: int,
+        expected_revision: int,
+        requirement_root_set_hash: str,
+        *,
+        failure_injector: RuntimeFailureInjector | None = None,
+    ) -> M5RootBarrierReceipt:
+        """Close the complete frozen root set in one owned transaction."""
+
+        with self._connection.transaction(), self._connection.cursor() as cursor:
+            return close_m5_requirement_roots(
+                cursor,
+                epoch_id,
+                expected_revision,
+                requirement_root_set_hash,
+                failure_injector=failure_injector,
             )
 
     def _read_existing_open_read_only(

@@ -110,15 +110,18 @@ def _acquire(
             "SELECT groundloop_m5_authorize_checked_transition(%s, %s)",
             (epoch_id, expected_revision),
         )
-        assert cursor.execute(
-            """
+        assert (
+            cursor.execute(
+                """
             UPDATE groundloop_m5_semantic_job
             SET job_state = 'running'
             WHERE epoch_id = %s AND logical_job_id = %s
               AND job_state = 'declared'
             """,
-            (epoch_id, job.logical_job_id),
-        ).rowcount == 1
+                (epoch_id, job.logical_job_id),
+            ).rowcount
+            == 1
+        )
         cursor.execute(
             """
             INSERT INTO groundloop_m5_job_attempt (
@@ -148,21 +151,27 @@ def _acquire(
             """,
             (resulting_revision, epoch_id),
         )
-        assert cursor.execute(
-            """
+        assert (
+            cursor.execute(
+                """
             UPDATE groundloop_epoch SET revision = %s
             WHERE epoch_id = %s AND revision = %s
             """,
-            (resulting_revision, epoch_id, expected_revision),
-        ).rowcount == 1
-        assert cursor.execute(
-            """
+                (resulting_revision, epoch_id, expected_revision),
+            ).rowcount
+            == 1
+        )
+        assert (
+            cursor.execute(
+                """
             UPDATE groundloop_m5_runtime_epoch
             SET runtime_state = 'semantic_pending', revision = %s
             WHERE epoch_id = %s AND revision = %s
             """,
-            (resulting_revision, epoch_id, expected_revision),
-        ).rowcount == 1
+                (resulting_revision, epoch_id, expected_revision),
+            ).rowcount
+            == 1
+        )
         cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
     return M5JobLease(job.logical_job_id, attempt, resulting_revision, True, False)
 
@@ -241,7 +250,7 @@ def _stage(
 
 
 def _root_set_hash(
-    roots: tuple[tuple[M5DiscoveryScopeContract, M5LogicalJobSpec], ...]
+    roots: tuple[tuple[M5DiscoveryScopeContract, M5LogicalJobSpec], ...],
 ) -> str:
     return digests.requirement_root_set_digest(job.logical_job_id for _, job in roots)
 
@@ -564,9 +573,8 @@ def test_empty_roots_stage_exactly_and_close_with_forward_heads(
     m5_runtime_db: Any,
 ) -> None:
     plan = m5_runtime_db.register_plan(event_id="root-empty-close")
-    receipt = PostgresM5RuntimeStore(
-        m5_runtime_db.connection
-    ).open_typed_event_atomically(plan)
+    store = PostgresM5RuntimeStore(m5_runtime_db.connection)
+    receipt = store.open_typed_event_atomically(plan)
     roots = _roots(plan, m5_runtime_db.manifest)
     revision = 1
     staged: list[
@@ -600,16 +608,14 @@ def test_empty_roots_stage_exactly_and_close_with_forward_heads(
 
     before_replay = _transition_snapshot(m5_runtime_db.connection, receipt.epoch_id)
     lease, job, result, output = staged[0]
-    with m5_runtime_db.connection.transaction():
-        replay = stage_m5_discovery_result(
-            m5_runtime_db.connection.cursor(),
-            receipt.epoch_id,
-            lease.resulting_revision,
-            lease,
-            job,
-            result,
-            output,
-        )
+    replay = store.stage_m5_discovery_result_atomically(
+        receipt.epoch_id,
+        lease.resulting_revision,
+        lease,
+        job,
+        result,
+        output,
+    )
     assert replay.exact_replay
     assert replay.resulting_revision == revision
     assert (
@@ -617,13 +623,11 @@ def test_empty_roots_stage_exactly_and_close_with_forward_heads(
         == before_replay
     )
 
-    with m5_runtime_db.connection.transaction():
-        barrier = close_m5_requirement_roots(
-            m5_runtime_db.connection.cursor(),
-            receipt.epoch_id,
-            revision,
-            _root_set_hash(roots),
-        )
+    barrier = store.close_m5_requirement_roots_atomically(
+        receipt.epoch_id,
+        revision,
+        _root_set_hash(roots),
+    )
     assert not barrier.exact_replay
     assert barrier.resulting_revision == revision + 1
     assert m5_runtime_db.connection.execute(
@@ -645,18 +649,17 @@ def test_empty_roots_stage_exactly_and_close_with_forward_heads(
     before_barrier_replay = _transition_snapshot(
         m5_runtime_db.connection, receipt.epoch_id
     )
-    with m5_runtime_db.connection.transaction():
-        replay_barrier = close_m5_requirement_roots(
-            m5_runtime_db.connection.cursor(),
-            receipt.epoch_id,
-            revision,
-            _root_set_hash(roots),
-        )
+    replay_barrier = store.close_m5_requirement_roots_atomically(
+        receipt.epoch_id,
+        revision,
+        _root_set_hash(roots),
+    )
     assert replay_barrier.exact_replay
     assert replay_barrier.barrier_completion_hash == barrier.barrier_completion_hash
-    assert _transition_snapshot(
-        m5_runtime_db.connection, receipt.epoch_id
-    ) == before_barrier_replay
+    assert (
+        _transition_snapshot(m5_runtime_db.connection, receipt.epoch_id)
+        == before_barrier_replay
+    )
 
 
 def test_incomplete_barrier_and_conflicting_attempt_output_write_nothing(
