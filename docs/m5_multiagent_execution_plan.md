@@ -333,14 +333,16 @@ Lane R0-S uses branch `workstream/m5-d24-schema-016` and worktree
 
 Lane R0-C1 uses branch `workstream/m5-d24-c1-contracts` and worktree
 `/home/kassym/Desktop/groundloop-worktrees/m5-d24-c1-contracts`. Its accepted
-contract input is main commit `46e7794`, and it owns only:
+contract input is main commit
+`46e7794ae1290ea7e80418c64f5e587efdc9147b`, and it owns only:
 
 - `src/groundloop/m5/runtime/contracts.py`;
 - `tests/m5/runtime/test_d24_c1_contracts.py`; and
 - `docs/workstreams/m5_runtime_implementation/D24_C1_CONTRACTS_HANDOFF.md`.
 
-The coordinator records the exact lane base in the next status-only commit;
-R0-C1 must not edit before that record exists. This lane implements and
+Its exact lane base is
+`f1ceedd7fd94503c36707da9a3867e55e0e37927`; R0-C1 must validate that HEAD
+before editing. This lane implements and
 falsifies only the accepted C1 enums and receipt DTO topology. It must not edit
 `application.py`, fake ports, PostgreSQL/persistence code, direct-M4 code, or
 existing tests. Method/envelope contextual validation and atomic settlement
