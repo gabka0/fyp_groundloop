@@ -1,11 +1,11 @@
 # GroundLoop M5 Implementation Status
 
-Status date: 2026-08-06
+Status date: 2026-08-07
 
 Milestone status: **M5.0 through M5.3 complete; M5.4 partially complete.**
 M5.4-01 passes. M5.4-02 through M5.4-09 and every M5.5--M5.6
 implementation/evaluation closure remain pending. M5-D24 is contract-PASS and
-M5-D24-C1 is accepted; both remain implementation-PENDING.
+M5-D24-C1 and M5-D24-C2 are accepted; all remain implementation-PENDING.
 
 ## 1. Honest current verdict
 
@@ -80,6 +80,8 @@ The authoritative documents are:
 - `docs/workstreams/m5_runtime_contract/EXECUTION_DISPOSITION_RECEIPT_CORRECTION.md`
   -- accepted explicit successful-disposition and total return-receipt
   correction;
+- `docs/workstreams/m5_runtime_contract/LEGACY_TERMINAL_COVERAGE_CORRECTION.md`
+  -- accepted first-install rejection of unbackfillable terminal M5 history;
 - `docs/m5_implementation_plan.md` -- stages M5.1 through M5.6;
 - `docs/m5_multiagent_execution_plan.md` -- path-exclusive ownership and
   integration order; and
@@ -174,10 +176,15 @@ M5-D24-C1 then corrected the non-inferable successful evidence disposition and
 ambiguous successful-return receipts after independent exact-byte GO on
 pre-freeze SHA-256
 `741ce0de897099164eb877684bc12209f347eb920185be5ed4c3c3d5395bf25a`.
-Migration 016, C1 implementation, persistence, application composition, and
-all D24 race/crash/reconnect tests are still unimplemented. The proposed M5-D25
-persisted-matching draft remains non-authoritative and has unresolved
-adversarial blockers plus literal migration-016 placeholders.
+M5-D24-C2 removes the contradictory allowance for pre-016 terminal M5 history
+that cannot be given exact point coverage without guessing. Two independent
+exact-byte reads returned GO on pre-freeze SHA-256
+`de9a56439d4f1995339c72917c52dc7726c9fdd6095c27c8923493193abb5aad`.
+The pure C1 receipt DTO checkpoint is integrated. Migration 016, contextual C1
+persistence/application composition, and all D24 race/crash/reconnect gates
+remain implementation-PENDING. The proposed M5-D25 persisted-matching draft
+remains non-authoritative and has unresolved adversarial blockers plus literal
+migration-016 placeholders.
 
 ## 5. Remaining closure boundary
 

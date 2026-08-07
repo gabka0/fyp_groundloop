@@ -1,5 +1,31 @@
 # GroundLoop Decision Log
 
+## 2026-08-07 — M5-D24-C2 Legacy Terminal Coverage Boundary Accepted
+
+Decision status: narrow correction accepted after two independent exact-byte
+reviews; implementation evidence remains pending.
+
+M5-D24 Section 11.2 permitted migration 016 to install over a terminal
+zero-attempt M5 epoch while also forbidding guessed legacy work/timing
+backfill. Migration 015 has only terminal aggregate timing; it does not have
+the point observations, expected/observed/missing coverage, pending-anchor
+history, or accumulator transition needed for the one-to-one terminal cutoff
+required by Sections 9 and 11.3. Those requirements cannot both hold without
+inventing evidence.
+
+The accepted correction makes first installation reject any pre-016 terminal
+M5 runtime header or M5 event result after the existing live/attempt checks.
+It preserves the exact seven-lock order, attempt-family error precedence,
+failure atomicity, bare terminal base epochs with no M5 runtime/result, and
+both ledger-first exact-rerun paths. It authorizes no legacy backfill and does
+not weaken the exact post-016 terminal work/timing/coverage closure.
+
+The authoritative text is
+`docs/workstreams/m5_runtime_contract/LEGACY_TERMINAL_COVERAGE_CORRECTION.md`.
+Two independent exact-byte reads returned GO on pre-freeze content SHA-256
+`de9a56439d4f1995339c72917c52dc7726c9fdd6095c27c8923493193abb5aad`.
+This correction changes no M4-v1 contract and does not authorize M5-D25.
+
 ## 2026-08-06 — M5-D24-C1 Execution Disposition and Return Receipt Accepted
 
 Decision status: narrow correction accepted after independent exact-byte

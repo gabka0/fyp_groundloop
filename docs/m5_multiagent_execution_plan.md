@@ -1,10 +1,10 @@
 # GroundLoop M5 Multi-Agent Execution Plan
 
 Status: frozen M5 ownership contract; historical Waves 0--2 complete;
-M5-D24 recovery R0-C integrated, R0-S repair active, and the narrow R0-C1
-receipt-contract lane authorized below
+M5-D24 recovery R0-C and pure R0-C1 integrated; R0-S repair active under the
+accepted M5-D24-C2 correction below
 
-Date: 2026-08-02; M5-D24 path amendment 2026-08-06
+Date: 2026-08-02; M5-D24 path amendments 2026-08-06 and 2026-08-07
 
 Authority: `docs/m5_design_freeze.md` defines semantics and
 `docs/m5_implementation_plan.md` defines gates. This document defines only
@@ -331,6 +331,11 @@ Lane R0-S uses branch `workstream/m5-d24-schema-016` and worktree
 - `tests/m5/postgres_runtime/test_migration_016.py`; and
 - `docs/workstreams/m5_runtime_implementation/D24_SCHEMA_016_HANDOFF.md`.
 
+Its migration input includes the accepted narrow first-install correction in
+`docs/workstreams/m5_runtime_contract/LEGACY_TERMINAL_COVERAGE_CORRECTION.md`.
+That correction grants no ownership of the contract document or another lane's
+paths.
+
 Lane R0-C1 uses branch `workstream/m5-d24-c1-contracts` and worktree
 `/home/kassym/Desktop/groundloop-worktrees/m5-d24-c1-contracts`. Its accepted
 contract input is main commit
@@ -359,7 +364,10 @@ named above.
 R0 exits only when golden byte/null/order vectors and the live fresh,
 populated-no-attempt, exact-rerun, five-field prerequisite-conflict,
 same-ID/content-conflict, replacement-object, and injected-rollback migration
-matrix pass on main.
+matrix pass on main. The migration matrix must also reject legacy failed and
+sealed M5 runtime/results with zero attempts, preserve attempt-family error
+precedence, permit a bare terminal base epoch, and rerun exactly after valid
+post-016 terminalization.
 
 ### Wave R1 -- requirement and typed-direct persistence
 
