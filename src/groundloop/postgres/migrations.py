@@ -1160,6 +1160,26 @@ def _m5_runtime_recovery_first_install_guard(
             "M5 runtime recovery bundle forbids an existing typed-direct attempt"
         )
 
+    terminal_history = connection.execute(
+        """
+        SELECT
+            EXISTS (
+                SELECT 1
+                FROM groundloop_m5_runtime_epoch
+                WHERE runtime_state IN ('sealed', 'failed')
+            ),
+            EXISTS (SELECT 1 FROM groundloop_m5_event_result)
+        """
+    ).fetchone()
+    if terminal_history is None:
+        raise M5RuntimeRecoveryBundleError(
+            "migration-016 terminal-history guard returned no row"
+        )
+    if bool(terminal_history[0]) or bool(terminal_history[1]):
+        raise M5RuntimeRecoveryBundleError(
+            "M5 runtime recovery bundle forbids legacy terminal M5 history"
+        )
+
 
 def install_m5_runtime_recovery_bundle(
     connection: Connection[Any],

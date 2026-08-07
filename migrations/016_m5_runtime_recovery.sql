@@ -25,7 +25,7 @@ LANGUAGE plpgsql
 AS $$
 BEGIN
     IF TG_OP = 'DELETE' THEN
-        RETURN NEW;
+        RETURN OLD;
     END IF;
     IF ROW(OLD.lease_expires_at) IS DISTINCT FROM ROW(NEW.lease_expires_at) THEN
         RAISE EXCEPTION 'immutable M5 attempt lease changed';
@@ -420,6 +420,63 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION groundloop_m5_recovery_cancellation_plan_digest(
+    epoch_to_hash bigint,
+    structural_event_to_hash text,
+    reason_to_hash text,
+    completed_revision_to_hash bigint
+)
+RETURNS char(64)
+LANGUAGE plpgsql
+STABLE
+STRICT
+PARALLEL SAFE
+AS $$
+DECLARE
+    fields text[];
+    job_count bigint;
+    job_row record;
+BEGIN
+    IF reason_to_hash NOT IN (
+        'subject_inactive', 'scope_retired', 'epoch_failed'
+    ) THEN
+        RAISE EXCEPTION 'M5 cancellation-plan reason is invalid';
+    END IF;
+    SELECT count(*) INTO job_count
+    FROM groundloop_m5_semantic_job AS job
+    WHERE job.epoch_id = epoch_to_hash
+      AND job.job_state = 'cancelled'
+      AND job.cancelled_by_event_id = structural_event_to_hash
+      AND job.cancelled_by_epoch_id = epoch_to_hash
+      AND job.cancellation_reason = reason_to_hash
+      AND job.completed_revision = completed_revision_to_hash;
+    IF job_count = 0 THEN
+        RETURN NULL;
+    END IF;
+    fields := ARRAY[
+        'm5-cancellation-plan-v2',
+        'text', structural_event_to_hash,
+        'int', epoch_to_hash::text,
+        'sequence', 'int', job_count::text
+    ];
+    FOR job_row IN
+        SELECT logical_job_id
+        FROM groundloop_m5_semantic_job
+        WHERE epoch_id = epoch_to_hash
+          AND job_state = 'cancelled'
+          AND cancelled_by_event_id = structural_event_to_hash
+          AND cancelled_by_epoch_id = epoch_to_hash
+          AND cancellation_reason = reason_to_hash
+          AND completed_revision = completed_revision_to_hash
+        ORDER BY logical_job_id COLLATE "C"
+    LOOP
+        fields := fields || ARRAY['sha256', job_row.logical_job_id];
+    END LOOP;
+    fields := fields || ARRAY['enum', reason_to_hash];
+    RETURN groundloop_m5_digest_text_fields(fields);
+END;
+$$;
+
 CREATE FUNCTION groundloop_m5_require_runtime_recovery_bundle()
 RETURNS void
 LANGUAGE plpgsql
@@ -664,6 +721,17 @@ BEGIN
           AND attempt.job_id = NEW.logical_job_id
           AND attempt.attempt_ordinal = NEW.attempt_ordinal
           AND attempt.lease_expires_at = NEW.lease_expires_at
+          AND attempt.execution_spec_hash = job.execution_spec_hash
+          AND attempt.attempt_id =
+              groundloop_m5_recovery_stable_m4_digest(ARRAY[
+                  'm4-job-attempt-v1', attempt.job_id,
+                  attempt.attempt_ordinal::text
+              ])
+          AND attempt.lease_token_hash =
+              groundloop_m5_recovery_stable_m4_digest(ARRAY[
+                  'm4-lease-token-v1', attempt.job_id,
+                  attempt.attempt_ordinal::text
+              ])
           AND job.epoch_id = NEW.epoch_id
           AND job.job_kind = NEW.job_kind
     ) THEN
@@ -697,6 +765,60 @@ BEGIN
         RAISE EXCEPTION 'M5 dispatch-record digest is incorrect';
     END IF;
     RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION groundloop_m5_lock_dispatch_attempt_binding()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NEW.subgraph = 'requirement' THEN
+        PERFORM 1
+        FROM groundloop_m5_job_attempt AS attempt
+        JOIN groundloop_m5_semantic_job AS job
+          ON job.logical_job_id = attempt.logical_job_id
+        WHERE attempt.attempt_id = NEW.attempt_id
+          AND attempt.logical_job_id = NEW.logical_job_id
+          AND attempt.attempt_ordinal = NEW.attempt_ordinal
+          AND attempt.lease_expires_at = NEW.lease_expires_at
+          AND job.epoch_id = NEW.epoch_id
+          AND job.job_kind = NEW.job_kind
+        FOR SHARE OF attempt, job;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION
+                'M5 dispatch does not lock its exact requirement attempt';
+        END IF;
+    ELSIF NEW.subgraph = 'direct' THEN
+        PERFORM 1
+        FROM groundloop_semantic_job_attempt AS attempt
+        JOIN groundloop_semantic_job AS job ON job.job_id = attempt.job_id
+        WHERE attempt.attempt_id = NEW.attempt_id
+          AND attempt.job_id = NEW.logical_job_id
+          AND attempt.attempt_ordinal = NEW.attempt_ordinal
+          AND attempt.lease_expires_at = NEW.lease_expires_at
+          AND attempt.execution_spec_hash = job.execution_spec_hash
+          AND attempt.attempt_id =
+              groundloop_m5_recovery_stable_m4_digest(ARRAY[
+                  'm4-job-attempt-v1', attempt.job_id,
+                  attempt.attempt_ordinal::text
+              ])
+          AND attempt.lease_token_hash =
+              groundloop_m5_recovery_stable_m4_digest(ARRAY[
+                  'm4-lease-token-v1', attempt.job_id,
+                  attempt.attempt_ordinal::text
+              ])
+          AND job.epoch_id = NEW.epoch_id
+          AND job.job_kind = NEW.job_kind
+        FOR SHARE OF attempt, job;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION
+                'M5 dispatch does not lock its exact typed-direct attempt';
+        END IF;
+    ELSE
+        RAISE EXCEPTION 'M5 dispatch subgraph is invalid';
+    END IF;
+    RETURN NEW;
 END;
 $$;
 
@@ -738,6 +860,95 @@ BEGIN
         ) THEN
             RAISE EXCEPTION 'fallback provenance does not bind a forward root';
         END IF;
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION groundloop_m5_validate_dispatch_attempt_reverse_closure()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    attempt_to_check text := OLD.attempt_id;
+    subgraph_to_check text := CASE TG_TABLE_NAME
+        WHEN 'groundloop_m5_job_attempt' THEN 'requirement'
+        WHEN 'groundloop_semantic_job_attempt' THEN 'direct'
+        ELSE '__invalid__'
+    END;
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM groundloop_m5_dispatch_record AS dispatch
+        WHERE dispatch.subgraph = subgraph_to_check
+          AND dispatch.attempt_id = attempt_to_check
+    ) AND NOT (
+        (subgraph_to_check = 'requirement' AND EXISTS (
+            SELECT 1
+            FROM groundloop_m5_dispatch_record AS dispatch
+            JOIN groundloop_m5_job_attempt AS attempt
+              ON attempt.attempt_id = dispatch.attempt_id
+             AND attempt.logical_job_id = dispatch.logical_job_id
+             AND attempt.attempt_ordinal = dispatch.attempt_ordinal
+             AND attempt.lease_expires_at = dispatch.lease_expires_at
+            JOIN groundloop_m5_semantic_job AS job
+              ON job.logical_job_id = attempt.logical_job_id
+             AND job.epoch_id = dispatch.epoch_id
+             AND job.job_kind = dispatch.job_kind
+            WHERE dispatch.subgraph = 'requirement'
+              AND dispatch.attempt_id = attempt_to_check
+        ))
+        OR (subgraph_to_check = 'direct' AND EXISTS (
+            SELECT 1
+            FROM groundloop_m5_dispatch_record AS dispatch
+            JOIN groundloop_semantic_job_attempt AS attempt
+              ON attempt.attempt_id = dispatch.attempt_id
+             AND attempt.job_id = dispatch.logical_job_id
+             AND attempt.attempt_ordinal = dispatch.attempt_ordinal
+             AND attempt.lease_expires_at = dispatch.lease_expires_at
+            JOIN groundloop_semantic_job AS job
+              ON job.job_id = attempt.job_id
+             AND job.epoch_id = dispatch.epoch_id
+             AND job.job_kind = dispatch.job_kind
+            WHERE dispatch.subgraph = 'direct'
+              AND dispatch.attempt_id = attempt_to_check
+              AND attempt.execution_spec_hash = job.execution_spec_hash
+              AND attempt.attempt_id =
+                  groundloop_m5_recovery_stable_m4_digest(ARRAY[
+                      'm4-job-attempt-v1', attempt.job_id,
+                      attempt.attempt_ordinal::text
+                  ])
+              AND attempt.lease_token_hash =
+                  groundloop_m5_recovery_stable_m4_digest(ARRAY[
+                      'm4-lease-token-v1', attempt.job_id,
+                      attempt.attempt_ordinal::text
+                  ])
+        ))
+    ) THEN
+        RAISE EXCEPTION
+            'M5 dispatch lost its exact applicable attempt binding';
+    END IF;
+    IF subgraph_to_check = 'direct' AND EXISTS (
+        SELECT 1
+        FROM groundloop_m5_typed_direct_late_return_envelope AS envelope
+        WHERE envelope.attempt_id = attempt_to_check
+    ) AND NOT EXISTS (
+        SELECT 1
+        FROM groundloop_m5_typed_direct_late_return_envelope AS envelope
+        JOIN groundloop_semantic_job_attempt AS attempt
+          ON attempt.attempt_id = envelope.attempt_id
+         AND attempt.job_id = envelope.job_id
+        WHERE envelope.attempt_id = attempt_to_check
+          AND envelope.attempt_binding = jsonb_build_object(
+              'attempt_id', attempt.attempt_id,
+              'job_id', attempt.job_id,
+              'execution_spec_hash', btrim(attempt.execution_spec_hash),
+              'attempt_ordinal', attempt.attempt_ordinal,
+              'lease_token_hash', btrim(attempt.lease_token_hash)
+          )
+    ) THEN
+        RAISE EXCEPTION
+            'typed-direct envelope lost its exact attempt identity binding';
     END IF;
     RETURN NULL;
 END;
@@ -791,6 +1002,9 @@ FOR EACH ROW EXECUTE FUNCTION groundloop_m5_reject_immutable_row();
 CREATE TRIGGER groundloop_m5_requirement_root_provenance_immutable
 BEFORE UPDATE OR DELETE ON groundloop_m5_requirement_root_provenance
 FOR EACH ROW EXECUTE FUNCTION groundloop_m5_reject_immutable_row();
+CREATE TRIGGER groundloop_m5_dispatch_record_attempt_lock
+BEFORE INSERT ON groundloop_m5_dispatch_record
+FOR EACH ROW EXECUTE FUNCTION groundloop_m5_lock_dispatch_attempt_binding();
 CREATE TRIGGER groundloop_m5_dispatch_record_immutable
 BEFORE UPDATE OR DELETE ON groundloop_m5_dispatch_record
 FOR EACH ROW EXECUTE FUNCTION groundloop_m5_reject_immutable_row();
@@ -814,6 +1028,14 @@ CREATE CONSTRAINT TRIGGER groundloop_m5_direct_terminal_projection_shape
 AFTER INSERT OR UPDATE ON groundloop_m5_direct_terminal_projection
 DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION groundloop_m5_validate_direct_terminal_projection();
+CREATE CONSTRAINT TRIGGER groundloop_m5_requirement_dispatch_attempt_reverse
+AFTER UPDATE OR DELETE ON groundloop_m5_job_attempt
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION groundloop_m5_validate_dispatch_attempt_reverse_closure();
+CREATE CONSTRAINT TRIGGER groundloop_m5_direct_dispatch_attempt_reverse
+AFTER UPDATE OR DELETE ON groundloop_semantic_job_attempt
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION groundloop_m5_validate_dispatch_attempt_reverse_closure();
 
 -- groundloop:m5-runtime-recovery-group:work_schema
 CREATE TABLE groundloop_m5_attempt_execution_evidence (
@@ -924,6 +1146,41 @@ ALTER TABLE groundloop_m5_runtime_work_accumulator
     ADD PRIMARY KEY (epoch_id),
     ADD FOREIGN KEY (epoch_id) REFERENCES groundloop_m5_runtime_epoch(epoch_id);
 
+CREATE FUNCTION groundloop_m5_reject_terminal_event_accounting_insert()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    runtime_state_value text;
+    accumulator_terminalized boolean := false;
+BEGIN
+    SELECT runtime_epoch.runtime_state
+    INTO STRICT runtime_state_value
+    FROM groundloop_m5_runtime_epoch AS runtime_epoch
+    WHERE runtime_epoch.epoch_id = NEW.epoch_id
+    FOR UPDATE;
+    IF TG_TABLE_NAME = 'groundloop_m5_runtime_work_contribution' THEN
+        SELECT accumulator.terminalized
+        INTO accumulator_terminalized
+        FROM groundloop_m5_runtime_work_accumulator AS accumulator
+        WHERE accumulator.epoch_id = NEW.epoch_id
+        FOR UPDATE;
+    ELSE
+        SELECT accumulator.terminalized
+        INTO accumulator_terminalized
+        FROM groundloop_m5_runtime_timing_accumulator AS accumulator
+        WHERE accumulator.epoch_id = NEW.epoch_id
+        FOR UPDATE;
+    END IF;
+    IF runtime_state_value IN ('sealed', 'failed')
+       OR coalesce(accumulator_terminalized, false) THEN
+        RAISE EXCEPTION
+            'terminal M5 epoch rejects event-accounted work or timing';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION groundloop_m5_validate_execution_evidence()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -956,6 +1213,8 @@ DECLARE
     attempt_values bigint[];
     expected_work_digest char(64);
     expected_evidence_digest char(64);
+    event_branch_count integer;
+    postterminal_branch_count integer;
 BEGIN
     SELECT array_agg((payload ->> ('attempt_' || counter_name))::bigint ORDER BY ordinal)
     INTO attempt_values
@@ -1020,6 +1279,46 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'confirmed fallback work disagrees with root provenance';
     END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM groundloop_m5_dispatch_record AS dispatch
+        WHERE dispatch.subgraph = NEW.subgraph
+          AND dispatch.attempt_id = NEW.attempt_id
+          AND dispatch.epoch_id = NEW.epoch_id
+          AND (
+              (dispatch.job_kind IN (
+                   'impact_discovery', 'frontier_retrieve',
+                   'forward_requirement_retrieval',
+                   'reverse_requirement_discovery'
+               ) AND (
+                   attempt_values[29] <> 0
+                   OR attempt_values[31] <> 0
+                   OR attempt_values[32] <> 0
+               ))
+              OR (dispatch.job_kind IN (
+                      'verify_pair', 'verify_requirement_pair'
+                  ) AND (
+                      attempt_values[28] <> 0
+                      OR attempt_values[30] <> 0
+                  ))
+              OR (attempt_values[30] > 0 AND attempt_values[28] <> 1)
+              OR ((attempt_values[31] > 0 OR attempt_values[32] > 0)
+                  AND attempt_values[29] <> 1)
+              OR (dispatch.job_kind IN ('impact_discovery', 'frontier_retrieve')
+                  AND attempt_values[28] > attempt_values[4])
+              OR (dispatch.job_kind = 'verify_pair'
+                  AND attempt_values[29] > attempt_values[5])
+              OR (dispatch.job_kind = 'forward_requirement_retrieval'
+                  AND attempt_values[28] > attempt_values[9])
+              OR (dispatch.job_kind = 'reverse_requirement_discovery'
+                  AND attempt_values[28] > attempt_values[10])
+              OR (dispatch.job_kind = 'verify_requirement_pair'
+                  AND attempt_values[29] > attempt_values[12])
+          )
+    ) THEN
+        RAISE EXCEPTION
+            'confirmed attempt model/token work disagrees with its job call';
+    END IF;
     expected_evidence_digest := groundloop_m5_digest_text_fields(ARRAY[
         'm5-attempt-execution-evidence-v1',
         'int', NEW.epoch_id::text,
@@ -1033,6 +1332,58 @@ BEGIN
     IF NEW.evidence_digest <> expected_evidence_digest THEN
         RAISE EXCEPTION 'M5 execution-evidence digest is incorrect';
     END IF;
+    SELECT count(*)::integer
+    INTO event_branch_count
+    FROM groundloop_m5_runtime_work_contribution AS contribution
+    JOIN groundloop_m5_runtime_timing_contribution AS timing
+      ON timing.epoch_id = contribution.epoch_id
+     AND timing.subgraph = NEW.subgraph
+     AND timing.attempt_id = contribution.source_id
+     AND timing.execution_evidence_digest = NEW.evidence_digest
+     AND timing.attempt_timing_digest = NEW.attempt_timing_digest
+    WHERE contribution.epoch_id = NEW.epoch_id
+      AND contribution.contribution_kind = CASE NEW.subgraph
+          WHEN 'requirement' THEN 'm5_attempt_execution'
+          WHEN 'direct' THEN 'direct_attempt_execution'
+          ELSE '__invalid__'
+      END
+      AND contribution.source_id = NEW.attempt_id
+      AND contribution.source_identity_hash = NEW.evidence_digest
+      AND contribution.work_digest = NEW.attempt_work_digest;
+    SELECT count(*)::integer
+    INTO postterminal_branch_count
+    FROM groundloop_m5_post_terminal_attempt_audit AS audit
+    JOIN groundloop_m5_post_terminal_attempt_timing AS timing
+      ON timing.epoch_id = audit.epoch_id
+     AND timing.subgraph = audit.subgraph
+     AND timing.attempt_id = audit.attempt_id
+     AND timing.attempt_timing_digest = audit.timing_digest
+    WHERE audit.epoch_id = NEW.epoch_id
+      AND audit.subgraph = NEW.subgraph
+      AND audit.attempt_id = NEW.attempt_id
+      AND audit.execution_evidence_digest = NEW.evidence_digest
+      AND audit.work_digest = NEW.attempt_work_digest
+      AND audit.timing_digest = NEW.attempt_timing_digest
+      AND NOT EXISTS (
+          SELECT 1
+          FROM groundloop_m5_runtime_work_contribution AS contribution
+          WHERE contribution.epoch_id = NEW.epoch_id
+            AND contribution.contribution_kind IN (
+                'm5_attempt_execution', 'direct_attempt_execution'
+            )
+            AND contribution.source_id = NEW.attempt_id
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM groundloop_m5_runtime_timing_contribution AS event_timing
+          WHERE event_timing.epoch_id = NEW.epoch_id
+            AND event_timing.subgraph = NEW.subgraph
+            AND event_timing.attempt_id = NEW.attempt_id
+      );
+    IF event_branch_count + postterminal_branch_count <> 1 THEN
+        RAISE EXCEPTION
+            'M5 execution evidence lacks one exclusive accounting branch';
+    END IF;
     RETURN NULL;
 END;
 $$;
@@ -1044,10 +1395,12 @@ AS $$
 DECLARE
     expected_work_digest char(64);
     expected_key_digest char(64);
+    work_values bigint[];
+    allowed_counter_ordinals integer[];
 BEGIN
-    expected_work_digest := groundloop_m5_recovery_runtime_work_digest(
-        groundloop_m5_recovery_work_values(NEW)
-    );
+    work_values := groundloop_m5_recovery_work_values(NEW);
+    expected_work_digest :=
+        groundloop_m5_recovery_runtime_work_digest(work_values);
     expected_key_digest := groundloop_m5_digest_text_fields(ARRAY[
         'm5-runtime-work-contribution-key-v1',
         'int', NEW.epoch_id::text,
@@ -1057,6 +1410,49 @@ BEGIN
     IF NEW.work_digest <> expected_work_digest
        OR NEW.contribution_key_digest <> expected_key_digest THEN
         RAISE EXCEPTION 'M5 work contribution digest is incorrect';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1
+        FROM groundloop_m5_runtime_epoch AS runtime_epoch
+        JOIN groundloop_epoch AS base_epoch
+          ON base_epoch.epoch_id = runtime_epoch.epoch_id
+        WHERE runtime_epoch.epoch_id = NEW.epoch_id
+          AND runtime_epoch.revision = NEW.applied_revision
+          AND base_epoch.revision = NEW.applied_revision
+    ) THEN
+        RAISE EXCEPTION
+            'M5 work contribution is not at the exact current revision';
+    END IF;
+    allowed_counter_ordinals := CASE NEW.contribution_kind
+        WHEN 'structural_open' THEN
+            ARRAY[1, 2, 3, 16, 21, 22, 23, 24, 26, 27]
+        WHEN 'm5_acquisition' THEN ARRAY[]::integer[]
+        WHEN 'direct_acquisition' THEN ARRAY[]::integer[]
+        WHEN 'm5_attempt_execution' THEN
+            ARRAY[9, 10, 11, 12, 26, 27, 28, 29, 30, 31, 32]
+        WHEN 'direct_attempt_execution' THEN
+            ARRAY[4, 5, 26, 27, 28, 29, 30, 31, 32]
+        WHEN 'root_result_stage' THEN ARRAY[18, 19, 26, 27]
+        WHEN 'root_barrier' THEN ARRAY[20, 26, 27]
+        WHEN 'verifier_completion' THEN
+            ARRAY[13, 14, 15, 21, 22, 23, 24, 26, 27]
+        WHEN 'cancellation' THEN ARRAY[16, 26, 27]
+        WHEN 'terminal_job_failure' THEN ARRAY[26, 27]
+        WHEN 'direct_transition' THEN
+            ARRAY[6, 7, 8, 21, 22, 23, 24, 26, 27]
+        WHEN 'preterminal_late_return' THEN ARRAY[17, 26, 27]
+        WHEN 'epoch_failure' THEN ARRAY[21, 22, 23, 24, 26, 27]
+        WHEN 'seal' THEN ARRAY[21, 22, 23, 24, 25, 26, 27]
+        ELSE ARRAY[]::integer[]
+    END;
+    IF EXISTS (
+        SELECT 1
+        FROM unnest(work_values) WITH ORDINALITY AS counter(value, ordinal)
+        WHERE counter.value <> 0
+          AND NOT (counter.ordinal::integer = ANY(allowed_counter_ordinals))
+    ) THEN
+        RAISE EXCEPTION
+            'M5 work contribution uses a counter owned by another surface';
     END IF;
     IF NEW.contribution_kind IN ('m5_acquisition', 'direct_acquisition')
        AND (
@@ -1071,6 +1467,7 @@ BEGIN
                      WHEN 'm5_acquisition' THEN 'requirement'
                      ELSE 'direct'
                  END
+                 AND dispatched_revision = NEW.applied_revision
            )
        )
     THEN
@@ -1085,6 +1482,8 @@ BEGIN
         WHERE structural_epoch.epoch_id = NEW.epoch_id
           AND structural_epoch.event_id = NEW.source_id
           AND structural_epoch.payload_hash = NEW.source_identity_hash
+          AND NEW.applied_revision = 1
+        FOR SHARE OF structural_epoch
     ) THEN
         RAISE EXCEPTION 'structural-open contribution lacks its exact event';
     END IF;
@@ -1092,6 +1491,12 @@ BEGIN
        AND NOT EXISTS (
            SELECT 1
            FROM groundloop_m5_attempt_execution_evidence AS evidence
+           JOIN groundloop_m5_runtime_timing_contribution AS timing
+             ON timing.epoch_id = evidence.epoch_id
+            AND timing.subgraph = evidence.subgraph
+            AND timing.attempt_id = evidence.attempt_id
+            AND timing.execution_evidence_digest = evidence.evidence_digest
+            AND timing.attempt_timing_digest = evidence.attempt_timing_digest
            WHERE evidence.epoch_id = NEW.epoch_id
              AND evidence.attempt_id = NEW.source_id
              AND evidence.evidence_digest = NEW.source_identity_hash
@@ -1107,13 +1512,34 @@ BEGIN
     IF NEW.contribution_kind = 'root_result_stage' AND NOT EXISTS (
         SELECT 1
         FROM groundloop_m5_job_attempt AS attempt
+        JOIN groundloop_m5_semantic_job AS job
+          ON job.logical_job_id = attempt.logical_job_id
+        JOIN groundloop_m5_attempt_result_artifact AS artifact
+          ON artifact.attempt_id = attempt.attempt_id
+         AND artifact.logical_job_id = attempt.logical_job_id
+         AND artifact.job_epoch_id = job.epoch_id
+        JOIN groundloop_m5_discovery_scope AS scope
+          ON scope.root_job_id = job.logical_job_id
+         AND scope.epoch_id = job.epoch_id
+        JOIN groundloop_m5_requirement_discovery_result AS result
+          ON result.root_job_id = scope.root_job_id
+         AND result.staged_epoch_id = scope.epoch_id
+         AND result.scope_contract_digest = scope.scope_contract_digest
         WHERE attempt.attempt_id = NEW.source_id
+          AND attempt.attempt_state = 'completed'
           AND attempt.attempt_output_digest = NEW.source_identity_hash
-          AND EXISTS (
-              SELECT 1 FROM groundloop_m5_semantic_job AS job
-              WHERE job.logical_job_id = attempt.logical_job_id
-                AND job.epoch_id = NEW.epoch_id
-          )
+          AND job.epoch_id = NEW.epoch_id
+          AND job.job_state = 'running'
+          AND artifact.disposition = 'root_result_staged'
+          AND artifact.attempt_output_digest = NEW.source_identity_hash
+          AND artifact.result_artifact_id = result.result_artifact_id
+          AND artifact.result_artifact_hash = result.result_artifact_hash
+          AND scope.scope_state = 'result_staged'
+          AND scope.staged_result_artifact_hash = result.result_artifact_hash
+          AND result.staged_revision = NEW.applied_revision
+          AND scope.staged_revision = NEW.applied_revision
+          AND NEW.requirement_channel_hit_count = result.channel_hit_count
+          AND NEW.requirement_pre_dedup_selection_count = result.selection_count
     ) THEN
         RAISE EXCEPTION 'root-result contribution lacks its attempt output';
     END IF;
@@ -1128,24 +1554,170 @@ BEGIN
            groundloop_m5_recovery_root_barrier_digest(
                NEW.epoch_id, NEW.source_id
            )
+        OR NEW.requirement_admitted_pair_count <> (
+            SELECT count(*)::bigint
+            FROM groundloop_m5_requirement_admitted_pair AS admitted
+            WHERE admitted.epoch_id = NEW.epoch_id
+        )
+        OR NOT EXISTS (
+            SELECT 1
+            FROM groundloop_m5_discovery_scope AS scope
+            WHERE scope.epoch_id = NEW.epoch_id
+        )
+        OR EXISTS (
+            SELECT 1
+            FROM groundloop_m5_discovery_scope AS scope
+            WHERE scope.epoch_id = NEW.epoch_id
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM groundloop_m5_semantic_job AS job
+                  JOIN groundloop_m5_requirement_discovery_result AS result
+                    ON result.root_job_id = job.logical_job_id
+                   AND result.staged_epoch_id = job.epoch_id
+                  WHERE job.epoch_id = scope.epoch_id
+                    AND job.logical_job_id = scope.root_job_id
+                    AND job.job_kind IN (
+                        'forward_requirement_retrieval',
+                        'reverse_requirement_discovery'
+                    )
+                    AND job.job_state = CASE scope.scope_state
+                        WHEN 'closed_active' THEN 'completed_active'
+                        WHEN 'closed_inactive' THEN 'completed_inactive'
+                        ELSE '__invalid__'
+                    END
+                    AND job.completed_revision = NEW.applied_revision
+                    AND scope.closed_revision = NEW.applied_revision
+                    AND result.staged_revision = scope.staged_revision
+                    AND result.scope_contract_digest =
+                        scope.scope_contract_digest
+                    AND scope.staged_result_artifact_hash =
+                        result.result_artifact_hash
+                    AND job.result_artifact_id = result.result_artifact_id
+                    AND job.result_artifact_hash = result.result_artifact_hash
+                    AND job.scope_closure_digest = scope.scope_closure_digest
+                    AND job.child_set_hash = scope.child_set_hash
+                    AND job.completion_digest = scope.completion_digest
+              )
+        )
+        OR EXISTS (
+            SELECT 1
+            FROM groundloop_m5_semantic_job AS root_job
+            WHERE root_job.epoch_id = NEW.epoch_id
+              AND root_job.parent_job_id IS NULL
+              AND root_job.job_kind IN (
+                  'forward_requirement_retrieval',
+                  'reverse_requirement_discovery'
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM groundloop_m5_discovery_scope AS scope
+                  JOIN groundloop_m5_requirement_discovery_result AS result
+                    ON result.root_job_id = scope.root_job_id
+                   AND result.staged_epoch_id = scope.epoch_id
+                  WHERE scope.epoch_id = root_job.epoch_id
+                    AND scope.root_job_id = root_job.logical_job_id
+                    AND root_job.job_state = CASE scope.scope_state
+                        WHEN 'closed_active' THEN 'completed_active'
+                        WHEN 'closed_inactive' THEN 'completed_inactive'
+                        ELSE '__invalid__'
+                    END
+                    AND root_job.completed_revision = NEW.applied_revision
+                    AND scope.closed_revision = NEW.applied_revision
+                    AND result.staged_revision = scope.staged_revision
+                    AND result.scope_contract_digest =
+                        scope.scope_contract_digest
+                    AND scope.staged_result_artifact_hash =
+                        result.result_artifact_hash
+                    AND root_job.result_artifact_id = result.result_artifact_id
+                    AND root_job.result_artifact_hash =
+                        result.result_artifact_hash
+                    AND root_job.scope_closure_digest =
+                        scope.scope_closure_digest
+                    AND root_job.child_set_hash = scope.child_set_hash
+                    AND root_job.completion_digest = scope.completion_digest
+              )
+        )
     ) THEN
         RAISE EXCEPTION 'root-barrier contribution lacks its exact completion';
     END IF;
     IF NEW.contribution_kind = 'verifier_completion' AND NOT EXISTS (
         SELECT 1
         FROM groundloop_m5_attempt_result_artifact AS artifact
+        JOIN groundloop_m5_job_attempt AS attempt
+          ON attempt.attempt_id = artifact.attempt_id
+         AND attempt.logical_job_id = artifact.logical_job_id
+        JOIN groundloop_m5_semantic_job AS job
+          ON job.logical_job_id = artifact.logical_job_id
+         AND job.epoch_id = artifact.job_epoch_id
+        JOIN groundloop_m5_requirement_verifier_execution AS execution
+          ON execution.logical_job_id = artifact.logical_job_id
+         AND execution.attempt_id = artifact.attempt_id
+         AND execution.artifact_id = artifact.result_artifact_id
+         AND execution.artifact_hash = artifact.result_artifact_hash
+        JOIN groundloop_m5_requirement_verifier_artifact AS verifier_artifact
+          ON verifier_artifact.artifact_id = execution.artifact_id
+         AND verifier_artifact.artifact_hash = execution.artifact_hash
+         AND verifier_artifact.semantic_pair_digest = job.semantic_pair_digest
         WHERE artifact.attempt_id = NEW.source_id
           AND artifact.attempt_result_artifact_hash = NEW.source_identity_hash
           AND artifact.job_epoch_id = NEW.epoch_id
           AND artifact.disposition IN (
               'verifier_completed_active', 'verifier_completed_inactive'
           )
+          AND NEW.requirement_observation_artifact_count = 1
+          AND NEW.requirement_effective_observation_count = CASE
+              WHEN artifact.disposition = 'verifier_completed_active'
+              THEN 1 ELSE 0 END
+          AND NEW.requirement_inactive_completion_count = CASE
+              WHEN artifact.disposition = 'verifier_completed_inactive'
+              THEN 1 ELSE 0 END
+          AND job.job_kind = 'verify_requirement_pair'
+          AND attempt.attempt_state = 'completed'
+          AND attempt.attempt_output_digest = artifact.attempt_output_digest
+          AND attempt.execution_spec_hash = artifact.execution_spec_hash
+          AND job.payload_hash = artifact.payload_hash
+          AND job.execution_spec_hash = artifact.execution_spec_hash
+          AND job.job_state = artifact.job_state_after
+          AND job.result_artifact_id = artifact.result_artifact_id
+          AND job.result_artifact_hash = artifact.result_artifact_hash
+          AND job.completed_revision = NEW.applied_revision
+          AND verifier_artifact.execution_spec_hash = job.execution_spec_hash
+          AND verifier_artifact.subject_kind = job.subject_kind
+          AND verifier_artifact.subject_id = job.subject_id
+          AND verifier_artifact.chunk_version_id = job.chunk_version_id
+          AND execution.pair_input_hash = verifier_artifact.pair_input_hash
+          AND execution.produced_epoch_id = NEW.epoch_id
     ) THEN
         RAISE EXCEPTION 'verifier contribution lacks its result artifact';
     END IF;
-    IF NEW.contribution_kind = 'cancellation'
-       AND NEW.source_id <> NEW.source_identity_hash THEN
-        RAISE EXCEPTION 'cancellation contribution key is not its plan digest';
+    IF NEW.contribution_kind = 'cancellation' AND NOT EXISTS (
+        SELECT 1
+        FROM groundloop_m5_runtime_epoch AS runtime_epoch
+        JOIN LATERAL (
+            SELECT job.cancellation_reason,
+                   count(*)::bigint AS cancelled_count
+            FROM groundloop_m5_semantic_job AS job
+            WHERE job.epoch_id = runtime_epoch.epoch_id
+              AND job.job_state = 'cancelled'
+              AND job.cancelled_by_event_id =
+                  runtime_epoch.structural_event_id
+              AND job.cancelled_by_epoch_id = runtime_epoch.epoch_id
+              AND job.completed_revision = NEW.applied_revision
+            GROUP BY job.cancellation_reason
+        ) AS cancellation ON true
+        WHERE runtime_epoch.epoch_id = NEW.epoch_id
+          AND NEW.source_id = NEW.source_identity_hash
+          AND NEW.source_id = groundloop_m5_recovery_cancellation_plan_digest(
+              NEW.epoch_id,
+              runtime_epoch.structural_event_id,
+              cancellation.cancellation_reason,
+              NEW.applied_revision
+          )
+          AND NEW.requirement_cancelled_job_count =
+              cancellation.cancelled_count
+    ) THEN
+        RAISE EXCEPTION
+            'cancellation contribution lacks exact plan and cancelled-job count';
     END IF;
     IF NEW.contribution_kind = 'terminal_job_failure' AND NOT EXISTS (
         SELECT 1
@@ -1156,6 +1728,7 @@ BEGIN
           AND job.logical_job_id = NEW.source_id
           AND job.job_state = 'terminal_failed'
           AND job.archive_reason IS NOT NULL
+          AND job.completed_revision = NEW.applied_revision
           AND attempt.attempt_state = 'failed'
           AND attempt.error_hash IS NOT NULL
           AND NOT EXISTS (
@@ -1179,10 +1752,13 @@ BEGIN
         WHERE transition.epoch_id = NEW.epoch_id
           AND transition.transition_id = NEW.source_id
           AND transition.payload_hash = NEW.source_identity_hash
+          AND transition.to_revision = NEW.applied_revision
     ) THEN
         RAISE EXCEPTION 'direct-transition contribution lacks exact M4 transition';
     END IF;
-    IF NEW.contribution_kind = 'preterminal_late_return' AND NOT (
+    IF NEW.contribution_kind = 'preterminal_late_return' AND (
+        NEW.requirement_late_attempt_artifact_count <> 1
+        OR NOT (
         EXISTS (
             SELECT 1
             FROM groundloop_m5_expired_attempt_return AS expired
@@ -1207,13 +1783,36 @@ BEGIN
             JOIN groundloop_m5_job_attempt AS attempt
               ON attempt.attempt_id = artifact.attempt_id
              AND attempt.logical_job_id = artifact.logical_job_id
+            JOIN groundloop_m5_semantic_job AS job
+              ON job.logical_job_id = artifact.logical_job_id
+             AND job.epoch_id = artifact.job_epoch_id
             WHERE artifact.job_epoch_id = NEW.epoch_id
               AND artifact.attempt_id = NEW.source_id
               AND artifact.attempt_result_artifact_hash =
                   NEW.source_identity_hash
               AND artifact.disposition = 'terminal_audit_only'
               AND artifact.archive_reason <> 'attempt_expired'
-              AND attempt.attempt_state <> 'expired'
+              AND artifact.job_state_at_receipt = 'cancelled'
+              AND artifact.job_state_after = 'cancelled'
+              AND attempt.attempt_state = 'dispatched'
+              AND job.job_state = 'cancelled'
+              AND job.completed_revision IS NOT NULL
+              AND job.completed_revision <= (
+                  SELECT runtime_epoch.revision
+                  FROM groundloop_m5_runtime_epoch AS runtime_epoch
+                  WHERE runtime_epoch.epoch_id = NEW.epoch_id
+              )
+              AND job.completed_revision <= NEW.applied_revision
+              AND job.cancelled_by_event_id = artifact.cancelled_by_event_id
+              AND job.cancelled_by_epoch_id = artifact.cancelled_by_epoch_id
+              AND job.cancellation_reason = artifact.cancellation_reason
+              AND job.cancellation_reason <> 'epoch_failed'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM groundloop_m5_job_attempt AS later_attempt
+                  WHERE later_attempt.logical_job_id = attempt.logical_job_id
+                    AND later_attempt.attempt_ordinal > attempt.attempt_ordinal
+              )
               AND evidence.disposition IN ('returned', 'reused_artifact')
               AND evidence.result_or_error_hash =
                   artifact.attempt_output_digest
@@ -1239,10 +1838,36 @@ BEGIN
             JOIN groundloop_semantic_job_attempt AS attempt
               ON attempt.attempt_id = envelope.attempt_id
              AND attempt.job_id = envelope.job_id
+            JOIN groundloop_semantic_job AS job
+              ON job.job_id = envelope.job_id
+             AND job.epoch_id = envelope.epoch_id
+            JOIN groundloop_m5_direct_terminal_projection AS projection
+              ON projection.epoch_id = job.epoch_id
+             AND projection.job_id = job.job_id
             WHERE envelope.epoch_id = NEW.epoch_id
               AND envelope.attempt_id = NEW.source_id
               AND envelope.envelope_digest = NEW.source_identity_hash
-              AND attempt.attempt_state <> 'expired'
+              AND attempt.attempt_state = 'leased'
+              AND job.job_state = 'cancelled'
+              AND job.completed_revision IS NOT NULL
+              AND job.completed_revision <= (
+                  SELECT runtime_epoch.revision
+                  FROM groundloop_m5_runtime_epoch AS runtime_epoch
+                  WHERE runtime_epoch.epoch_id = NEW.epoch_id
+              )
+              AND job.completed_revision <= NEW.applied_revision
+              AND projection.terminal_state = 'cancelled'
+              AND projection.terminal_reason IS NOT NULL
+              AND projection.terminal_reason <> 'epoch_failed'
+              AND projection.completed_revision = job.completed_revision
+              AND projection.m4_completion_digest IS NOT DISTINCT FROM
+                  job.completion_digest
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM groundloop_semantic_job_attempt AS later_attempt
+                  WHERE later_attempt.job_id = attempt.job_id
+                    AND later_attempt.attempt_ordinal > attempt.attempt_ordinal
+              )
               AND evidence.disposition IN ('returned', 'reused_artifact')
               AND evidence.result_or_error_hash = envelope.envelope_digest
               AND runtime_epoch.runtime_state NOT IN ('sealed', 'failed')
@@ -1254,16 +1879,19 @@ BEGIN
                     AND expired.subgraph = 'direct'
                     AND expired.attempt_id = NEW.source_id
               )
-        )
+        ))
     ) THEN
         RAISE EXCEPTION 'late-return contribution lacks its exact return artifact';
     END IF;
     IF NEW.contribution_kind = 'epoch_failure' AND NOT EXISTS (
         SELECT 1
         FROM groundloop_m5_event_result AS result
+        JOIN groundloop_m5_runtime_epoch AS runtime_epoch
+          ON runtime_epoch.epoch_id = result.epoch_id
         WHERE result.epoch_id = NEW.epoch_id
           AND result.structural_event_id = NEW.source_id
           AND result.outcome = 'failed'
+          AND runtime_epoch.runtime_state = 'failed'
           AND result.failure_reason IS NOT NULL
           AND NEW.source_identity_hash = groundloop_m5_digest_text_fields(ARRAY[
               'm5-epoch-failure-contribution-source-v1',
@@ -1276,9 +1904,12 @@ BEGIN
     IF NEW.contribution_kind = 'seal' AND NOT EXISTS (
         SELECT 1
         FROM groundloop_m5_event_result AS result
+        JOIN groundloop_m5_runtime_epoch AS runtime_epoch
+          ON runtime_epoch.epoch_id = result.epoch_id
         WHERE result.epoch_id = NEW.epoch_id
           AND result.structural_event_id = NEW.source_id
           AND result.outcome = 'sealed'
+          AND runtime_epoch.runtime_state = 'sealed'
           AND NEW.source_identity_hash = groundloop_m5_digest_text_fields(ARRAY[
               'm5-seal-contribution-source-v1',
               'text', result.structural_event_id,
@@ -1299,6 +1930,10 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
     expected_work_digest char(64);
+    old_work_values bigint[];
+    new_work_values bigint[];
+    revision_work_values bigint[];
+    terminal_contribution_count integer;
 BEGIN
     IF TG_OP = 'DELETE' THEN
         RAISE EXCEPTION 'M5 work accumulator cannot be deleted';
@@ -1309,6 +1944,48 @@ BEGIN
            OR (OLD.terminalized AND ROW(NEW.*) IS DISTINCT FROM ROW(OLD.*)) THEN
             RAISE EXCEPTION 'illegal M5 work-accumulator transition';
         END IF;
+        IF NOT OLD.terminalized AND NEW.terminalized THEN
+            IF NEW.updated_revision <> OLD.updated_revision + 1 THEN
+                RAISE EXCEPTION
+                    'terminal work accumulator must advance exactly one revision';
+            END IF;
+            SELECT count(*)::integer
+            INTO terminal_contribution_count
+            FROM groundloop_m5_runtime_work_contribution AS contribution
+            WHERE contribution.epoch_id = NEW.epoch_id
+              AND contribution.applied_revision = NEW.updated_revision
+              AND contribution.contribution_kind IN ('epoch_failure', 'seal');
+            SELECT array_agg(revision_counter.total ORDER BY revision_counter.ordinal)
+            INTO revision_work_values
+            FROM (
+                SELECT counter.ordinal,
+                       sum(counter.value)::bigint AS total
+                FROM groundloop_m5_runtime_work_contribution AS contribution
+                CROSS JOIN LATERAL unnest(
+                    groundloop_m5_recovery_work_values(contribution)
+                ) WITH ORDINALITY AS counter(value, ordinal)
+                WHERE contribution.epoch_id = NEW.epoch_id
+                  AND contribution.applied_revision = NEW.updated_revision
+                GROUP BY counter.ordinal
+            ) AS revision_counter;
+            old_work_values := groundloop_m5_recovery_work_values(OLD);
+            new_work_values := groundloop_m5_recovery_work_values(NEW);
+            IF terminal_contribution_count <> 1
+               OR revision_work_values IS NULL
+               OR EXISTS (
+                SELECT 1
+                FROM generate_subscripts(new_work_values, 1) AS item(ordinal)
+                WHERE new_work_values[item.ordinal] <>
+                    old_work_values[item.ordinal]
+                    + revision_work_values[item.ordinal]
+            ) THEN
+                RAISE EXCEPTION
+                    'terminal work accumulator lacks exact revision contribution slice';
+            END IF;
+        END IF;
+    ELSIF NEW.terminalized THEN
+        RAISE EXCEPTION
+            'terminal work accumulator cannot be inserted without prior point state';
     END IF;
     expected_work_digest := groundloop_m5_recovery_runtime_work_digest(
         groundloop_m5_recovery_work_values(NEW)
@@ -1333,6 +2010,9 @@ $$;
 CREATE TRIGGER groundloop_m5_attempt_execution_evidence_immutable
 BEFORE UPDATE OR DELETE ON groundloop_m5_attempt_execution_evidence
 FOR EACH ROW EXECUTE FUNCTION groundloop_m5_reject_immutable_row();
+CREATE TRIGGER groundloop_m5_work_contribution_nonterminal_insert
+BEFORE INSERT ON groundloop_m5_runtime_work_contribution
+FOR EACH ROW EXECUTE FUNCTION groundloop_m5_reject_terminal_event_accounting_insert();
 CREATE TRIGGER groundloop_m5_work_contribution_immutable
 BEFORE UPDATE OR DELETE ON groundloop_m5_runtime_work_contribution
 FOR EACH ROW EXECUTE FUNCTION groundloop_m5_reject_immutable_row();
@@ -1519,7 +2199,7 @@ CREATE TABLE groundloop_m5_runtime_timing_accumulator (
 
 CREATE INDEX groundloop_m5_transition_timing_by_anchor
     ON groundloop_m5_transition_call_timing(
-        epoch_id, contribution_key_digest, anchor_revision
+        epoch_id, anchor_revision, contribution_key_digest
     );
 
 CREATE FUNCTION groundloop_m5_validate_timing_row()
@@ -1551,7 +2231,18 @@ BEGIN
         ]);
         IF NEW.attempt_timing_digest <> expected_timing_digest
            OR NOT EXISTS (
-               SELECT 1 FROM groundloop_m5_attempt_execution_evidence AS evidence
+               SELECT 1
+               FROM groundloop_m5_attempt_execution_evidence AS evidence
+               JOIN groundloop_m5_runtime_work_contribution AS contribution
+                 ON contribution.epoch_id = evidence.epoch_id
+                AND contribution.source_id = evidence.attempt_id
+                AND contribution.source_identity_hash = evidence.evidence_digest
+                AND contribution.work_digest = evidence.attempt_work_digest
+                AND contribution.contribution_kind = CASE evidence.subgraph
+                    WHEN 'requirement' THEN 'm5_attempt_execution'
+                    WHEN 'direct' THEN 'direct_attempt_execution'
+                    ELSE '__invalid__'
+                END
                WHERE evidence.subgraph = NEW.subgraph
                  AND evidence.attempt_id = NEW.attempt_id
                  AND evidence.epoch_id = NEW.epoch_id
@@ -1574,6 +2265,16 @@ BEGIN
         IF NEW.transition_timing_digest <> expected_timing_digest THEN
             RAISE EXCEPTION 'M5 transition timing digest is incorrect';
         END IF;
+        IF EXISTS (
+            SELECT 1
+            FROM groundloop_m5_runtime_epoch AS runtime_epoch
+            WHERE runtime_epoch.epoch_id = NEW.epoch_id
+              AND runtime_epoch.runtime_state IN ('sealed', 'failed')
+              AND runtime_epoch.revision = NEW.anchor_revision
+        ) THEN
+            RAISE EXCEPTION
+                'terminal revision cannot have a transition-call timing row';
+        END IF;
     END IF;
     RETURN NULL;
 END;
@@ -1583,6 +2284,26 @@ CREATE FUNCTION groundloop_m5_validate_timing_accumulator()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
+DECLARE
+    attempt_count bigint;
+    attempt_contribution_count bigint;
+    attempt_required_observed bigint;
+    attempt_required_missing bigint;
+    attempt_server_observed bigint;
+    attempt_lock_observed bigint;
+    attempt_wal_observed bigint;
+    attempt_blocks_observed bigint;
+    attempt_coordinator_ns bigint;
+    attempt_neural_ns bigint;
+    attempt_roundtrip_ns bigint;
+    attempt_external_io_ns bigint;
+    attempt_end_to_end_ns bigint;
+    attempt_server_ns bigint;
+    attempt_lock_ns bigint;
+    attempt_wal_bytes bigint;
+    attempt_block_reads bigint;
+    pending_missing bigint;
+    pending_row_count integer;
 BEGIN
     IF TG_OP = 'DELETE' THEN
         RAISE EXCEPTION 'M5 timing accumulator cannot be deleted';
@@ -1593,6 +2314,195 @@ BEGIN
            OR (OLD.terminalized AND ROW(NEW.*) IS DISTINCT FROM ROW(OLD.*)) THEN
             RAISE EXCEPTION 'illegal M5 timing-accumulator transition';
         END IF;
+        IF NOT OLD.terminalized AND NEW.terminalized THEN
+            SELECT count(*)::bigint
+            INTO attempt_contribution_count
+            FROM groundloop_m5_runtime_work_contribution AS contribution
+            WHERE contribution.epoch_id = NEW.epoch_id
+              AND contribution.applied_revision = NEW.updated_revision
+              AND contribution.contribution_kind IN (
+                  'm5_attempt_execution', 'direct_attempt_execution'
+              );
+            SELECT count(*)::bigint,
+                   count(*) FILTER (
+                       WHERE timing.required_interval_observed
+                   )::bigint,
+                   count(*) FILTER (
+                       WHERE NOT timing.required_interval_observed
+                   )::bigint,
+                   count(timing.postgres_server_execution_ns)::bigint,
+                   count(timing.postgres_lock_wait_ns)::bigint,
+                   count(timing.postgres_wal_bytes)::bigint,
+                   count(timing.postgres_shared_block_reads)::bigint,
+                   coalesce(sum(timing.coordinator_non_db_non_neural_ns), 0)::bigint,
+                   coalesce(sum(timing.neural_wall_ns), 0)::bigint,
+                   coalesce(sum(timing.postgres_roundtrip_wall_ns), 0)::bigint,
+                   coalesce(sum(timing.external_io_wall_ns), 0)::bigint,
+                   coalesce(sum(timing.end_to_end_wall_ns), 0)::bigint,
+                   coalesce(sum(timing.postgres_server_execution_ns), 0)::bigint,
+                   coalesce(sum(timing.postgres_lock_wait_ns), 0)::bigint,
+                   coalesce(sum(timing.postgres_wal_bytes), 0)::bigint,
+                   coalesce(sum(timing.postgres_shared_block_reads), 0)::bigint
+            INTO attempt_count,
+                 attempt_required_observed, attempt_required_missing,
+                 attempt_server_observed, attempt_lock_observed,
+                 attempt_wal_observed, attempt_blocks_observed,
+                 attempt_coordinator_ns, attempt_neural_ns,
+                 attempt_roundtrip_ns, attempt_external_io_ns,
+                 attempt_end_to_end_ns, attempt_server_ns,
+                 attempt_lock_ns, attempt_wal_bytes, attempt_block_reads
+            FROM groundloop_m5_runtime_work_contribution AS contribution
+            JOIN groundloop_m5_attempt_execution_evidence AS evidence
+              ON evidence.epoch_id = contribution.epoch_id
+             AND evidence.attempt_id = contribution.source_id
+             AND evidence.evidence_digest = contribution.source_identity_hash
+             AND evidence.attempt_work_digest = contribution.work_digest
+             AND contribution.contribution_kind = CASE evidence.subgraph
+                 WHEN 'requirement' THEN 'm5_attempt_execution'
+                 WHEN 'direct' THEN 'direct_attempt_execution'
+                 ELSE '__invalid__'
+             END
+            JOIN groundloop_m5_runtime_timing_contribution AS timing
+              ON timing.epoch_id = evidence.epoch_id
+             AND timing.subgraph = evidence.subgraph
+             AND timing.attempt_id = evidence.attempt_id
+             AND timing.execution_evidence_digest = evidence.evidence_digest
+             AND timing.attempt_timing_digest = evidence.attempt_timing_digest
+            WHERE contribution.epoch_id = NEW.epoch_id
+              AND contribution.applied_revision = NEW.updated_revision;
+
+            pending_missing := CASE
+                WHEN OLD.pending_anchor_revision IS NULL THEN 0 ELSE 1
+            END;
+            IF pending_missing = 1 THEN
+                SELECT count(*)::integer
+                INTO pending_row_count
+                FROM groundloop_m5_transition_call_timing AS timing
+                WHERE timing.epoch_id = OLD.epoch_id
+                  AND timing.contribution_kind =
+                      OLD.pending_contribution_kind
+                  AND timing.source_id = OLD.pending_source_id
+                  AND timing.contribution_key_digest =
+                      OLD.pending_contribution_key_digest
+                  AND timing.anchor_revision = OLD.pending_anchor_revision
+                  AND NOT timing.required_interval_observed
+                  AND ROW(
+                      timing.coordinator_non_db_non_neural_ns,
+                      timing.neural_wall_ns,
+                      timing.postgres_roundtrip_wall_ns,
+                      timing.external_io_wall_ns,
+                      timing.end_to_end_wall_ns,
+                      timing.postgres_server_execution_ns,
+                      timing.postgres_lock_wait_ns,
+                      timing.postgres_wal_bytes,
+                      timing.postgres_shared_block_reads
+                  ) IS NOT DISTINCT FROM ROW(
+                      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+                  )
+                  AND timing.observation_digest =
+                      groundloop_m5_recovery_timing_observation_digest(
+                          false, NULL, NULL, NULL, NULL, NULL,
+                          NULL, NULL, NULL, NULL
+                      )
+                  AND timing.transition_timing_digest =
+                      groundloop_m5_digest_text_fields(ARRAY[
+                          'm5-transition-call-timing-v1',
+                          'int', OLD.epoch_id::text,
+                          'enum', OLD.pending_contribution_kind,
+                          'text', OLD.pending_source_id,
+                          'sha256', OLD.pending_contribution_key_digest,
+                          'int', OLD.pending_anchor_revision::text,
+                          'sha256', timing.observation_digest
+                      ]);
+            ELSE
+                pending_row_count := 0;
+            END IF;
+
+            IF NEW.updated_revision <> OLD.updated_revision + 1
+               OR attempt_count <> attempt_contribution_count
+               OR pending_row_count <> pending_missing
+               OR NEW.pending_anchor_revision IS NOT NULL
+               OR EXISTS (
+                   SELECT 1
+                   FROM groundloop_m5_transition_call_timing AS timing
+                   WHERE timing.epoch_id = NEW.epoch_id
+                     AND timing.anchor_revision = NEW.updated_revision
+               )
+               OR ROW(
+                   NEW.coordinator_non_db_non_neural_ns,
+                   NEW.neural_wall_ns,
+                   NEW.postgres_roundtrip_wall_ns,
+                   NEW.external_io_wall_ns,
+                   NEW.end_to_end_wall_ns,
+                   NEW.postgres_server_execution_ns,
+                   NEW.postgres_lock_wait_ns,
+                   NEW.postgres_wal_bytes,
+                   NEW.postgres_shared_block_reads
+               ) IS DISTINCT FROM ROW(
+                   OLD.coordinator_non_db_non_neural_ns
+                       + attempt_coordinator_ns,
+                   OLD.neural_wall_ns + attempt_neural_ns,
+                   OLD.postgres_roundtrip_wall_ns + attempt_roundtrip_ns,
+                   OLD.external_io_wall_ns + attempt_external_io_ns,
+                   OLD.end_to_end_wall_ns + attempt_end_to_end_ns,
+                   OLD.postgres_server_execution_ns + attempt_server_ns,
+                   OLD.postgres_lock_wait_ns + attempt_lock_ns,
+                   OLD.postgres_wal_bytes + attempt_wal_bytes,
+                   OLD.postgres_shared_block_reads + attempt_block_reads
+               )
+               OR NEW.required_expected_count <>
+                  OLD.required_expected_count + attempt_count + 1
+               OR NEW.required_observed_count <>
+                  OLD.required_observed_count + attempt_required_observed
+               OR NEW.required_missing_count <>
+                  OLD.required_missing_count + attempt_required_missing
+                  + pending_missing + 1
+               OR NEW.postgres_server_execution_expected_count <>
+                  OLD.postgres_server_execution_expected_count
+                  + attempt_count + 1
+               OR NEW.postgres_server_execution_observed_count <>
+                  OLD.postgres_server_execution_observed_count
+                  + attempt_server_observed
+               OR NEW.postgres_server_execution_missing_count <>
+                  OLD.postgres_server_execution_missing_count
+                  + attempt_count - attempt_server_observed
+                  + pending_missing + 1
+               OR NEW.postgres_lock_wait_expected_count <>
+                  OLD.postgres_lock_wait_expected_count + attempt_count + 1
+               OR NEW.postgres_lock_wait_observed_count <>
+                  OLD.postgres_lock_wait_observed_count
+                  + attempt_lock_observed
+               OR NEW.postgres_lock_wait_missing_count <>
+                  OLD.postgres_lock_wait_missing_count
+                  + attempt_count - attempt_lock_observed
+                  + pending_missing + 1
+               OR NEW.postgres_wal_bytes_expected_count <>
+                  OLD.postgres_wal_bytes_expected_count + attempt_count + 1
+               OR NEW.postgres_wal_bytes_observed_count <>
+                  OLD.postgres_wal_bytes_observed_count
+                  + attempt_wal_observed
+               OR NEW.postgres_wal_bytes_missing_count <>
+                  OLD.postgres_wal_bytes_missing_count
+                  + attempt_count - attempt_wal_observed
+                  + pending_missing + 1
+               OR NEW.postgres_shared_block_reads_expected_count <>
+                  OLD.postgres_shared_block_reads_expected_count
+                  + attempt_count + 1
+               OR NEW.postgres_shared_block_reads_observed_count <>
+                  OLD.postgres_shared_block_reads_observed_count
+                  + attempt_blocks_observed
+               OR NEW.postgres_shared_block_reads_missing_count <>
+                  OLD.postgres_shared_block_reads_missing_count
+                  + attempt_count - attempt_blocks_observed
+                  + pending_missing + 1
+            THEN
+                RAISE EXCEPTION
+                    'terminal timing accumulator does not freeze exact revision slice';
+            END IF;
+        END IF;
+    ELSIF NEW.terminalized THEN
+        RAISE EXCEPTION
+            'terminal timing accumulator cannot be inserted without prior point state';
     END IF;
     IF NOT EXISTS (
         SELECT 1
@@ -1629,11 +2539,19 @@ $$;
 CREATE TRIGGER groundloop_m5_runtime_timing_contribution_immutable
 BEFORE UPDATE OR DELETE ON groundloop_m5_runtime_timing_contribution
 FOR EACH ROW EXECUTE FUNCTION groundloop_m5_reject_immutable_row();
+CREATE TRIGGER groundloop_m5_runtime_timing_nonterminal_insert
+BEFORE INSERT ON groundloop_m5_runtime_timing_contribution
+FOR EACH ROW EXECUTE FUNCTION groundloop_m5_reject_terminal_event_accounting_insert();
 CREATE TRIGGER groundloop_m5_transition_call_timing_immutable
 BEFORE UPDATE OR DELETE ON groundloop_m5_transition_call_timing
 FOR EACH ROW EXECUTE FUNCTION groundloop_m5_reject_immutable_row();
 CREATE TRIGGER groundloop_m5_timing_accumulator_transition
 BEFORE UPDATE OR DELETE ON groundloop_m5_runtime_timing_accumulator
+FOR EACH ROW EXECUTE FUNCTION groundloop_m5_validate_timing_accumulator();
+
+CREATE CONSTRAINT TRIGGER groundloop_m5_timing_accumulator_shape
+AFTER INSERT OR UPDATE ON groundloop_m5_runtime_timing_accumulator
+DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION groundloop_m5_validate_timing_accumulator();
 
 CREATE CONSTRAINT TRIGGER groundloop_m5_runtime_timing_contribution_shape
@@ -1868,6 +2786,181 @@ CREATE TABLE groundloop_m5_event_timing_coverage (
     CHECK (postgres_wal_bytes_expected_count = postgres_wal_bytes_observed_count + postgres_wal_bytes_missing_count),
     CHECK (postgres_shared_block_reads_expected_count = postgres_shared_block_reads_observed_count + postgres_shared_block_reads_missing_count)
 );
+
+CREATE FUNCTION groundloop_m5_validate_terminal_accounting_closure()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    epoch_to_check bigint := NEW.epoch_id;
+    terminal_state text;
+BEGIN
+    SELECT runtime_epoch.runtime_state INTO terminal_state
+    FROM groundloop_m5_runtime_epoch AS runtime_epoch
+    WHERE runtime_epoch.epoch_id = epoch_to_check;
+    IF terminal_state IS NULL OR terminal_state NOT IN ('sealed', 'failed') THEN
+        RETURN NULL;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1
+        FROM groundloop_m5_runtime_epoch AS runtime_epoch
+        JOIN groundloop_m5_event_result AS result
+          ON result.epoch_id = runtime_epoch.epoch_id
+         AND result.structural_event_id = runtime_epoch.structural_event_id
+        JOIN groundloop_m5_runtime_work_accumulator AS work_accumulator
+          ON work_accumulator.epoch_id = runtime_epoch.epoch_id
+        JOIN groundloop_m5_runtime_timing_accumulator AS timing_accumulator
+          ON timing_accumulator.epoch_id = runtime_epoch.epoch_id
+        JOIN groundloop_m5_runtime_work AS event_work
+          ON event_work.epoch_id = result.epoch_id
+         AND event_work.structural_event_id = result.structural_event_id
+         AND event_work.work_kind = 'event'
+        JOIN groundloop_m5_event_timing_coverage AS coverage
+          ON coverage.epoch_id = result.epoch_id
+         AND coverage.structural_event_id = result.structural_event_id
+        JOIN groundloop_m5_runtime_work_contribution AS terminal_contribution
+          ON terminal_contribution.epoch_id = result.epoch_id
+         AND terminal_contribution.contribution_kind = CASE result.outcome
+             WHEN 'failed' THEN 'epoch_failure'
+             WHEN 'sealed' THEN 'seal'
+             ELSE '__invalid__'
+         END
+         AND terminal_contribution.source_id = result.structural_event_id
+         AND terminal_contribution.applied_revision = runtime_epoch.revision
+        WHERE runtime_epoch.epoch_id = epoch_to_check
+          AND result.outcome = runtime_epoch.runtime_state
+          AND work_accumulator.terminalized
+          AND work_accumulator.updated_revision = runtime_epoch.revision
+          AND timing_accumulator.terminalized
+          AND timing_accumulator.updated_revision = runtime_epoch.revision
+          AND timing_accumulator.pending_anchor_revision IS NULL
+          AND result.event_work_kind = 'event'
+          AND result.event_work_digest = work_accumulator.work_digest
+          AND event_work.work_digest = work_accumulator.work_digest
+          AND groundloop_m5_recovery_work_values(event_work) =
+              groundloop_m5_recovery_work_values(work_accumulator)
+          AND ROW(
+              result.coordinator_non_db_non_neural_ns,
+              result.neural_wall_ns,
+              result.postgres_roundtrip_wall_ns,
+              result.external_io_wall_ns,
+              result.end_to_end_wall_ns
+          ) = ROW(
+              timing_accumulator.coordinator_non_db_non_neural_ns,
+              timing_accumulator.neural_wall_ns,
+              timing_accumulator.postgres_roundtrip_wall_ns,
+              timing_accumulator.external_io_wall_ns,
+              timing_accumulator.end_to_end_wall_ns
+          )
+          AND result.postgres_server_execution_ns IS NOT DISTINCT FROM CASE
+              WHEN timing_accumulator.postgres_server_execution_observed_count > 0
+               AND timing_accumulator.postgres_server_execution_missing_count = 0
+              THEN timing_accumulator.postgres_server_execution_ns
+              ELSE NULL
+          END
+          AND result.postgres_lock_wait_ns IS NOT DISTINCT FROM CASE
+              WHEN timing_accumulator.postgres_lock_wait_observed_count > 0
+               AND timing_accumulator.postgres_lock_wait_missing_count = 0
+              THEN timing_accumulator.postgres_lock_wait_ns
+              ELSE NULL
+          END
+          AND result.postgres_wal_bytes IS NOT DISTINCT FROM CASE
+              WHEN timing_accumulator.postgres_wal_bytes_observed_count > 0
+               AND timing_accumulator.postgres_wal_bytes_missing_count = 0
+              THEN timing_accumulator.postgres_wal_bytes
+              ELSE NULL
+          END
+          AND result.postgres_shared_block_reads IS NOT DISTINCT FROM CASE
+              WHEN timing_accumulator.postgres_shared_block_reads_observed_count > 0
+               AND timing_accumulator.postgres_shared_block_reads_missing_count = 0
+              THEN timing_accumulator.postgres_shared_block_reads
+              ELSE NULL
+          END
+          AND ROW(
+              coverage.required_expected_count,
+              coverage.required_observed_count,
+              coverage.required_missing_count,
+              coverage.postgres_server_execution_expected_count,
+              coverage.postgres_server_execution_observed_count,
+              coverage.postgres_server_execution_missing_count,
+              coverage.postgres_lock_wait_expected_count,
+              coverage.postgres_lock_wait_observed_count,
+              coverage.postgres_lock_wait_missing_count,
+              coverage.postgres_wal_bytes_expected_count,
+              coverage.postgres_wal_bytes_observed_count,
+              coverage.postgres_wal_bytes_missing_count,
+              coverage.postgres_shared_block_reads_expected_count,
+              coverage.postgres_shared_block_reads_observed_count,
+              coverage.postgres_shared_block_reads_missing_count
+          ) = ROW(
+              timing_accumulator.required_expected_count,
+              timing_accumulator.required_observed_count,
+              timing_accumulator.required_missing_count,
+              timing_accumulator.postgres_server_execution_expected_count,
+              timing_accumulator.postgres_server_execution_observed_count,
+              timing_accumulator.postgres_server_execution_missing_count,
+              timing_accumulator.postgres_lock_wait_expected_count,
+              timing_accumulator.postgres_lock_wait_observed_count,
+              timing_accumulator.postgres_lock_wait_missing_count,
+              timing_accumulator.postgres_wal_bytes_expected_count,
+              timing_accumulator.postgres_wal_bytes_observed_count,
+              timing_accumulator.postgres_wal_bytes_missing_count,
+              timing_accumulator.postgres_shared_block_reads_expected_count,
+              timing_accumulator.postgres_shared_block_reads_observed_count,
+              timing_accumulator.postgres_shared_block_reads_missing_count
+          )
+          AND NOT coverage.terminal_client_roundtrip_included
+          AND terminal_contribution.source_identity_hash = CASE result.outcome
+              WHEN 'failed' THEN groundloop_m5_digest_text_fields(ARRAY[
+                  'm5-epoch-failure-contribution-source-v1',
+                  'text', result.structural_event_id,
+                  'enum', result.failure_reason
+              ])
+              WHEN 'sealed' THEN groundloop_m5_digest_text_fields(ARRAY[
+                  'm5-seal-contribution-source-v1',
+                  'text', result.structural_event_id,
+                  'sha256', result.combined_status_delta_set_hash,
+                  'sha256', result.changed_state_set_hash,
+                  'text', result.publication_id
+              ])
+              ELSE NULL
+          END
+    ) THEN
+        RAISE EXCEPTION
+            'terminal M5 result lacks exact work/timing cutoff closure';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER groundloop_m5_terminal_result_accounting_closure
+AFTER INSERT OR UPDATE ON groundloop_m5_event_result
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION groundloop_m5_validate_terminal_accounting_closure();
+CREATE CONSTRAINT TRIGGER groundloop_m5_terminal_runtime_accounting_closure
+AFTER INSERT OR UPDATE ON groundloop_m5_runtime_epoch
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION groundloop_m5_validate_terminal_accounting_closure();
+CREATE CONSTRAINT TRIGGER groundloop_m5_terminal_event_work_accounting_closure
+AFTER INSERT OR UPDATE ON groundloop_m5_runtime_work
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION groundloop_m5_validate_terminal_accounting_closure();
+CREATE CONSTRAINT TRIGGER groundloop_m5_terminal_work_accumulator_closure
+AFTER INSERT OR UPDATE ON groundloop_m5_runtime_work_accumulator
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION groundloop_m5_validate_terminal_accounting_closure();
+CREATE CONSTRAINT TRIGGER groundloop_m5_terminal_timing_accumulator_closure
+AFTER INSERT OR UPDATE ON groundloop_m5_runtime_timing_accumulator
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION groundloop_m5_validate_terminal_accounting_closure();
+CREATE CONSTRAINT TRIGGER groundloop_m5_terminal_timing_coverage_closure
+AFTER INSERT OR UPDATE ON groundloop_m5_event_timing_coverage
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION groundloop_m5_validate_terminal_accounting_closure();
+CREATE CONSTRAINT TRIGGER groundloop_m5_terminal_contribution_closure
+AFTER INSERT OR UPDATE ON groundloop_m5_runtime_work_contribution
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION groundloop_m5_validate_terminal_accounting_closure();
 
 CREATE FUNCTION groundloop_m5_validate_typed_direct_late_return_envelope()
 RETURNS trigger
@@ -2578,6 +3671,15 @@ BEGIN
                expected_admitted_pair_id THEN
                 RAISE EXCEPTION 'typed-direct admitted-pair identity is incorrect';
             END IF;
+            PERFORM groundloop_m5_recovery_f64_from_hex(
+                execution_item ->> 'temperature'
+            );
+            FOR item IN SELECT value
+                FROM jsonb_array_elements(execution_item -> 'raw_logits')
+                    AS raw_logit(value)
+            LOOP
+                PERFORM groundloop_m5_recovery_f64_from_hex(item #>> '{}');
+            END LOOP;
             IF NOT EXISTS (
                 SELECT 1
                 FROM groundloop_m4_verification_execution AS execution
@@ -2598,14 +3700,19 @@ BEGIN
                       execution_item ->> 'calibration_version'
                   AND execution.calibration_artifact_sha256 =
                       execution_item ->> 'calibration_artifact_sha256'
-                  AND execution.temperature =
-                      groundloop_m5_recovery_f64_from_hex(
-                          execution_item ->> 'temperature'
-                      )
-                  AND execution.raw_logits = ARRAY(
-                      SELECT groundloop_m5_recovery_f64_from_hex(value #>> '{}')
-                      FROM jsonb_array_elements(execution_item -> 'raw_logits')
-                           AS raw_logit(value)
+                  AND encode(float8send(execution.temperature), 'hex') =
+                      execution_item ->> 'temperature'
+                  AND ARRAY(
+                      SELECT encode(float8send(value), 'hex')
+                      FROM unnest(execution.raw_logits) WITH ORDINALITY
+                           AS persisted_logit(value, ordinal)
+                      ORDER BY ordinal
+                  ) = ARRAY(
+                      SELECT value #>> '{}'
+                      FROM jsonb_array_elements(
+                          execution_item -> 'raw_logits'
+                      ) WITH ORDINALITY AS raw_logit(value, ordinal)
+                      ORDER BY ordinal
                   )
                   AND execution.raw_output_hash =
                       execution_item ->> 'raw_output_hash'
@@ -2721,18 +3828,12 @@ BEGIN
               AND observation.chunk_version_id =
                   observation_item ->> 'chunk_version_id'
               AND observation.task_type = observation_item ->> 'task_type'
-              AND observation.support_score =
-                  groundloop_m5_recovery_f64_from_hex(
-                      observation_item ->> 'support_score'
-                  )
-              AND observation.refute_score =
-                  groundloop_m5_recovery_f64_from_hex(
-                      observation_item ->> 'refute_score'
-                  )
-              AND observation.neutral_score =
-                  groundloop_m5_recovery_f64_from_hex(
-                      observation_item ->> 'neutral_score'
-                  )
+              AND encode(float8send(observation.support_score), 'hex') =
+                  observation_item ->> 'support_score'
+              AND encode(float8send(observation.refute_score), 'hex') =
+                  observation_item ->> 'refute_score'
+              AND encode(float8send(observation.neutral_score), 'hex') =
+                  observation_item ->> 'neutral_score'
               AND observation.model_id = observation_item ->> 'model_id'
               AND observation.model_version = observation_item ->> 'model_version'
               AND observation.prompt_version = observation_item ->> 'prompt_version'
@@ -2826,8 +3927,31 @@ BEGIN
                   ON work_accumulator.epoch_id = evidence.epoch_id
                 JOIN groundloop_m5_runtime_timing_accumulator AS timing_accumulator
                   ON timing_accumulator.epoch_id = evidence.epoch_id
+                JOIN groundloop_semantic_job AS job
+                  ON job.epoch_id = evidence.epoch_id
+                 AND job.job_id = NEW.job_id
+                JOIN groundloop_m5_direct_terminal_projection AS projection
+                  ON projection.epoch_id = job.epoch_id
+                 AND projection.job_id = job.job_id
                 WHERE runtime_epoch.epoch_id = NEW.epoch_id
                   AND runtime_epoch.runtime_state NOT IN ('sealed', 'failed')
+                  AND attempt_row.attempt_state = 'leased'
+                  AND job.job_state = 'cancelled'
+                  AND job.completed_revision IS NOT NULL
+                  AND job.completed_revision <= runtime_epoch.revision
+                  AND projection.terminal_state = 'cancelled'
+                  AND projection.terminal_reason IS NOT NULL
+                  AND projection.terminal_reason <> 'epoch_failed'
+                  AND projection.completed_revision = job.completed_revision
+                  AND projection.m4_completion_digest IS NOT DISTINCT FROM
+                      job.completion_digest
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM groundloop_semantic_job_attempt AS later_attempt
+                      WHERE later_attempt.job_id = attempt_row.job_id
+                        AND later_attempt.attempt_ordinal >
+                            attempt_row.attempt_ordinal
+                  )
                   AND evidence.disposition IN ('returned', 'reused_artifact')
                   AND evidence.result_or_error_hash = NEW.envelope_digest
                   AND execution_contribution.applied_revision =
@@ -2853,6 +3977,65 @@ BEGIN
     ) THEN
         RAISE EXCEPTION
             'typed-direct late-return envelope lacks exact audit/accounting closure';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION groundloop_m5_lock_typed_direct_envelope_event_source()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    PERFORM 1
+    FROM groundloop_epoch AS base_epoch
+    WHERE base_epoch.epoch_id = NEW.epoch_id
+      AND base_epoch.event_id = NEW.job_binding ->> 'event_id'
+    FOR SHARE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION
+            'typed-direct envelope does not lock its exact event source';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION groundloop_m5_validate_base_epoch_source_reverse_closure()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    epoch_to_check bigint := OLD.epoch_id;
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM groundloop_m5_typed_direct_late_return_envelope AS envelope
+        WHERE envelope.epoch_id = epoch_to_check
+          AND NOT EXISTS (
+              SELECT 1
+              FROM groundloop_epoch AS base_epoch
+              WHERE base_epoch.epoch_id = envelope.epoch_id
+                AND base_epoch.event_id = envelope.job_binding ->> 'event_id'
+          )
+    ) THEN
+        RAISE EXCEPTION
+            'typed-direct envelope lost its exact event source binding';
+    END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM groundloop_m5_runtime_work_contribution AS contribution
+        WHERE contribution.epoch_id = epoch_to_check
+          AND contribution.contribution_kind = 'structural_open'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM groundloop_epoch AS base_epoch
+              WHERE base_epoch.epoch_id = contribution.epoch_id
+                AND base_epoch.event_id = contribution.source_id
+                AND base_epoch.payload_hash = contribution.source_identity_hash
+          )
+    ) THEN
+        RAISE EXCEPTION
+            'structural-open contribution lost its exact event source';
     END IF;
     RETURN NULL;
 END;
@@ -2979,6 +4162,13 @@ BEGIN
               AND attempt.lease_expires_at = NEW.original_lease_expires_at
               AND envelope.envelope_digest = NEW.worker_output_digest
               AND envelope.result_artifact_hash = NEW.worker_artifact_hash
+              AND EXISTS (
+                  SELECT 1
+                  FROM groundloop_semantic_job_attempt AS successor
+                  WHERE successor.job_id = attempt.job_id
+                    AND successor.attempt_ordinal =
+                        attempt.attempt_ordinal + 1
+              )
         ) THEN
             RAISE EXCEPTION 'typed-direct expired return lacks its exact envelope';
         END IF;
@@ -3116,6 +4306,8 @@ BEGIN
          AND timing.attempt_id = NEW.attempt_id
         JOIN groundloop_m5_event_result AS result
           ON result.epoch_id = NEW.epoch_id
+        JOIN groundloop_m5_runtime_epoch AS runtime_epoch
+          ON runtime_epoch.epoch_id = result.epoch_id
         WHERE evidence.subgraph = NEW.subgraph
           AND evidence.attempt_id = NEW.attempt_id
           AND evidence.epoch_id = NEW.epoch_id
@@ -3124,6 +4316,7 @@ BEGIN
           AND evidence.attempt_timing_digest = NEW.timing_digest
           AND timing.attempt_timing_digest = NEW.timing_digest
           AND result.logical_result_hash = NEW.terminal_logical_result_hash
+          AND runtime_epoch.runtime_state IN ('sealed', 'failed')
     ) THEN
         RAISE EXCEPTION 'M5 post-terminal audit closure is inconsistent';
     END IF;
@@ -3148,12 +4341,40 @@ BEGIN
               ON evidence.subgraph = 'requirement'
              AND evidence.attempt_id = artifact.attempt_id
              AND evidence.epoch_id = artifact.job_epoch_id
+            JOIN groundloop_m5_job_attempt AS attempt
+              ON attempt.attempt_id = artifact.attempt_id
+             AND attempt.logical_job_id = artifact.logical_job_id
+            JOIN groundloop_m5_semantic_job AS job
+              ON job.logical_job_id = artifact.logical_job_id
+             AND job.epoch_id = artifact.job_epoch_id
             WHERE artifact.job_epoch_id = NEW.epoch_id
               AND artifact.attempt_id = NEW.attempt_id
               AND artifact.attempt_result_artifact_hash =
                   NEW.return_artifact_digest
               AND artifact.disposition = 'terminal_audit_only'
               AND artifact.archive_reason <> 'attempt_expired'
+              AND attempt.attempt_state = 'dispatched'
+              AND job.job_state = artifact.job_state_at_receipt
+              AND artifact.job_state_after = artifact.job_state_at_receipt
+              AND job.job_state = 'cancelled'
+              AND job.completed_revision IS NOT NULL
+              AND job.completed_revision <= (
+                  SELECT runtime_epoch.revision
+                  FROM groundloop_m5_runtime_epoch AS runtime_epoch
+                  WHERE runtime_epoch.epoch_id = NEW.epoch_id
+              )
+              AND job.cancelled_by_event_id IS NOT DISTINCT FROM
+                  artifact.cancelled_by_event_id
+              AND job.cancelled_by_epoch_id IS NOT DISTINCT FROM
+                  artifact.cancelled_by_epoch_id
+              AND job.cancellation_reason IS NOT DISTINCT FROM
+                  artifact.cancellation_reason
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM groundloop_m5_job_attempt AS later_attempt
+                  WHERE later_attempt.logical_job_id = attempt.logical_job_id
+                    AND later_attempt.attempt_ordinal > attempt.attempt_ordinal
+              )
               AND evidence.evidence_digest = NEW.execution_evidence_digest
               AND evidence.disposition IN ('returned', 'reused_artifact')
               AND evidence.result_or_error_hash = artifact.attempt_output_digest
@@ -3174,12 +4395,39 @@ BEGIN
               ON evidence.subgraph = 'direct'
              AND evidence.attempt_id = envelope.attempt_id
              AND evidence.epoch_id = envelope.epoch_id
+            JOIN groundloop_semantic_job_attempt AS attempt
+              ON attempt.attempt_id = envelope.attempt_id
+             AND attempt.job_id = envelope.job_id
+            JOIN groundloop_semantic_job AS job
+              ON job.job_id = envelope.job_id
+             AND job.epoch_id = envelope.epoch_id
+            JOIN groundloop_m5_direct_terminal_projection AS projection
+              ON projection.epoch_id = job.epoch_id
+             AND projection.job_id = job.job_id
             WHERE envelope.epoch_id = NEW.epoch_id
               AND envelope.attempt_id = NEW.attempt_id
               AND envelope.envelope_digest = NEW.return_artifact_digest
               AND evidence.evidence_digest = NEW.execution_evidence_digest
               AND evidence.disposition IN ('returned', 'reused_artifact')
               AND evidence.result_or_error_hash = envelope.envelope_digest
+              AND attempt.attempt_state = 'leased'
+              AND job.job_state = 'cancelled'
+              AND job.completed_revision IS NOT NULL
+              AND job.completed_revision <= (
+                  SELECT runtime_epoch.revision
+                  FROM groundloop_m5_runtime_epoch AS runtime_epoch
+                  WHERE runtime_epoch.epoch_id = NEW.epoch_id
+              )
+              AND projection.terminal_state = job.job_state
+              AND projection.completed_revision = job.completed_revision
+              AND projection.m4_completion_digest IS NOT DISTINCT FROM
+                  job.completion_digest
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM groundloop_semantic_job_attempt AS later_attempt
+                  WHERE later_attempt.job_id = attempt.job_id
+                    AND later_attempt.attempt_ordinal > attempt.attempt_ordinal
+              )
         ) OR EXISTS (
             SELECT 1 FROM groundloop_m5_expired_attempt_return AS expired
             WHERE expired.epoch_id = NEW.epoch_id
@@ -3312,6 +4560,7 @@ BEGIN
 END;
 $$;
 
+CREATE TRIGGER groundloop_m5_typed_direct_late_envelope_event_lock BEFORE INSERT ON groundloop_m5_typed_direct_late_return_envelope FOR EACH ROW EXECUTE FUNCTION groundloop_m5_lock_typed_direct_envelope_event_source();
 CREATE TRIGGER groundloop_m5_typed_direct_late_envelope_immutable BEFORE UPDATE OR DELETE ON groundloop_m5_typed_direct_late_return_envelope FOR EACH ROW EXECUTE FUNCTION groundloop_m5_reject_immutable_row();
 CREATE TRIGGER groundloop_m5_expired_attempt_return_immutable BEFORE UPDATE OR DELETE ON groundloop_m5_expired_attempt_return FOR EACH ROW EXECUTE FUNCTION groundloop_m5_reject_immutable_row();
 CREATE TRIGGER groundloop_m5_post_terminal_timing_immutable BEFORE UPDATE OR DELETE ON groundloop_m5_post_terminal_attempt_timing FOR EACH ROW EXECUTE FUNCTION groundloop_m5_reject_immutable_row();
@@ -3325,6 +4574,7 @@ CREATE CONSTRAINT TRIGGER groundloop_m5_post_terminal_timing_shape AFTER INSERT 
 CREATE CONSTRAINT TRIGGER groundloop_m5_post_terminal_audit_shape AFTER INSERT OR UPDATE ON groundloop_m5_post_terminal_attempt_audit DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION groundloop_m5_validate_post_terminal_audit();
 CREATE CONSTRAINT TRIGGER groundloop_m5_postcommit_telemetry_shape AFTER INSERT OR UPDATE ON groundloop_m5_postcommit_invocation_telemetry DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION groundloop_m5_validate_terminal_timing_sidecar();
 CREATE CONSTRAINT TRIGGER groundloop_m5_event_timing_coverage_shape AFTER INSERT OR UPDATE ON groundloop_m5_event_timing_coverage DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION groundloop_m5_validate_terminal_timing_sidecar();
+CREATE CONSTRAINT TRIGGER groundloop_m5_base_epoch_source_reverse AFTER UPDATE OR DELETE ON groundloop_epoch DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION groundloop_m5_validate_base_epoch_source_reverse_closure();
 
 -- groundloop:m5-runtime-recovery-group:attempt_result_replacements
 ALTER TABLE groundloop_m5_attempt_result_artifact
@@ -3380,6 +4630,7 @@ DECLARE
     expected_output_digest char(64);
     expected_artifact_hash char(64);
     expired_shape boolean;
+    terminal_audit_shape boolean;
 BEGIN
     SELECT job_kind INTO STRICT kind
     FROM groundloop_m5_semantic_job
@@ -3420,6 +4671,8 @@ BEGIN
              )
              AND NEW.job_state_after = NEW.job_state_at_receipt)
         );
+    terminal_audit_shape := NEW.disposition = 'terminal_audit_only'
+        AND NEW.archive_reason <> 'attempt_expired';
     IF NEW.attempt_output_digest <> expected_output_digest THEN
         RAISE EXCEPTION 'M5 attempt-output digest is incorrect';
     END IF;
@@ -3465,6 +4718,54 @@ BEGIN
               )
         ) THEN
             RAISE EXCEPTION 'expired M5 attempt-result lacks exact sidecar closure';
+        END IF;
+    ELSIF terminal_audit_shape THEN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM groundloop_m5_job_attempt AS attempt
+            JOIN groundloop_m5_semantic_job AS job
+              ON job.logical_job_id = attempt.logical_job_id
+            JOIN groundloop_m5_attempt_execution_evidence AS evidence
+              ON evidence.epoch_id = job.epoch_id
+             AND evidence.subgraph = 'requirement'
+             AND evidence.attempt_id = attempt.attempt_id
+            JOIN groundloop_m5_runtime_epoch AS runtime_epoch
+              ON runtime_epoch.epoch_id = job.epoch_id
+            WHERE attempt.attempt_id = NEW.attempt_id
+              AND attempt.logical_job_id = NEW.logical_job_id
+              AND attempt.execution_spec_hash = NEW.execution_spec_hash
+              AND attempt.attempt_state = 'dispatched'
+              AND job.epoch_id = NEW.job_epoch_id
+              AND job.payload_hash = NEW.payload_hash
+              AND job.job_state = NEW.job_state_at_receipt
+              AND NEW.job_state_after = NEW.job_state_at_receipt
+              AND job.job_state = 'cancelled'
+              AND job.completed_revision IS NOT NULL
+              AND job.completed_revision <= runtime_epoch.revision
+              AND job.cancelled_by_event_id IS NOT DISTINCT FROM
+                  NEW.cancelled_by_event_id
+              AND job.cancelled_by_epoch_id IS NOT DISTINCT FROM
+                  NEW.cancelled_by_epoch_id
+              AND job.cancellation_reason IS NOT DISTINCT FROM
+                  NEW.cancellation_reason
+              AND evidence.disposition IN ('returned', 'reused_artifact')
+              AND evidence.result_or_error_hash = NEW.attempt_output_digest
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM groundloop_m5_job_attempt AS later_attempt
+                  WHERE later_attempt.logical_job_id = attempt.logical_job_id
+                    AND later_attempt.attempt_ordinal > attempt.attempt_ordinal
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM groundloop_m5_expired_attempt_return AS expired
+                  WHERE expired.epoch_id = job.epoch_id
+                    AND expired.subgraph = 'requirement'
+                    AND expired.attempt_id = attempt.attempt_id
+              )
+        ) THEN
+            RAISE EXCEPTION
+                'terminal-audit-only M5 result lacks current terminal job closure';
         END IF;
     ELSIF NOT EXISTS (
         SELECT 1
@@ -3538,6 +4839,9 @@ BEGIN
                FROM groundloop_m5_job_attempt AS attempt
                JOIN groundloop_m5_runtime_epoch AS runtime_epoch
                  ON runtime_epoch.epoch_id = NEW.job_epoch_id
+               JOIN groundloop_m5_semantic_job AS job
+                 ON job.logical_job_id = attempt.logical_job_id
+                AND job.epoch_id = NEW.job_epoch_id
                JOIN groundloop_m5_attempt_execution_evidence AS evidence
                  ON evidence.epoch_id = NEW.job_epoch_id
                 AND evidence.subgraph = 'requirement'
@@ -3572,7 +4876,24 @@ BEGIN
                  ON timing_accumulator.epoch_id = evidence.epoch_id
                WHERE attempt.attempt_id = NEW.attempt_id
                  AND attempt.logical_job_id = NEW.logical_job_id
-                 AND attempt.attempt_state <> 'expired'
+                 AND attempt.attempt_state = 'dispatched'
+                 AND job.job_state = 'cancelled'
+                 AND NEW.job_state_at_receipt = 'cancelled'
+                 AND NEW.job_state_after = 'cancelled'
+                 AND job.cancelled_by_event_id IS NOT DISTINCT FROM
+                     NEW.cancelled_by_event_id
+                 AND job.cancelled_by_epoch_id IS NOT DISTINCT FROM
+                     NEW.cancelled_by_epoch_id
+                 AND job.cancellation_reason IS NOT DISTINCT FROM
+                     NEW.cancellation_reason
+                 AND job.cancellation_reason <> 'epoch_failed'
+                 AND NOT EXISTS (
+                     SELECT 1
+                     FROM groundloop_m5_job_attempt AS later_attempt
+                     WHERE later_attempt.logical_job_id = attempt.logical_job_id
+                       AND later_attempt.attempt_ordinal >
+                           attempt.attempt_ordinal
+                 )
                  AND runtime_epoch.runtime_state NOT IN ('sealed', 'failed')
                  AND evidence.disposition IN ('returned', 'reused_artifact')
                  AND evidence.result_or_error_hash = NEW.attempt_output_digest
