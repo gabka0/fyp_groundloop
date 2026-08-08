@@ -1,8 +1,8 @@
 # GroundLoop M5 Multi-Agent Execution Plan
 
 Status: frozen M5 ownership contract; historical Waves 0--2 complete;
-M5-D24 recovery R0-C, pure R0-C1, and R0-S accepted on main; exact
-path-exclusive R1 persistence activation pending
+M5-D24 recovery R0-C, pure R0-C1, and R0-S accepted on main; path-exclusive
+R1-P and R1-D active under the committed manifest below
 
 Date: 2026-08-02; M5-D24 path amendments 2026-08-06 through 2026-08-08
 
@@ -373,20 +373,19 @@ R0 exited at main commit
 `61875894172c8e0b36866d6b215ecab7a57b76ec`. On those exact committed bytes,
 migration 016 passed 200/200 live tests, migration 015 passed 26/26, the
 broader PostgreSQL runtime suite passed 292/292, and the static/type/compile
-gates passed. R1 remains blocked until the literal accepted migration-016
-identity and exact path manifest are committed in
+gates passed. At that checkpoint, R1 remained blocked until the literal
+accepted migration-016 identity and exact path manifest were committed in
 `docs/workstreams/m5_runtime_implementation/D24_R1_ACTIVATION.md`.
 
 ### Wave R1 -- requirement and typed-direct persistence
 
-Wave R1 starts only after R0 integration. Lane R1-P owns new requirement-side
-recovery persistence modules, `src/groundloop/m5/runtime/persistence.py`, new
-requirement recovery tests, and its handoff. Lane R1-D owns
-`src/groundloop/m5/runtime/direct_m4.py`, the required M4 persistence/pipeline
-cursor-local changes, new direct recovery tests, and its handoff. The
-coordinator publishes their exact filenames and branch/worktree names in a
-committed R1 activation note before either lane edits; no broad directory grant
-is implied here.
+R1 is active only from the commit containing
+`docs/workstreams/m5_runtime_implementation/D24_R1_ACTIVATION.md`; its exact
+accepted parent is `15415edadb70201ef26f1e5e50b7fe0d63279210`. That note freezes
+the literal accepted migration-016 tuple, exact branch/worktree names, eight
+R1-P paths, nine R1-D paths, shared operational pins and focused gates. No
+broad directory grant is implied. Each lane records the manifest commit as its
+exact branch base before editing.
 
 R1 proves both serial orders of takeover/result/failure races, exact replay,
 dispatch-versus-evidence ambiguity, post-terminal isolation, work/timing point

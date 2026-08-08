@@ -9,6 +9,12 @@ M5-D24-C1 and M5-D24-C2 are accepted. Its R0 contracts and migration 016 are
 accepted on main; R1 checked persistence, R2 composition, and the overall
 decision-row implementation evidence remain pending.
 
+The exact disjoint R1-P requirement and R1-D typed-direct persistence paths
+are now active under
+`docs/workstreams/m5_runtime_implementation/D24_R1_ACTIVATION.md`. Activation
+is an ownership barrier, not implementation evidence; both lane results remain
+pending independent audit and main-line integration.
+
 ## 1. Honest current verdict
 
 M5 is no longer an informal "AND over requirement counts" extension. The

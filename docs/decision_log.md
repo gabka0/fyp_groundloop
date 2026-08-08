@@ -1,11 +1,11 @@
 # GroundLoop Decision Log
 
-## 2026-08-08 — M5-D24 R0 Migration 016 Accepted; R1 Eligible
+## 2026-08-08 — M5-D24 R0 Migration 016 Accepted; R1 Authorized
 
 Decision status: exact migration-016 schema/installer boundary accepted on
-main; R1 is eligible for a new path-exclusive activation manifest but remains
-blocked until that manifest is committed. R2 composition, M5-D25, and overall
-M5-D24 implementation evidence remain pending.
+main; exact path-exclusive R1-P and R1-D checked-persistence lanes authorized
+by a committed manifest. R2 composition, M5-D25, and overall M5-D24
+implementation evidence remain pending.
 
 The complete audited migration-016 topology was integrated in order as main
 commits `4e7f3e4`, `c10cf8d`, and
@@ -26,9 +26,10 @@ prerequisite_sha256 = b7b03574dc2ba62fd6ba7be22744e2fe6d9ec178ffb2b4b9b552c5ff62
 
 This accepts raw schema and installer invariants only. It does not prove
 checked attempt acquisition/settlement, reconnect recovery, exactly-once
-provider execution, M5.4 closure, or a utility claim. No R1 lane may edit until
-its exact paths and lane base are frozen in a committed activation note. No
-lane owns the user-held M5-D25 draft.
+provider execution, M5.4 closure, or a utility claim. The exact R1 paths,
+branches, worktrees, accepted tuple, shared pins and gates are frozen in
+`docs/workstreams/m5_runtime_implementation/D24_R1_ACTIVATION.md`. No lane owns
+the user-held M5-D25 draft.
 
 ## 2026-08-07 — M5-D24-C2 Legacy Terminal Coverage Boundary Accepted
 
