@@ -1,11 +1,13 @@
 # GroundLoop M5 Implementation Status
 
-Status date: 2026-08-07
+Status date: 2026-08-08
 
 Milestone status: **M5.0 through M5.3 complete; M5.4 partially complete.**
 M5.4-01 passes. M5.4-02 through M5.4-09 and every M5.5--M5.6
 implementation/evaluation closure remain pending. M5-D24 is contract-PASS and
-M5-D24-C1 and M5-D24-C2 are accepted; all remain implementation-PENDING.
+M5-D24-C1 and M5-D24-C2 are accepted. Its R0 contracts and migration 016 are
+accepted on main; R1 checked persistence, R2 composition, and the overall
+decision-row implementation evidence remain pending.
 
 ## 1. Honest current verdict
 
@@ -20,7 +22,8 @@ incremental overlay, migration 014/PostgreSQL integrity, the independent SQL
 oracle, a 100,000-event in-memory differential, and a snapshot-per-prefix
 three-oracle history, durable failure/replay coordination, byte-total v2
 runtime contracts, public activation/bootstrap, requirement job/root
-transitions, and a cursor-local typed-direct slice. There is still no accepted
+transitions, a cursor-local typed-direct slice, and the exact migration-016
+recovery schema/installer boundary. There is still no accepted
 M5 evidence for complete dynamic requirement execution, combined sparse seal,
 lost-worker takeover, durable event work/timing, sealed reconnect replay,
 maintained-runtime model quality, production latency, call savings, utility,
@@ -180,11 +183,19 @@ M5-D24-C2 removes the contradictory allowance for pre-016 terminal M5 history
 that cannot be given exact point coverage without guessing. Two independent
 exact-byte reads returned GO on pre-freeze SHA-256
 `de9a56439d4f1995339c72917c52dc7726c9fdd6095c27c8923493193abb5aad`.
-The pure C1 receipt DTO checkpoint is integrated. Migration 016, contextual C1
-persistence/application composition, and all D24 race/crash/reconnect gates
-remain implementation-PENDING. The proposed M5-D25 persisted-matching draft
-remains non-authoritative and has unresolved adversarial blockers plus literal
-migration-016 placeholders.
+The pure C1 receipt DTO checkpoint is integrated. Migration 016 is accepted at
+main commit `61875894172c8e0b36866d6b215ecab7a57b76ec` with bundle SHA-256
+`28a31f37c13cdaa2b89676e6279740a1f366e1acd16502c4fa722c2e0be21565`
+and migration SHA-256
+`a63d2a878a5196e071e3e51c6e6737cf76552057ade65da4112e0f0bafb412d7`.
+The exact committed main bytes passed 200/200 migration-016 tests, 26/26
+migration-015 regressions and 292/292 broader live PostgreSQL runtime tests;
+Ruff, strict mypy, compileall and diff-check also passed. This accepts only the
+R0 schema/installer boundary. Contextual C1 checked persistence/application
+composition and every D24 race/crash/reconnect gate remain
+implementation-PENDING. The proposed M5-D25 persisted-matching draft remains
+non-authoritative and has unresolved adversarial blockers; migration-016
+acceptance alone does not authorize it.
 
 ## 5. Remaining closure boundary
 

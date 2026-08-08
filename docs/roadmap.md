@@ -240,8 +240,10 @@ reference semantics completed on 2026-08-03 after an independent
 high-confidence audit GO. M5.2 and M5.3 are complete. M5.4-01 passes; public
 activation and partial root/direct transitions have live evidence but do not
 independently close M5.4-05. M5-D24's recoverable-dispatch/accounting contract
-is frozen and its implementation is active; migration 016 and every remaining
-M5.4--M5.6 implementation/evaluation closure remain pending. See
+is frozen, and its R0 contracts plus migration 016 are accepted on main. R1
+checked persistence is next but remains blocked on its exact committed path
+manifest; R2 composition and every remaining M5.4--M5.6
+implementation/evaluation closure remain pending. See
 `docs/m5_implementation_status.md`.
 
 Deliverables:

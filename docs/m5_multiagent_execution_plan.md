@@ -1,10 +1,10 @@
 # GroundLoop M5 Multi-Agent Execution Plan
 
 Status: frozen M5 ownership contract; historical Waves 0--2 complete;
-M5-D24 recovery R0-C and pure R0-C1 integrated; R0-S repair active under the
-accepted M5-D24-C2 correction below
+M5-D24 recovery R0-C, pure R0-C1, and R0-S accepted on main; exact
+path-exclusive R1 persistence activation pending
 
-Date: 2026-08-02; M5-D24 path amendments 2026-08-06 and 2026-08-07
+Date: 2026-08-02; M5-D24 path amendments 2026-08-06 through 2026-08-08
 
 Authority: `docs/m5_design_freeze.md` defines semantics and
 `docs/m5_implementation_plan.md` defines gates. This document defines only
@@ -368,6 +368,14 @@ matrix pass on main. The migration matrix must also reject legacy failed and
 sealed M5 runtime/results with zero attempts, preserve attempt-family error
 precedence, permit a bare terminal base epoch, and rerun exactly after valid
 post-016 terminalization.
+
+R0 exited at main commit
+`61875894172c8e0b36866d6b215ecab7a57b76ec`. On those exact committed bytes,
+migration 016 passed 200/200 live tests, migration 015 passed 26/26, the
+broader PostgreSQL runtime suite passed 292/292, and the static/type/compile
+gates passed. R1 remains blocked until the literal accepted migration-016
+identity and exact path manifest are committed in
+`docs/workstreams/m5_runtime_implementation/D24_R1_ACTIVATION.md`.
 
 ### Wave R1 -- requirement and typed-direct persistence
 

@@ -3,7 +3,7 @@
 Status: frozen M5 falsification contract, amended by M5-D21 through
 M5-D24-C2; staged evidence current through partial M5.4
 
-Date: 2026-08-07
+Date: 2026-08-08
 
 Authority: each row is a necessary condition, not a menu. In Section 1, the
 first status is the M5.0 contract audit and the second is implementation
@@ -179,6 +179,13 @@ must return `work_in_progress`; takeover must serialize on the database clock;
 and terminal event work/timing must remain unchanged by post-terminal audit
 rows. The exact D24 falsifiers and migration-016 route barrier are normative in
 the recovery amendment.
+
+Migration 016's R0 schema/installer subgate is accepted on main commit
+`61875894172c8e0b36866d6b215ecab7a57b76ec`: its exact committed bytes passed
+200/200 migration-016 tests, 26/26 migration-015 regressions and 292/292
+broader live PostgreSQL runtime tests. M5.0-24 and M5.4-05 through M5.4-07
+remain `PENDING` because checked R1 settlement, R2 composition and the named
+race/crash/reconnect histories have not yet passed.
 
 ## 6. M5.5 controlled evaluation gates
 

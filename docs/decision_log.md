@@ -1,5 +1,35 @@
 # GroundLoop Decision Log
 
+## 2026-08-08 — M5-D24 R0 Migration 016 Accepted; R1 Eligible
+
+Decision status: exact migration-016 schema/installer boundary accepted on
+main; R1 is eligible for a new path-exclusive activation manifest but remains
+blocked until that manifest is committed. R2 composition, M5-D25, and overall
+M5-D24 implementation evidence remain pending.
+
+The complete audited migration-016 topology was integrated in order as main
+commits `4e7f3e4`, `c10cf8d`, and
+`61875894172c8e0b36866d6b215ecab7a57b76ec`. On that exact final commit, the
+live migration-016 suite passed 200/200, migration-015 passed 26/26, and the
+broader PostgreSQL runtime suite passed 292/292. Ruff formatting and lint,
+strict mypy, compileall, bundle-identity recomputation, and diff-check passed.
+
+The accepted migration-016 ledger identity is:
+
+```text
+bundle_id = m5-runtime-recovery-schema-bundle-v1
+bundle_sha256 = 28a31f37c13cdaa2b89676e6279740a1f366e1acd16502c4fa722c2e0be21565
+migration_sha256 = a63d2a878a5196e071e3e51c6e6737cf76552057ade65da4112e0f0bafb412d7
+oracle_sha256 = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+prerequisite_sha256 = b7b03574dc2ba62fd6ba7be22744e2fe6d9ec178ffb2b4b9b552c5ff6281dacd
+```
+
+This accepts raw schema and installer invariants only. It does not prove
+checked attempt acquisition/settlement, reconnect recovery, exactly-once
+provider execution, M5.4 closure, or a utility claim. No R1 lane may edit until
+its exact paths and lane base are frozen in a committed activation note. No
+lane owns the user-held M5-D25 draft.
+
 ## 2026-08-07 — M5-D24-C2 Legacy Terminal Coverage Boundary Accepted
 
 Decision status: narrow correction accepted after two independent exact-byte
