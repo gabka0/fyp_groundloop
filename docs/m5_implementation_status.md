@@ -1,19 +1,25 @@
 # GroundLoop M5 Implementation Status
 
-Status date: 2026-08-08
+Status date: 2026-08-10
 
 Milestone status: **M5.0 through M5.3 complete; M5.4 partially complete.**
 M5.4-01 passes. M5.4-02 through M5.4-09 and every M5.5--M5.6
-implementation/evaluation closure remain pending. M5-D24 is contract-PASS and
-M5-D24-C1 and M5-D24-C2 are accepted. Its R0 contracts and migration 016 are
-accepted on main; R1 checked persistence, R2 composition, and the overall
-decision-row implementation evidence remain pending.
+implementation/evaluation closure remain pending. M5-D24-C1 through
+M5-D24-C3 are accepted, and M5.0-24 is restored to contract-PASS. The C3
+correction was required when a cancellation/expired-output race exposed a
+prose versus accepted-schema contradiction. Its accepted reviewed-candidate
+SHA-256 is
+`59fca1859e55af3ff9ffe818205c0ed61cacd17876525cddfc60d448f9eaf723`.
+The R0 contracts and migration 016 remain accepted on main. R1-D is integrated;
+R1-P is resumed from its 34/34 live-green cancellation checkpoint; R2
+composition and the overall decision-row implementation evidence remain
+pending.
 
 The exact disjoint R1-P requirement and R1-D typed-direct persistence paths
-are now active under
-`docs/workstreams/m5_runtime_implementation/D24_R1_ACTIVATION.md`. Activation
-is an ownership barrier, not implementation evidence; both lane results remain
-pending independent audit and main-line integration.
+remain governed by
+`docs/workstreams/m5_runtime_implementation/D24_R1_ACTIVATION.md`. R1-D is
+integrated. R1-P is active again under accepted M5-D24-C3. Activation is an
+ownership barrier, not whole-stage implementation evidence.
 
 ## 1. Honest current verdict
 
@@ -72,10 +78,11 @@ m5_acceptance_matrix.md       7861cf4146f190843560e1cdf912a9f862372fc891a4851d72
 m5_multiagent_execution_plan faffae5f839623efd9e387f63e951881cf1f46c5b66f37c3db642cc416a9e20a
 ```
 
-Those hashes identify the final audited semantic candidate. Subsequent edits
-have changed status and executable-evidence reporting without changing the
-frozen semantic contract. Final implementation artifact hashes and the
-decision-row cross-stage mapping will be recorded at M5.6.
+Those hashes identify the initial audited M5.0 semantic candidate. Later
+accepted amendments M5-D21 through M5-D24-C3 extend or correct that contract
+and are identified by their own decision and audit records below. Final
+implementation artifact hashes and the decision-row cross-stage mapping will
+be recorded at M5.6.
 
 ## 3. Frozen M5.0 result
 
@@ -91,6 +98,9 @@ The authoritative documents are:
   correction;
 - `docs/workstreams/m5_runtime_contract/LEGACY_TERMINAL_COVERAGE_CORRECTION.md`
   -- accepted first-install rejection of unbackfillable terminal M5 history;
+- `docs/workstreams/m5_runtime_contract/CANCELLATION_EXPIRED_OUTPUT_CORRECTION.md`
+  -- accepted cancellation-first expired-output and delayed postterminal
+  archival correction;
 - `docs/m5_implementation_plan.md` -- stages M5.1 through M5.6;
 - `docs/m5_multiagent_execution_plan.md` -- path-exclusive ownership and
   integration order; and
@@ -202,6 +212,19 @@ composition and every D24 race/crash/reconnect gate remain
 implementation-PENDING. The proposed M5-D25 persisted-matching draft remains
 non-authoritative and has unresolved adversarial blockers; migration-016
 acceptance alone does not authorize it.
+
+During R1-P execution, the cancellation-first half of the required
+already-expired-output race proved that immediate preterminal archival cannot
+match accepted migration 016: cancellation has already made the job/scope
+terminal, while the SQL closure permits only `running -> running` until the
+event itself is terminal. Accepted M5-D24-C3 specifies output-first
+preterminal archival, cancellation-first zero-write conflict, and delayed
+`EXPIRED_POSTTERMINAL` archival after seal/failure. R1-P owns the two
+preterminal orders and may use a clearly labelled owned terminal fixture for
+persistence-shape evidence; production seal/failure and end-to-end
+continuation remain R2. The current cancellation checkpoint passed 34/34 live
+nested PostgreSQL tests, but that is tranche evidence rather than whole-R1-P
+or M5.4 closure.
 
 ## 5. Remaining closure boundary
 

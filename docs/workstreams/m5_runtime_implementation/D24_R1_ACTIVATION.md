@@ -1,9 +1,9 @@
 # M5-D24 R1 Checked-Persistence Activation
 
-Status: active path-exclusive manifest; R1-P and R1-D may start only from the
-commit containing this note
+Status: active path-exclusive manifest; R1-D is integrated and R1-P is resumed
+from its live-green cancellation checkpoint under accepted M5-D24-C3
 
-Date: 2026-08-08
+Date: 2026-08-08; accepted M5-D24-C3 amendment 2026-08-10
 
 Accepted R0 implementation commit:
 `61875894172c8e0b36866d6b215ecab7a57b76ec`
@@ -145,6 +145,13 @@ R1-P additionally covers root-result/barrier/cancellation/verifier races and
 exact counts. R1-D additionally covers byte-total direct envelopes, both
 discovery and verifier branches, and frozen public-M4 behavior.
 
+Accepted M5-D24-C3 governs the affected cancellation race without changing
+this path manifest. Output-first must archive `EXPIRED_PRETERMINAL` before
+cancellation, while cancellation-first must reject the preterminal expired
+output with zero writes. R1-P owns those two orders and fixture-backed
+postterminal persistence-shape evidence. R2 owns production event
+terminalization and the end-to-end `EXPIRED_POSTTERMINAL` continuation.
+
 ## 6. Integration and forbidden paths
 
 Both lanes require independent code/handoff audit before integration. The
@@ -162,6 +169,6 @@ Neither R1 lane owns:
 - `docs/workstreams/m5_runtime_contract/PERSISTED_MATCHING_AMENDMENT_DRAFT.md`.
 
 M5-D25 and migration 017 remain blocked. This activation does not close
-M5.0-24, M5.4-02 through M5.4-09, M5.5, M5.6, or M5 as a whole and does not
-establish exactly-once provider execution, objective truth, performance
-superiority, or representative utility.
+M5.0-24's implementation half, M5.4-02 through M5.4-09, M5.5, M5.6, or M5 as
+a whole and does not establish exactly-once provider execution, objective
+truth, performance superiority, or representative utility.

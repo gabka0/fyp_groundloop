@@ -1,10 +1,11 @@
 # GroundLoop M5 Multi-Agent Execution Plan
 
 Status: frozen M5 ownership contract; historical Waves 0--2 complete;
-M5-D24 recovery R0-C, pure R0-C1, and R0-S accepted on main; path-exclusive
-R1-P and R1-D active under the committed manifest below
+M5-D24 recovery R0-C, pure R0-C1, and R0-S accepted on main; R1-D integrated;
+R1-P active from its live-green cancellation checkpoint under the committed
+manifest below; M5-D24-C3 race clarification accepted
 
-Date: 2026-08-02; M5-D24 path amendments 2026-08-06 through 2026-08-08
+Date: 2026-08-02; M5-D24 path amendments 2026-08-06 through 2026-08-10
 
 Authority: `docs/m5_design_freeze.md` defines semantics and
 `docs/m5_implementation_plan.md` defines gates. This document defines only
@@ -391,6 +392,15 @@ R1 proves both serial orders of takeover/result/failure races, exact replay,
 dispatch-versus-evidence ambiguity, post-terminal isolation, work/timing point
 maintenance, and frozen public M4-v1 regression. Cross-lane wrappers are
 coordinator work after both lane commits.
+
+Accepted M5-D24-C3 resumes R1-P without changing lane paths. An
+already-replaced requirement attempt archives preterminal when output wins
+before cancellation, while cancellation-first conflicts with zero writes while
+the event remains nonterminal. R1-P owns the two preterminal orders and
+fixture-backed postterminal persistence-shape evidence. R2 owns production
+seal/failure and the end-to-end postterminal continuation. No R1 lane may edit
+migration 016 or invent a terminal preterminal artifact to bypass that
+accepted closure.
 
 ### Wave R2 -- application composition
 

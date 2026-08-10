@@ -235,14 +235,16 @@ is explicit pre-dissertation/M6 debt, not a hidden extension of M4.
 
 ## M5 — Bounded Evidence Groups
 
-Status: active. M5.0 contract freeze completed on 2026-08-02; M5.1 pure
-reference semantics completed on 2026-08-03 after an independent
-high-confidence audit GO. M5.2 and M5.3 are complete. M5.4-01 passes; public
-activation and partial root/direct transitions have live evidence but do not
-independently close M5.4-05. M5-D24's recoverable-dispatch/accounting contract
-is frozen, and its R0 contracts plus migration 016 are accepted on main. The
-exact disjoint R1 checked-persistence lanes are active under their committed
-manifest; R2 composition and every remaining M5.4--M5.6
+Status: active. The M5.0 contract freeze is complete through accepted
+M5-D24-C3; M5.1 pure reference semantics completed on 2026-08-03 after an
+independent high-confidence audit GO. M5.2 and M5.3 are complete. M5.4-01
+passes; public activation and partial root/direct transitions have live
+evidence but do not independently close M5.4-05. M5-D24's
+recoverable-dispatch/accounting contract through C3 is frozen, and its R0
+contracts plus migration 016 are accepted on main. C3 reconciles the
+cancellation-first expired-output race with the immutable accepted schema.
+R1-D is integrated; R1-P is resumed from its live-green cancellation
+checkpoint. R2 composition and every remaining M5.4--M5.6
 implementation/evaluation closure remain pending. See
 `docs/m5_implementation_status.md`.
 
@@ -263,9 +265,9 @@ Deliverables:
 
 Stages:
 
-- **M5.0:** design/theory/schema/data freeze. **Complete.** Contract rows pass;
-  decision-row implementation halves remain pending until the M5.6 cross-stage
-  evidence mapping.
+- **M5.0:** design/theory/schema/data freeze. **Complete through accepted
+  M5-D24-C3.** Contract rows pass; decision-row implementation halves remain
+  pending until the M5.6 cross-stage evidence mapping.
 - **M5.1:** pure records, history, structural events, and independent Python
   oracle. **Complete.**
 - **M5.2:** incremental Hall-mask engine, certificates, exhaustive bounded

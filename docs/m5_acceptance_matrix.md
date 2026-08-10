@@ -1,9 +1,9 @@
 # GroundLoop M5 Acceptance Matrix
 
 Status: frozen M5 falsification contract, amended by M5-D21 through
-M5-D24-C2; staged evidence current through partial M5.4
+M5-D24-C3; staged evidence current through partial M5.4
 
-Date: 2026-08-08
+Date: 2026-08-10
 
 Authority: each row is a necessary condition, not a menu. In Section 1, the
 first status is the M5.0 contract audit and the second is implementation
@@ -40,12 +40,13 @@ design freeze is reopened and the scope change is recorded.
 | M5.0-21 | M5-D21 typed direct bridge and combined state | After activation, use missing/prior-committed/reordered/mismatched kind/event/base/policy/manifest/registry/revision/state sidecars, commit a typed document sidecar without its M4 row, let public M4 open/resume/fail/seal change a typed epoch, or let direct completion commit COMPLETE while M5 work remains | Current-transaction guard/deferred-constraint rejection and rollback matrix, unchanged `v1_only` bytes, exact typed document open, public-M4 terminal-path rejection, and combined-state transition tests | PASS / PENDING |
 | M5.0-22 | M5-D22 byte-total changed-state artifacts | Mutate any state field, optional F64/null, sequence order, policy/certificate binding, coordinate, or certificate digest; supply a bootstrap/reference hash that does not match the named historical row | Golden one-field vectors, independent activation recomputation, live reference-to-row rejection, and exact replay | PASS / PENDING |
 | M5.0-23 | M5-D23 runtime transition completeness | Lose/change a retry error hash, mutate/reorder a cancellation target/reason, omit or reconstruct direct structural payload, or acquire direct work through a public typed-forbidden M4 path | Retry/cancellation golden vectors and replay tests; exact payload-bound typed direct open; cursor-local direct acquisition; public-route rejection | PASS / PENDING |
-| M5.0-24 | M5-D24 recoverable dispatch and durable accounting, as corrected by M5-D24-C1 and M5-D24-C2 | Lose a worker after dispatch; race takeover/output; conflate dispatch with confirmed execution; infer returned versus reused evidence from work; accept an ambiguous successful-return receipt, a method/wrapper/envelope kind mismatch, or a late-return TOCTOU; double-apply work/timing; mutate terminal event totals with a late return; omit a total terminal/result-reserved projection; accept partial timing, a non-byte-total direct envelope, multiple outer timing anchors, a nonexact migration-015 prerequisite, or pre-016 terminal M5 aggregates that lack exact point coverage | Golden DTO/digest/null/replay/disposition/branch tests; migration-016 install/rerun/conflict/rollback, exact-ledger, legacy-terminal rejection, bare-terminal-base, and post-016-terminal rerun tests; M5/direct takeover races; crash/reconnect, late/post-terminal, work/timing coverage, ambiguity-bound, M4-v1 regression, and no-inline-aggregate tests | PASS / PENDING |
+| M5.0-24 | M5-D24 recoverable dispatch and durable accounting, as corrected by M5-D24-C1 through M5-D24-C3 | Lose a worker after dispatch; race takeover/output; conflate dispatch with confirmed execution; infer returned versus reused evidence from work; accept an ambiguous successful-return receipt, a method/wrapper/envelope kind mismatch, or a late-return TOCTOU; archive a cancellation-first expired output against a false preterminal job image; double-apply work/timing; mutate terminal event totals with a late return; omit a total terminal/result-reserved projection; accept partial timing, a non-byte-total direct envelope, multiple outer timing anchors, a nonexact migration-015 prerequisite, or pre-016 terminal M5 aggregates that lack exact point coverage | Golden DTO/digest/null/replay/disposition/branch tests; migration-016 install/rerun/conflict/rollback, exact-ledger, legacy-terminal rejection, bare-terminal-base, and post-016-terminal rerun tests; M5/direct takeover races; cancellation/expired-output output-first archival plus cancellation-first zero-write conflict and postterminal continuation; crash/reconnect, late/post-terminal, work/timing coverage, ambiguity-bound, M4-v1 regression, and no-inline-aggregate tests | PASS / PENDING |
 
 M5.0 originally froze after the contract side of every row passed, three
 independent audits reported no unresolved P0/P1, and the coordinator recorded
 the decisions. The later implementation conflict followed the frozen amendment
-procedure and is now specified by M5-D21 through M5-D24-C2, runtime-addendum
+procedure, and accepted M5-D24-C3 restores M5.0-24's contract half to `PASS`.
+The current contract set is M5-D21 through M5-D24-C3 plus runtime-addendum
 revision 5, the M5-D24 recovery amendment and its receipt/legacy-coverage
 corrections, and rows M5.0-21 through M5.0-24.
 The decision-row implementation halves remain `PENDING` until the
@@ -178,14 +179,14 @@ PASS. A dispatch row alone is not confirmed execution evidence; a live lease
 must return `work_in_progress`; takeover must serialize on the database clock;
 and terminal event work/timing must remain unchanged by post-terminal audit
 rows. The exact D24 falsifiers and migration-016 route barrier are normative in
-the recovery amendment.
+the recovery amendment and its accepted corrections.
 
 Migration 016's R0 schema/installer subgate is accepted on main commit
 `61875894172c8e0b36866d6b215ecab7a57b76ec`: its exact committed bytes passed
 200/200 migration-016 tests, 26/26 migration-015 regressions and 292/292
-broader live PostgreSQL runtime tests. M5.0-24 and M5.4-05 through M5.4-07
-remain `PENDING` because checked R1 settlement, R2 composition and the named
-race/crash/reconnect histories have not yet passed.
+broader live PostgreSQL runtime tests. M5.0-24's implementation half and
+M5.4-05 through M5.4-07 remain `PENDING` because checked R1 settlement, R2
+composition and the named race/crash/reconnect histories have not yet passed.
 
 ## 6. M5.5 controlled evaluation gates
 

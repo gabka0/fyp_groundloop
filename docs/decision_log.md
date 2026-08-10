@@ -1,5 +1,37 @@
 # GroundLoop Decision Log
 
+## 2026-08-10 — M5-D24-C3 Cancellation/Expired-Output Boundary Accepted
+
+Decision status: accepted narrow correction after independent exact-byte
+review. Accepted reviewed-candidate SHA-256:
+`59fca1859e55af3ff9ffe818205c0ed61cacd17876525cddfc60d448f9eaf723`.
+
+The R1-P cancellation race gate exposed a contradiction between the D24 race
+prose and the already-accepted migration-016 validators. After a committed
+takeover, D24 gives `attempt_expired` precedence. If cancellation commits
+before the old output while the event remains nonterminal, however, the job
+and root scope are durably `cancelled`. Migration 016 accepts only
+`running -> running` for a preterminal expired artifact and accepts an exact
+terminal-state artifact only after the event is sealed or failed. Neither
+preterminal artifact can truthfully describe the locked rows.
+
+M5-D24-C3 preserves migration 016. Output-first keeps
+the existing `EXPIRED_PRETERMINAL` closure. Cancellation-first conflicts with
+zero writes while the event is nonterminal. The caller may retain and resubmit
+the provider output after seal or failure, but persistence cannot prove
+continuity with either zero-write rejection. The first legal postterminal
+commit freezes the complete returned identity as the attempt-result artifact,
+expired-return row, execution evidence, postterminal timing, and general
+audit; only subsequent changed replay can conflict. This closure uses exact
+cancelled attribution and cannot change frozen terminal totals. The
+authoritative accepted text is
+`docs/workstreams/m5_runtime_contract/CANCELLATION_EXPIRED_OUTPUT_CORRECTION.md`.
+
+Independent review accepted the exact candidate bytes with no unresolved
+P0/P1. R1-P resumes from its 34/34 live-green cancellation checkpoint under
+the correction. This decision changes no accepted migration-016 byte, ledger
+value, public M4-v1 contract, D25 boundary, or migration-017 status.
+
 ## 2026-08-08 — M5-D24 R0 Migration 016 Accepted; R1 Authorized
 
 Decision status: exact migration-016 schema/installer boundary accepted on
