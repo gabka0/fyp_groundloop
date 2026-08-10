@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from typing import Any, Protocol
 
@@ -2236,6 +2237,8 @@ class PostgresM4ApplicationPorts:
         expected_revision: int,
         spec: LogicalJobSpec,
         lease_token_hash: str,
+        *,
+        lease_expires_at: datetime | None = None,
     ) -> JobLease:
         """Persist deterministic direct dispatch in the caller's transaction."""
         if not self._measured:
@@ -2280,12 +2283,18 @@ class PostgresM4ApplicationPorts:
                 attempt_ordinal=ordinal,
                 lease_token_hash=lease_token_hash,
             )
-            started = self.runtime_store.start_attempt_point_local(
-                cursor,
-                epoch_id,
-                expected_revision,
-                attempt,
-            )
+            if lease_expires_at is None:
+                started = self.runtime_store.start_attempt_point_local(
+                    cursor, epoch_id, expected_revision, attempt
+                )
+            else:
+                started = self.runtime_store.start_recovery_attempt_point_local(
+                    cursor,
+                    epoch_id,
+                    expected_revision,
+                    attempt,
+                    lease_expires_at=lease_expires_at,
+                )
             if not started.replayed:
                 self.evaluation_store.apply_transition_local(
                     cursor,
@@ -2322,6 +2331,52 @@ class PostgresM4ApplicationPorts:
             attempt_id=attempt.attempt_id,
             lease_token_hash=attempt.lease_token_hash,
             expected_revision=header.revision,
+        )
+
+    def _takeover_direct_job_local(
+        self,
+        cursor: Cursor[Any],
+        epoch_id: int,
+        expected_revision: int,
+        spec: LogicalJobSpec,
+        expired_attempt_id: str,
+        successor: JobAttempt,
+        *,
+        decision_time: datetime,
+        lease_expires_at: datetime,
+    ) -> JobLease:
+        """Stage the frozen dense successor for one M5-D24 direct takeover."""
+
+        if not self._measured:
+            raise ValidationError(
+                "typed cursor-local M4 composition requires measured mode"
+            )
+        if successor.job_id != spec.job_id:
+            raise EventConflictError("typed-direct successor belongs to another job")
+        result = self.runtime_store.takeover_attempt_point_local(
+            cursor,
+            epoch_id,
+            expected_revision,
+            expired_attempt_id,
+            successor,
+            decision_time=decision_time,
+            lease_expires_at=lease_expires_at,
+        )
+        self.evaluation_store.apply_transition_local(
+            cursor,
+            epoch_id,
+            EvaluationTransition(
+                transition_id=successor.attempt_id,
+                expected_revision=expected_revision,
+            ),
+        )
+        return JobLease(
+            spec.job_id,
+            True,
+            False,
+            attempt_id=successor.attempt_id,
+            lease_token_hash=successor.lease_token_hash,
+            expected_revision=result.header.revision,
         )
 
     def mark_retryable_failure(self, epoch_id: int, lease: JobLease) -> None:
@@ -2366,6 +2421,75 @@ class PostgresM4ApplicationPorts:
             with self.connection.transaction():
                 with self.connection.cursor() as cursor:
                     self._sync_evaluation(cursor, epoch_id)
+
+    def _mark_direct_retryable_failure_local(
+        self,
+        cursor: Cursor[Any],
+        epoch_id: int,
+        expected_revision: int,
+        lease: JobLease,
+    ) -> None:
+        """Stage one retryable direct failure without owning the transaction."""
+
+        attempt_id, _token, _lease_revision = self._completion_lease_binding(
+            lease, lease.job_id
+        )
+        transition_id = stable_m4_digest(
+            "m4-evaluation-retryable-failure-v1",
+            str(epoch_id),
+            lease.job_id,
+            attempt_id,
+        )
+        result = self.runtime_store.mark_retryable_failure_point_local(
+            cursor,
+            epoch_id,
+            expected_revision,
+            lease.job_id,
+            attempt_id,
+        )
+        if not result.replayed:
+            self.evaluation_store.apply_transition_local(
+                cursor,
+                epoch_id,
+                EvaluationTransition(
+                    transition_id=transition_id,
+                    expected_revision=expected_revision,
+                ),
+            )
+
+    def _mark_direct_terminal_failure_local(
+        self,
+        cursor: Cursor[Any],
+        epoch_id: int,
+        expected_revision: int,
+        lease: JobLease,
+    ) -> None:
+        """Stage the M4 half of terminal direct failure under an outer owner."""
+
+        attempt_id, _token, _lease_revision = self._completion_lease_binding(
+            lease, lease.job_id
+        )
+        result = self.runtime_store.mark_terminal_failure_point_local(
+            cursor,
+            epoch_id,
+            expected_revision,
+            lease.job_id,
+            attempt_id,
+        )
+        if not result.replayed:
+            self.evaluation_store.apply_transition_local(
+                cursor,
+                epoch_id,
+                EvaluationTransition(
+                    transition_id=stable_m4_digest(
+                        "m4-evaluation-terminal-failure-v1",
+                        str(epoch_id),
+                        lease.job_id,
+                        attempt_id,
+                    ),
+                    expected_revision=expected_revision,
+                ),
+            )
 
     def complete_expansion(
         self,

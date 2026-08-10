@@ -1,9 +1,9 @@
-"""Cursor-local adapter for the frozen M4-v1 direct subgraph.
+"""Checked adapter for the frozen M4-v1 direct subgraph.
 
 The typed M5 persistence coordinator owns the surrounding transaction and the
-shared epoch/head authority.  This adapter stages only the preserved M4-v1
-subgraph using the caller's cursor; it never commits, rolls back, starts a
-nested transaction, or invokes an external model.
+shared epoch/head authority. Cursor methods stage only the preserved M4-v1
+subgraph. Successful worker returns use the explicit atomic methods here so
+normal versus late classification shares one locked transaction.
 """
 
 from __future__ import annotations
@@ -33,6 +33,25 @@ from groundloop.m4.contracts import (
     LogicalJobSpec,
 )
 from groundloop.m4.pipeline import PostgresM4ApplicationPorts, StructuralPayload
+from groundloop.m5.runtime.contracts import (
+    M5DirectAttemptReturnReceipt,
+    M5DirectCursorContributionReceipt,
+    M5DirectLateReturnDisposition,
+    M5DirectLateReturnReceipt,
+    M5DirectNormalReturnReceipt,
+    M5ExecutionEvidenceDisposition,
+    M5RuntimeTiming,
+    M5RuntimeWork,
+    M5RuntimeWorkContributionKind,
+    M5TransitionTimingAnchor,
+    M5TypedDirectJobLease,
+    M5TypedDirectLateReturnEnvelope,
+    M5TypedDirectReturnKind,
+)
+from groundloop.m5.runtime.postgres_direct_recovery import (
+    PostgresM5DirectRecoveryStore,
+    _DirectReturnSettlement,
+)
 from groundloop.repository import InMemoryRepository
 
 
@@ -56,6 +75,7 @@ class PostgresM5DirectM4Adapter:
 
     def __init__(self, ports: PostgresM4ApplicationPorts) -> None:
         self._ports = ports
+        self._recovery = PostgresM5DirectRecoveryStore(ports)
         self._pending_cache: _PendingCacheAdoption | None = None
 
     def stage_direct_open(
@@ -102,11 +122,11 @@ class PostgresM5DirectM4Adapter:
         expected_revision: int,
         job: LogicalJobSpec,
         lease_token_hash: str,
-    ) -> JobLease:
-        """Persist deterministic attempt/dispatch state before external work."""
+    ) -> M5TypedDirectJobLease:
+        """Persist one total migration-016 direct acquisition outcome."""
         self._require_cursor(cursor)
         self._require_no_pending_cache()
-        return self._ports._acquire_direct_job_local(
+        return self._recovery.acquire_direct_job(
             cursor,
             epoch_id,
             expected_revision,
@@ -136,6 +156,285 @@ class PostgresM5DirectM4Adapter:
             completion,
             children,
         )
+
+    def settle_direct_expansion_atomically(
+        self,
+        epoch_id: int,
+        expected_revision: int,
+        lease: M5TypedDirectJobLease,
+        envelope: M5TypedDirectLateReturnEnvelope,
+        children: tuple[LogicalJobSpec, ...],
+        execution_disposition: M5ExecutionEvidenceDisposition,
+        attempt_work: M5RuntimeWork,
+        attempt_timing: M5RuntimeTiming | None,
+    ) -> M5DirectAttemptReturnReceipt:
+        """Commit one discovery return with one normal-versus-late decision."""
+
+        self._require_no_pending_cache()
+        try:
+            with self._ports.connection.transaction():
+                with self._ports.connection.cursor() as cursor:
+                    settlement = self._recovery.settle_direct_expansion_cursor(
+                        cursor,
+                        epoch_id,
+                        expected_revision,
+                        lease,
+                        envelope,
+                        children,
+                        execution_disposition,
+                        attempt_work,
+                        attempt_timing,
+                    )
+                    anchor: M5TransitionTimingAnchor | None = None
+                    if not settlement.exact_replay and settlement.normal is not None:
+                        normal_cursor = settlement.normal
+                        assert normal_cursor.direct_transition_source_id is not None
+                        anchor = M5TransitionTimingAnchor.build(
+                            epoch_id=epoch_id,
+                            contribution_kind=(
+                                M5RuntimeWorkContributionKind.DIRECT_TRANSITION
+                            ),
+                            source_id=normal_cursor.direct_transition_source_id,
+                            anchor_revision=settlement.resulting_revision,
+                            terminal_transition=False,
+                        )
+                    elif (
+                        not settlement.exact_replay
+                        and settlement.late is not None
+                        and settlement.late.disposition
+                        in {
+                            M5DirectLateReturnDisposition.EXPIRED_PRETERMINAL,
+                            M5DirectLateReturnDisposition.TERMINAL_AUDIT_PRETERMINAL,
+                        }
+                    ):
+                        anchor = M5TransitionTimingAnchor.build(
+                            epoch_id=epoch_id,
+                            contribution_kind=(
+                                M5RuntimeWorkContributionKind.PRETERMINAL_LATE_RETURN
+                            ),
+                            source_id=settlement.late.attempt_id,
+                            anchor_revision=settlement.resulting_revision,
+                            terminal_transition=False,
+                        )
+                    if anchor is not None:
+                        self._recovery.install_outer_transition_anchor(cursor, anchor)
+                    receipt = self._build_direct_return_receipt(
+                        epoch_id=epoch_id,
+                        return_kind=M5TypedDirectReturnKind.DISCOVERY,
+                        envelope=envelope,
+                        settlement=settlement,
+                        anchor=anchor,
+                    )
+                    cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
+        except Exception:
+            self._after_outer_rollback()
+            raise
+        self._after_outer_commit()
+        return receipt
+
+    def settle_direct_verifier_atomically(
+        self,
+        epoch_id: int,
+        expected_revision: int,
+        lease: M5TypedDirectJobLease,
+        envelope: M5TypedDirectLateReturnEnvelope,
+        execution_disposition: M5ExecutionEvidenceDisposition,
+        attempt_work: M5RuntimeWork,
+        attempt_timing: M5RuntimeTiming | None,
+    ) -> M5DirectAttemptReturnReceipt:
+        """Commit one verifier return with one normal-versus-late decision."""
+
+        self._require_no_pending_cache()
+        try:
+            with self._ports.connection.transaction():
+                with self._ports.connection.cursor() as cursor:
+                    verifier = self._recovery.settle_direct_verifier_cursor(
+                        cursor,
+                        epoch_id,
+                        expected_revision,
+                        lease,
+                        envelope,
+                        execution_disposition,
+                        attempt_work,
+                        attempt_timing,
+                    )
+                    if verifier.repository is not None:
+                        assert verifier.engine is not None
+                        self._pending_cache = _PendingCacheAdoption(
+                            _CacheAction.ADOPT_WORKING,
+                            epoch_id,
+                            verifier.repository,
+                            verifier.engine,
+                        )
+                    settlement = verifier.settlement
+                    anchor: M5TransitionTimingAnchor | None = None
+                    if not settlement.exact_replay and settlement.normal is not None:
+                        normal_cursor = settlement.normal
+                        assert normal_cursor.direct_transition_source_id is not None
+                        anchor = M5TransitionTimingAnchor.build(
+                            epoch_id=epoch_id,
+                            contribution_kind=(
+                                M5RuntimeWorkContributionKind.DIRECT_TRANSITION
+                            ),
+                            source_id=normal_cursor.direct_transition_source_id,
+                            anchor_revision=settlement.resulting_revision,
+                            terminal_transition=False,
+                        )
+                    elif (
+                        not settlement.exact_replay
+                        and settlement.late is not None
+                        and settlement.late.disposition
+                        in {
+                            M5DirectLateReturnDisposition.EXPIRED_PRETERMINAL,
+                            M5DirectLateReturnDisposition.TERMINAL_AUDIT_PRETERMINAL,
+                        }
+                    ):
+                        anchor = M5TransitionTimingAnchor.build(
+                            epoch_id=epoch_id,
+                            contribution_kind=(
+                                M5RuntimeWorkContributionKind.PRETERMINAL_LATE_RETURN
+                            ),
+                            source_id=settlement.late.attempt_id,
+                            anchor_revision=settlement.resulting_revision,
+                            terminal_transition=False,
+                        )
+                    if anchor is not None:
+                        self._recovery.install_outer_transition_anchor(cursor, anchor)
+                    receipt = self._build_direct_return_receipt(
+                        epoch_id=epoch_id,
+                        return_kind=M5TypedDirectReturnKind.VERIFIER,
+                        envelope=envelope,
+                        settlement=settlement,
+                        anchor=anchor,
+                    )
+                    cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
+        except Exception:
+            self._after_outer_rollback()
+            raise
+        self._after_outer_commit()
+        return receipt
+
+    @staticmethod
+    def _build_direct_return_receipt(
+        *,
+        epoch_id: int,
+        return_kind: M5TypedDirectReturnKind,
+        envelope: M5TypedDirectLateReturnEnvelope,
+        settlement: _DirectReturnSettlement,
+        anchor: M5TransitionTimingAnchor | None,
+    ) -> M5DirectAttemptReturnReceipt:
+        normal: M5DirectNormalReturnReceipt | None
+        late: M5DirectLateReturnReceipt | None
+        if settlement.normal is not None:
+            normal_cursor = settlement.normal
+            assert normal_cursor.direct_transition_source_id is not None
+            assert normal_cursor.direct_transition_source_identity_hash is not None
+            assert normal_cursor.direct_transition_contribution_key_digest is not None
+            normal = M5DirectNormalReturnReceipt(
+                epoch_id=epoch_id,
+                job_id=normal_cursor.job_id,
+                attempt_id=normal_cursor.attempt_id,
+                resulting_revision=settlement.resulting_revision,
+                exact_replay=settlement.exact_replay,
+                execution_evidence_digest=(normal_cursor.execution_evidence_digest),
+                return_artifact_digest=envelope.result_artifact_hash,
+                direct_transition_source_id=(normal_cursor.direct_transition_source_id),
+                direct_transition_source_identity_hash=(
+                    normal_cursor.direct_transition_source_identity_hash
+                ),
+                direct_transition_contribution_key_digest=(
+                    normal_cursor.direct_transition_contribution_key_digest
+                ),
+                observation_completion=normal_cursor.observation_completion,
+                current_terminal_logical_result_hash=(
+                    settlement.current_terminal_logical_result_hash
+                ),
+                transition_anchor=anchor,
+            )
+            late = None
+        else:
+            assert settlement.late is not None
+            late_cursor = settlement.late
+            normal = None
+            late = M5DirectLateReturnReceipt(
+                disposition=late_cursor.disposition,
+                epoch_id=epoch_id,
+                job_id=late_cursor.job_id,
+                attempt_id=late_cursor.attempt_id,
+                resulting_revision=settlement.resulting_revision,
+                exact_replay=settlement.exact_replay,
+                envelope_digest=late_cursor.envelope_digest,
+                execution_evidence_digest=late_cursor.execution_evidence_digest,
+                expired_return_digest=late_cursor.expired_return_digest,
+                current_terminal_logical_result_hash=(
+                    settlement.current_terminal_logical_result_hash
+                ),
+                transition_anchor=anchor,
+            )
+        return M5DirectAttemptReturnReceipt(
+            return_kind=return_kind,
+            normal=normal,
+            late=late,
+        )
+
+    def mark_direct_retryable_failure(
+        self,
+        cursor: Cursor[Any],
+        epoch_id: int,
+        expected_revision: int,
+        lease: M5TypedDirectJobLease,
+        error_hash: str,
+        attempt_work: M5RuntimeWork,
+        attempt_timing: M5RuntimeTiming | None,
+    ) -> M5DirectCursorContributionReceipt:
+        """Stage retryable M4 failure plus exact D24 point evidence."""
+
+        self._require_cursor(cursor)
+        self._require_no_pending_cache()
+        return self._recovery.mark_direct_retryable_failure(
+            cursor,
+            epoch_id,
+            expected_revision,
+            lease,
+            error_hash,
+            attempt_work,
+            attempt_timing,
+        )
+
+    def mark_direct_terminal_failure(
+        self,
+        cursor: Cursor[Any],
+        epoch_id: int,
+        expected_revision: int,
+        lease: M5TypedDirectJobLease,
+        terminal_reason: str,
+        error_hash: str,
+        attempt_work: M5RuntimeWork,
+        attempt_timing: M5RuntimeTiming | None,
+    ) -> M5DirectCursorContributionReceipt:
+        """Stage terminal M4 failure plus its typed projection and evidence."""
+
+        self._require_cursor(cursor)
+        self._require_no_pending_cache()
+        return self._recovery.mark_direct_terminal_failure(
+            cursor,
+            epoch_id,
+            expected_revision,
+            lease,
+            terminal_reason,
+            error_hash,
+            attempt_work,
+            attempt_timing,
+        )
+
+    def install_outer_transition_anchor(
+        self, cursor: Cursor[Any], anchor: M5TransitionTimingAnchor
+    ) -> None:
+        """Install exactly the anchor chosen by a surrounding typed transaction."""
+
+        self._require_cursor(cursor)
+        self._require_no_pending_cache()
+        self._recovery.install_outer_transition_anchor(cursor, anchor)
 
     def stage_direct_verifier_completion(
         self,
@@ -185,9 +484,7 @@ class PostgresM5DirectM4Adapter:
         self._ports._stage_direct_failure_local(
             cursor, epoch_id, expected_revision, reason
         )
-        self._pending_cache = _PendingCacheAdoption(
-            _CacheAction.RESET_FAILED, epoch_id
-        )
+        self._pending_cache = _PendingCacheAdoption(_CacheAction.RESET_FAILED, epoch_id)
 
     def stage_direct_seal(
         self,
@@ -202,9 +499,7 @@ class PostgresM5DirectM4Adapter:
         receipt = self._ports._stage_direct_seal_local(
             cursor, epoch_id, expected_revision, update
         )
-        self._pending_cache = _PendingCacheAdoption(
-            _CacheAction.ADOPT_SEALED, epoch_id
-        )
+        self._pending_cache = _PendingCacheAdoption(_CacheAction.ADOPT_SEALED, epoch_id)
         return receipt
 
     def _after_outer_commit(self) -> None:

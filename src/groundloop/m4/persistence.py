@@ -1140,6 +1140,44 @@ class PostgresM4RuntimeStore:
         lease_expires_at: datetime | None = None,
     ) -> PointMutationResult:
         """Acquire one point-runtime lease in the caller's transaction."""
+        return self._start_attempt_point_local(
+            cursor,
+            epoch_id,
+            expected_revision,
+            attempt,
+            lease_expires_at=lease_expires_at,
+            database_clock_authoritative=False,
+        )
+
+    def start_recovery_attempt_point_local(
+        self,
+        cursor: SqlExecutor,
+        epoch_id: int,
+        expected_revision: int,
+        attempt: JobAttempt,
+        *,
+        lease_expires_at: datetime,
+    ) -> PointMutationResult:
+        """Acquire one D24 lease whose deadline came from locked PostgreSQL time."""
+        return self._start_attempt_point_local(
+            cursor,
+            epoch_id,
+            expected_revision,
+            attempt,
+            lease_expires_at=lease_expires_at,
+            database_clock_authoritative=True,
+        )
+
+    def _start_attempt_point_local(
+        self,
+        cursor: SqlExecutor,
+        epoch_id: int,
+        expected_revision: int,
+        attempt: JobAttempt,
+        *,
+        lease_expires_at: datetime | None,
+        database_clock_authoritative: bool,
+    ) -> PointMutationResult:
         expiry = lease_expires_at or datetime.now(UTC) + timedelta(minutes=5)
         header = self.read_epoch_header_point(
             epoch_id, for_update=True, cursor=cursor
@@ -1167,8 +1205,10 @@ class PostgresM4RuntimeStore:
             if stored == attempt:
                 return PointMutationResult(header, job, replayed=True)
             raise EventConflictError("attempt_id was reused with different content")
-        if expiry <= datetime.now(UTC):
+        if not database_clock_authoritative and expiry <= datetime.now(UTC):
             raise ValidationError("attempt lease must expire in the future")
+        if database_clock_authoritative and expiry.tzinfo is None:
+            raise ValidationError("attempt lease timestamp must include timezone")
         self._require_point_revision(header, expected_revision)
         if header.state in {
             RuntimeEpochState.FAILED,
@@ -1221,6 +1261,100 @@ class PostgresM4RuntimeStore:
             replayed=False,
         )
 
+    def takeover_attempt_point_local(
+        self,
+        cursor: SqlExecutor,
+        epoch_id: int,
+        expected_revision: int,
+        expired_attempt_id: str,
+        successor: JobAttempt,
+        *,
+        decision_time: datetime,
+        lease_expires_at: datetime,
+    ) -> PointMutationResult:
+        """Replace one locked, expired typed-direct lease with its dense successor.
+
+        This cursor-local operation is deliberately unavailable through the public
+        M4 application API.  M5-D24 owns the surrounding recovery transaction and
+        supplies both timestamps sampled/computed by PostgreSQL after the frozen
+        header/job/attempt locks have been acquired.
+        """
+
+        if decision_time.tzinfo is None or lease_expires_at.tzinfo is None:
+            raise ValidationError("typed-direct takeover timestamps require timezone")
+        if lease_expires_at <= decision_time:
+            raise ValidationError("typed-direct successor deadline must be later")
+        header = self.read_epoch_header_point(epoch_id, for_update=True, cursor=cursor)
+        job = self.read_job_point(
+            epoch_id, successor.job_id, for_update=True, cursor=cursor
+        )
+        self._require_point_revision(header, expected_revision)
+        if header.state in {RuntimeEpochState.FAILED, RuntimeEpochState.SEALED}:
+            raise InvalidEventError("terminal epochs cannot replace direct attempts")
+        if job.state is not JobState.RUNNING or job.latest_attempt is None:
+            raise InvalidEventError("only a running direct job can be taken over")
+        latest = job.latest_attempt
+        if latest.attempt.attempt_id != expired_attempt_id:
+            raise EventConflictError("typed-direct takeover lost the latest attempt")
+        if latest.state != "leased":
+            raise EventConflictError("typed-direct takeover requires a leased attempt")
+        if decision_time < latest.lease_expires_at:
+            raise EventConflictError("typed-direct attempt remains under a live lease")
+        if successor.job_id != job.spec.job_id:
+            raise EventConflictError("typed-direct successor belongs to another job")
+        if successor.execution_spec_hash != job.spec.execution_spec_hash:
+            raise EventConflictError(
+                "typed-direct successor execution identity differs"
+            )
+        expected_ordinal = latest.attempt.attempt_ordinal + 1
+        if successor.attempt_ordinal != expected_ordinal:
+            raise InvalidEventError("typed-direct successor ordinal is not dense")
+        expected_attempt_id = stable_m4_digest(
+            "m4-job-attempt-v1", successor.job_id, str(expected_ordinal)
+        )
+        expected_token = stable_m4_digest(
+            "m4-lease-token-v1", successor.job_id, str(expected_ordinal)
+        )
+        if (
+            successor.attempt_id != expected_attempt_id
+            or successor.lease_token_hash != expected_token
+        ):
+            raise EventConflictError("typed-direct successor identity is not frozen M4")
+        expired_rows = cursor.execute(
+            """
+            UPDATE groundloop_semantic_job_attempt
+            SET attempt_state = 'expired', finished_at = %s
+            WHERE attempt_id = %s AND job_id = %s AND attempt_state = 'leased'
+            """,
+            (decision_time, expired_attempt_id, successor.job_id),
+        ).rowcount
+        if expired_rows != 1:
+            raise EventConflictError("typed-direct attempt changed before takeover")
+        cursor.execute(
+            """
+            INSERT INTO groundloop_semantic_job_attempt (
+                attempt_id, job_id, execution_spec_hash, attempt_ordinal,
+                lease_token_hash, attempt_state, lease_expires_at
+            ) VALUES (%s, %s, %s, %s, %s, 'leased', %s)
+            """,
+            (
+                successor.attempt_id,
+                successor.job_id,
+                successor.execution_spec_hash,
+                successor.attempt_ordinal,
+                successor.lease_token_hash,
+                lease_expires_at,
+            ),
+        )
+        next_header = self._advance_point_epoch(
+            header, expected_revision, cursor=cursor
+        )
+        return PointMutationResult(
+            next_header,
+            self.read_job_point(epoch_id, successor.job_id, cursor=cursor),
+            replayed=False,
+        )
+
     def mark_retryable_failure_point(
         self,
         epoch_id: int,
@@ -1231,49 +1365,120 @@ class PostgresM4RuntimeStore:
         """Fail only the named latest attempt while retaining the logical job."""
         with self._connection.transaction():
             self._reject_typed_epoch_mutation(epoch_id)
-            header = self.read_epoch_header_point(epoch_id, for_update=True)
-            job = self.read_job_point(epoch_id, job_id, for_update=True)
-            latest = job.latest_attempt
-            if job.state is JobState.RETRYABLE_FAILED:
-                if latest is not None and latest.attempt.attempt_id == attempt_id:
-                    return PointMutationResult(header, job, replayed=True)
-                raise EventConflictError("failure does not name the failed attempt")
-            self._require_point_revision(header, expected_revision)
-            if header.state in {
-                RuntimeEpochState.FAILED,
-                RuntimeEpochState.SEALED,
-            }:
-                raise InvalidEventError("epoch cannot accept a retryable failure")
-            if job.state is not JobState.RUNNING or latest is None:
-                raise InvalidEventError("only a running job can fail retryably")
-            if latest.attempt.attempt_id != attempt_id:
-                raise EventConflictError("failure does not name the active attempt")
-            attempt_rows = self._connection.execute(
-                """
-                UPDATE groundloop_semantic_job_attempt
-                SET attempt_state = 'failed', finished_at = now()
-                WHERE attempt_id = %s AND job_id = %s
-                  AND attempt_state = 'leased'
-                """,
-                (attempt_id, job_id),
-            ).rowcount
-            if attempt_rows != 1:
-                raise EventConflictError("attempt changed before retryable failure")
-            job_rows = self._connection.execute(
-                """
-                UPDATE groundloop_semantic_job SET job_state = 'retryable_failed'
-                WHERE epoch_id = %s AND job_id = %s AND job_state = 'running'
-                """,
-                (epoch_id, job_id),
-            ).rowcount
-            if job_rows != 1:
-                raise EventConflictError("job changed before retryable failure")
-            next_header = self._advance_point_epoch(header, expected_revision)
-            return PointMutationResult(
-                next_header,
-                self.read_job_point(epoch_id, job_id),
-                replayed=False,
+            return self.mark_retryable_failure_point_local(
+                self._connection,
+                epoch_id,
+                expected_revision,
+                job_id,
+                attempt_id,
             )
+
+    def mark_retryable_failure_point_local(
+        self,
+        cursor: SqlExecutor,
+        epoch_id: int,
+        expected_revision: int,
+        job_id: str,
+        attempt_id: str,
+    ) -> PointMutationResult:
+        """Stage one retryable M4 failure in a caller-owned typed transaction."""
+
+        header = self.read_epoch_header_point(
+            epoch_id, for_update=True, cursor=cursor
+        )
+        job = self.read_job_point(epoch_id, job_id, for_update=True, cursor=cursor)
+        latest = job.latest_attempt
+        if job.state is JobState.RETRYABLE_FAILED:
+            if latest is not None and latest.attempt.attempt_id == attempt_id:
+                return PointMutationResult(header, job, replayed=True)
+            raise EventConflictError("failure does not name the failed attempt")
+        self._require_point_revision(header, expected_revision)
+        if header.state in {RuntimeEpochState.FAILED, RuntimeEpochState.SEALED}:
+            raise InvalidEventError("epoch cannot accept a retryable failure")
+        if job.state is not JobState.RUNNING or latest is None:
+            raise InvalidEventError("only a running job can fail retryably")
+        if latest.attempt.attempt_id != attempt_id:
+            raise EventConflictError("failure does not name the active attempt")
+        attempt_rows = cursor.execute(
+            """
+            UPDATE groundloop_semantic_job_attempt
+            SET attempt_state = 'failed', finished_at = now()
+            WHERE attempt_id = %s AND job_id = %s AND attempt_state = 'leased'
+            """,
+            (attempt_id, job_id),
+        ).rowcount
+        if attempt_rows != 1:
+            raise EventConflictError("attempt changed before retryable failure")
+        job_rows = cursor.execute(
+            """
+            UPDATE groundloop_semantic_job SET job_state = 'retryable_failed'
+            WHERE epoch_id = %s AND job_id = %s AND job_state = 'running'
+            """,
+            (epoch_id, job_id),
+        ).rowcount
+        if job_rows != 1:
+            raise EventConflictError("job changed before retryable failure")
+        next_header = self._advance_point_epoch(
+            header, expected_revision, cursor=cursor
+        )
+        return PointMutationResult(
+            next_header,
+            self.read_job_point(epoch_id, job_id, cursor=cursor),
+            replayed=False,
+        )
+
+    def mark_terminal_failure_point_local(
+        self,
+        cursor: SqlExecutor,
+        epoch_id: int,
+        expected_revision: int,
+        job_id: str,
+        attempt_id: str,
+    ) -> PointMutationResult:
+        """Stage the M4 half of a typed-direct terminal-attempt failure."""
+
+        header = self.read_epoch_header_point(
+            epoch_id, for_update=True, cursor=cursor
+        )
+        job = self.read_job_point(epoch_id, job_id, for_update=True, cursor=cursor)
+        latest = job.latest_attempt
+        self._require_point_revision(header, expected_revision)
+        if header.state in {RuntimeEpochState.FAILED, RuntimeEpochState.SEALED}:
+            raise InvalidEventError("terminal epoch cannot settle a direct failure")
+        if job.state is not JobState.RUNNING or latest is None:
+            raise InvalidEventError("only a running direct job can fail terminally")
+        if latest.attempt.attempt_id != attempt_id or latest.state != "leased":
+            raise EventConflictError("terminal failure lost its direct attempt")
+        attempt_rows = cursor.execute(
+            """
+            UPDATE groundloop_semantic_job_attempt
+            SET attempt_state = 'failed', finished_at = clock_timestamp()
+            WHERE attempt_id = %s AND job_id = %s AND attempt_state = 'leased'
+            """,
+            (attempt_id, job_id),
+        ).rowcount
+        if attempt_rows != 1:
+            raise EventConflictError("attempt changed before terminal failure")
+        completed_revision = expected_revision + 1
+        job_rows = cursor.execute(
+            """
+            UPDATE groundloop_semantic_job
+            SET job_state = 'terminal_failed',
+                completed_revision = %s, completed_at = clock_timestamp()
+            WHERE epoch_id = %s AND job_id = %s AND job_state = 'running'
+            """,
+            (completed_revision, epoch_id, job_id),
+        ).rowcount
+        if job_rows != 1:
+            raise EventConflictError("job changed before terminal failure")
+        next_header = self._advance_point_epoch(
+            header, expected_revision, cursor=cursor
+        )
+        return PointMutationResult(
+            next_header,
+            self.read_job_point(epoch_id, job_id, cursor=cursor),
+            replayed=False,
+        )
 
     def complete_point(
         self,
