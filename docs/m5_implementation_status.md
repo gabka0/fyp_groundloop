@@ -1,25 +1,25 @@
 # GroundLoop M5 Implementation Status
 
-Status date: 2026-08-10
+Status date: 2026-08-12
 
-Milestone status: **M5.0 through M5.3 complete; M5.4 partially complete.**
+Milestone status: **M5.0 through M5.3 complete; M5.4 is partially complete.**
 M5.4-01 passes. M5.4-02 through M5.4-09 and every M5.5--M5.6
 implementation/evaluation closure remain pending. M5-D24-C1 through
-M5-D24-C3 are accepted, and M5.0-24 is restored to contract-PASS. The C3
-correction was required when a cancellation/expired-output race exposed a
-prose versus accepted-schema contradiction. Its accepted reviewed-candidate
-SHA-256 is
+M5-D24-C4 are accepted, and M5.0-24 is contract-`PASS` /
+implementation-`PENDING`. C4's accepted reviewed-candidate SHA-256 is
+`f2e23d0bc4c245004f677f771e45123a619d4b1ad88da207e803cb89dcfec80c`.
+C3's accepted reviewed-candidate SHA-256 remains
 `59fca1859e55af3ff9ffe818205c0ed61cacd17876525cddfc60d448f9eaf723`.
 The R0 contracts and migration 016 remain accepted on main. R1-D is integrated;
-R1-P is resumed from its 34/34 live-green cancellation checkpoint; R2
-composition and the overall decision-row implementation evidence remain
-pending.
+R1-P is resumed under accepted C4; R2 composition and the overall decision-row
+implementation evidence remain pending.
 
 The exact disjoint R1-P requirement and R1-D typed-direct persistence paths
 remain governed by
 `docs/workstreams/m5_runtime_implementation/D24_R1_ACTIVATION.md`. R1-D is
-integrated. R1-P is active again under accepted M5-D24-C3. Activation is an
-ownership barrier, not whole-stage implementation evidence.
+integrated. R1-P remains the owner of the C4 source/tests and SQL-only terminal
+fixture under the unchanged manifest. Activation is an ownership barrier, not
+whole-stage implementation evidence.
 
 ## 1. Honest current verdict
 
@@ -79,7 +79,7 @@ m5_multiagent_execution_plan faffae5f839623efd9e387f63e951881cf1f46c5b66f37c3db6
 ```
 
 Those hashes identify the initial audited M5.0 semantic candidate. Later
-accepted amendments M5-D21 through M5-D24-C3 extend or correct that contract
+accepted amendments M5-D21 through M5-D24-C4 extend or correct that contract
 and are identified by their own decision and audit records below. Final
 implementation artifact hashes and the decision-row cross-stage mapping will
 be recorded at M5.6.
@@ -101,6 +101,9 @@ The authoritative documents are:
 - `docs/workstreams/m5_runtime_contract/CANCELLATION_EXPIRED_OUTPUT_CORRECTION.md`
   -- accepted cancellation-first expired-output and delayed postterminal
   archival correction;
+- `docs/workstreams/m5_runtime_contract/TERMINAL_SUCCESSOR_EXPIRED_OUTPUT_CORRECTION.md`
+  -- accepted retryable/terminal-successor and requirement late-artifact
+  closure correction;
 - `docs/m5_implementation_plan.md` -- stages M5.1 through M5.6;
 - `docs/m5_multiagent_execution_plan.md` -- path-exclusive ownership and
   integration order; and
@@ -225,6 +228,29 @@ persistence-shape evidence; production seal/failure and end-to-end
 continuation remain R2. The current cancellation checkpoint passed 34/34 live
 nested PostgreSQL tests, but that is tranche evidence rather than whole-R1-P
 or M5.4 closure.
+
+Subsequent R1-P verifier work exposed the broader M5-D24-C4 defect.
+The same impossible preterminal image occurs when the dense successor is
+`retryable_failed`, `completed_active`, `completed_inactive`, or
+`terminal_failed`, not only when it is `cancelled`: exact `running -> running`
+is false, migration 016 has no retryable-failed artifact shape, and it admits
+an exact terminal-state expired artifact only after the event is sealed or
+failed. Accepted C4 therefore keeps preterminal archival only for a still-
+running successor and requires zero writes for every retryable or terminal
+successor while the event is nonterminal. Checked reacquisition may restore
+`running` and reopen the unchanged preterminal path. Otherwise outer
+terminalization must resolve `retryable_failed` into one of the four accepted
+terminal states before the first exact five-row postterminal archive. C4 also
+requires complete context/self-digested discovery/verifier DTOs on first call
+and replay, explicit discovery snapshot-exhaustion evidence and nested
+snapshot/scope validation, and an immutable-core verifier pair-input check
+equivalent to the normal SQL validator, while forbidding a late-only call from
+populating normal semantic artifact tables. The discovery boolean is required
+true and revalidated for `snapshot_exhausted`; it is non-material and not
+replay-bound for `budget_filled`. C3 remains accepted; C4 changes no migration
+or public contract. R1-P's SQL-only fixture proves the storage barrier after
+test-local state resolution; R2 retains proof of production
+`retryable_failed` resolution and the end-to-end continuation.
 
 ## 5. Remaining closure boundary
 

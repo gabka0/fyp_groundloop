@@ -3,9 +3,9 @@
 Status: frozen M5 ownership contract; historical Waves 0--2 complete;
 M5-D24 recovery R0-C, pure R0-C1, and R0-S accepted on main; R1-D integrated;
 R1-P active from its live-green cancellation checkpoint under the committed
-manifest below; M5-D24-C3 race clarification accepted
+manifest below; M5-D24-C3 and M5-D24-C4 accepted
 
-Date: 2026-08-02; M5-D24 path amendments 2026-08-06 through 2026-08-10
+Date: 2026-08-02; M5-D24 path amendments 2026-08-06 through 2026-08-12
 
 Authority: `docs/m5_design_freeze.md` defines semantics and
 `docs/m5_implementation_plan.md` defines gates. This document defines only
@@ -401,6 +401,26 @@ fixture-backed postterminal persistence-shape evidence. R2 owns production
 seal/failure and the end-to-end postterminal continuation. No R1 lane may edit
 migration 016 or invent a terminal preterminal artifact to bypass that
 accepted closure.
+
+Accepted M5-D24-C4 changes no path ownership. R1-P owns the requirement source,
+nested tests, and clearly labelled SQL-only terminal fixture needed to prove
+that `retryable_failed` and every terminal successor (`completed_active`,
+`completed_inactive`, `terminal_failed`, or `cancelled`) cause zero-write
+rejection while the event is nonterminal. R1-P also owns checked-reacquisition
+coverage from `retryable_failed` back to `running`, and SQL-only fixture proof
+that persistence rejects the output while `retryable_failed` and inserts the
+exact five rows only after test-local resolution to one of the four accepted
+terminal states. It also owns proof that a late-only requirement return
+validates the complete resupplied discovery/verifier DTO, explicit discovery
+exhaustion and nested context, and the verifier pair-input immutable core, but
+inserts no normal semantic artifact rows. Snapshot-exhaustion evidence is true
+and revalidated for `snapshot_exhausted`; the `budget_filled` boolean is non-
+material and not replay-bound. R2 retains production seal/failure composition,
+including proof that production terminalization resolves `retryable_failed`,
+and end-to-end continuation.
+
+R1-P resumes under the accepted correction. No lane may edit migration 016/017
+or a public contract/digest to implement it.
 
 ### Wave R2 -- application composition
 

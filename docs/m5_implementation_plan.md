@@ -1,14 +1,19 @@
 # GroundLoop M5 Implementation Plan
 
-Status: frozen M5 execution plan; M5.0--M5.3 complete, M5.4 active
+Status: frozen M5 execution plan through accepted M5-D24-C4; M5.0--M5.3
+complete and M5.4 active
 
-Date: 2026-08-02; M5-D24 execution amendment 2026-08-06
+Date: 2026-08-02; M5-D24 execution amendments through accepted C4 2026-08-12
 
 Authority: `docs/m5_design_freeze.md` governs. M5-D24 recovery/accounting work
 also obeys
 `docs/workstreams/m5_runtime_contract/RECOVERY_WORK_AMENDMENT.md`.
 Implementation stops on any conflict with those contracts rather than silently
 choosing new semantics.
+
+Accepted M5-D24-C3 and M5-D24-C4 are authoritative. C4 governs the
+retryable/terminal-successor expired-output and requirement late-artifact
+closure; its implementation evidence remains pending.
 
 ## 1. Outcome
 
@@ -396,6 +401,28 @@ Before full dynamic composition, implement in order:
    audit paths with exact replay and terminal cutoff isolation; and
 5. application reconnect and both-order race/crash tests with unchanged public
    M4-v1 behavior.
+
+Accepted C3 delays the cancellation-first expired output until the event is
+terminal. Accepted M5-D24-C4 generalizes that same truthful boundary to a
+dense successor in `retryable_failed`, `completed_active`,
+`completed_inactive`, `terminal_failed`, or `cancelled` while the event remains
+nonterminal. R1-P must prove zero writes for all five states, checked
+reacquisition from `retryable_failed` back to the unchanged
+`running -> running` preterminal path, and the exact five-row archive only
+after its SQL-only fixture resolves the test-local job from the rejected
+retryable state to one of migration 016's four terminal states. Audit-only
+requirement calls must fully validate and self-digest the supplied discovery/
+verifier DTO on first call and replay, and must not populate normal semantic
+artifact tables. R2 owns proof that production
+terminalization resolves `retryable_failed` and owns the end-to-end
+continuation. Discovery late calls must also resupply explicit snapshot-
+exhaustion evidence and validate every nested epoch/policy, scope and snapshot
+binding. The boolean must be true for `snapshot_exhausted`; it is non-material
+and not replay-bound for `budget_filled`. Verifier late calls must validate the
+pair-input immutable core equivalently to its normal SQL trigger. No
+migration-016/017, public M4 contract, digest, or path-manifest change is
+authorized; only the internal M5 checked-persistence signature may carry the
+missing explicit evidence.
 
 The contracts and migration lanes may run in parallel only under the explicit
 path manifest in `docs/m5_multiagent_execution_plan.md`. Persistence/direct

@@ -1,5 +1,50 @@
 # GroundLoop Decision Log
 
+## 2026-08-12 — M5-D24-C4 Terminal-Successor/Artifact Boundary Accepted
+
+Decision status: accepted narrow correction after independent exact-byte
+review. Accepted reviewed-candidate SHA-256:
+`f2e23d0bc4c245004f677f771e45123a619d4b1ad88da207e803cb89dcfec80c`.
+
+R1-P exposed the same accepted-schema contradiction beyond C3's
+cancellation-first case. After takeover, the dense successor job can become
+`retryable_failed`, `completed_active`, `completed_inactive`,
+`terminal_failed`, or `cancelled` while the event remains nonterminal. D24's
+`running -> running` expired artifact is then false. Migration 016 has no
+`retryable_failed` artifact shape and admits the exact terminal-state expired
+artifact only after the event runtime is sealed or failed.
+
+Accepted M5-D24-C4 keeps the unchanged preterminal archive only while
+the successor is `running`. A `retryable_failed` or terminal successor while
+the event is nonterminal conflicts with zero writes. Checked reacquisition may
+return a retryable job to `running`, after which the old output may archive
+preterminal if it locks before a later terminal transition. Outer
+terminalization must resolve `retryable_failed` into one of migration 016's
+four terminal states before the first legal postterminal call atomically
+freezes the attempt-result artifact, expired-return, execution evidence,
+postterminal timing, and general audit using that exact terminal state. R1-P's
+clearly labelled SQL-only fixture proves only rejection of the retryable image
+and acceptance of the five-row storage shape after test-local state
+resolution. R2 owns proof that production terminalization performs that
+resolution and owns the end-to-end continuation.
+
+C4 also resolves the phrase "referenced immutable worker artifact closure"
+for audit-only requirement returns. The complete discovery or verifier DTO is
+resupplied and context/self-digest validated on first call and replay;
+discovery additionally resupplies explicit snapshot-exhaustion evidence, and
+verifier pair input receives an immutable-core check equivalent to its normal
+SQL validator. The five late rows freeze artifact ID/hash and content-
+addressed identity. A late-only call does not populate normal discovery/
+verifier semantic artifact or currency tables. The authoritative accepted
+text is
+`docs/workstreams/m5_runtime_contract/TERMINAL_SUCCESSOR_EXPIRED_OUTPUT_CORRECTION.md`.
+
+Independent review accepted the exact candidate bytes with no unresolved
+P0/P1. M5.0-24's contract half is restored to `PASS`, its implementation half
+remains `PENDING`, and R1-P resumes under C4. The accepted correction changes
+no migration-016/017 byte or status, public contract or digest, M4-v1
+behavior, D25 boundary, or accepted C3 result.
+
 ## 2026-08-10 — M5-D24-C3 Cancellation/Expired-Output Boundary Accepted
 
 Decision status: accepted narrow correction after independent exact-byte

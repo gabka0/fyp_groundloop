@@ -1,9 +1,11 @@
 # M5-D24 R1 Checked-Persistence Activation
 
 Status: active path-exclusive manifest; R1-D is integrated and R1-P is resumed
-from its live-green cancellation checkpoint under accepted M5-D24-C3
+from its live-green cancellation checkpoint under accepted M5-D24-C3 and
+M5-D24-C4
 
-Date: 2026-08-08; accepted M5-D24-C3 amendment 2026-08-10
+Date: 2026-08-08; accepted M5-D24-C3 amendment 2026-08-10; accepted
+M5-D24-C4 amendment 2026-08-12
 
 Accepted R0 implementation commit:
 `61875894172c8e0b36866d6b215ecab7a57b76ec`
@@ -151,6 +153,26 @@ cancellation, while cancellation-first must reject the preterminal expired
 output with zero writes. R1-P owns those two orders and fixture-backed
 postterminal persistence-shape evidence. R2 owns production event
 terminalization and the end-to-end `EXPIRED_POSTTERMINAL` continuation.
+
+Accepted M5-D24-C4 also leaves this manifest unchanged. R1-P owns zero-write
+coverage when the dense successor is `retryable_failed`, `completed_active`,
+`completed_inactive`, `terminal_failed`, or `cancelled` but the event remains
+nonterminal. It also owns checked-reacquisition coverage from
+`retryable_failed` back to `running` and fixture-backed proof that the first
+legal postterminal five-row archive starts only after its SQL-only fixture
+resolves the test-local job to one of migration 016's four exact terminal
+states; the fixture carries forward the zero-write rejection while the job is
+`retryable_failed`. For every audit-only requirement discovery/verifier return,
+R1-P must validate the complete resupplied context/self-digested DTO,
+discovery exhaustion and nested context, and verifier pair-input immutable
+core, then prove that no normal semantic artifact table is populated.
+Snapshot-exhaustion evidence is true and revalidated for
+`snapshot_exhausted`; the `budget_filled` boolean is non-material and not
+replay-bound. R2 continues to own production event
+terminalization, including proof of production resolution of
+`retryable_failed`, and the end-to-end continuation. R1-P resumes under the
+accepted correction, and neither lane may change migration 016/017 or a public
+contract/digest to implement it.
 
 ## 6. Integration and forbidden paths
 
