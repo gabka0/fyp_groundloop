@@ -9,24 +9,33 @@ final direct/M5 readiness projection.
 
 from __future__ import annotations
 
+import hashlib
+import json
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from psycopg import Cursor
+from psycopg.types.json import Jsonb
 
 from groundloop.domain import SubjectKind
 from groundloop.errors import EventConflictError, InvalidEventError, ValidationError
 from groundloop.m4.contracts import VectorIndexKind
+from groundloop.m5.runtime import digests
 from groundloop.m5.runtime.contracts import (
     M5AttemptArchiveReason,
-    M5AttemptCompletionReceipt,
     M5AttemptDisposition,
     M5AttemptOutput,
     M5AttemptResultArtifact,
+    M5CancellationPlan,
+    M5CancellationReceipt,
     M5CandidatePolicyManifest,
     M5DiscoveryDirection,
     M5DiscoveryScopeContract,
+    M5ExecutionEvidenceDisposition,
+    M5ExpiredAttemptReturn,
     M5JobAttempt,
     M5JobCompletion,
     M5JobKind,
@@ -34,12 +43,19 @@ from groundloop.m5.runtime.contracts import (
     M5JobState,
     M5LogicalJobSpec,
     M5RequirementAdmissionChannel,
+    M5RequirementAttemptReturnReceipt,
     M5RequirementChannelHit,
     M5RequirementDiscoveryResult,
     M5RequirementFrontierHead,
+    M5RequirementReturnDisposition,
     M5RequirementScopeSelection,
     M5RetrievalTermination,
     M5RootBarrierReceipt,
+    M5RuntimeSubgraph,
+    M5RuntimeTiming,
+    M5RuntimeTimingObservation,
+    M5RuntimeWork,
+    M5RuntimeWorkContributionKind,
     M5ScopeState,
     M5TerminalReason,
     SemanticPairKey,
@@ -52,6 +68,28 @@ from groundloop.m5.runtime.frontier import (
     classify_attempt_activity,
     deduplicate_discovery_results,
     validate_directional_hit_order,
+)
+from groundloop.m5.runtime.postgres_recovery import (
+    RequirementExecutionAccounting,
+    RequirementPostterminalReplay,
+    StoredRequirementAttempt,
+    build_requirement_execution_accounting,
+    finish_cancellation_accounting,
+    finish_requirement_execution_accounting,
+    finish_root_barrier_accounting,
+    load_requirement_dispatch,
+    persist_cancellation_contribution,
+    persist_postterminal_requirement_accounting,
+    persist_preterminal_late_return_contribution,
+    persist_requirement_execution_accounting,
+    persist_root_barrier_contribution,
+    persist_root_result_stage_contribution,
+    read_latest_requirement_attempt,
+    read_requirement_attempt,
+    read_requirement_execution_replay,
+    read_requirement_postterminal_replay,
+    require_runtime_recovery_bundle,
+    start_event_accounting,
 )
 
 RuntimeRootFailureInjector = Callable[[str], None]
@@ -71,6 +109,9 @@ class _EpochHeader:
     requirement_registry_snapshot_digest: str
     active_chunk_snapshot_digest: str
     requirement_root_set_hash: str
+    open_work_count: int
+    open_scope_count: int
+    blocking_failure_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +143,9 @@ class _StoredJob:
     completion_digest: str | None
     created_revision: int
     completed_revision: int | None
+    cancelled_by_event_id: str | None
+    cancelled_by_epoch_id: int | None
+    cancellation_reason: M5TerminalReason | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +159,41 @@ class _StoredAttempt:
 class _StoredAttemptResult:
     artifact: M5AttemptResultArtifact
     output: M5AttemptOutput
+
+
+@dataclass(frozen=True, slots=True)
+class _LateReturnPlan:
+    disposition: M5RequirementReturnDisposition
+    artifact: M5AttemptResultArtifact
+    expired_return: M5ExpiredAttemptReturn | None
+    return_kind: str
+    return_artifact_digest: str
+    terminal_logical_result_hash: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _StoredExpiredReturn:
+    record: M5ExpiredAttemptReturn
+    original_lease_token_hash: str
+    original_lease_expires_at: datetime
+    cancellation_attribution: dict[str, Any]
+    execution_evidence_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingDelta:
+    key: str
+    broad_reverse_scope_count: int
+    forward_scope_count: int
+    verifier_job_count: int
+
+    @property
+    def values(self) -> tuple[int, int, int]:
+        return (
+            self.broad_reverse_scope_count,
+            self.forward_scope_count,
+            self.verifier_job_count,
+        )
 
 
 def _inject(injector: RuntimeRootFailureInjector | None, point: str) -> None:
@@ -150,7 +229,8 @@ def _lock_epoch(cursor: Cursor[Any], epoch_id: int) -> _EpochHeader:
         SELECT structural_event_id, revision, runtime_state,
                candidate_policy_id, candidate_policy_manifest_hash,
                requirement_registry_snapshot_digest,
-               active_chunk_snapshot_digest, requirement_root_set_hash
+               active_chunk_snapshot_digest, requirement_root_set_hash,
+               open_work_count, open_scope_count, blocking_failure_count
         FROM groundloop_m5_runtime_epoch
         WHERE epoch_id = %s
         FOR UPDATE
@@ -174,6 +254,9 @@ def _lock_epoch(cursor: Cursor[Any], epoch_id: int) -> _EpochHeader:
         requirement_registry_snapshot_digest=_text(runtime[5]),
         active_chunk_snapshot_digest=_text(runtime[6]),
         requirement_root_set_hash=_text(runtime[7]),
+        open_work_count=int(runtime[8]),
+        open_scope_count=int(runtime[9]),
+        blocking_failure_count=int(runtime[10]),
     )
 
 
@@ -303,7 +386,8 @@ _JOB_SELECT = """
            execution_spec_hash, expandable, payload_hash, job_state,
            result_artifact_id, result_artifact_hash, scope_closure_digest,
            child_set_hash, archive_reason, completion_digest,
-           created_revision, completed_revision
+           created_revision, completed_revision, cancelled_by_event_id,
+           cancelled_by_epoch_id, cancellation_reason
     FROM groundloop_m5_semantic_job
 """
 
@@ -347,6 +431,11 @@ def _job_from_row(row: tuple[Any, ...]) -> _StoredJob:
         completion_digest=_optional_text(row[25]),
         created_revision=int(row[26]),
         completed_revision=None if row[27] is None else int(row[27]),
+        cancelled_by_event_id=_optional_text(row[28]),
+        cancelled_by_epoch_id=None if row[29] is None else int(row[29]),
+        cancellation_reason=(
+            None if row[30] is None else M5TerminalReason(str(row[30]))
+        ),
     )
 
 
@@ -362,6 +451,37 @@ def _read_job(
     if row is None:
         raise InvalidEventError("root transition names an unknown semantic job")
     return _job_from_row(tuple(row))
+
+
+def _lock_cancellation_scopes(
+    cursor: Cursor[Any], *, epoch_id: int, logical_job_ids: tuple[str, ...]
+) -> tuple[_StoredScope, ...]:
+    """Lock selected root scopes in the frozen tier-8 C order."""
+
+    rows = cursor.execute(
+        _SCOPE_SELECT
+        + " WHERE epoch_id = %s AND root_job_id = ANY(%s)"
+        + ' ORDER BY root_job_id COLLATE "C" FOR UPDATE',
+        (epoch_id, list(logical_job_ids)),
+    ).fetchall()
+    return tuple(_scope_from_row(tuple(row)) for row in rows)
+
+
+def _lock_cancellation_jobs(
+    cursor: Cursor[Any], *, epoch_id: int, logical_job_ids: tuple[str, ...]
+) -> tuple[_StoredJob, ...]:
+    """Lock the complete selected job set in the frozen tier-9 C order."""
+
+    rows = cursor.execute(
+        _JOB_SELECT
+        + " WHERE epoch_id = %s AND logical_job_id = ANY(%s)"
+        + ' ORDER BY logical_job_id COLLATE "C" FOR UPDATE',
+        (epoch_id, list(logical_job_ids)),
+    ).fetchall()
+    jobs = tuple(_job_from_row(tuple(row)) for row in rows)
+    if tuple(job.spec.logical_job_id for job in jobs) != logical_job_ids:
+        raise InvalidEventError("cancellation plan names an unknown semantic job")
+    return jobs
 
 
 def _read_attempt(
@@ -425,6 +545,42 @@ def _validate_header_bindings(
     job.spec.validate_manifest_and_scope(manifest, scope.contract)
 
 
+def _validate_cancellation_bindings(
+    *,
+    header: _EpochHeader,
+    manifest: M5CandidatePolicyManifest,
+    scopes: tuple[_StoredScope, ...],
+    jobs: tuple[_StoredJob, ...],
+) -> None:
+    scope_by_root = {scope.root_job_id: scope for scope in scopes}
+    expected_root_ids = {
+        job.spec.logical_job_id for job in jobs if job.spec.parent_job_id is None
+    }
+    if set(scope_by_root) != expected_root_ids:
+        raise ValidationError("cancellation root jobs and scopes are not a bijection")
+    for job in jobs:
+        if (
+            job.epoch_id != header.epoch_id
+            or job.spec.structural_event_id != header.structural_event_id
+            or job.spec.candidate_policy_id != manifest.candidate_policy_id
+            or job.spec.candidate_policy_manifest_hash != manifest.manifest_hash
+            or job.spec.requirement_registry_snapshot_digest
+            != header.requirement_registry_snapshot_digest
+            or job.spec.active_chunk_snapshot_digest
+            != header.active_chunk_snapshot_digest
+        ):
+            raise ValidationError("cancellation job is outside its frozen epoch")
+        if job.spec.parent_job_id is None:
+            _validate_header_bindings(
+                header,
+                scope_by_root[job.spec.logical_job_id],
+                job,
+                manifest,
+            )
+        elif job.spec.job_kind is not M5JobKind.VERIFY_REQUIREMENT_PAIR:
+            raise ValidationError("cancellation child is not a verifier job")
+
+
 def _validate_pair_membership(
     cursor: Cursor[Any], *, scope: M5DiscoveryScopeContract, pair: SemanticPairKey
 ) -> None:
@@ -459,7 +615,10 @@ def _validate_discovery_result(
     scope: _StoredScope,
     job: _StoredJob,
     manifest: M5CandidatePolicyManifest,
+    eligible_snapshot_exhausted: bool,
 ) -> None:
+    if not isinstance(eligible_snapshot_exhausted, bool):
+        raise ValidationError("snapshot-exhaustion evidence must be boolean")
     if (
         result.root_job_id != job.spec.logical_job_id
         or result.scope_contract_digest != scope.contract.scope_contract_digest
@@ -480,9 +639,7 @@ def _validate_discovery_result(
     result.validate_policy(
         direction=scope.contract.direction,
         manifest=manifest,
-        eligible_snapshot_exhausted=(
-            result.termination is M5RetrievalTermination.SNAPSHOT_EXHAUSTED
-        ),
+        eligible_snapshot_exhausted=eligible_snapshot_exhausted,
     )
 
 
@@ -764,6 +921,761 @@ def _validate_executable_lease(
     return lease.attempt
 
 
+def _same_attempt_identity(stored: M5JobAttempt, supplied: M5JobAttempt) -> bool:
+    return (
+        stored.attempt_id,
+        stored.logical_job_id,
+        stored.attempt_ordinal,
+        stored.execution_spec_hash,
+        stored.lease_token_hash,
+        stored.lease_expires_at,
+    ) == (
+        supplied.attempt_id,
+        supplied.logical_job_id,
+        supplied.attempt_ordinal,
+        supplied.execution_spec_hash,
+        supplied.lease_token_hash,
+        supplied.lease_expires_at,
+    )
+
+
+def _current_terminal_logical_result_hash(
+    cursor: Cursor[Any], *, header: _EpochHeader
+) -> str | None:
+    row = cursor.execute(
+        """
+        SELECT logical_result_hash
+        FROM groundloop_m5_event_result
+        WHERE epoch_id = %s
+        """,
+        (header.epoch_id,),
+    ).fetchone()
+    if header.runtime_state in {"sealed", "failed"}:
+        if row is None:
+            raise ValidationError("terminal M5 epoch lacks its immutable result")
+        return _text(row[0])
+    if row is not None:
+        raise ValidationError("nonterminal M5 epoch has an immutable result")
+    return None
+
+
+def _build_late_return_plan(
+    *,
+    header: _EpochHeader,
+    job: _StoredJob,
+    attempt: StoredRequirementAttempt,
+    output: M5AttemptOutput,
+    activity: tuple[bool, bool | None, bool | None, bool | None],
+    terminal_logical_result_hash: str | None,
+) -> _LateReturnPlan | None:
+    postterminal = terminal_logical_result_hash is not None
+    cancellation = job.state is M5JobState.CANCELLED
+    cancellation_values = (
+        job.cancelled_by_event_id if cancellation else None,
+        job.cancelled_by_epoch_id if cancellation else None,
+        job.cancellation_reason if cancellation else None,
+    )
+    if cancellation and any(value is None for value in cancellation_values):
+        raise ValidationError("cancelled late return lacks full attribution")
+
+    if attempt.state == "expired":
+        if job.state is not M5JobState.RUNNING and not postterminal:
+            raise EventConflictError(
+                "nonrunning successor requires terminal event before expired audit"
+            )
+        receipt_state = job.state if postterminal else M5JobState.RUNNING
+        if postterminal and not receipt_state.terminal:
+            raise EventConflictError("postterminal expired return lacks terminal job")
+        artifact = M5AttemptResultArtifact.build(
+            attempt_output=output,
+            job_state_at_receipt=receipt_state,
+            job_state_after=receipt_state,
+            disposition=M5AttemptDisposition.TERMINAL_AUDIT_ONLY,
+            activity_snapshot_epoch_id=header.epoch_id,
+            activity_snapshot_revision=header.revision,
+            epoch_active=activity[0],
+            chunk_active=activity[1],
+            requirement_active=activity[2],
+            group_active=activity[3],
+            archive_reason=M5AttemptArchiveReason.ATTEMPT_EXPIRED,
+            cancelled_by_event_id=cancellation_values[0],
+            cancelled_by_epoch_id=cancellation_values[1],
+            cancellation_reason=cancellation_values[2],
+        )
+        expired = M5ExpiredAttemptReturn.build(
+            subgraph=M5RuntimeSubgraph.REQUIREMENT,
+            epoch_id=header.epoch_id,
+            attempt_id=attempt.attempt.attempt_id,
+            logical_job_id=job.spec.logical_job_id,
+            worker_output_digest=output.attempt_output_digest,
+            worker_artifact_hash=output.result_artifact_hash,
+            activity_snapshot_epoch_id=header.epoch_id,
+            activity_snapshot_revision=header.revision,
+            received_after_terminal=postterminal,
+        )
+        return _LateReturnPlan(
+            disposition=(
+                M5RequirementReturnDisposition.EXPIRED_POSTTERMINAL
+                if postterminal
+                else M5RequirementReturnDisposition.EXPIRED_PRETERMINAL
+            ),
+            artifact=artifact,
+            expired_return=expired,
+            return_kind="expired_return",
+            return_artifact_digest=expired.expired_return_digest,
+            terminal_logical_result_hash=terminal_logical_result_hash,
+        )
+
+    if attempt.state != "dispatched" or job.state is not M5JobState.CANCELLED:
+        return None
+    if not postterminal and job.cancellation_reason is M5TerminalReason.EPOCH_FAILED:
+        raise EventConflictError(
+            "epoch-failure cancellation must terminalize before return audit"
+        )
+    archive_reason = classify_attempt_activity(
+        epoch_active=activity[0],
+        chunk_active=activity[1],
+        requirement_active=activity[2],
+        group_active=activity[3],
+        job_already_terminal=True,
+    )
+    if archive_reason is None:
+        raise ValidationError("terminal audit lacks its activity archive reason")
+    artifact = M5AttemptResultArtifact.build(
+        attempt_output=output,
+        job_state_at_receipt=M5JobState.CANCELLED,
+        job_state_after=M5JobState.CANCELLED,
+        disposition=M5AttemptDisposition.TERMINAL_AUDIT_ONLY,
+        activity_snapshot_epoch_id=header.epoch_id,
+        activity_snapshot_revision=header.revision,
+        epoch_active=activity[0],
+        chunk_active=activity[1],
+        requirement_active=activity[2],
+        group_active=activity[3],
+        archive_reason=archive_reason,
+        cancelled_by_event_id=cancellation_values[0],
+        cancelled_by_epoch_id=cancellation_values[1],
+        cancellation_reason=cancellation_values[2],
+    )
+    return _LateReturnPlan(
+        disposition=(
+            M5RequirementReturnDisposition.TERMINAL_AUDIT_POSTTERMINAL
+            if postterminal
+            else M5RequirementReturnDisposition.TERMINAL_AUDIT_PRETERMINAL
+        ),
+        artifact=artifact,
+        expired_return=None,
+        return_kind="terminal_audit_only",
+        return_artifact_digest=artifact.attempt_result_artifact_hash,
+        terminal_logical_result_hash=terminal_logical_result_hash,
+    )
+
+
+def _insert_late_attempt_artifact(
+    cursor: Cursor[Any], *, plan: _LateReturnPlan, output: M5AttemptOutput
+) -> None:
+    artifact = plan.artifact
+    cursor.execute(
+        """
+        INSERT INTO groundloop_m5_attempt_result_artifact (
+            attempt_result_artifact_id, attempt_result_artifact_hash,
+            attempt_output_digest, attempt_id, logical_job_id, job_epoch_id,
+            payload_hash, execution_spec_hash, result_artifact_id,
+            result_artifact_hash, job_state_at_receipt, job_state_after,
+            disposition, activity_snapshot_epoch_id,
+            activity_snapshot_revision, epoch_active, chunk_active,
+            requirement_active, group_active, archive_reason,
+            cancelled_by_event_id, cancelled_by_epoch_id, cancellation_reason
+        ) VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+        )
+        """,
+        (
+            artifact.attempt_result_artifact_id,
+            artifact.attempt_result_artifact_hash,
+            artifact.attempt_output_digest,
+            artifact.attempt_id,
+            artifact.logical_job_id,
+            artifact.job_epoch_id,
+            output.payload_hash,
+            output.execution_spec_hash,
+            output.result_artifact_id,
+            output.result_artifact_hash,
+            artifact.job_state_at_receipt.value,
+            artifact.job_state_after.value,
+            artifact.disposition.value,
+            artifact.activity_snapshot_epoch_id,
+            artifact.activity_snapshot_revision,
+            artifact.epoch_active,
+            artifact.chunk_active,
+            artifact.requirement_active,
+            artifact.group_active,
+            None if artifact.archive_reason is None else artifact.archive_reason.value,
+            artifact.cancelled_by_event_id,
+            artifact.cancelled_by_epoch_id,
+            (
+                None
+                if artifact.cancellation_reason is None
+                else artifact.cancellation_reason.value
+            ),
+        ),
+    )
+
+
+def _insert_expired_return_sidecar(
+    cursor: Cursor[Any],
+    *,
+    plan: _LateReturnPlan,
+    attempt: M5JobAttempt,
+    execution_evidence_digest: str,
+) -> None:
+    expired = plan.expired_return
+    if expired is None or attempt.lease_expires_at is None:
+        raise ValidationError("expired return lacks its original lease binding")
+    artifact = plan.artifact
+    cursor.execute(
+        """
+        INSERT INTO groundloop_m5_expired_attempt_return (
+            epoch_id, subgraph, attempt_id, logical_job_id,
+            original_lease_token_hash, original_lease_expires_at,
+            worker_output_digest, worker_artifact_hash,
+            activity_snapshot_epoch_id, activity_snapshot_revision,
+            cancellation_attribution, execution_evidence_digest,
+            received_after_terminal, expired_return_digest
+        ) VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+        )
+        """,
+        (
+            expired.epoch_id,
+            expired.subgraph.value,
+            expired.attempt_id,
+            expired.logical_job_id,
+            attempt.lease_token_hash,
+            attempt.lease_expires_at,
+            expired.worker_output_digest,
+            expired.worker_artifact_hash,
+            expired.activity_snapshot_epoch_id,
+            expired.activity_snapshot_revision,
+            Jsonb(
+                {
+                    "cancelled_by_event_id": artifact.cancelled_by_event_id,
+                    "cancelled_by_epoch_id": artifact.cancelled_by_epoch_id,
+                    "cancellation_reason": (
+                        None
+                        if artifact.cancellation_reason is None
+                        else artifact.cancellation_reason.value
+                    ),
+                }
+            ),
+            execution_evidence_digest,
+            expired.received_after_terminal,
+            expired.expired_return_digest,
+        ),
+    )
+
+
+def _derive_root_result_stage_work(
+    cursor: Cursor[Any], *, epoch_id: int, logical_job_id: str, attempt_id: str
+) -> M5RuntimeWork:
+    """Measure the canonical final rows physically owned by root staging."""
+
+    rows = cursor.execute(
+        """
+        SELECT serialized FROM (
+            SELECT to_jsonb(item)::text AS serialized
+            FROM groundloop_m5_job_attempt AS item
+            WHERE item.attempt_id = %s
+            UNION ALL
+            SELECT to_jsonb(item)::text
+            FROM groundloop_m5_attempt_result_artifact AS item
+            WHERE item.attempt_id = %s
+            UNION ALL
+            SELECT to_jsonb(item)::text
+            FROM groundloop_m5_requirement_channel_hit AS item
+            WHERE item.root_job_id = %s
+            UNION ALL
+            SELECT to_jsonb(item)::text
+            FROM groundloop_m5_requirement_scope_selection AS item
+            WHERE item.root_job_id = %s
+            UNION ALL
+            SELECT to_jsonb(item)::text
+            FROM groundloop_m5_requirement_discovery_result AS item
+            WHERE item.root_job_id = %s
+            UNION ALL
+            SELECT to_jsonb(item)::text
+            FROM groundloop_m5_discovery_scope AS item
+            WHERE item.epoch_id = %s AND item.root_job_id = %s
+        ) AS root_rows
+        ORDER BY serialized COLLATE "C"
+        """,
+        (
+            attempt_id,
+            attempt_id,
+            logical_job_id,
+            logical_job_id,
+            logical_job_id,
+            epoch_id,
+            logical_job_id,
+        ),
+    ).fetchall()
+    if len(rows) < 4:
+        raise ValidationError("root result staging lacks its persistence rows")
+    byte_count = 0
+    stage_hasher = hashlib.sha256()
+    for row in rows:
+        encoded = str(row[0]).encode("utf-8")
+        frame = len(encoded).to_bytes(8, byteorder="big", signed=False)
+        stage_hasher.update(frame)
+        stage_hasher.update(encoded)
+        byte_count += len(frame) + len(encoded)
+    if len(stage_hasher.digest()) != hashlib.sha256().digest_size:
+        raise AssertionError("SHA-256 root-result instrumentation drift")
+    return M5RuntimeWork(bytes_hashed=byte_count, bytes_serialized=byte_count)
+
+
+def _derive_late_return_work(
+    cursor: Cursor[Any], *, attempt_id: str, expired: bool
+) -> M5RuntimeWork:
+    rows = cursor.execute(
+        """
+        SELECT serialized FROM (
+            SELECT to_jsonb(item)::text AS serialized
+            FROM groundloop_m5_attempt_result_artifact AS item
+            WHERE item.attempt_id = %s
+            UNION ALL
+            SELECT to_jsonb(item)::text
+            FROM groundloop_m5_expired_attempt_return AS item
+            WHERE item.subgraph = 'requirement' AND item.attempt_id = %s
+        ) AS late_rows
+        ORDER BY serialized COLLATE "C"
+        """,
+        (attempt_id, attempt_id),
+    ).fetchall()
+    if len(rows) != 1 + int(expired):
+        raise ValidationError("late return lacks its exact immutable rows")
+    byte_count = 0
+    late_hasher = hashlib.sha256()
+    for row in rows:
+        encoded = str(row[0]).encode("utf-8")
+        frame = len(encoded).to_bytes(8, byteorder="big", signed=False)
+        late_hasher.update(frame)
+        late_hasher.update(encoded)
+        byte_count += len(frame) + len(encoded)
+    if len(late_hasher.digest()) != hashlib.sha256().digest_size:
+        raise AssertionError("SHA-256 late-return instrumentation drift")
+    return M5RuntimeWork(
+        requirement_late_attempt_artifact_count=1,
+        bytes_hashed=byte_count,
+        bytes_serialized=byte_count,
+    )
+
+
+def _derive_root_barrier_work(
+    *,
+    plan: M5RootBarrierPlan,
+    child_jobs: tuple[M5LogicalJobSpec, ...],
+) -> M5RuntimeWork:
+    """Measure the barrier's immutable canonical persistence projection."""
+
+    payloads: list[tuple[Any, ...]] = [
+        (
+            "plan",
+            plan.structural_event_id,
+            plan.requirement_root_set_hash,
+            plan.barrier_completion_hash,
+        )
+    ]
+    for pair in plan.admitted_pairs:
+        payloads.append(
+            (
+                "admitted_pair",
+                pair.epoch_id,
+                pair.pair.subject_kind.value,
+                pair.pair.subject_id,
+                pair.pair.chunk_version_id,
+                pair.semantic_pair_digest,
+                pair.candidate_policy_id,
+                pair.owner_root_job_id,
+                tuple(reason.value for reason in pair.reasons),
+                pair.mandatory_lineage,
+                pair.admitted_pair_digest,
+            )
+        )
+        payloads.extend(
+            (
+                "admitted_source",
+                pair.admitted_pair_digest,
+                source.root_job_id,
+                source.scope_contract_digest,
+                source.selection_digest,
+            )
+            for source in pair.sources
+        )
+    payloads.extend(
+        (
+            "root_closure",
+            closure.root_job_id,
+            closure.scope_contract_digest,
+            closure.semantic_pair_digests,
+            closure.scope_closure_digest,
+            closure.child_job_ids,
+            closure.child_set_hash,
+        )
+        for closure in plan.root_closures
+    )
+    for child in child_jobs:
+        assert child.pair is not None
+        payloads.append(
+            (
+                "child_spec",
+                child.logical_job_id,
+                child.structural_event_id,
+                child.job_kind.value,
+                child.candidate_policy_id,
+                child.candidate_policy_manifest_hash,
+                child.parent_job_id,
+                child.pair.subject_kind.value,
+                child.pair.subject_id,
+                child.pair.chunk_version_id,
+                child.semantic_pair_digest,
+                child.scope_contract_digest,
+                child.requirement_registry_snapshot_digest,
+                child.active_chunk_snapshot_digest,
+                child.role_template_hash,
+                child.execution_spec_hash,
+                child.expandable,
+                child.payload_hash,
+            )
+        )
+    rows = sorted(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        for payload in payloads
+    )
+    byte_count = 0
+    barrier_hasher = hashlib.sha256()
+    for encoded in rows:
+        frame = len(encoded).to_bytes(8, byteorder="big", signed=False)
+        barrier_hasher.update(frame)
+        barrier_hasher.update(encoded)
+        byte_count += len(frame) + len(encoded)
+    if len(barrier_hasher.digest()) != hashlib.sha256().digest_size:
+        raise AssertionError("SHA-256 root-barrier instrumentation drift")
+    return M5RuntimeWork(
+        requirement_admitted_pair_count=len(plan.admitted_pairs),
+        bytes_hashed=byte_count,
+        bytes_serialized=byte_count,
+    )
+
+
+def _load_expired_return(
+    cursor: Cursor[Any], *, epoch_id: int, attempt_id: str
+) -> _StoredExpiredReturn | None:
+    row = cursor.execute(
+        """
+        SELECT logical_job_id, original_lease_token_hash,
+               original_lease_expires_at, worker_output_digest,
+               worker_artifact_hash, activity_snapshot_epoch_id,
+               activity_snapshot_revision, cancellation_attribution,
+               execution_evidence_digest, received_after_terminal,
+               expired_return_digest
+        FROM groundloop_m5_expired_attempt_return
+        WHERE epoch_id = %s AND subgraph = 'requirement' AND attempt_id = %s
+        """,
+        (epoch_id, attempt_id),
+    ).fetchone()
+    if row is None:
+        return None
+    if not isinstance(row[2], datetime) or not isinstance(row[7], dict):
+        raise ValidationError("stored expired-return sidecar has invalid wire types")
+    return _StoredExpiredReturn(
+        record=M5ExpiredAttemptReturn(
+            subgraph=M5RuntimeSubgraph.REQUIREMENT,
+            epoch_id=epoch_id,
+            attempt_id=attempt_id,
+            logical_job_id=_text(row[0]),
+            worker_output_digest=_text(row[3]),
+            worker_artifact_hash=_text(row[4]),
+            activity_snapshot_epoch_id=int(row[5]),
+            activity_snapshot_revision=int(row[6]),
+            received_after_terminal=bool(row[9]),
+            expired_return_digest=_text(row[10]),
+        ),
+        original_lease_token_hash=_text(row[1]),
+        original_lease_expires_at=row[2],
+        cancellation_attribution=dict(row[7]),
+        execution_evidence_digest=_text(row[8]),
+    )
+
+
+def _validate_expired_replay_sidecar(
+    *,
+    stored: _StoredExpiredReturn,
+    artifact: M5AttemptResultArtifact,
+    attempt: M5JobAttempt,
+    output: M5AttemptOutput,
+    accounting: RequirementExecutionAccounting,
+    postterminal: bool,
+) -> None:
+    expected_cancellation = {
+        "cancelled_by_event_id": artifact.cancelled_by_event_id,
+        "cancelled_by_epoch_id": artifact.cancelled_by_epoch_id,
+        "cancellation_reason": (
+            None
+            if artifact.cancellation_reason is None
+            else artifact.cancellation_reason.value
+        ),
+    }
+    if (
+        stored.record.logical_job_id != output.logical_job_id
+        or stored.record.worker_output_digest != output.attempt_output_digest
+        or stored.record.worker_artifact_hash != output.result_artifact_hash
+        or stored.record.activity_snapshot_epoch_id
+        != artifact.activity_snapshot_epoch_id
+        or stored.record.activity_snapshot_revision
+        != artifact.activity_snapshot_revision
+        or stored.record.received_after_terminal is not postterminal
+        or stored.original_lease_token_hash != attempt.lease_token_hash
+        or stored.original_lease_expires_at != attempt.lease_expires_at
+        or stored.cancellation_attribution != expected_cancellation
+        or stored.execution_evidence_digest != accounting.evidence.evidence_digest
+    ):
+        raise EventConflictError("expired-return replay changed immutable sidecar")
+
+
+def _validate_late_replay(
+    cursor: Cursor[Any],
+    *,
+    header: _EpochHeader,
+    lease: M5JobLease,
+    supplied_job: M5LogicalJobSpec,
+    supplied_output: M5AttemptOutput,
+    job: _StoredJob,
+    attempt: StoredRequirementAttempt,
+    accounting: RequirementExecutionAccounting,
+    event_replay_revision: int | None,
+    postterminal_replay: RequirementPostterminalReplay | None,
+) -> M5RequirementAttemptReturnReceipt | None:
+    stored = _load_attempt_result(cursor, attempt_id=attempt.attempt.attempt_id)
+    if stored is None or (
+        stored.artifact.disposition is not M5AttemptDisposition.TERMINAL_AUDIT_ONLY
+    ):
+        if postterminal_replay is not None:
+            raise ValidationError("postterminal evidence lacks its audit artifact")
+        return None
+    if event_replay_revision is None and postterminal_replay is None:
+        raise ValidationError("late-return artifact lacks execution evidence")
+    if (
+        supplied_job != job.spec
+        or lease.attempt is None
+        or not _same_attempt_identity(attempt.attempt, lease.attempt)
+        or stored.output != supplied_output
+        or stored.artifact.logical_job_id != job.spec.logical_job_id
+    ):
+        raise EventConflictError("late-return replay changed immutable output")
+    stored.artifact.validate_job_shape(job.spec.job_kind)
+    expired = stored.artifact.archive_reason is M5AttemptArchiveReason.ATTEMPT_EXPIRED
+    expired_row = _load_expired_return(
+        cursor, epoch_id=header.epoch_id, attempt_id=attempt.attempt.attempt_id
+    )
+    if expired != (expired_row is not None):
+        raise ValidationError("late-return artifact and expired sidecar diverged")
+    if expired_row is not None:
+        _validate_expired_replay_sidecar(
+            stored=expired_row,
+            artifact=stored.artifact,
+            attempt=attempt.attempt,
+            output=supplied_output,
+            accounting=accounting,
+            postterminal=postterminal_replay is not None,
+        )
+        return_digest = expired_row.record.expired_return_digest
+    else:
+        return_digest = stored.artifact.attempt_result_artifact_hash
+
+    work_names = M5RuntimeWork.counter_names()
+    contribution = cursor.execute(
+        f"""
+        SELECT {", ".join(work_names)}, work_digest, source_identity_hash,
+               contribution_key_digest, applied_revision
+        FROM groundloop_m5_runtime_work_contribution
+        WHERE epoch_id = %s AND contribution_kind = 'preterminal_late_return'
+          AND source_id = %s
+        """,
+        (header.epoch_id, attempt.attempt.attempt_id),
+    ).fetchone()
+    if event_replay_revision is not None:
+        if postterminal_replay is not None or contribution is None:
+            raise ValidationError("late return has conflicting accounting branches")
+        values = tuple(contribution)
+        work_end = len(work_names)
+        stored_work = M5RuntimeWork(
+            **dict(zip(work_names, map(int, values[:work_end]), strict=True)),
+            work_digest=_text(values[work_end]),
+        )
+        expected_work = _derive_late_return_work(
+            cursor, attempt_id=attempt.attempt.attempt_id, expired=expired
+        )
+        expected_key = digests.runtime_work_contribution_key_digest(
+            epoch_id=header.epoch_id,
+            contribution_kind=M5RuntimeWorkContributionKind.PRETERMINAL_LATE_RETURN,
+            source_id=attempt.attempt.attempt_id,
+        )
+        if (
+            stored_work != expected_work
+            or _text(values[work_end + 1]) != return_digest
+            or _text(values[work_end + 2]) != expected_key
+            or int(values[work_end + 3]) != event_replay_revision
+        ):
+            raise EventConflictError("late-return replay changed immutable accounting")
+        disposition = (
+            M5RequirementReturnDisposition.EXPIRED_PRETERMINAL
+            if expired
+            else M5RequirementReturnDisposition.TERMINAL_AUDIT_PRETERMINAL
+        )
+    else:
+        if contribution is not None or postterminal_replay is None:
+            raise ValidationError("postterminal return has event accounting")
+        event_rows = cursor.execute(
+            """
+            SELECT
+              (SELECT count(*) FROM groundloop_m5_runtime_work_contribution
+               WHERE epoch_id = %s AND source_id = %s
+                 AND contribution_kind IN (
+                     'm5_attempt_execution', 'preterminal_late_return')),
+              (SELECT count(*) FROM groundloop_m5_runtime_timing_contribution
+               WHERE epoch_id = %s AND subgraph = 'requirement'
+                 AND attempt_id = %s)
+            """,
+            (
+                header.epoch_id,
+                attempt.attempt.attempt_id,
+                header.epoch_id,
+                attempt.attempt.attempt_id,
+            ),
+        ).fetchone()
+        terminal_hash = _current_terminal_logical_result_hash(cursor, header=header)
+        if (
+            event_rows != (0, 0)
+            or postterminal_replay.return_kind
+            != ("expired_return" if expired else "terminal_audit_only")
+            or postterminal_replay.return_artifact_digest != return_digest
+            or postterminal_replay.terminal_logical_result_hash != terminal_hash
+        ):
+            raise EventConflictError("postterminal replay changed immutable closure")
+        disposition = (
+            M5RequirementReturnDisposition.EXPIRED_POSTTERMINAL
+            if expired
+            else M5RequirementReturnDisposition.TERMINAL_AUDIT_POSTTERMINAL
+        )
+    return M5RequirementAttemptReturnReceipt(
+        disposition=disposition,
+        logical_job_id=job.spec.logical_job_id,
+        attempt_id=attempt.attempt.attempt_id,
+        resulting_revision=header.revision,
+        exact_replay=True,
+        execution_evidence_digest=accounting.evidence.evidence_digest,
+        return_artifact_digest=return_digest,
+        current_terminal_logical_result_hash=(
+            _current_terminal_logical_result_hash(cursor, header=header)
+        ),
+        transition_anchor=None,
+    )
+
+
+def _persist_late_return(
+    cursor: Cursor[Any],
+    *,
+    header: _EpochHeader,
+    plan: _LateReturnPlan,
+    attempt: StoredRequirementAttempt,
+    output: M5AttemptOutput,
+    accounting: RequirementExecutionAccounting,
+    failure_injector: RuntimeRootFailureInjector | None,
+) -> M5RequirementAttemptReturnReceipt:
+    terminal_logical_result_hash = plan.terminal_logical_result_hash
+    if terminal_logical_result_hash is not None:
+        _insert_late_attempt_artifact(cursor, plan=plan, output=output)
+        _inject(failure_injector, "late_return_artifact_inserted")
+        if plan.expired_return is not None:
+            _insert_expired_return_sidecar(
+                cursor,
+                plan=plan,
+                attempt=attempt.attempt,
+                execution_evidence_digest=accounting.evidence.evidence_digest,
+            )
+            _inject(failure_injector, "late_return_expired_sidecar_inserted")
+        persist_postterminal_requirement_accounting(
+            cursor,
+            accounting=accounting,
+            return_kind=plan.return_kind,
+            return_artifact_digest=plan.return_artifact_digest,
+            terminal_logical_result_hash=terminal_logical_result_hash,
+            failure_injector=failure_injector,
+        )
+        transition_anchor = None
+    else:
+        if accounting.anchor.anchor_revision != header.revision:
+            raise ValidationError("preterminal late-return anchor revision drifted")
+        _authorize(cursor, header)
+        accounting_start = start_event_accounting(
+            cursor, epoch_id=header.epoch_id, expected_revision=header.revision
+        )
+        _insert_late_attempt_artifact(cursor, plan=plan, output=output)
+        _inject(failure_injector, "late_return_artifact_inserted")
+        if plan.expired_return is not None:
+            _insert_expired_return_sidecar(
+                cursor,
+                plan=plan,
+                attempt=attempt.attempt,
+                execution_evidence_digest=accounting.evidence.evidence_digest,
+            )
+            _inject(failure_injector, "late_return_expired_sidecar_inserted")
+        late_work = _derive_late_return_work(
+            cursor,
+            attempt_id=attempt.attempt.attempt_id,
+            expired=plan.expired_return is not None,
+        )
+        persist_requirement_execution_accounting(cursor, accounting=accounting)
+        persist_preterminal_late_return_contribution(
+            cursor,
+            accounting=accounting,
+            return_artifact_digest=plan.return_artifact_digest,
+            late_work=late_work,
+        )
+        finish_requirement_execution_accounting(
+            cursor,
+            epoch_id=header.epoch_id,
+            expected_revision=header.revision,
+            start=accounting_start,
+            accounting=accounting,
+            additional_work=late_work,
+            same_revision=True,
+        )
+        transition_anchor = accounting.anchor
+    _inject(failure_injector, "late_return_accounting_inserted")
+    _force_deferred_validation(cursor)
+    _inject(failure_injector, "late_return_constraints_validated")
+    receipt = M5RequirementAttemptReturnReceipt(
+        disposition=plan.disposition,
+        logical_job_id=attempt.attempt.logical_job_id,
+        attempt_id=attempt.attempt.attempt_id,
+        resulting_revision=header.revision,
+        exact_replay=False,
+        execution_evidence_digest=accounting.evidence.evidence_digest,
+        return_artifact_digest=plan.return_artifact_digest,
+        current_terminal_logical_result_hash=plan.terminal_logical_result_hash,
+        transition_anchor=transition_anchor,
+    )
+    if transition_anchor is not None:
+        receipt.validate_anchor_context(
+            epoch_id=header.epoch_id,
+            expected_kind=M5RuntimeWorkContributionKind.PRETERMINAL_LATE_RETURN,
+        )
+    return receipt
+
+
 def _validate_stage_replay(
     cursor: Cursor[Any],
     *,
@@ -774,20 +1686,40 @@ def _validate_stage_replay(
     supplied_output: M5AttemptOutput,
     scope: _StoredScope,
     job: _StoredJob,
-    attempt: _StoredAttempt,
+    attempt: StoredRequirementAttempt,
     manifest: M5CandidatePolicyManifest,
-) -> M5AttemptCompletionReceipt | None:
+    eligible_snapshot_exhausted: bool,
+    accounting: RequirementExecutionAccounting,
+    replay_revision: int | None,
+) -> M5RequirementAttemptReturnReceipt | None:
     stored_artifact = _load_attempt_result(
         cursor, attempt_id=attempt.attempt.attempt_id
     )
-    stored_result = _load_discovery_result(cursor, root_job_id=job.spec.logical_job_id)
-    if stored_artifact is None and stored_result is None:
+    work_names = M5RuntimeWork.counter_names()
+    contribution = cursor.execute(
+        f"""
+        SELECT {", ".join(work_names)}, work_digest, source_identity_hash,
+               contribution_key_digest, applied_revision
+        FROM groundloop_m5_runtime_work_contribution
+        WHERE epoch_id = %s AND contribution_kind = 'root_result_stage'
+          AND source_id = %s
+        """,
+        (header.epoch_id, attempt.attempt.attempt_id),
+    ).fetchone()
+    if replay_revision is None and stored_artifact is None and contribution is None:
         return None
-    if stored_artifact is None or stored_result is None:
+    stored_result = _load_discovery_result(cursor, root_job_id=job.spec.logical_job_id)
+    if (
+        replay_revision is None
+        or stored_artifact is None
+        or stored_result is None
+        or contribution is None
+    ):
         raise EventConflictError("root staging is only partially durable")
     if (
         supplied_job != job.spec
-        or lease.attempt != attempt.attempt
+        or lease.attempt is None
+        or not _same_attempt_identity(attempt.attempt, lease.attempt)
         or supplied_output != stored_artifact.output
         or supplied_result != stored_result
         or stored_artifact.artifact.disposition
@@ -795,18 +1727,24 @@ def _validate_stage_replay(
         or stored_artifact.artifact.logical_job_id != job.spec.logical_job_id
         or attempt.state != "completed"
         or attempt.attempt_output_digest != supplied_output.attempt_output_digest
+        or attempt.attempt.attempt_work_digest
+        != accounting.evidence.attempt_work.work_digest
         or scope.staged_result_artifact_hash != supplied_result.result_artifact_hash
         or scope.state
         not in {
             M5ScopeState.RESULT_STAGED,
             M5ScopeState.CLOSED_ACTIVE,
             M5ScopeState.CLOSED_INACTIVE,
+            M5ScopeState.TERMINAL_FAILED,
+            M5ScopeState.CANCELLED,
         }
         or job.state
         not in {
             M5JobState.RUNNING,
             M5JobState.COMPLETED_ACTIVE,
             M5JobState.COMPLETED_INACTIVE,
+            M5JobState.TERMINAL_FAILED,
+            M5JobState.CANCELLED,
         }
     ):
         raise EventConflictError("attempt ID already records another root result")
@@ -818,19 +1756,51 @@ def _validate_stage_replay(
         scope=scope,
         job=job,
         manifest=manifest,
+        eligible_snapshot_exhausted=eligible_snapshot_exhausted,
     )
     stored_artifact.artifact.validate_job_shape(job.spec.job_kind)
-    return M5AttemptCompletionReceipt(
+    work_end = len(work_names)
+    stored_work = M5RuntimeWork(
+        **dict(zip(work_names, map(int, contribution[:work_end]), strict=True)),
+        work_digest=_text(contribution[work_end]),
+    )
+    expected_work = M5RuntimeWork(
+        requirement_channel_hit_count=len(stored_result.channel_hits),
+        requirement_pre_dedup_selection_count=len(stored_result.selections),
+        bytes_hashed=stored_work.bytes_hashed,
+        bytes_serialized=stored_work.bytes_serialized,
+    )
+    expected_key = digests.runtime_work_contribution_key_digest(
+        epoch_id=header.epoch_id,
+        contribution_kind=M5RuntimeWorkContributionKind.ROOT_RESULT_STAGE,
+        source_id=attempt.attempt.attempt_id,
+    )
+    if (
+        stored_work != expected_work
+        or _text(contribution[work_end + 1]) != supplied_output.attempt_output_digest
+        or _text(contribution[work_end + 2]) != expected_key
+        or int(contribution[work_end + 3]) != replay_revision
+        or replay_revision != scope.staged_revision
+    ):
+        raise EventConflictError("root staging replay changed immutable accounting")
+    return M5RequirementAttemptReturnReceipt(
+        disposition=M5RequirementReturnDisposition.APPLIED,
         logical_job_id=job.spec.logical_job_id,
         attempt_id=attempt.attempt.attempt_id,
         resulting_revision=header.revision,
         exact_replay=True,
+        execution_evidence_digest=accounting.evidence.evidence_digest,
+        return_artifact_digest=(stored_artifact.artifact.attempt_result_artifact_hash),
+        current_terminal_logical_result_hash=(
+            _current_terminal_logical_result_hash(cursor, header=header)
+        ),
+        transition_anchor=None,
     )
 
 
 def _lock_and_validate_pending_counter_revisions(
     cursor: Cursor[Any], *, epoch_id: int, expected_revision: int
-) -> None:
+) -> tuple[int, int]:
     owner_rows = cursor.execute(
         """
         SELECT owner_claim_id, updated_revision
@@ -853,6 +1823,166 @@ def _lock_and_validate_pending_counter_revisions(
     ).fetchall()
     if any(int(row[1]) != expected_revision for row in (*owner_rows, *answer_rows)):
         raise ValidationError("PENDING counter revision diverged from runtime epoch")
+    return len(owner_rows), len(answer_rows)
+
+
+def _cancellation_pending_projection(
+    cursor: Cursor[Any],
+    *,
+    header: _EpochHeader,
+    scopes: tuple[_StoredScope, ...],
+    jobs: tuple[_StoredJob, ...],
+) -> tuple[tuple[_PendingDelta, ...], tuple[_PendingDelta, ...]]:
+    """Freeze selected owner/answer deltas before the counter-lock tier."""
+
+    member_rows = cursor.execute(
+        """
+        SELECT requirement_version_id, owner_claim_id
+        FROM groundloop_m5_requirement_registry_snapshot_member
+        WHERE requirement_registry_snapshot_digest = %s
+        ORDER BY requirement_version_id COLLATE "C", owner_claim_id COLLATE "C"
+        """,
+        (header.requirement_registry_snapshot_digest,),
+    ).fetchall()
+    owners_by_requirement: dict[str, set[str]] = {}
+    all_owner_ids: set[str] = set()
+    for requirement_version_id_value, owner_claim_id_value in member_rows:
+        requirement_version_id = str(requirement_version_id_value)
+        owner_claim_id = str(owner_claim_id_value)
+        owners_by_requirement.setdefault(requirement_version_id, set()).add(
+            owner_claim_id
+        )
+        all_owner_ids.add(owner_claim_id)
+    scope_by_root = {scope.root_job_id: scope for scope in scopes}
+    owner_deltas: dict[str, Counter[str]] = {}
+    counter_by_kind = {
+        M5JobKind.REVERSE_REQUIREMENT_DISCOVERY: "broad_reverse_scope_count",
+        M5JobKind.FORWARD_REQUIREMENT_RETRIEVAL: "forward_scope_count",
+        M5JobKind.VERIFY_REQUIREMENT_PAIR: "verifier_job_count",
+    }
+    for job in jobs:
+        if job.spec.job_kind is M5JobKind.REVERSE_REQUIREMENT_DISCOVERY:
+            selected_owner_ids = all_owner_ids
+        elif job.spec.job_kind is M5JobKind.FORWARD_REQUIREMENT_RETRIEVAL:
+            scope = scope_by_root[job.spec.logical_job_id]
+            scope_requirement_version_id = scope.contract.requirement_version_id
+            assert scope_requirement_version_id is not None
+            selected_owner_ids = owners_by_requirement.get(
+                scope_requirement_version_id, set()
+            )
+        else:
+            assert job.spec.pair is not None
+            selected_owner_ids = owners_by_requirement.get(
+                job.spec.pair.subject_id, set()
+            )
+        if not selected_owner_ids:
+            raise ValidationError("cancellation job lacks frozen owner multiplicity")
+        for owner_claim_id in selected_owner_ids:
+            owner_delta = owner_deltas.setdefault(owner_claim_id, Counter())
+            owner_delta[counter_by_kind[job.spec.job_kind]] += 1
+
+    answer_rows = cursor.execute(
+        """
+        SELECT claim_id, answer_version_id
+        FROM groundloop_claim
+        WHERE claim_id = ANY(%s) AND required
+        ORDER BY answer_version_id COLLATE "C", claim_id COLLATE "C"
+        """,
+        (list(owner_deltas),),
+    ).fetchall()
+    answer_deltas: dict[str, Counter[str]] = {}
+    for owner_claim_id_value, answer_version_id_value in answer_rows:
+        owner_claim_id = str(owner_claim_id_value)
+        answer_version_id = str(answer_version_id_value)
+        answer_delta = answer_deltas.setdefault(answer_version_id, Counter())
+        answer_delta.update(owner_deltas[owner_claim_id])
+
+    def freeze(deltas: dict[str, Counter[str]]) -> tuple[_PendingDelta, ...]:
+        return tuple(
+            _PendingDelta(
+                key,
+                counters["broad_reverse_scope_count"],
+                counters["forward_scope_count"],
+                counters["verifier_job_count"],
+            )
+            for key, counters in sorted(
+                deltas.items(), key=lambda item: item[0].encode("utf-8")
+            )
+        )
+
+    return freeze(owner_deltas), freeze(answer_deltas)
+
+
+def _apply_cancellation_pending_deltas(
+    cursor: Cursor[Any],
+    *,
+    epoch_id: int,
+    expected_revision: int,
+    resulting_revision: int,
+    owner_deltas: tuple[_PendingDelta, ...],
+    answer_deltas: tuple[_PendingDelta, ...],
+) -> None:
+    """CAS the selected owner/answer units, then advance every cutoff."""
+
+    owner_row_count, answer_row_count = _lock_and_validate_pending_counter_revisions(
+        cursor, epoch_id=epoch_id, expected_revision=expected_revision
+    )
+    for delta in owner_deltas:
+        values = delta.values
+        updated = cursor.execute(
+            """
+            UPDATE groundloop_m5_owner_pending_counter
+            SET broad_reverse_scope_count = broad_reverse_scope_count - %s,
+                forward_scope_count = forward_scope_count - %s,
+                verifier_job_count = verifier_job_count - %s
+            WHERE epoch_id = %s AND owner_claim_id = %s
+              AND updated_revision = %s
+              AND broad_reverse_scope_count >= %s
+              AND forward_scope_count >= %s
+              AND verifier_job_count >= %s
+            """,
+            (*values, epoch_id, delta.key, expected_revision, *values),
+        ).rowcount
+        if updated != 1:
+            raise ValidationError("owner PENDING cancellation lost multiplicity")
+
+    for delta in answer_deltas:
+        values = delta.values
+        updated = cursor.execute(
+            """
+            UPDATE groundloop_m5_answer_pending_counter
+            SET broad_reverse_scope_count = broad_reverse_scope_count - %s,
+                forward_scope_count = forward_scope_count - %s,
+                verifier_job_count = verifier_job_count - %s
+            WHERE epoch_id = %s AND answer_version_id = %s
+              AND updated_revision = %s
+              AND broad_reverse_scope_count >= %s
+              AND forward_scope_count >= %s
+              AND verifier_job_count >= %s
+            """,
+            (*values, epoch_id, delta.key, expected_revision, *values),
+        ).rowcount
+        if updated != 1:
+            raise ValidationError("answer PENDING cancellation lost multiplicity")
+
+    owner_advanced = cursor.execute(
+        """
+        UPDATE groundloop_m5_owner_pending_counter
+        SET updated_revision = %s
+        WHERE epoch_id = %s AND updated_revision = %s
+        """,
+        (resulting_revision, epoch_id, expected_revision),
+    ).rowcount
+    answer_advanced = cursor.execute(
+        """
+        UPDATE groundloop_m5_answer_pending_counter
+        SET updated_revision = %s
+        WHERE epoch_id = %s AND updated_revision = %s
+        """,
+        (resulting_revision, epoch_id, expected_revision),
+    ).rowcount
+    if owner_advanced != owner_row_count or answer_advanced != answer_row_count:
+        raise ValidationError("PENDING cancellation cutoff lost rows")
 
 
 def _advance_revision(
@@ -933,6 +2063,59 @@ def _advance_revision(
         raise EventConflictError("stale typed runtime revision")
 
 
+def _advance_cancellation_revision(
+    cursor: Cursor[Any],
+    *,
+    header: _EpochHeader,
+    resulting_revision: int,
+    cancelled_job_count: int,
+    cancelled_root_count: int,
+) -> None:
+    """Advance the header by the exact selected cancellation units."""
+
+    if (
+        header.open_work_count < cancelled_job_count
+        or header.open_scope_count < cancelled_root_count
+    ):
+        raise ValidationError("cancellation exceeds the durable open-count image")
+    updated_base = cursor.execute(
+        """
+        UPDATE groundloop_epoch
+        SET revision = %s
+        WHERE epoch_id = %s AND revision = %s
+          AND structural_status = 'committed'
+          AND semantic_status = 'pending'
+          AND evaluation_state = 'pending'
+        """,
+        (resulting_revision, header.epoch_id, header.revision),
+    ).rowcount
+    if updated_base != 1:
+        raise EventConflictError("stale base epoch revision")
+    updated_runtime = cursor.execute(
+        """
+        UPDATE groundloop_m5_runtime_epoch
+        SET runtime_state = 'semantic_pending', revision = %s,
+            open_work_count = %s, open_scope_count = %s
+        WHERE epoch_id = %s AND revision = %s
+          AND runtime_state IN ('structural_committed', 'semantic_pending')
+          AND open_work_count = %s AND open_scope_count = %s
+          AND blocking_failure_count = %s
+        """,
+        (
+            resulting_revision,
+            header.open_work_count - cancelled_job_count,
+            header.open_scope_count - cancelled_root_count,
+            header.epoch_id,
+            header.revision,
+            header.open_work_count,
+            header.open_scope_count,
+            header.blocking_failure_count,
+        ),
+    ).rowcount
+    if updated_runtime != 1:
+        raise EventConflictError("stale typed runtime revision")
+
+
 def _force_deferred_validation(cursor: Cursor[Any]) -> None:
     cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
     cursor.execute("SET CONSTRAINTS ALL DEFERRED")
@@ -946,9 +2129,13 @@ def stage_m5_discovery_result(
     job: M5LogicalJobSpec,
     result: M5RequirementDiscoveryResult,
     attempt_output: M5AttemptOutput,
+    execution_disposition: M5ExecutionEvidenceDisposition,
+    attempt_work: M5RuntimeWork,
+    attempt_timing: M5RuntimeTiming | None,
     *,
+    eligible_snapshot_exhausted: bool,
     failure_injector: RuntimeRootFailureInjector | None = None,
-) -> M5AttemptCompletionReceipt:
+) -> M5RequirementAttemptReturnReceipt:
     """Stage one successful root result under the caller's transaction."""
 
     if (
@@ -957,6 +2144,14 @@ def stage_m5_discovery_result(
         or expected_revision < 1
     ):
         raise InvalidEventError("expected runtime revision must be positive")
+    if execution_disposition not in {
+        M5ExecutionEvidenceDisposition.RETURNED,
+        M5ExecutionEvidenceDisposition.REUSED_ARTIFACT,
+    }:
+        raise ValidationError(
+            "successful root return requires returned or reused_artifact"
+        )
+    require_runtime_recovery_bundle(cursor)
     leased_attempt = _validate_executable_lease(
         lease=lease, job=job, expected_revision=expected_revision
     )
@@ -981,6 +2176,8 @@ def stage_m5_discovery_result(
         raise ValidationError("attempt output does not bind the supplied root result")
 
     header = _lock_epoch(cursor, epoch_id)
+    if expected_revision > header.revision:
+        raise EventConflictError("expected revision is newer than durable runtime")
     manifest = _load_manifest(cursor, header.candidate_policy_id)
     # Read the immutable target first so tier-7 activity rows can be locked
     # before the tier-8 scope row.
@@ -995,13 +2192,85 @@ def stage_m5_discovery_result(
     stored_job = _read_job(
         cursor, epoch_id=epoch_id, logical_job_id=job.logical_job_id, for_update=True
     )
-    attempt = _read_attempt(
+    attempt = read_requirement_attempt(
         cursor,
         logical_job_id=job.logical_job_id,
         attempt_id=leased_attempt.attempt_id,
-        for_update=True,
     )
+    if attempt is None or not _same_attempt_identity(attempt.attempt, leased_attempt):
+        raise EventConflictError("root return lease identity is not durable")
     _validate_header_bindings(header, scope, stored_job, manifest)
+    _validate_discovery_result(
+        cursor,
+        epoch_id=epoch_id,
+        result=result,
+        scope=scope,
+        job=stored_job,
+        manifest=manifest,
+        eligible_snapshot_exhausted=eligible_snapshot_exhausted,
+    )
+    dispatch = load_requirement_dispatch(
+        cursor, epoch_id=epoch_id, attempt=attempt.attempt
+    )
+    if (
+        dispatch.record_digest != lease.dispatch_record_digest
+        or dispatch.dispatched_revision != lease.resulting_revision
+    ):
+        raise EventConflictError("root return lease dispatch identity is not durable")
+    terminal_logical_result_hash = _current_terminal_logical_result_hash(
+        cursor, header=header
+    )
+    late_accounting = build_requirement_execution_accounting(
+        epoch_id=epoch_id,
+        expected_revision=expected_revision,
+        attempt=leased_attempt,
+        dispatch=dispatch,
+        disposition=execution_disposition,
+        result_or_error_hash=attempt_output.attempt_output_digest,
+        attempt_work=attempt_work,
+        attempt_timing=attempt_timing,
+        anchor_kind=M5RuntimeWorkContributionKind.PRETERMINAL_LATE_RETURN,
+        anchor_revision=header.revision,
+    )
+    replay_revision = read_requirement_execution_replay(
+        cursor,
+        expected_evidence=late_accounting.evidence,
+        expected_observation=late_accounting.observation,
+    )
+    postterminal_replay = (
+        None
+        if replay_revision is not None
+        else read_requirement_postterminal_replay(
+            cursor,
+            expected_evidence=late_accounting.evidence,
+            expected_observation=late_accounting.observation,
+        )
+    )
+    late_replay = _validate_late_replay(
+        cursor,
+        header=header,
+        lease=lease,
+        supplied_job=job,
+        supplied_output=attempt_output,
+        job=stored_job,
+        attempt=attempt,
+        accounting=late_accounting,
+        event_replay_revision=replay_revision,
+        postterminal_replay=postterminal_replay,
+    )
+    if late_replay is not None:
+        return late_replay
+    accounting = build_requirement_execution_accounting(
+        epoch_id=epoch_id,
+        expected_revision=expected_revision,
+        attempt=leased_attempt,
+        dispatch=dispatch,
+        disposition=execution_disposition,
+        result_or_error_hash=attempt_output.attempt_output_digest,
+        attempt_work=attempt_work,
+        attempt_timing=attempt_timing,
+        anchor_kind=M5RuntimeWorkContributionKind.ROOT_RESULT_STAGE,
+    )
     replay = _validate_stage_replay(
         cursor,
         header=header,
@@ -1013,30 +2282,91 @@ def stage_m5_discovery_result(
         job=stored_job,
         attempt=attempt,
         manifest=manifest,
+        eligible_snapshot_exhausted=eligible_snapshot_exhausted,
+        accounting=accounting,
+        replay_revision=replay_revision,
     )
     if replay is not None:
         return replay
+    if job != stored_job.spec:
+        raise EventConflictError("supplied root job differs from durable identity")
+    latest = read_latest_requirement_attempt(cursor, logical_job_id=job.logical_job_id)
+    if latest is None:
+        raise ValidationError("root job lost its durable attempt history")
+    late_plan = _build_late_return_plan(
+        header=header,
+        job=stored_job,
+        attempt=attempt,
+        output=attempt_output,
+        activity=activity,
+        terminal_logical_result_hash=terminal_logical_result_hash,
+    )
+    if late_plan is not None:
+        postterminal = late_plan.terminal_logical_result_hash is not None
+        if attempt.state == "expired":
+            successor = cursor.execute(
+                """
+                SELECT 1
+                FROM groundloop_m5_job_attempt
+                WHERE logical_job_id = %s AND attempt_ordinal = %s
+                """,
+                (job.logical_job_id, attempt.attempt.attempt_ordinal + 1),
+            ).fetchone()
+            if (
+                successor is None
+                or latest.attempt.attempt_ordinal <= attempt.attempt.attempt_ordinal
+            ):
+                raise ValidationError("expired root return lacks a dense successor")
+        elif not _same_attempt_identity(latest.attempt, leased_attempt):
+            raise EventConflictError(
+                "still-current terminal audit has a later durable attempt"
+            )
+        if postterminal:
+            if not stored_job.state.terminal or scope.state in {
+                M5ScopeState.OPEN,
+                M5ScopeState.RESULT_STAGED,
+            }:
+                raise ValidationError("postterminal root return lacks terminal closure")
+        else:
+            if header.revision != expected_revision:
+                raise EventConflictError("stale preterminal late-return revision")
+            _require_pending_epoch(header)
+            if attempt.state == "expired":
+                if stored_job.state is not M5JobState.RUNNING or scope.state not in {
+                    M5ScopeState.OPEN,
+                    M5ScopeState.RESULT_STAGED,
+                }:
+                    raise EventConflictError(
+                        "preterminal expired return lacks its running successor"
+                    )
+            elif (
+                stored_job.state is not M5JobState.CANCELLED
+                or scope.state is not M5ScopeState.CANCELLED
+            ):
+                raise EventConflictError(
+                    "preterminal terminal audit lacks cancelled closure"
+                )
+        return _persist_late_return(
+            cursor,
+            header=header,
+            plan=late_plan,
+            attempt=attempt,
+            output=attempt_output,
+            accounting=late_accounting,
+            failure_injector=failure_injector,
+        )
+
     if header.revision != expected_revision:
         raise EventConflictError("stale typed runtime revision")
     _require_pending_epoch(header)
-    if job != stored_job.spec:
-        raise EventConflictError("supplied root job differs from durable identity")
-    if lease.attempt != attempt.attempt:
-        raise EventConflictError("supplied lease differs from durable attempt")
+    if not _same_attempt_identity(latest.attempt, leased_attempt):
+        raise EventConflictError("root return lease is no longer the latest attempt")
     if attempt.state != "dispatched" or attempt.attempt_output_digest is not None:
         raise EventConflictError("root attempt is not an unreserved dispatch")
     if stored_job.state is not M5JobState.RUNNING:
         raise EventConflictError("root job is not running")
     if scope.state is not M5ScopeState.OPEN:
         raise EventConflictError("root discovery scope is not open")
-    _validate_discovery_result(
-        cursor,
-        epoch_id=epoch_id,
-        result=result,
-        scope=scope,
-        job=stored_job,
-        manifest=manifest,
-    )
 
     archive_reason = classify_attempt_activity(
         epoch_active=activity[0],
@@ -1063,6 +2393,10 @@ def stage_m5_discovery_result(
     artifact.validate_job_shape(job.job_kind)
     resulting_revision = header.revision + 1
     _authorize(cursor, header)
+    accounting_start = start_event_accounting(
+        cursor, epoch_id=epoch_id, expected_revision=expected_revision
+    )
+    persist_requirement_execution_accounting(cursor, accounting=accounting)
     _inject(failure_injector, "root_stage_authorized")
 
     reserved = cursor.execute(
@@ -1212,30 +2546,73 @@ def stage_m5_discovery_result(
     completed_attempt = cursor.execute(
         """
         UPDATE groundloop_m5_job_attempt
-        SET attempt_state = 'completed', finished_at = now()
+        SET attempt_state = 'completed', finished_at = clock_timestamp(),
+            attempt_work_digest = %s
         WHERE attempt_id = %s AND logical_job_id = %s
           AND attempt_state = 'result_reserved'
           AND attempt_output_digest = %s
+          AND lease_token_hash = %s AND lease_expires_at = %s
+          AND execution_spec_hash = %s
         """,
         (
+            accounting.evidence.attempt_work.work_digest,
             attempt_output.attempt_id,
             job.logical_job_id,
             attempt_output.attempt_output_digest,
+            leased_attempt.lease_token_hash,
+            leased_attempt.lease_expires_at,
+            leased_attempt.execution_spec_hash,
         ),
     ).rowcount
     if completed_attempt != 1:
         raise EventConflictError("root attempt completion lost its reservation")
     _inject(failure_injector, "root_stage_attempt_completed")
+    measured_work = _derive_root_result_stage_work(
+        cursor,
+        epoch_id=epoch_id,
+        logical_job_id=job.logical_job_id,
+        attempt_id=attempt_output.attempt_id,
+    )
+    stage_work = M5RuntimeWork(
+        requirement_channel_hit_count=len(result.channel_hits),
+        requirement_pre_dedup_selection_count=len(result.selections),
+        bytes_hashed=measured_work.bytes_hashed,
+        bytes_serialized=measured_work.bytes_serialized,
+    )
+    persist_root_result_stage_contribution(
+        cursor,
+        accounting=accounting,
+        attempt_output_digest=attempt_output.attempt_output_digest,
+        stage_work=stage_work,
+    )
     _advance_revision(cursor, header=header, resulting_revision=resulting_revision)
+    finish_requirement_execution_accounting(
+        cursor,
+        epoch_id=epoch_id,
+        expected_revision=expected_revision,
+        start=accounting_start,
+        accounting=accounting,
+        additional_work=stage_work,
+    )
     _inject(failure_injector, "root_stage_revision_advanced")
     _force_deferred_validation(cursor)
     _inject(failure_injector, "root_stage_constraints_validated")
-    return M5AttemptCompletionReceipt(
+    receipt = M5RequirementAttemptReturnReceipt(
+        disposition=M5RequirementReturnDisposition.APPLIED,
         logical_job_id=job.logical_job_id,
         attempt_id=attempt_output.attempt_id,
         resulting_revision=resulting_revision,
         exact_replay=False,
+        execution_evidence_digest=accounting.evidence.evidence_digest,
+        return_artifact_digest=artifact.attempt_result_artifact_hash,
+        current_terminal_logical_result_hash=None,
+        transition_anchor=accounting.anchor,
     )
+    receipt.validate_anchor_context(
+        epoch_id=epoch_id,
+        expected_kind=M5RuntimeWorkContributionKind.ROOT_RESULT_STAGE,
+    )
+    return receipt
 
 
 def _read_all_root_scopes(
@@ -1496,6 +2873,259 @@ def _durable_pair_rows(
     )
 
 
+def _validate_root_barrier_timing_replay(
+    cursor: Cursor[Any],
+    *,
+    header: _EpochHeader,
+    contribution_key_digest: str,
+    completed_revision: int,
+) -> None:
+    accumulator = cursor.execute(
+        """
+        SELECT pending_contribution_kind, pending_source_id,
+               pending_contribution_key_digest, pending_anchor_revision,
+               updated_revision
+        FROM groundloop_m5_runtime_timing_accumulator
+        WHERE epoch_id = %s
+        """,
+        (header.epoch_id,),
+    ).fetchone()
+    if accumulator is None or int(accumulator[4]) != header.revision:
+        raise ValidationError("root-barrier timing accumulator lost its cutoff")
+    pending_exact = tuple(accumulator[:4]) == (
+        M5RuntimeWorkContributionKind.ROOT_BARRIER.value,
+        header.structural_event_id,
+        contribution_key_digest,
+        completed_revision,
+    )
+    timing_row = cursor.execute(
+        """
+        SELECT contribution_key_digest, anchor_revision,
+               required_interval_observed,
+               coordinator_non_db_non_neural_ns, neural_wall_ns,
+               postgres_roundtrip_wall_ns, external_io_wall_ns,
+               end_to_end_wall_ns, postgres_server_execution_ns,
+               postgres_lock_wait_ns, postgres_wal_bytes,
+               postgres_shared_block_reads, observation_digest,
+               transition_timing_digest
+        FROM groundloop_m5_transition_call_timing
+        WHERE epoch_id = %s AND contribution_kind = 'root_barrier'
+          AND source_id = %s AND anchor_revision = %s
+        """,
+        (header.epoch_id, header.structural_event_id, completed_revision),
+    ).fetchone()
+    if timing_row is None:
+        if not pending_exact or header.revision != completed_revision:
+            raise ValidationError("root-barrier timing anchor is not durable")
+        return
+    if pending_exact:
+        raise ValidationError("root-barrier timing point is both pending and recorded")
+    values = tuple(timing_row)
+    observed = bool(values[2])
+    raw_timing = values[3:12]
+    timing = M5RuntimeTiming(*raw_timing) if observed else None
+    if not observed and any(value is not None for value in raw_timing):
+        raise ValidationError("missing root-barrier timing point has values")
+    observation = M5RuntimeTimingObservation(observed, timing, _text(values[12]))
+    expected_timing_digest = digests.transition_call_timing_digest(
+        epoch_id=header.epoch_id,
+        contribution_kind=M5RuntimeWorkContributionKind.ROOT_BARRIER,
+        source_id=header.structural_event_id,
+        contribution_key_digest=contribution_key_digest,
+        anchor_revision=completed_revision,
+        observation_digest=observation.observation_digest,
+    )
+    if (
+        _text(values[0]) != contribution_key_digest
+        or int(values[1]) != completed_revision
+        or _text(values[13]) != expected_timing_digest
+    ):
+        raise EventConflictError("root-barrier replay changed its timing point")
+
+
+def _validate_cancellation_timing_replay(
+    cursor: Cursor[Any],
+    *,
+    header: _EpochHeader,
+    plan_digest: str,
+    contribution_key_digest: str,
+    applied_revision: int,
+) -> None:
+    accumulator = cursor.execute(
+        """
+        SELECT pending_contribution_kind, pending_source_id,
+               pending_contribution_key_digest, pending_anchor_revision,
+               updated_revision
+        FROM groundloop_m5_runtime_timing_accumulator
+        WHERE epoch_id = %s
+        """,
+        (header.epoch_id,),
+    ).fetchone()
+    if accumulator is None or int(accumulator[4]) != header.revision:
+        raise ValidationError("cancellation timing accumulator lost its cutoff")
+    pending_exact = tuple(accumulator[:4]) == (
+        M5RuntimeWorkContributionKind.CANCELLATION.value,
+        plan_digest,
+        contribution_key_digest,
+        applied_revision,
+    )
+    timing_row = cursor.execute(
+        """
+        SELECT contribution_key_digest, anchor_revision,
+               required_interval_observed,
+               coordinator_non_db_non_neural_ns, neural_wall_ns,
+               postgres_roundtrip_wall_ns, external_io_wall_ns,
+               end_to_end_wall_ns, postgres_server_execution_ns,
+               postgres_lock_wait_ns, postgres_wal_bytes,
+               postgres_shared_block_reads, observation_digest,
+               transition_timing_digest
+        FROM groundloop_m5_transition_call_timing
+        WHERE epoch_id = %s AND contribution_kind = 'cancellation'
+          AND source_id = %s AND anchor_revision = %s
+        """,
+        (header.epoch_id, plan_digest, applied_revision),
+    ).fetchone()
+    if timing_row is None:
+        if not pending_exact or header.revision != applied_revision:
+            raise ValidationError("cancellation timing anchor is not durable")
+        return
+    if pending_exact:
+        raise ValidationError("cancellation timing point is pending and recorded")
+    values = tuple(timing_row)
+    observed = bool(values[2])
+    raw_timing = values[3:12]
+    timing = M5RuntimeTiming(*raw_timing) if observed else None
+    if not observed and any(value is not None for value in raw_timing):
+        raise ValidationError("missing cancellation timing point has values")
+    observation = M5RuntimeTimingObservation(observed, timing, _text(values[12]))
+    expected_digest = digests.transition_call_timing_digest(
+        epoch_id=header.epoch_id,
+        contribution_kind=M5RuntimeWorkContributionKind.CANCELLATION,
+        source_id=plan_digest,
+        contribution_key_digest=contribution_key_digest,
+        anchor_revision=applied_revision,
+        observation_digest=observation.observation_digest,
+    )
+    if (
+        _text(values[0]) != contribution_key_digest
+        or int(values[1]) != applied_revision
+        or _text(values[13]) != expected_digest
+    ):
+        raise EventConflictError("cancellation replay changed its timing point")
+
+
+def _validate_cancellation_replay(
+    cursor: Cursor[Any],
+    *,
+    header: _EpochHeader,
+    plan: M5CancellationPlan,
+    scopes: tuple[_StoredScope, ...],
+    jobs: tuple[_StoredJob, ...],
+) -> M5CancellationReceipt | None:
+    work_names = M5RuntimeWork.counter_names()
+    contribution = cursor.execute(
+        f"""
+        SELECT {", ".join(work_names)}, work_digest, source_identity_hash,
+               contribution_key_digest, applied_revision
+        FROM groundloop_m5_runtime_work_contribution
+        WHERE epoch_id = %s AND contribution_kind = 'cancellation'
+          AND source_id = %s
+        """,
+        (header.epoch_id, plan.plan_digest),
+    ).fetchone()
+    if contribution is None:
+        return None
+    work_end = len(work_names)
+    stored_work = M5RuntimeWork(
+        **dict(zip(work_names, map(int, contribution[:work_end]), strict=True)),
+        work_digest=_text(contribution[work_end]),
+    )
+    expected_work = M5RuntimeWork(
+        requirement_cancelled_job_count=len(plan.cancelled_job_ids)
+    )
+    expected_key = digests.runtime_work_contribution_key_digest(
+        epoch_id=header.epoch_id,
+        contribution_kind=M5RuntimeWorkContributionKind.CANCELLATION,
+        source_id=plan.plan_digest,
+    )
+    applied_revision = int(contribution[work_end + 3])
+    durable_digest_row = cursor.execute(
+        """
+        SELECT groundloop_m5_recovery_cancellation_plan_digest(%s, %s, %s, %s)
+        """,
+        (
+            header.epoch_id,
+            header.structural_event_id,
+            plan.reason.value,
+            applied_revision,
+        ),
+    ).fetchone()
+    durable_digest = (
+        None
+        if durable_digest_row is None or durable_digest_row[0] is None
+        else _text(durable_digest_row[0])
+    )
+    if (
+        stored_work != expected_work
+        or _text(contribution[work_end + 1]) != plan.plan_digest
+        or _text(contribution[work_end + 2]) != expected_key
+        or applied_revision > header.revision
+        or durable_digest != plan.plan_digest
+    ):
+        raise EventConflictError("cancellation replay changed immutable accounting")
+
+    scope_by_root = {scope.root_job_id: scope for scope in scopes}
+    for job in jobs:
+        expected_completion = M5JobCompletion.build(
+            job=job.spec,
+            terminal_state=M5JobState.CANCELLED,
+            archive_reason=plan.reason,
+        )
+        if (
+            _stored_completion(job) != expected_completion
+            or job.completed_revision != applied_revision
+            or job.cancelled_by_event_id != header.structural_event_id
+            or job.cancelled_by_epoch_id != header.epoch_id
+            or job.cancellation_reason is not plan.reason
+        ):
+            raise EventConflictError("cancelled job differs from its immutable plan")
+        if job.spec.parent_job_id is None:
+            scope = scope_by_root[job.spec.logical_job_id]
+            if (
+                scope.state is not M5ScopeState.CANCELLED
+                or scope.completion_digest != expected_completion.completion_digest
+                or scope.closed_revision != applied_revision
+            ):
+                raise EventConflictError(
+                    "cancelled root scope differs from its immutable plan"
+                )
+
+    work_cutoff = cursor.execute(
+        """
+        SELECT updated_revision, terminalized
+        FROM groundloop_m5_runtime_work_accumulator
+        WHERE epoch_id = %s
+        """,
+        (header.epoch_id,),
+    ).fetchone()
+    if work_cutoff is None or (
+        int(work_cutoff[0]) != header.revision
+        or bool(work_cutoff[1]) != (header.runtime_state in {"sealed", "failed"})
+    ):
+        raise ValidationError("cancellation work accumulator lost its cutoff")
+    _validate_cancellation_timing_replay(
+        cursor,
+        header=header,
+        plan_digest=plan.plan_digest,
+        contribution_key_digest=expected_key,
+        applied_revision=applied_revision,
+    )
+    _lock_and_validate_pending_counter_revisions(
+        cursor, epoch_id=header.epoch_id, expected_revision=header.revision
+    )
+    return M5CancellationReceipt(plan.cancelled_job_ids, header.revision, True)
+
+
 def _validate_barrier_replay(
     cursor: Cursor[Any],
     *,
@@ -1631,6 +3261,56 @@ def _validate_barrier_replay(
     if len(completed_revisions) != 1:
         raise ValidationError("closed root set does not share one barrier revision")
     completed_revision = next(iter(completed_revisions))
+    work_names = M5RuntimeWork.counter_names()
+    contribution = cursor.execute(
+        f"""
+        SELECT {", ".join(work_names)}, work_digest, source_identity_hash,
+               contribution_key_digest, applied_revision
+        FROM groundloop_m5_runtime_work_contribution
+        WHERE epoch_id = %s AND contribution_kind = 'root_barrier'
+          AND source_id = %s
+        """,
+        (header.epoch_id, header.structural_event_id),
+    ).fetchone()
+    if contribution is None:
+        raise ValidationError("closed root barrier lacks its work contribution")
+    work_end = len(work_names)
+    stored_work = M5RuntimeWork(
+        **dict(zip(work_names, map(int, contribution[:work_end]), strict=True)),
+        work_digest=_text(contribution[work_end]),
+    )
+    expected_work = _derive_root_barrier_work(plan=plan, child_jobs=child_jobs)
+    expected_key = digests.runtime_work_contribution_key_digest(
+        epoch_id=header.epoch_id,
+        contribution_kind=M5RuntimeWorkContributionKind.ROOT_BARRIER,
+        source_id=header.structural_event_id,
+    )
+    if (
+        stored_work != expected_work
+        or _text(contribution[work_end + 1]) != plan.barrier_completion_hash
+        or _text(contribution[work_end + 2]) != expected_key
+        or int(contribution[work_end + 3]) != completed_revision
+    ):
+        raise EventConflictError("root-barrier replay changed immutable accounting")
+    work_cutoff = cursor.execute(
+        """
+        SELECT updated_revision, terminalized
+        FROM groundloop_m5_runtime_work_accumulator
+        WHERE epoch_id = %s
+        """,
+        (header.epoch_id,),
+    ).fetchone()
+    if work_cutoff is None or (
+        int(work_cutoff[0]) != header.revision
+        or bool(work_cutoff[1]) != (header.runtime_state in {"sealed", "failed"})
+    ):
+        raise ValidationError("root-barrier work accumulator lost its cutoff")
+    _validate_root_barrier_timing_replay(
+        cursor,
+        header=header,
+        contribution_key_digest=expected_key,
+        completed_revision=completed_revision,
+    )
     expected_heads = _expected_frontier_heads(
         epoch_id=header.epoch_id,
         completed_revision=completed_revision,
@@ -1646,8 +3326,16 @@ def _validate_barrier_replay(
             candidate_policy_id=expected_head.candidate_policy_id,
             for_update=False,
         )
-        if current != expected_head:
-            raise EventConflictError("durable forward frontier differs on replay")
+        if current is None:
+            raise EventConflictError("durable forward frontier is missing on replay")
+        try:
+            selected = advance_requirement_frontier(expected_head, current)
+        except ValidationError as exc:
+            raise EventConflictError(
+                "durable forward frontier differs on replay"
+            ) from exc
+        if selected != current:
+            raise EventConflictError("durable forward frontier regressed on replay")
     return M5RootBarrierReceipt(
         requirement_root_set_hash=plan.requirement_root_set_hash,
         barrier_completion_hash=plan.barrier_completion_hash,
@@ -1775,7 +3463,10 @@ def close_m5_requirement_roots(
         or expected_revision < 1
     ):
         raise InvalidEventError("expected runtime revision must be positive")
+    require_runtime_recovery_bundle(cursor)
     header = _lock_epoch(cursor, epoch_id)
+    if expected_revision > header.revision:
+        raise EventConflictError("expected revision is newer than durable runtime")
     if requirement_root_set_hash != header.requirement_root_set_hash:
         raise EventConflictError("requirement root-set hash differs from runtime")
     manifest = _load_manifest(cursor, header.candidate_policy_id)
@@ -1817,6 +3508,7 @@ def close_m5_requirement_roots(
             scope=scope,
             job=job,
             manifest=manifest,
+            eligible_snapshot_exhausted=True,
         )
         artifact = _root_attempt_result(
             cursor, root_job_id=job.spec.logical_job_id, result=result
@@ -1860,6 +3552,9 @@ def close_m5_requirement_roots(
         raise InvalidEventError("root barrier requires every root job running")
 
     resulting_revision = header.revision + 1
+    accounting_start = start_event_accounting(
+        cursor, epoch_id=epoch_id, expected_revision=header.revision
+    )
     _authorize(cursor, header)
     _inject(failure_injector, "root_barrier_authorized")
     for pair in plan.admitted_pairs:
@@ -2111,6 +3806,25 @@ def close_m5_requirement_roots(
         pending_revision_already_updated=True,
     )
     _inject(failure_injector, "root_barrier_revision_advanced")
+    barrier_work = _derive_root_barrier_work(plan=plan, child_jobs=child_jobs)
+    anchor = persist_root_barrier_contribution(
+        cursor,
+        epoch_id=epoch_id,
+        structural_event_id=header.structural_event_id,
+        barrier_completion_hash=plan.barrier_completion_hash,
+        resulting_revision=resulting_revision,
+        barrier_work=barrier_work,
+    )
+    _inject(failure_injector, "root_barrier_contribution_inserted")
+    finish_root_barrier_accounting(
+        cursor,
+        epoch_id=epoch_id,
+        expected_revision=header.revision,
+        start=accounting_start,
+        anchor=anchor,
+        barrier_work=barrier_work,
+    )
+    _inject(failure_injector, "root_barrier_accounting_finished")
     _force_deferred_validation(cursor)
     _inject(failure_injector, "root_barrier_constraints_validated")
     return M5RootBarrierReceipt(
@@ -2121,8 +3835,218 @@ def close_m5_requirement_roots(
     )
 
 
+def _persist_new_cancellation(
+    cursor: Cursor[Any],
+    *,
+    header: _EpochHeader,
+    plan: M5CancellationPlan,
+    scopes: tuple[_StoredScope, ...],
+    jobs: tuple[_StoredJob, ...],
+    owner_deltas: tuple[_PendingDelta, ...],
+    answer_deltas: tuple[_PendingDelta, ...],
+    failure_injector: RuntimeRootFailureInjector | None,
+) -> M5CancellationReceipt:
+    resulting_revision = header.revision + 1
+    accounting_start = start_event_accounting(
+        cursor, epoch_id=header.epoch_id, expected_revision=header.revision
+    )
+    _authorize(cursor, header)
+    _inject(failure_injector, "cancellation_authorized")
+    settled_row = cursor.execute("SELECT clock_timestamp()").fetchone()
+    if settled_row is None or not isinstance(settled_row[0], datetime):
+        raise ValidationError("PostgreSQL did not return a cancellation timestamp")
+    settled_at = settled_row[0]
+    completions = {
+        job.spec.logical_job_id: M5JobCompletion.build(
+            job=job.spec,
+            terminal_state=M5JobState.CANCELLED,
+            archive_reason=plan.reason,
+        )
+        for job in jobs
+    }
+    for job in jobs:
+        completion = completions[job.spec.logical_job_id]
+        updated = cursor.execute(
+            """
+            UPDATE groundloop_m5_semantic_job
+            SET job_state = 'cancelled', archive_reason = %s,
+                result_artifact_id = NULL, result_artifact_hash = NULL,
+                scope_closure_digest = NULL, child_set_hash = NULL,
+                completion_digest = %s, cancelled_by_event_id = %s,
+                cancelled_by_epoch_id = %s, cancellation_reason = %s,
+                completed_revision = %s, completed_at = %s
+            WHERE epoch_id = %s AND logical_job_id = %s AND job_state = %s
+            """,
+            (
+                plan.reason.value,
+                completion.completion_digest,
+                plan.structural_event_id,
+                plan.epoch_id,
+                plan.reason.value,
+                resulting_revision,
+                settled_at,
+                header.epoch_id,
+                job.spec.logical_job_id,
+                job.state.value,
+            ),
+        ).rowcount
+        if updated != 1:
+            raise EventConflictError("semantic job lost its cancellation race")
+    _inject(failure_injector, "cancellation_jobs_closed")
+
+    for scope in scopes:
+        completion = completions[scope.root_job_id]
+        updated = cursor.execute(
+            """
+            UPDATE groundloop_m5_discovery_scope
+            SET scope_state = 'cancelled', completion_digest = %s,
+                closed_revision = %s, closed_at = %s
+            WHERE epoch_id = %s AND root_job_id = %s AND scope_state = %s
+            """,
+            (
+                completion.completion_digest,
+                resulting_revision,
+                settled_at,
+                header.epoch_id,
+                scope.root_job_id,
+                scope.state.value,
+            ),
+        ).rowcount
+        if updated != 1:
+            raise EventConflictError("root scope lost its cancellation race")
+    _inject(failure_injector, "cancellation_scopes_closed")
+
+    _apply_cancellation_pending_deltas(
+        cursor,
+        epoch_id=header.epoch_id,
+        expected_revision=header.revision,
+        resulting_revision=resulting_revision,
+        owner_deltas=owner_deltas,
+        answer_deltas=answer_deltas,
+    )
+    _inject(failure_injector, "cancellation_pending_recomputed")
+    _advance_cancellation_revision(
+        cursor,
+        header=header,
+        resulting_revision=resulting_revision,
+        cancelled_job_count=len(jobs),
+        cancelled_root_count=len(scopes),
+    )
+    _inject(failure_injector, "cancellation_revision_advanced")
+
+    cancellation_work = M5RuntimeWork(
+        requirement_cancelled_job_count=len(plan.cancelled_job_ids)
+    )
+    anchor = persist_cancellation_contribution(
+        cursor,
+        epoch_id=header.epoch_id,
+        plan_digest=plan.plan_digest,
+        resulting_revision=resulting_revision,
+        cancellation_work=cancellation_work,
+    )
+    _inject(failure_injector, "cancellation_contribution_inserted")
+    finish_cancellation_accounting(
+        cursor,
+        epoch_id=header.epoch_id,
+        expected_revision=header.revision,
+        start=accounting_start,
+        anchor=anchor,
+        cancellation_work=cancellation_work,
+    )
+    _inject(failure_injector, "cancellation_accounting_finished")
+    _force_deferred_validation(cursor)
+    _inject(failure_injector, "cancellation_constraints_validated")
+    return M5CancellationReceipt(plan.cancelled_job_ids, resulting_revision, False)
+
+
+def cancel_m5_work(
+    cursor: Cursor[Any],
+    epoch_id: int,
+    expected_revision: int,
+    cancellation_plan: M5CancellationPlan,
+    *,
+    failure_injector: RuntimeRootFailureInjector | None = None,
+) -> M5CancellationReceipt:
+    """Cancel one exact sorted batch of open requirement jobs and root scopes."""
+
+    if (
+        isinstance(expected_revision, bool)
+        or not isinstance(expected_revision, int)
+        or expected_revision < 1
+    ):
+        raise InvalidEventError("expected runtime revision must be positive")
+    if not isinstance(cancellation_plan, M5CancellationPlan):
+        raise ValidationError("cancellation_plan must be an M5CancellationPlan")
+    require_runtime_recovery_bundle(cursor)
+    header = _lock_epoch(cursor, epoch_id)
+    if expected_revision > header.revision:
+        raise EventConflictError("expected revision is newer than durable runtime")
+    if (
+        cancellation_plan.epoch_id != header.epoch_id
+        or cancellation_plan.structural_event_id != header.structural_event_id
+    ):
+        raise EventConflictError("cancellation plan belongs to another typed epoch")
+    manifest = _load_manifest(cursor, header.candidate_policy_id)
+    scopes = _lock_cancellation_scopes(
+        cursor,
+        epoch_id=header.epoch_id,
+        logical_job_ids=cancellation_plan.cancelled_job_ids,
+    )
+    jobs = _lock_cancellation_jobs(
+        cursor,
+        epoch_id=header.epoch_id,
+        logical_job_ids=cancellation_plan.cancelled_job_ids,
+    )
+    _validate_cancellation_bindings(
+        header=header,
+        manifest=manifest,
+        scopes=scopes,
+        jobs=jobs,
+    )
+    replay = _validate_cancellation_replay(
+        cursor,
+        header=header,
+        plan=cancellation_plan,
+        scopes=scopes,
+        jobs=jobs,
+    )
+    if replay is not None:
+        return replay
+
+    _require_pending_epoch(header)
+    if header.revision != expected_revision:
+        raise EventConflictError("stale typed runtime revision")
+    open_job_states = {
+        M5JobState.DECLARED,
+        M5JobState.RUNNING,
+        M5JobState.RETRYABLE_FAILED,
+    }
+    if any(job.state not in open_job_states for job in jobs):
+        raise EventConflictError("cancellation plan does not name only open jobs")
+    open_scope_states = {M5ScopeState.OPEN, M5ScopeState.RESULT_STAGED}
+    if any(scope.state not in open_scope_states for scope in scopes):
+        raise EventConflictError("cancellation plan does not name only open scopes")
+    owner_deltas, answer_deltas = _cancellation_pending_projection(
+        cursor,
+        header=header,
+        scopes=scopes,
+        jobs=jobs,
+    )
+    return _persist_new_cancellation(
+        cursor,
+        header=header,
+        plan=cancellation_plan,
+        scopes=scopes,
+        jobs=jobs,
+        owner_deltas=owner_deltas,
+        answer_deltas=answer_deltas,
+        failure_injector=failure_injector,
+    )
+
+
 __all__ = [
     "RuntimeRootFailureInjector",
+    "cancel_m5_work",
     "close_m5_requirement_roots",
     "stage_m5_discovery_result",
 ]

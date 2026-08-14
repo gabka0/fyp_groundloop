@@ -12,6 +12,7 @@ import secrets
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from psycopg import Connection, Cursor, sql
@@ -37,38 +38,77 @@ from groundloop.m5.events import (
 from groundloop.m5.runtime import digests
 from groundloop.m5.runtime.contracts import (
     ActiveChunkSnapshot,
+    M5AcquisitionDisposition,
     M5ActivationReceipt,
     M5ActivationRequest,
     M5AttemptCompletionReceipt,
     M5AttemptOutput,
+    M5CancellationPlan,
+    M5CancellationReceipt,
     M5CandidatePolicyManifest,
     M5ChangedStateReference,
     M5DiscoveryDirection,
     M5DiscoveryScopeContract,
     M5EventRunResult,
+    M5ExecutionEvidenceDisposition,
     M5JobAttempt,
     M5JobCompletion,
     M5JobKind,
     M5JobLease,
     M5JobState,
+    M5LeaseTerminalProjection,
     M5LogicalJobSpec,
     M5ReplayedOutcome,
+    M5RequirementAttemptReturnReceipt,
     M5RequirementDiscoveryResult,
+    M5RequirementPairInput,
+    M5RequirementVerifierArtifact,
     M5RootBarrierReceipt,
     M5RunFailureReason,
     M5RunState,
+    M5RuntimeOperationalConfig,
     M5RuntimeTiming,
+    M5RuntimeTimingCoverage,
     M5RuntimeWork,
+    M5RuntimeWorkContributionKind,
     M5StateReferenceKind,
     M5TerminalReason,
+    M5TransitionTimingReceipt,
     M5TypedEventPlan,
     RequirementRegistrySnapshot,
     SemanticPairKey,
 )
+from groundloop.m5.runtime.postgres_recovery import (
+    RequirementExecutionAccounting,
+    StoredRequirementAttempt,
+    append_transition_call_timing_checked,
+    build_requirement_execution_accounting,
+    finish_requirement_dispatch_accounting,
+    finish_requirement_execution_accounting,
+    load_requirement_dispatch,
+    persist_requirement_dispatch,
+    persist_requirement_execution_accounting,
+    persist_structural_open_accounting,
+    persist_structural_open_identity,
+    persist_terminal_invocation_telemetry,
+    persist_terminal_job_failure_contribution,
+    read_acquisition_clock,
+    read_current_event_timing,
+    read_latest_requirement_attempt,
+    read_requirement_attempt,
+    read_requirement_execution_replay,
+    require_runtime_recovery_bundle,
+    requirement_fallback_required,
+    root_result_is_reserved,
+    start_event_accounting,
+    validate_structural_open_recovery,
+)
 from groundloop.m5.runtime.postgres_roots import (
+    cancel_m5_work,
     close_m5_requirement_roots,
     stage_m5_discovery_result,
 )
+from groundloop.m5.runtime.postgres_verifier import complete_m5_verifier
 from groundloop.postgres.m5 import (
     M5BootstrapProjection,
     build_m5_bootstrap_projection,
@@ -82,6 +122,23 @@ _NORMALIZER_PROVENANCE_HASH = (
     "d91b94f256f79c6bc7b29fafa41c7a608b90c17bd479b29a64be00fa538c49fb"
 )
 _WORK_COUNTER_COLUMNS = M5RuntimeWork.counter_names()
+_STRUCTURAL_OPEN_EPOCH_ROWS = (
+    ("groundloop_epoch", "epoch_id"),
+    ("groundloop_m5_update", "epoch_id"),
+    ("groundloop_m5_runtime_epoch", "epoch_id"),
+    ("groundloop_m5_group_family", "creator_epoch_id"),
+    ("groundloop_m5_group_version", "creator_epoch_id"),
+    ("groundloop_m5_requirement_version", "creator_epoch_id"),
+    ("groundloop_m5_group_deactivation", "epoch_id"),
+    ("groundloop_m5_requirement_registry_snapshot", "created_epoch_id"),
+    ("groundloop_m5_active_chunk_snapshot", "created_epoch_id"),
+    ("groundloop_m5_discovery_scope", "epoch_id"),
+    ("groundloop_m5_semantic_job", "epoch_id"),
+    ("groundloop_m5_owner_pending_counter", "epoch_id"),
+    ("groundloop_m5_answer_pending_counter", "epoch_id"),
+    ("groundloop_m5_runtime_operational_config", "epoch_id"),
+    ("groundloop_m5_requirement_root_provenance", "epoch_id"),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +172,8 @@ class _StoredM5Job:
     spec: M5LogicalJobSpec
     state: M5JobState
     admitted_pair_digest: str | None
+    completion: M5JobCompletion | None
+    completed_revision: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,6 +363,11 @@ def _inject(injector: RuntimeFailureInjector | None, point: str) -> None:
         injector(point)
 
 
+def _force_deferred_validation(cursor: Cursor[Any]) -> None:
+    cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
+    cursor.execute("SET CONSTRAINTS ALL DEFERRED")
+
+
 def _require_sha256(name: str, value: str) -> None:
     if (
         not isinstance(value, str)
@@ -417,10 +481,50 @@ def _stored_job_from_row(row: tuple[Any, ...], epoch_id: int) -> _StoredM5Job:
         expandable=bool(row[17]),
         payload_hash=str(row[18]).strip(),
     )
+    state = M5JobState(str(row[19]))
+    result_artifact_id = None if row[20] is None else str(row[20]).strip()
+    result_artifact_hash = None if row[21] is None else str(row[21]).strip()
+    scope_closure_digest = None if row[22] is None else str(row[22]).strip()
+    child_set_hash = None if row[23] is None else str(row[23]).strip()
+    archive_reason = None if row[24] is None else M5TerminalReason(str(row[24]))
+    completion_digest = None if row[25] is None else str(row[25]).strip()
+    completed_revision = None if row[26] is None else int(row[26])
+    completion: M5JobCompletion | None = None
+    if state.terminal:
+        if completion_digest is None or completed_revision is None:
+            raise ValidationError("terminal M5 job lacks its durable completion")
+        completion = M5JobCompletion(
+            logical_job_id=spec.logical_job_id,
+            payload_hash=spec.payload_hash,
+            execution_spec_hash=spec.execution_spec_hash,
+            terminal_state=state,
+            result_artifact_id=result_artifact_id,
+            result_artifact_hash=result_artifact_hash,
+            scope_closure_digest=scope_closure_digest,
+            child_set_hash=child_set_hash,
+            archive_reason=archive_reason,
+            completion_digest=completion_digest,
+        )
+        completion.validate_job(spec)
+    elif any(
+        value is not None
+        for value in (
+            result_artifact_id,
+            result_artifact_hash,
+            scope_closure_digest,
+            child_set_hash,
+            archive_reason,
+            completion_digest,
+            completed_revision,
+        )
+    ):
+        raise ValidationError("nonterminal M5 job has terminal completion fields")
     return _StoredM5Job(
         spec=spec,
-        state=M5JobState(str(row[19])),
+        state=state,
         admitted_pair_digest=admitted_pair_digest,
+        completion=completion,
+        completed_revision=completed_revision,
     )
 
 
@@ -431,7 +535,10 @@ _M5_JOB_SELECT = """
            semantic_pair_digest, admitted_pair_digest,
            scope_contract_digest, requirement_registry_snapshot_digest,
            active_chunk_snapshot_digest, role_template_hash,
-           execution_spec_hash, expandable, payload_hash, job_state
+           execution_spec_hash, expandable, payload_hash, job_state,
+           result_artifact_id, result_artifact_hash, scope_closure_digest,
+           child_set_hash, archive_reason, completion_digest,
+           completed_revision
     FROM groundloop_m5_semantic_job
 """
 
@@ -494,6 +601,8 @@ def _stored_attempt_from_row(row: tuple[Any, ...]) -> _StoredM5Attempt:
             attempt_ordinal=int(row[2]),
             execution_spec_hash=str(row[3]).strip(),
             lease_token_hash=str(row[4]).strip(),
+            lease_expires_at=row[9],
+            attempt_work_digest=str(row[10]).strip(),
         ),
         state=state,
         attempt_output_digest=output_digest,
@@ -510,7 +619,8 @@ def _read_stored_attempts(
         """
         SELECT attempt_id, logical_job_id, attempt_ordinal,
                execution_spec_hash, lease_token_hash, attempt_state,
-               attempt_output_digest, error_hash, finished_at
+               attempt_output_digest, error_hash, finished_at,
+               lease_expires_at, attempt_work_digest
         FROM groundloop_m5_job_attempt
         WHERE logical_job_id = %s
         ORDER BY attempt_ordinal
@@ -539,12 +649,44 @@ def _require_executable_lease(
         or lease.exact_replay
         or lease.attempt is None
     ):
-        raise ValidationError("retryable failure requires an executable M5 lease")
+        raise ValidationError("failure settlement requires an executable M5 lease")
     if lease.resulting_revision > expected_revision:
         raise EventConflictError("lease revision is newer than the expected revision")
     if lease.logical_job_id != lease.attempt.logical_job_id:
         raise EventConflictError("lease attempt belongs to another M5 job")
     return lease.attempt
+
+
+def _same_requirement_attempt_identity(
+    stored: M5JobAttempt, supplied: M5JobAttempt
+) -> bool:
+    """Compare the immutable lease tuple, excluding its settle-once work digest."""
+
+    return (
+        stored.attempt_id,
+        stored.logical_job_id,
+        stored.attempt_ordinal,
+        stored.execution_spec_hash,
+        stored.lease_token_hash,
+        stored.lease_expires_at,
+    ) == (
+        supplied.attempt_id,
+        supplied.logical_job_id,
+        supplied.attempt_ordinal,
+        supplied.execution_spec_hash,
+        supplied.lease_token_hash,
+        supplied.lease_expires_at,
+    )
+
+
+_M5_FAILURE_TERMINAL_REASONS = frozenset(
+    {
+        M5TerminalReason.RETRY_EXHAUSTED,
+        M5TerminalReason.RETRIEVAL_ERROR,
+        M5TerminalReason.VERIFIER_ERROR,
+        M5TerminalReason.INVALID_ARTIFACT,
+    }
+)
 
 
 def _lock_pending_revision_bindings(
@@ -575,7 +717,13 @@ def _lock_pending_revision_bindings(
 
 
 def _advance_job_lifecycle_revision(
-    cursor: Cursor[Any], *, header: _RuntimeEpochHeader, expected_revision: int
+    cursor: Cursor[Any],
+    *,
+    header: _RuntimeEpochHeader,
+    expected_revision: int,
+    open_work_delta: int = 0,
+    open_scope_delta: int = 0,
+    blocking_failure_delta: int = 0,
 ) -> int:
     resulting_revision = expected_revision + 1
     _lock_pending_revision_bindings(
@@ -599,11 +747,25 @@ def _advance_job_lifecycle_revision(
     runtime_updated = cursor.execute(
         """
         UPDATE groundloop_m5_runtime_epoch
-        SET runtime_state = 'semantic_pending', revision = %s
+        SET runtime_state = 'semantic_pending', revision = %s,
+            open_work_count = %s, open_scope_count = %s,
+            blocking_failure_count = %s
         WHERE epoch_id = %s AND revision = %s
           AND runtime_state IN ('structural_committed', 'semantic_pending')
+          AND open_work_count = %s AND open_scope_count = %s
+          AND blocking_failure_count = %s
         """,
-        (resulting_revision, header.epoch_id, expected_revision),
+        (
+            resulting_revision,
+            header.open_work_count + open_work_delta,
+            header.open_scope_count + open_scope_delta,
+            header.blocking_failure_count + blocking_failure_delta,
+            header.epoch_id,
+            expected_revision,
+            header.open_work_count,
+            header.open_scope_count,
+            header.blocking_failure_count,
+        ),
     ).rowcount
     if runtime_updated != 1:
         raise EventConflictError("stale typed runtime revision")
@@ -624,6 +786,93 @@ def _advance_job_lifecycle_revision(
         (resulting_revision, header.epoch_id),
     )
     return resulting_revision
+
+
+def _move_job_pending_to_blocking_failure(
+    cursor: Cursor[Any],
+    *,
+    epoch_id: int,
+    logical_job_id: str,
+    job_kind: M5JobKind,
+    expected_revision: int,
+) -> None:
+    """Move the exact owner/answer multiplicity for one failed job."""
+
+    _lock_pending_revision_bindings(
+        cursor, epoch_id=epoch_id, expected_revision=expected_revision
+    )
+    owner_rows = cursor.execute(
+        """
+        SELECT DISTINCT member.owner_claim_id COLLATE "C" AS owner_claim_id
+        FROM groundloop_m5_semantic_job AS job
+        JOIN groundloop_m5_discovery_scope AS scope
+          ON scope.scope_contract_digest = job.scope_contract_digest
+        JOIN groundloop_m5_requirement_registry_snapshot_member AS member
+          ON member.requirement_registry_snapshot_digest =
+             job.requirement_registry_snapshot_digest
+         AND (
+             job.job_kind = 'reverse_requirement_discovery'
+             OR (job.job_kind = 'forward_requirement_retrieval'
+                 AND member.requirement_version_id = scope.requirement_version_id)
+             OR (job.job_kind = 'verify_requirement_pair'
+                 AND member.requirement_version_id = job.subject_id)
+         )
+        WHERE job.epoch_id = %s AND job.logical_job_id = %s
+        ORDER BY owner_claim_id
+        """,
+        (epoch_id, logical_job_id),
+    ).fetchall()
+    owner_ids = tuple(str(row[0]) for row in owner_rows)
+    if not owner_ids:
+        raise ValidationError("terminal M5 job has no frozen owner multiplicity")
+    pending_column = {
+        M5JobKind.FORWARD_REQUIREMENT_RETRIEVAL: "forward_scope_count",
+        M5JobKind.REVERSE_REQUIREMENT_DISCOVERY: "broad_reverse_scope_count",
+        M5JobKind.VERIFY_REQUIREMENT_PAIR: "verifier_job_count",
+    }[job_kind]
+    owner_updated = cursor.execute(
+        sql.SQL(
+            "UPDATE groundloop_m5_owner_pending_counter "
+            "SET {counter} = {counter} - 1, "
+            "blocking_failure_count = blocking_failure_count + 1 "
+            "WHERE epoch_id = %s AND owner_claim_id = ANY(%s) "
+            "AND updated_revision = %s AND {counter} > 0"
+        ).format(counter=sql.Identifier(pending_column)),
+        (epoch_id, list(owner_ids), expected_revision),
+    ).rowcount
+    if owner_updated != len(owner_ids):
+        raise ValidationError("owner PENDING failure transition lost multiplicity")
+    answer_rows = cursor.execute(
+        """
+        SELECT answer_version_id, count(*)::bigint
+        FROM groundloop_claim
+        WHERE claim_id = ANY(%s) AND required
+        GROUP BY answer_version_id
+        ORDER BY answer_version_id COLLATE "C"
+        """,
+        (list(owner_ids),),
+    ).fetchall()
+    for answer_id, multiplicity_value in answer_rows:
+        multiplicity = int(multiplicity_value)
+        answer_updated = cursor.execute(
+            sql.SQL(
+                "UPDATE groundloop_m5_answer_pending_counter "
+                "SET {counter} = {counter} - %s, "
+                "blocking_failure_count = blocking_failure_count + %s "
+                "WHERE epoch_id = %s AND answer_version_id = %s "
+                "AND updated_revision = %s AND {counter} >= %s"
+            ).format(counter=sql.Identifier(pending_column)),
+            (
+                multiplicity,
+                multiplicity,
+                epoch_id,
+                str(answer_id),
+                expected_revision,
+                multiplicity,
+            ),
+        ).rowcount
+        if answer_updated != 1:
+            raise ValidationError("answer PENDING failure transition lost multiplicity")
 
 
 def _require_fresh_version_identifiers(
@@ -1030,6 +1279,72 @@ def _build_root_declarations(
     if len({declaration.job.logical_job_id for declaration in ordered}) != len(ordered):
         raise ValidationError("typed root declaration repeats a logical job")
     return ordered
+
+
+def _validate_recovery_root_fallback_map(
+    roots: tuple[_RootDeclaration, ...], supplied: dict[str, bool]
+) -> dict[str, bool]:
+    expected_ids = {
+        declaration.job.logical_job_id
+        for declaration in roots
+        if declaration.job.job_kind is M5JobKind.FORWARD_REQUIREMENT_RETRIEVAL
+    }
+    if set(supplied) != expected_ids:
+        raise ValidationError(
+            "recovery root fallback map must exactly cover the frozen root set"
+        )
+    if any(not isinstance(value, bool) for value in supplied.values()):
+        raise ValidationError("recovery root fallback values must be boolean")
+    return {root_id: supplied[root_id] for root_id in sorted(supplied)}
+
+
+def _derive_structural_open_work(
+    cursor: Cursor[Any], *, epoch_id: int
+) -> M5RuntimeWork:
+    """Hash the canonical database serialization of rows written by open."""
+
+    serialized_rows: list[bytes] = []
+    for table_name, epoch_column in _STRUCTURAL_OPEN_EPOCH_ROWS:
+        rows = cursor.execute(
+            sql.SQL(
+                "SELECT to_jsonb(open_row)::text FROM {} AS open_row "
+                "WHERE open_row.{} = %s "
+                'ORDER BY to_jsonb(open_row)::text COLLATE "C"'
+            ).format(sql.Identifier(table_name), sql.Identifier(epoch_column)),
+            (epoch_id,),
+        ).fetchall()
+        serialized_rows.extend(str(row[0]).encode("utf-8") for row in rows)
+
+    snapshot_members = cursor.execute(
+        """
+        SELECT to_jsonb(member_row)::text
+        FROM groundloop_m5_requirement_registry_snapshot_member AS member_row
+        JOIN groundloop_m5_requirement_registry_snapshot AS snapshot
+          USING (requirement_registry_snapshot_digest)
+        WHERE snapshot.created_epoch_id = %s
+        UNION ALL
+        SELECT to_jsonb(member_row)::text
+        FROM groundloop_m5_active_chunk_snapshot_member AS member_row
+        JOIN groundloop_m5_active_chunk_snapshot AS snapshot
+          USING (active_chunk_snapshot_digest)
+        WHERE snapshot.created_epoch_id = %s
+        """,
+        (epoch_id, epoch_id),
+    ).fetchall()
+    serialized_rows.extend(str(row[0]).encode("utf-8") for row in snapshot_members)
+    if not serialized_rows:
+        raise ValidationError("structural open produced no persistence rows")
+
+    byte_count = 0
+    structural_hasher = hashlib.sha256()
+    for encoded_row in sorted(serialized_rows):
+        frame = len(encoded_row).to_bytes(8, byteorder="big", signed=False)
+        structural_hasher.update(frame)
+        structural_hasher.update(encoded_row)
+        byte_count += len(frame) + len(encoded_row)
+    if len(structural_hasher.digest()) != hashlib.sha256().digest_size:
+        raise AssertionError("SHA-256 structural-open instrumentation drift")
+    return M5RuntimeWork(bytes_hashed=byte_count, bytes_serialized=byte_count)
 
 
 def _requirement_snapshot_rows(
@@ -1610,6 +1925,39 @@ def _load_runtime_work(
     return M5RuntimeWork(**values, work_digest=str(row[0]).strip())
 
 
+def _load_runtime_work_accumulator(
+    cursor: Cursor[Any], *, epoch_id: int, expected_revision: int
+) -> M5RuntimeWork | None:
+    relation = cursor.execute(
+        "SELECT to_regclass('groundloop_m5_runtime_work_accumulator')"
+    ).fetchone()
+    if relation is None or relation[0] is None:
+        return None
+    selected_columns = (*_WORK_COUNTER_COLUMNS, "work_digest")
+    row = cursor.execute(
+        sql.SQL(
+            "SELECT {}, updated_revision, terminalized "
+            "FROM groundloop_m5_runtime_work_accumulator WHERE epoch_id = %s"
+        ).format(
+            sql.SQL(", ").join(sql.Identifier(column) for column in selected_columns)
+        ),
+        (epoch_id,),
+    ).fetchone()
+    if row is None:
+        raise ValidationError("typed M5 epoch lacks its work accumulator")
+    work_end = len(_WORK_COUNTER_COLUMNS)
+    if int(row[work_end + 1]) != expected_revision or bool(row[work_end + 2]):
+        raise ValidationError("M5 work accumulator is not at the active revision")
+    values = {
+        name: int(value)
+        for name, value in zip(_WORK_COUNTER_COLUMNS, row[:work_end], strict=True)
+    }
+    return M5RuntimeWork(
+        **values,
+        work_digest=str(row[work_end]).strip(),
+    )
+
+
 def _optional_int(value: Any) -> int | None:
     return None if value is None else int(value)
 
@@ -1792,6 +2140,62 @@ def _load_terminal_result(
         postgres_wal_bytes=_optional_int(row[21]),
         postgres_shared_block_reads=_optional_int(row[22]),
     )
+    event_timing_coverage: M5RuntimeTimingCoverage | None = None
+    call_timing_coverage: M5RuntimeTimingCoverage | None = None
+    coverage_relation = cursor.execute(
+        "SELECT to_regclass('groundloop_m5_event_timing_coverage')"
+    ).fetchone()
+    if coverage_relation is not None and coverage_relation[0] is not None:
+        coverage_row = cursor.execute(
+            """
+            SELECT required_expected_count, required_observed_count,
+                   required_missing_count,
+                   postgres_server_execution_expected_count,
+                   postgres_server_execution_observed_count,
+                   postgres_server_execution_missing_count,
+                   postgres_lock_wait_expected_count,
+                   postgres_lock_wait_observed_count,
+                   postgres_lock_wait_missing_count,
+                   postgres_wal_bytes_expected_count,
+                   postgres_wal_bytes_observed_count,
+                   postgres_wal_bytes_missing_count,
+                   postgres_shared_block_reads_expected_count,
+                   postgres_shared_block_reads_observed_count,
+                   postgres_shared_block_reads_missing_count,
+                   terminal_client_roundtrip_included
+            FROM groundloop_m5_event_timing_coverage
+            WHERE structural_event_id = %s AND epoch_id = %s
+            """,
+            (structural_event_id, epoch_id),
+        ).fetchone()
+        if coverage_row is None:
+            raise ValidationError(
+                "terminal M5 result lacks frozen event timing coverage"
+            )
+        coverage_values = tuple(coverage_row)
+        event_timing_coverage = M5RuntimeTimingCoverage(
+            required_expected_count=int(coverage_values[0]),
+            required_observed_count=int(coverage_values[1]),
+            required_missing_count=int(coverage_values[2]),
+            postgres_server_execution_expected_count=int(coverage_values[3]),
+            postgres_server_execution_observed_count=int(coverage_values[4]),
+            postgres_server_execution_missing_count=int(coverage_values[5]),
+            postgres_lock_wait_expected_count=int(coverage_values[6]),
+            postgres_lock_wait_observed_count=int(coverage_values[7]),
+            postgres_lock_wait_missing_count=int(coverage_values[8]),
+            postgres_wal_bytes_expected_count=int(coverage_values[9]),
+            postgres_wal_bytes_observed_count=int(coverage_values[10]),
+            postgres_wal_bytes_missing_count=int(coverage_values[11]),
+            postgres_shared_block_reads_expected_count=int(coverage_values[12]),
+            postgres_shared_block_reads_observed_count=int(coverage_values[13]),
+            postgres_shared_block_reads_missing_count=int(coverage_values[14]),
+            terminal_client_roundtrip_included=bool(coverage_values[15]),
+        )
+        event_timing_coverage.validate_aggregate(event_timing)
+        call_timing_coverage = M5RuntimeTimingCoverage.single_point(
+            None,
+            terminal_client_roundtrip_included=False,
+        )
     result = M5EventRunResult.build(
         event_id=structural_event_id,
         payload_hash=payload_hash,
@@ -1807,6 +2211,8 @@ def _load_terminal_result(
         combined_deltas=combined_deltas,
         changed_state_references=changed_references,
         failure_reason=failure_reason,
+        event_timing_coverage=event_timing_coverage,
+        call_timing_coverage=call_timing_coverage,
     )
     if result.logical_result_hash != str(row[11]).strip():
         raise ValidationError("terminal M5 logical-result hash is corrupt")
@@ -2054,7 +2460,7 @@ class PostgresM5RuntimeStore:
             if updated != 1:
                 raise EventConflictError("activation mode CAS failed")
             _inject(failure_injector, "activation_after_mode")
-            cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
+            _force_deferred_validation(cursor)
             _inject(failure_injector, "activation_after_constraints")
             return M5ActivationReceipt.build(request)
 
@@ -2177,7 +2583,7 @@ class PostgresM5RuntimeStore:
             return jobs
 
     def current_event_work(self, epoch_id: int) -> M5RuntimeWork:
-        """Read committed event work, or canonical zero before terminalization."""
+        """Read the terminal event row or current nonterminal point image."""
 
         with self._connection.transaction(), self._connection.cursor() as cursor:
             cursor.execute("SET TRANSACTION READ ONLY")
@@ -2191,7 +2597,79 @@ class PostgresM5RuntimeStore:
                 return work
             if header.runtime_state in {"sealed", "failed"}:
                 raise ValidationError("terminal M5 epoch lacks persisted event work")
-            return M5RuntimeWork()
+            accumulator = _load_runtime_work_accumulator(
+                cursor,
+                epoch_id=epoch_id,
+                expected_revision=header.revision,
+            )
+            return M5RuntimeWork() if accumulator is None else accumulator
+
+    def append_transition_call_timing(
+        self,
+        epoch_id: int,
+        contribution_kind: M5RuntimeWorkContributionKind,
+        source_id: str,
+        contribution_key_digest: str,
+        anchor_revision: int,
+        observed_timing: M5RuntimeTiming | None,
+    ) -> M5TransitionTimingReceipt:
+        """Append or exactly replay one frozen nonterminal transition point."""
+
+        with self._connection.transaction(), self._connection.cursor() as cursor:
+            require_runtime_recovery_bundle(cursor)
+            header = _read_runtime_epoch_header(cursor, epoch_id, for_update=True)
+            receipt = append_transition_call_timing_checked(
+                cursor,
+                epoch_id=epoch_id,
+                contribution_kind=contribution_kind,
+                source_id=source_id,
+                contribution_key_digest=contribution_key_digest,
+                anchor_revision=anchor_revision,
+                current_revision=header.revision,
+                observed_timing=observed_timing,
+            )
+            _force_deferred_validation(cursor)
+            return receipt
+
+    def current_event_timing(
+        self, epoch_id: int
+    ) -> tuple[M5RuntimeTiming, M5RuntimeTimingCoverage]:
+        """Read frozen terminal timing or project the current pending point missing."""
+
+        with self._connection.transaction(), self._connection.cursor() as cursor:
+            cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            header = _read_runtime_epoch_header(cursor, epoch_id, for_update=False)
+            return read_current_event_timing(
+                cursor,
+                epoch_id=epoch_id,
+                structural_event_id=header.structural_event_id,
+                current_revision=header.revision,
+                terminal=header.runtime_state in {"sealed", "failed"},
+            )
+
+    def append_terminal_invocation_telemetry(
+        self,
+        invocation_id: str,
+        event_id: str,
+        epoch_id: int,
+        terminal_logical_result_hash: str,
+        call_timing: M5RuntimeTiming | None,
+        call_timing_coverage: M5RuntimeTimingCoverage,
+    ) -> None:
+        """Append or exactly replay telemetry for one committed terminal call."""
+
+        with self._connection.transaction(), self._connection.cursor() as cursor:
+            require_runtime_recovery_bundle(cursor)
+            persist_terminal_invocation_telemetry(
+                cursor,
+                invocation_id=invocation_id,
+                structural_event_id=event_id,
+                epoch_id=epoch_id,
+                terminal_logical_result_hash=terminal_logical_result_hash,
+                call_timing=call_timing,
+                call_timing_coverage=call_timing_coverage,
+            )
+            _force_deferred_validation(cursor)
 
     def acquire_m5_job(
         self,
@@ -2199,7 +2677,7 @@ class PostgresM5RuntimeStore:
         expected_revision: int,
         job: M5LogicalJobSpec,
     ) -> M5JobLease:
-        """Persist one dense dispatch attempt before external work may start."""
+        """Return the total checked D24 acquisition outcome for one M5 job."""
 
         if (
             isinstance(expected_revision, bool)
@@ -2211,6 +2689,7 @@ class PostgresM5RuntimeStore:
             raise ValidationError("job must be an M5LogicalJobSpec")
 
         with self._connection.transaction(), self._connection.cursor() as cursor:
+            require_runtime_recovery_bundle(cursor)
             header = _read_runtime_epoch_header(cursor, epoch_id, for_update=True)
             stored_job = _read_stored_job(
                 cursor,
@@ -2224,40 +2703,115 @@ class PostgresM5RuntimeStore:
                 )
             if job.structural_event_id != header.structural_event_id:
                 raise EventConflictError("job belongs to another structural event")
-            attempts = _read_stored_attempts(
-                cursor, logical_job_id=job.logical_job_id, for_update=True
+            latest = read_latest_requirement_attempt(
+                cursor, logical_job_id=job.logical_job_id
             )
-            latest = attempts[-1] if attempts else None
+            # D24 samples the database clock only after base -> runtime -> job ->
+            # latest-attempt locks have been acquired.  Even no-write outcomes
+            # use this one total decision point.
+            acquisition_clock = read_acquisition_clock(cursor, epoch_id=epoch_id)
+
+            if expected_revision > header.revision:
+                raise EventConflictError("expected revision is newer than the epoch")
+            if latest is not None and (
+                latest.attempt.logical_job_id != job.logical_job_id
+                or latest.attempt.execution_spec_hash != job.execution_spec_hash
+            ):
+                raise ValidationError("latest M5 attempt disagrees with its job")
 
             if stored_job.state.terminal:
+                assert stored_job.completion is not None
+                terminal_projection = M5LeaseTerminalProjection.build(
+                    logical_job_id=job.logical_job_id,
+                    terminal_state=stored_job.state,
+                    terminal_reason=stored_job.completion.archive_reason,
+                    completion_digest=stored_job.completion.completion_digest,
+                )
+                dispatch = (
+                    None
+                    if latest is None
+                    else load_requirement_dispatch(
+                        cursor, epoch_id=epoch_id, attempt=latest.attempt
+                    )
+                )
                 return M5JobLease(
-                    job.logical_job_id,
-                    None if latest is None else latest.attempt,
-                    header.revision,
-                    False,
-                    True,
+                    logical_job_id=job.logical_job_id,
+                    attempt=None if latest is None else latest.attempt,
+                    resulting_revision=header.revision,
+                    should_execute=False,
+                    exact_replay=True,
+                    lease_expires_at=(
+                        None if latest is None else latest.attempt.lease_expires_at
+                    ),
+                    dispatch_record_digest=(
+                        None if dispatch is None else dispatch.record_digest
+                    ),
+                    disposition=M5AcquisitionDisposition.TERMINAL,
+                    terminal_projection=terminal_projection,
                 )
             if stored_job.state is M5JobState.RUNNING:
-                if latest is None or latest.state not in {
-                    "dispatched",
-                    "result_reserved",
-                }:
+                if latest is None:
                     raise ValidationError(
                         "running M5 job lacks its live durable attempt"
                     )
-                return M5JobLease(
-                    job.logical_job_id,
-                    latest.attempt,
-                    header.revision,
-                    False,
-                    True,
+                if latest.state == "result_reserved":
+                    raise ValidationError(
+                        "committed result_reserved M5 attempt is invalid"
+                    )
+                dispatch = load_requirement_dispatch(
+                    cursor, epoch_id=epoch_id, attempt=latest.attempt
+                )
+                if latest.state == "completed":
+                    if not root_result_is_reserved(
+                        cursor,
+                        epoch_id=epoch_id,
+                        logical_job_id=job.logical_job_id,
+                        attempt=latest,
+                    ):
+                        raise ValidationError(
+                            "running completed M5 attempt lacks reserved-result closure"
+                        )
+                    return M5JobLease(
+                        logical_job_id=job.logical_job_id,
+                        attempt=latest.attempt,
+                        resulting_revision=header.revision,
+                        should_execute=False,
+                        exact_replay=True,
+                        lease_expires_at=latest.attempt.lease_expires_at,
+                        dispatch_record_digest=dispatch.record_digest,
+                        disposition=M5AcquisitionDisposition.RESULT_RESERVED,
+                    )
+                if latest.state != "dispatched":
+                    raise ValidationError(
+                        "running M5 job has an invalid latest attempt state"
+                    )
+                assert latest.attempt.lease_expires_at is not None
+                if acquisition_clock.decision_time < latest.attempt.lease_expires_at:
+                    return M5JobLease(
+                        logical_job_id=job.logical_job_id,
+                        attempt=latest.attempt,
+                        resulting_revision=header.revision,
+                        should_execute=False,
+                        exact_replay=True,
+                        lease_expires_at=latest.attempt.lease_expires_at,
+                        dispatch_record_digest=dispatch.record_digest,
+                        disposition=M5AcquisitionDisposition.LIVE_LEASE,
+                    )
+                acquisition_disposition = M5AcquisitionDisposition.DISPATCH_TAKEOVER
+                takeover_attempt_id = latest.attempt.attempt_id
+                next_ordinal = latest.attempt.attempt_ordinal + 1
+            else:
+                acquisition_disposition = M5AcquisitionDisposition.DISPATCH_NEW
+                takeover_attempt_id = None
+                next_ordinal = (
+                    1 if latest is None else latest.attempt.attempt_ordinal + 1
                 )
 
             _require_pending_lifecycle_epoch(header)
             if header.revision != expected_revision:
                 raise EventConflictError("stale typed runtime revision")
             if stored_job.state is M5JobState.DECLARED:
-                if attempts:
+                if latest is not None:
                     raise ValidationError("declared M5 job already has an attempt")
             elif stored_job.state is M5JobState.RETRYABLE_FAILED:
                 if (
@@ -2268,60 +2822,77 @@ class PostgresM5RuntimeStore:
                     raise ValidationError(
                         "retryable-failed M5 job lacks its failed attempt"
                     )
+            elif stored_job.state is M5JobState.RUNNING:
+                if acquisition_disposition is not (
+                    M5AcquisitionDisposition.DISPATCH_TAKEOVER
+                ):
+                    raise ValidationError("running M5 job is not takeover eligible")
             else:
                 raise InvalidEventError("M5 job is not acquirable")
 
-            cursor.execute(
-                "SELECT groundloop_m5_authorize_checked_transition(%s, %s)",
-                (epoch_id, expected_revision),
-            )
+            lease_token_hash = _new_lease_token_hash()
+            if latest is not None:
+                while lease_token_hash == latest.attempt.lease_token_hash:
+                    lease_token_hash = _new_lease_token_hash()
             attempt = M5JobAttempt.build(
                 logical_job_id=job.logical_job_id,
-                attempt_ordinal=len(attempts) + 1,
+                attempt_ordinal=next_ordinal,
                 execution_spec_hash=job.execution_spec_hash,
-                lease_token_hash=_new_lease_token_hash(),
+                lease_token_hash=lease_token_hash,
+                lease_expires_at=acquisition_clock.lease_expires_at,
+                attempt_work_digest=M5RuntimeWork().work_digest,
             )
-            updated = cursor.execute(
-                """
-                UPDATE groundloop_m5_semantic_job
-                SET job_state = 'running'
-                WHERE epoch_id = %s AND logical_job_id = %s
-                  AND job_state = %s
-                """,
-                (
-                    epoch_id,
-                    job.logical_job_id,
-                    stored_job.state.value,
-                ),
-            ).rowcount
-            if updated != 1:
-                raise EventConflictError("M5 job changed before acquisition")
-            cursor.execute(
-                """
-                INSERT INTO groundloop_m5_job_attempt (
-                    attempt_id, logical_job_id, attempt_ordinal,
-                    execution_spec_hash, lease_token_hash, attempt_state,
-                    attempt_output_digest, error_hash, finished_at
-                ) VALUES (%s, %s, %s, %s, %s, 'dispatched', NULL, NULL, NULL)
-                """,
-                (
-                    attempt.attempt_id,
-                    attempt.logical_job_id,
-                    attempt.attempt_ordinal,
-                    attempt.execution_spec_hash,
-                    attempt.lease_token_hash,
-                ),
+            fallback_required = requirement_fallback_required(
+                cursor,
+                epoch_id=epoch_id,
+                job_kind=job.job_kind,
+                logical_job_id=job.logical_job_id,
             )
+            dispatch, anchor = persist_requirement_dispatch(
+                cursor,
+                epoch_id=epoch_id,
+                expected_revision=expected_revision,
+                attempt=attempt,
+                job_kind=job.job_kind,
+                fallback_required=fallback_required,
+                takeover_attempt_id=takeover_attempt_id,
+                decision_time=acquisition_clock.decision_time,
+            )
+            if acquisition_disposition is M5AcquisitionDisposition.DISPATCH_NEW:
+                updated = cursor.execute(
+                    """
+                    UPDATE groundloop_m5_semantic_job
+                    SET job_state = 'running'
+                    WHERE epoch_id = %s AND logical_job_id = %s
+                      AND job_state = %s
+                    """,
+                    (
+                        epoch_id,
+                        job.logical_job_id,
+                        stored_job.state.value,
+                    ),
+                ).rowcount
+                if updated != 1:
+                    raise EventConflictError("M5 job changed before acquisition")
             resulting_revision = _advance_job_lifecycle_revision(
                 cursor, header=header, expected_revision=expected_revision
             )
-            cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
+            finish_requirement_dispatch_accounting(
+                cursor,
+                epoch_id=epoch_id,
+                expected_revision=expected_revision,
+                anchor=anchor,
+            )
+            _force_deferred_validation(cursor)
             return M5JobLease(
-                job.logical_job_id,
-                attempt,
-                resulting_revision,
-                True,
-                False,
+                logical_job_id=job.logical_job_id,
+                attempt=attempt,
+                resulting_revision=resulting_revision,
+                should_execute=True,
+                exact_replay=False,
+                lease_expires_at=attempt.lease_expires_at,
+                dispatch_record_digest=dispatch.record_digest,
+                disposition=acquisition_disposition,
             )
 
     def mark_m5_retryable_failure(
@@ -2330,9 +2901,54 @@ class PostgresM5RuntimeStore:
         expected_revision: int,
         lease: M5JobLease,
         error_hash: str,
+        attempt_work: M5RuntimeWork,
+        attempt_timing: M5RuntimeTiming | None,
     ) -> M5AttemptCompletionReceipt:
         """Persist an external-call failure without inventing result identity."""
 
+        return self._mark_m5_failure(
+            epoch_id=epoch_id,
+            expected_revision=expected_revision,
+            lease=lease,
+            terminal_reason=None,
+            error_hash=error_hash,
+            attempt_work=attempt_work,
+            attempt_timing=attempt_timing,
+        )
+
+    def mark_m5_terminal_failure(
+        self,
+        epoch_id: int,
+        expected_revision: int,
+        lease: M5JobLease,
+        terminal_reason: M5TerminalReason,
+        error_hash: str,
+        attempt_work: M5RuntimeWork,
+        attempt_timing: M5RuntimeTiming | None,
+    ) -> M5AttemptCompletionReceipt:
+        """Settle one attempt and move its current job to blocking failure."""
+
+        return self._mark_m5_failure(
+            epoch_id=epoch_id,
+            expected_revision=expected_revision,
+            lease=lease,
+            terminal_reason=terminal_reason,
+            error_hash=error_hash,
+            attempt_work=attempt_work,
+            attempt_timing=attempt_timing,
+        )
+
+    def _mark_m5_failure(
+        self,
+        *,
+        epoch_id: int,
+        expected_revision: int,
+        lease: M5JobLease,
+        terminal_reason: M5TerminalReason | None,
+        error_hash: str,
+        attempt_work: M5RuntimeWork,
+        attempt_timing: M5RuntimeTiming | None,
+    ) -> M5AttemptCompletionReceipt:
         if (
             isinstance(expected_revision, bool)
             or not isinstance(expected_revision, int)
@@ -2340,9 +2956,20 @@ class PostgresM5RuntimeStore:
         ):
             raise InvalidEventError("expected runtime revision must be positive")
         _require_sha256("error_hash", error_hash)
+        if terminal_reason is not None and (
+            not isinstance(terminal_reason, M5TerminalReason)
+            or terminal_reason not in _M5_FAILURE_TERMINAL_REASONS
+        ):
+            raise ValidationError("terminal failure requires a failure terminal reason")
         attempt = _require_executable_lease(lease, expected_revision=expected_revision)
+        disposition = (
+            M5ExecutionEvidenceDisposition.RETRYABLE_FAILURE
+            if terminal_reason is None
+            else M5ExecutionEvidenceDisposition.TERMINAL_FAILURE
+        )
 
         with self._connection.transaction(), self._connection.cursor() as cursor:
+            require_runtime_recovery_bundle(cursor)
             header = _read_runtime_epoch_header(cursor, epoch_id, for_update=True)
             stored_job = _read_stored_job(
                 cursor,
@@ -2350,69 +2977,231 @@ class PostgresM5RuntimeStore:
                 logical_job_id=lease.logical_job_id,
                 for_update=True,
             )
-            if stored_job.spec.structural_event_id != header.structural_event_id:
-                raise EventConflictError("lease belongs to another structural event")
-            attempts = _read_stored_attempts(
-                cursor, logical_job_id=lease.logical_job_id, for_update=True
-            )
-            if not attempts:
-                raise EventConflictError("lease attempt is not durable")
-            latest = attempts[-1]
-            if latest.attempt != attempt:
-                raise EventConflictError(
-                    "lease identity differs from the current durable attempt"
-                )
-            if attempt.execution_spec_hash != stored_job.spec.execution_spec_hash:
+            if (
+                stored_job.spec.structural_event_id != header.structural_event_id
+                or attempt.execution_spec_hash != stored_job.spec.execution_spec_hash
+            ):
                 raise EventConflictError("lease execution identity is inconsistent")
-
-            if latest.state == "failed":
-                if stored_job.state is not M5JobState.RETRYABLE_FAILED:
-                    raise ValidationError(
-                        "failed attempt lacks retryable-failed job state"
-                    )
-                if latest.error_hash != error_hash:
-                    raise EventConflictError(
-                        "retryable failure replay changed its error hash"
-                    )
+            dispatch = load_requirement_dispatch(
+                cursor, epoch_id=epoch_id, attempt=attempt
+            )
+            if (
+                dispatch.record_digest != lease.dispatch_record_digest
+                or dispatch.dispatched_revision != lease.resulting_revision
+            ):
+                raise EventConflictError("lease dispatch identity is not durable")
+            accounting = build_requirement_execution_accounting(
+                epoch_id=epoch_id,
+                expected_revision=expected_revision,
+                attempt=attempt,
+                dispatch=dispatch,
+                disposition=disposition,
+                result_or_error_hash=error_hash,
+                attempt_work=attempt_work,
+                attempt_timing=attempt_timing,
+            )
+            durable_attempt = read_requirement_attempt(
+                cursor,
+                logical_job_id=lease.logical_job_id,
+                attempt_id=attempt.attempt_id,
+            )
+            if durable_attempt is None or not _same_requirement_attempt_identity(
+                durable_attempt.attempt, attempt
+            ):
+                raise EventConflictError("lease attempt identity is not durable")
+            replay_revision = read_requirement_execution_replay(
+                cursor,
+                expected_evidence=accounting.evidence,
+                expected_observation=accounting.observation,
+            )
+            if replay_revision is not None:
+                self._validate_m5_failure_replay(
+                    cursor=cursor,
+                    header=header,
+                    job=stored_job,
+                    attempt=durable_attempt,
+                    accounting=accounting,
+                    terminal_reason=terminal_reason,
+                    applied_revision=replay_revision,
+                )
                 return M5AttemptCompletionReceipt(
                     lease.logical_job_id,
                     attempt.attempt_id,
                     header.revision,
                     True,
                 )
-
-            _require_pending_lifecycle_epoch(header)
-            if header.revision != expected_revision:
-                raise EventConflictError("stale typed runtime revision")
-            if latest.state != "dispatched":
-                raise EventConflictError("only a dispatched attempt may fail retryably")
-            if stored_job.state is not M5JobState.RUNNING:
-                raise EventConflictError("retryable failure requires a running job")
-
-            cursor.execute(
-                "SELECT groundloop_m5_authorize_checked_transition(%s, %s)",
-                (epoch_id, expected_revision),
+            return self._persist_new_m5_failure(
+                cursor=cursor,
+                header=header,
+                job=stored_job,
+                attempt=attempt,
+                expected_revision=expected_revision,
+                terminal_reason=terminal_reason,
+                error_hash=error_hash,
+                accounting=accounting,
             )
-            updated_attempt = cursor.execute(
+
+    @staticmethod
+    def _validate_m5_failure_replay(
+        *,
+        cursor: Cursor[Any],
+        header: _RuntimeEpochHeader,
+        job: _StoredM5Job,
+        attempt: StoredRequirementAttempt,
+        accounting: RequirementExecutionAccounting,
+        terminal_reason: M5TerminalReason | None,
+        applied_revision: int,
+    ) -> None:
+        evidence = accounting.evidence
+        if (
+            applied_revision > header.revision
+            or attempt.state != "failed"
+            or attempt.error_hash != evidence.result_or_error_hash
+            or attempt.attempt.attempt_work_digest != evidence.attempt_work.work_digest
+        ):
+            raise ValidationError("M5 failure evidence lacks its settled attempt")
+        terminal_columns = ", ".join(_WORK_COUNTER_COLUMNS)
+        terminal_rows = cursor.execute(
+            f"""
+            SELECT {terminal_columns}, work_digest, source_identity_hash,
+                   contribution_key_digest
+            FROM groundloop_m5_runtime_work_contribution
+            WHERE epoch_id = %s
+              AND contribution_kind = 'terminal_job_failure'
+              AND source_id = %s AND applied_revision = %s
+            """,
+            (header.epoch_id, job.spec.logical_job_id, applied_revision),
+        ).fetchall()
+        if terminal_reason is None:
+            if terminal_rows:
+                raise ValidationError(
+                    "retryable evidence owns a terminal contribution revision"
+                )
+            if (
+                applied_revision == header.revision
+                and job.state is not M5JobState.RETRYABLE_FAILED
+            ):
+                raise ValidationError("retryable evidence lacks its current job state")
+            return
+        if (
+            job.state is M5JobState.TERMINAL_FAILED
+            and job.completion is not None
+            and job.completion.archive_reason is not terminal_reason
+        ):
+            raise EventConflictError(
+                "terminal failure replay changed its terminal reason"
+            )
+        expected_terminal_source = (
+            digests.terminal_job_failure_contribution_source_digest(
+                logical_job_id=job.spec.logical_job_id,
+                terminal_reason=terminal_reason,
+                error_hash=evidence.result_or_error_hash,
+            )
+        )
+        expected_terminal_key = digests.runtime_work_contribution_key_digest(
+            epoch_id=header.epoch_id,
+            contribution_kind="terminal_job_failure",
+            source_id=job.spec.logical_job_id,
+        )
+        terminal_expected = (
+            *M5RuntimeWork().counter_values(),
+            M5RuntimeWork().work_digest,
+            expected_terminal_source,
+            expected_terminal_key,
+        )
+        if len(terminal_rows) != 1 or tuple(terminal_rows[0]) != terminal_expected:
+            raise ValidationError(
+                "terminal evidence lacks its exact zero failure contribution"
+            )
+        if (
+            job.state is not M5JobState.TERMINAL_FAILED
+            or job.completion is None
+            or job.completion.archive_reason is not terminal_reason
+            or job.completed_revision != applied_revision
+        ):
+            raise ValidationError("terminal evidence lacks its exact job completion")
+        if job.spec.parent_job_id is None:
+            scope = cursor.execute(
                 """
-                UPDATE groundloop_m5_job_attempt
-                SET attempt_state = 'failed', error_hash = %s,
-                    finished_at = now()
-                WHERE attempt_id = %s AND logical_job_id = %s
-                  AND attempt_state = 'dispatched'
-                  AND lease_token_hash = %s
-                  AND execution_spec_hash = %s
+                SELECT scope_state, completion_digest, closed_revision
+                FROM groundloop_m5_discovery_scope
+                WHERE epoch_id = %s AND root_job_id = %s
                 """,
-                (
-                    error_hash,
-                    attempt.attempt_id,
-                    attempt.logical_job_id,
-                    attempt.lease_token_hash,
-                    attempt.execution_spec_hash,
-                ),
-            ).rowcount
-            if updated_attempt != 1:
-                raise EventConflictError("M5 attempt changed before failure")
+                (header.epoch_id, job.spec.logical_job_id),
+            ).fetchone()
+            if scope != (
+                "terminal_failed",
+                job.completion.completion_digest,
+                applied_revision,
+            ):
+                raise ValidationError("terminal root lacks its exact failed scope")
+
+    def _persist_new_m5_failure(
+        self,
+        *,
+        cursor: Cursor[Any],
+        header: _RuntimeEpochHeader,
+        job: _StoredM5Job,
+        attempt: M5JobAttempt,
+        expected_revision: int,
+        terminal_reason: M5TerminalReason | None,
+        error_hash: str,
+        accounting: RequirementExecutionAccounting,
+    ) -> M5AttemptCompletionReceipt:
+        _require_pending_lifecycle_epoch(header)
+        if header.revision != expected_revision:
+            raise EventConflictError("stale typed runtime revision")
+        latest = read_latest_requirement_attempt(
+            cursor, logical_job_id=job.spec.logical_job_id
+        )
+        if latest is None or not _same_requirement_attempt_identity(
+            latest.attempt, attempt
+        ):
+            raise EventConflictError("failure lease is no longer the latest attempt")
+        if latest.state != "dispatched":
+            raise EventConflictError("only a dispatched current attempt may fail")
+        if job.state is not M5JobState.RUNNING:
+            raise EventConflictError("failure settlement requires a running job")
+        settled_row = cursor.execute("SELECT clock_timestamp()").fetchone()
+        if settled_row is None or not isinstance(settled_row[0], datetime):
+            raise ValidationError("PostgreSQL did not return a settlement timestamp")
+        settled_at = settled_row[0]
+        resulting_revision = expected_revision + 1
+        cursor.execute(
+            "SELECT groundloop_m5_authorize_checked_transition(%s, %s)",
+            (header.epoch_id, expected_revision),
+        )
+        start = start_event_accounting(
+            cursor,
+            epoch_id=header.epoch_id,
+            expected_revision=expected_revision,
+        )
+        persist_requirement_execution_accounting(cursor, accounting=accounting)
+        updated_attempt = cursor.execute(
+            """
+            UPDATE groundloop_m5_job_attempt
+            SET attempt_state = 'failed', error_hash = %s,
+                finished_at = %s, attempt_work_digest = %s
+            WHERE attempt_id = %s AND logical_job_id = %s
+              AND attempt_state = 'dispatched'
+              AND lease_token_hash = %s AND lease_expires_at = %s
+              AND execution_spec_hash = %s
+            """,
+            (
+                error_hash,
+                settled_at,
+                accounting.evidence.attempt_work.work_digest,
+                attempt.attempt_id,
+                attempt.logical_job_id,
+                attempt.lease_token_hash,
+                attempt.lease_expires_at,
+                attempt.execution_spec_hash,
+            ),
+        ).rowcount
+        if updated_attempt != 1:
+            raise EventConflictError("M5 attempt changed before failure settlement")
+        open_scope_delta = 0
+        if terminal_reason is None:
             updated_job = cursor.execute(
                 """
                 UPDATE groundloop_m5_semantic_job
@@ -2420,20 +3209,116 @@ class PostgresM5RuntimeStore:
                 WHERE epoch_id = %s AND logical_job_id = %s
                   AND job_state = 'running'
                 """,
-                (epoch_id, lease.logical_job_id),
+                (header.epoch_id, job.spec.logical_job_id),
             ).rowcount
             if updated_job != 1:
-                raise EventConflictError("M5 job changed before failure")
-            resulting_revision = _advance_job_lifecycle_revision(
-                cursor, header=header, expected_revision=expected_revision
+                raise EventConflictError("M5 job changed before retryable failure")
+        else:
+            open_scope_delta = self._apply_terminal_m5_failure(
+                cursor=cursor,
+                header=header,
+                job=job,
+                terminal_reason=terminal_reason,
+                error_hash=error_hash,
+                resulting_revision=resulting_revision,
+                settled_at=settled_at,
             )
-            cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
-            return M5AttemptCompletionReceipt(
-                lease.logical_job_id,
-                attempt.attempt_id,
+        resulting_revision = _advance_job_lifecycle_revision(
+            cursor,
+            header=header,
+            expected_revision=expected_revision,
+            open_work_delta=-int(terminal_reason is not None),
+            open_scope_delta=open_scope_delta,
+            blocking_failure_delta=int(terminal_reason is not None),
+        )
+        finish_requirement_execution_accounting(
+            cursor,
+            epoch_id=header.epoch_id,
+            expected_revision=expected_revision,
+            start=start,
+            accounting=accounting,
+        )
+        _force_deferred_validation(cursor)
+        return M5AttemptCompletionReceipt(
+            job.spec.logical_job_id,
+            attempt.attempt_id,
+            resulting_revision,
+            False,
+        )
+
+    @staticmethod
+    def _apply_terminal_m5_failure(
+        *,
+        cursor: Cursor[Any],
+        header: _RuntimeEpochHeader,
+        job: _StoredM5Job,
+        terminal_reason: M5TerminalReason,
+        error_hash: str,
+        resulting_revision: int,
+        settled_at: datetime,
+    ) -> int:
+        completion = M5JobCompletion.build(
+            job=job.spec,
+            terminal_state=M5JobState.TERMINAL_FAILED,
+            archive_reason=terminal_reason,
+        )
+        updated_job = cursor.execute(
+            """
+            UPDATE groundloop_m5_semantic_job
+            SET job_state = 'terminal_failed', archive_reason = %s,
+                completion_digest = %s, completed_revision = %s,
+                completed_at = %s
+            WHERE epoch_id = %s AND logical_job_id = %s
+              AND job_state = 'running'
+            """,
+            (
+                terminal_reason.value,
+                completion.completion_digest,
                 resulting_revision,
-                False,
-            )
+                settled_at,
+                header.epoch_id,
+                job.spec.logical_job_id,
+            ),
+        ).rowcount
+        if updated_job != 1:
+            raise EventConflictError("M5 job changed before terminal failure")
+        root_scope_delta = 0
+        if job.spec.parent_job_id is None:
+            updated_scope = cursor.execute(
+                """
+                UPDATE groundloop_m5_discovery_scope
+                SET scope_state = 'terminal_failed', completion_digest = %s,
+                    closed_revision = %s, closed_at = %s
+                WHERE epoch_id = %s AND root_job_id = %s
+                  AND scope_state IN ('open', 'result_staged')
+                """,
+                (
+                    completion.completion_digest,
+                    resulting_revision,
+                    settled_at,
+                    header.epoch_id,
+                    job.spec.logical_job_id,
+                ),
+            ).rowcount
+            if updated_scope != 1:
+                raise EventConflictError("M5 root scope changed before failure")
+            root_scope_delta = -1
+        _move_job_pending_to_blocking_failure(
+            cursor,
+            epoch_id=header.epoch_id,
+            logical_job_id=job.spec.logical_job_id,
+            job_kind=job.spec.job_kind,
+            expected_revision=header.revision,
+        )
+        persist_terminal_job_failure_contribution(
+            cursor,
+            epoch_id=header.epoch_id,
+            resulting_revision=resulting_revision,
+            logical_job_id=job.spec.logical_job_id,
+            terminal_reason=terminal_reason,
+            error_hash=error_hash,
+        )
+        return root_scope_delta
 
     def stage_m5_discovery_result_atomically(
         self,
@@ -2443,9 +3328,13 @@ class PostgresM5RuntimeStore:
         job: M5LogicalJobSpec,
         result: M5RequirementDiscoveryResult,
         attempt_output: M5AttemptOutput,
+        execution_disposition: M5ExecutionEvidenceDisposition,
+        attempt_work: M5RuntimeWork,
+        attempt_timing: M5RuntimeTiming | None,
         *,
+        eligible_snapshot_exhausted: bool,
         failure_injector: RuntimeFailureInjector | None = None,
-    ) -> M5AttemptCompletionReceipt:
+    ) -> M5RequirementAttemptReturnReceipt:
         """Stage one root result inside exactly one owned transaction."""
 
         with self._connection.transaction(), self._connection.cursor() as cursor:
@@ -2457,6 +3346,10 @@ class PostgresM5RuntimeStore:
                 job,
                 result,
                 attempt_output,
+                execution_disposition,
+                attempt_work,
+                attempt_timing,
+                eligible_snapshot_exhausted=eligible_snapshot_exhausted,
                 failure_injector=failure_injector,
             )
 
@@ -2479,17 +3372,64 @@ class PostgresM5RuntimeStore:
                 failure_injector=failure_injector,
             )
 
-    def _read_existing_open_read_only(
-        self, plan: M5TypedEventPlan
-    ) -> OpenEventReceipt | None:
+    def complete_m5_verifier_atomically(
+        self,
+        epoch_id: int,
+        expected_revision: int,
+        lease: M5JobLease,
+        job: M5LogicalJobSpec,
+        pair_input: M5RequirementPairInput,
+        verifier_artifact: M5RequirementVerifierArtifact,
+        attempt_output: M5AttemptOutput,
+        execution_disposition: M5ExecutionEvidenceDisposition,
+        attempt_work: M5RuntimeWork,
+        attempt_timing: M5RuntimeTiming | None,
+        *,
+        failure_injector: RuntimeFailureInjector | None = None,
+    ) -> M5RequirementAttemptReturnReceipt:
+        """Complete or audit one verifier attempt in one owned transaction."""
+
         with self._connection.transaction(), self._connection.cursor() as cursor:
-            cursor.execute("SET TRANSACTION READ ONLY")
-            return self._read_existing_open(cursor, plan, for_update=False)
+            return complete_m5_verifier(
+                cursor,
+                epoch_id,
+                expected_revision,
+                lease,
+                job,
+                pair_input,
+                verifier_artifact,
+                attempt_output,
+                execution_disposition,
+                attempt_work,
+                attempt_timing,
+                failure_injector=failure_injector,
+            )
+
+    def cancel_m5_work_atomically(
+        self,
+        epoch_id: int,
+        expected_revision: int,
+        cancellation_plan: M5CancellationPlan,
+        *,
+        failure_injector: RuntimeFailureInjector | None = None,
+    ) -> M5CancellationReceipt:
+        """Cancel one exact requirement-job batch in an owned transaction."""
+
+        with self._connection.transaction(), self._connection.cursor() as cursor:
+            return cancel_m5_work(
+                cursor,
+                epoch_id,
+                expected_revision,
+                cancellation_plan,
+                failure_injector=failure_injector,
+            )
 
     def open_typed_event_atomically(
         self,
         plan: M5TypedEventPlan,
         *,
+        recovery_operational_config: M5RuntimeOperationalConfig | None = None,
+        recovery_root_fallback_required: dict[str, bool] | None = None,
         failure_injector: RuntimeFailureInjector | None = None,
     ) -> OpenEventReceipt:
         """Open the structural-group production failure/replay slice."""
@@ -2503,11 +3443,51 @@ class PostgresM5RuntimeStore:
         if plan.direct_plan is not None:
             raise InvalidEventError("group lifecycle events cannot carry a direct plan")
 
-        existing = self._read_existing_open_read_only(plan)
-        if existing is not None:
-            return existing
+        recovery_values = (
+            recovery_operational_config,
+            recovery_root_fallback_required,
+        )
+        if any(value is None for value in recovery_values) and not all(
+            value is None for value in recovery_values
+        ):
+            raise ValidationError(
+                "recovery open requires config and root provenance together"
+            )
+        recovery_open = recovery_operational_config is not None
+        if not recovery_open:
+            with self._connection.transaction(), self._connection.cursor() as cursor:
+                cursor.execute("SET TRANSACTION READ ONLY")
+                require_runtime_recovery_bundle(cursor)
+            raise ValidationError("typed open requires config and root provenance")
+
+        assert recovery_operational_config is not None
+        assert recovery_root_fallback_required is not None
+        with self._connection.transaction(), self._connection.cursor() as cursor:
+            cursor.execute("SET TRANSACTION READ ONLY")
+            require_runtime_recovery_bundle(cursor)
+            if not isinstance(recovery_operational_config, M5RuntimeOperationalConfig):
+                raise ValidationError(
+                    "recovery config must be an M5RuntimeOperationalConfig"
+                )
+            manifest = _load_candidate_manifest(cursor, plan.candidate_policy_id)
+            roots = _build_root_declarations(plan, manifest)
+            fallback_map = _validate_recovery_root_fallback_map(
+                roots, recovery_root_fallback_required
+            )
+            existing = self._read_existing_open(cursor, plan, for_update=False)
+            if existing is not None:
+                validate_structural_open_recovery(
+                    cursor,
+                    epoch_id=existing.epoch_id,
+                    structural_event_id=plan.structural_event_id,
+                    payload_hash=plan.payload_hash,
+                    config=recovery_operational_config,
+                    root_fallback_required=fallback_map,
+                )
+                return existing
 
         with self._connection.transaction(), self._connection.cursor() as cursor:
+            require_runtime_recovery_bundle(cursor)
             mode_row = cursor.execute(
                 """
                 SELECT mode
@@ -2560,6 +3540,24 @@ class PostgresM5RuntimeStore:
 
             existing = self._read_existing_open(cursor, plan, for_update=True)
             if existing is not None:
+                if recovery_open:
+                    assert recovery_operational_config is not None
+                    assert recovery_root_fallback_required is not None
+                    existing_manifest = _load_candidate_manifest(
+                        cursor, plan.candidate_policy_id
+                    )
+                    existing_roots = _build_root_declarations(plan, existing_manifest)
+                    existing_fallback = _validate_recovery_root_fallback_map(
+                        existing_roots, recovery_root_fallback_required
+                    )
+                    validate_structural_open_recovery(
+                        cursor,
+                        epoch_id=existing.epoch_id,
+                        structural_event_id=plan.structural_event_id,
+                        payload_hash=plan.payload_hash,
+                        config=recovery_operational_config,
+                        root_fallback_required=existing_fallback,
+                    )
                 return existing
 
             live_epoch = cursor.execute(
@@ -2583,6 +3581,12 @@ class PostgresM5RuntimeStore:
                 )
             decision_policy_version = manifest.decision_policy_version
             roots = _build_root_declarations(plan, manifest)
+            recovery_fallback_map: dict[str, bool] | None = None
+            if recovery_open:
+                assert recovery_root_fallback_required is not None
+                recovery_fallback_map = _validate_recovery_root_fallback_map(
+                    roots, recovery_root_fallback_required
+                )
             root_set_hash = digests.requirement_root_set_digest(
                 declaration.job.logical_job_id for declaration in roots
             )
@@ -2683,9 +3687,29 @@ class PostgresM5RuntimeStore:
                 epoch_id=epoch_id,
                 roots=roots,
             )
+            if recovery_open:
+                assert recovery_operational_config is not None
+                assert recovery_fallback_map is not None
+                persist_structural_open_identity(
+                    cursor,
+                    epoch_id=epoch_id,
+                    config=recovery_operational_config,
+                    root_fallback_required=recovery_fallback_map,
+                )
+                structural_work = _derive_structural_open_work(
+                    cursor, epoch_id=epoch_id
+                )
+                persist_structural_open_accounting(
+                    cursor,
+                    epoch_id=epoch_id,
+                    structural_event_id=plan.structural_event_id,
+                    payload_hash=plan.payload_hash,
+                    structural_work=structural_work,
+                )
+                _inject(failure_injector, "typed_open_recovery_initialized")
             _inject(failure_injector, "typed_open_snapshots_persisted")
             _inject(failure_injector, "typed_open_before_commit")
-            cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
+            _force_deferred_validation(cursor)
             return OpenEventReceipt(
                 epoch_id=epoch_id,
                 replayed=False,
@@ -3016,7 +4040,7 @@ class PostgresM5RuntimeStore:
                 raise EventConflictError("stale typed runtime revision")
             _inject(failure_injector, "typed_fail_runtime_updated")
             _inject(failure_injector, "typed_fail_before_constraints")
-            cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
+            _force_deferred_validation(cursor)
             _inject(failure_injector, "typed_fail_after_constraints")
             return result
 
