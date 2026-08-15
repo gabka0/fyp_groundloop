@@ -18,7 +18,7 @@ from groundloop.m5.runtime.contracts import (
     M5AttemptOutput,
     M5DiscoveryDirection,
     M5DiscoveryScopeContract,
-    M5JobAttempt,
+    M5ExecutionEvidenceDisposition,
     M5JobKind,
     M5JobLease,
     M5LogicalJobSpec,
@@ -27,14 +27,16 @@ from groundloop.m5.runtime.contracts import (
     M5RequirementDiscoveryResult,
     M5RequirementScopeSelection,
     M5RetrievalTermination,
+    M5RuntimeTiming,
+    M5RuntimeWork,
     RequirementRegistrySnapshot,
     RequirementRegistrySnapshotEntry,
     SemanticPairKey,
 )
 from groundloop.m5.runtime.persistence import PostgresM5RuntimeStore
-from groundloop.m5.runtime.postgres_roots import (
-    close_m5_requirement_roots,
-    stage_m5_discovery_result,
+from groundloop.m5.runtime.postgres_recovery import (
+    persist_structural_open_accounting,
+    persist_structural_open_identity,
 )
 
 
@@ -86,94 +88,22 @@ def _acquire(
     expected_revision: int,
     job: M5LogicalJobSpec,
 ) -> M5JobLease:
-    attempt = M5JobAttempt.build(
-        logical_job_id=job.logical_job_id,
-        attempt_ordinal=1,
-        execution_spec_hash=job.execution_spec_hash,
-        lease_token_hash=_sha(f"lease:{job.logical_job_id}"),
+    return PostgresM5RuntimeStore(connection).acquire_m5_job(
+        epoch_id, expected_revision, job
     )
-    resulting_revision = expected_revision + 1
-    with connection.transaction():
-        cursor = connection.cursor()
-        assert cursor.execute(
-            "SELECT revision FROM groundloop_epoch WHERE epoch_id = %s FOR UPDATE",
-            (epoch_id,),
-        ).fetchone() == (expected_revision,)
-        assert cursor.execute(
-            """
-            SELECT revision FROM groundloop_m5_runtime_epoch
-            WHERE epoch_id = %s FOR UPDATE
-            """,
-            (epoch_id,),
-        ).fetchone() == (expected_revision,)
-        cursor.execute(
-            "SELECT groundloop_m5_authorize_checked_transition(%s, %s)",
-            (epoch_id, expected_revision),
+
+
+def _attempt_work(job: M5LogicalJobSpec) -> M5RuntimeWork:
+    if job.job_kind is M5JobKind.FORWARD_REQUIREMENT_RETRIEVAL:
+        return M5RuntimeWork(
+            requirement_forward_retrieval_call_count=1,
+            embedding_model_call_count=1,
         )
-        assert (
-            cursor.execute(
-                """
-            UPDATE groundloop_m5_semantic_job
-            SET job_state = 'running'
-            WHERE epoch_id = %s AND logical_job_id = %s
-              AND job_state = 'declared'
-            """,
-                (epoch_id, job.logical_job_id),
-            ).rowcount
-            == 1
-        )
-        cursor.execute(
-            """
-            INSERT INTO groundloop_m5_job_attempt (
-                attempt_id, logical_job_id, attempt_ordinal,
-                execution_spec_hash, lease_token_hash, attempt_state
-            ) VALUES (%s, %s, %s, %s, %s, 'dispatched')
-            """,
-            (
-                attempt.attempt_id,
-                attempt.logical_job_id,
-                attempt.attempt_ordinal,
-                attempt.execution_spec_hash,
-                attempt.lease_token_hash,
-            ),
-        )
-        cursor.execute(
-            """
-            UPDATE groundloop_m5_owner_pending_counter
-            SET updated_revision = %s WHERE epoch_id = %s
-            """,
-            (resulting_revision, epoch_id),
-        )
-        cursor.execute(
-            """
-            UPDATE groundloop_m5_answer_pending_counter
-            SET updated_revision = %s WHERE epoch_id = %s
-            """,
-            (resulting_revision, epoch_id),
-        )
-        assert (
-            cursor.execute(
-                """
-            UPDATE groundloop_epoch SET revision = %s
-            WHERE epoch_id = %s AND revision = %s
-            """,
-                (resulting_revision, epoch_id, expected_revision),
-            ).rowcount
-            == 1
-        )
-        assert (
-            cursor.execute(
-                """
-            UPDATE groundloop_m5_runtime_epoch
-            SET runtime_state = 'semantic_pending', revision = %s
-            WHERE epoch_id = %s AND revision = %s
-            """,
-                (resulting_revision, epoch_id, expected_revision),
-            ).rowcount
-            == 1
-        )
-        cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
-    return M5JobLease(job.logical_job_id, attempt, resulting_revision, True, False)
+    assert job.job_kind is M5JobKind.REVERSE_REQUIREMENT_DISCOVERY
+    return M5RuntimeWork(
+        requirement_reverse_retrieval_call_count=1,
+        embedding_model_call_count=1,
+    )
 
 
 def _result(
@@ -235,18 +165,35 @@ def _stage(
         result_artifact_id=result.result_artifact_id,
         result_artifact_hash=result.result_artifact_hash,
     )
-    with connection.transaction():
-        receipt = stage_m5_discovery_result(
-            connection.cursor(),
-            epoch_id,
-            expected_revision,
-            lease,
-            job,
-            result,
-            output,
-            failure_injector=injector,
-        )
+    receipt = PostgresM5RuntimeStore(connection).stage_m5_discovery_result_atomically(
+        epoch_id,
+        expected_revision,
+        lease,
+        job,
+        result,
+        output,
+        M5ExecutionEvidenceDisposition.RETURNED,
+        _attempt_work(job),
+        M5RuntimeTiming(),
+        eligible_snapshot_exhausted=True,
+        failure_injector=injector,
+    )
     return receipt, output
+
+
+def _open_recovery_event(
+    store: PostgresM5RuntimeStore,
+    database: Any,
+    plan: Any,
+) -> Any:
+    roots = _roots(plan, database.manifest)
+    return store.open_typed_event_atomically(
+        plan,
+        recovery_operational_config=database.operational_config,
+        recovery_root_fallback_required={
+            job.logical_job_id: False for _scope, job in roots
+        },
+    )
 
 
 def _root_set_hash(
@@ -321,6 +268,7 @@ def _open_overlap_event(
         )
     )
     connection = m5_runtime_db.connection
+    payload_hash = _sha("root-overlap-payload")
     with connection.transaction():
         cursor = connection.cursor()
         row = cursor.execute(
@@ -332,7 +280,7 @@ def _open_overlap_event(
                       'provisional', NULL)
             RETURNING epoch_id
             """,
-            (event_id, _sha("root-overlap-payload")),
+            (event_id, payload_hash),
         ).fetchone()
         assert row is not None
         epoch_id = int(row[0])
@@ -509,6 +457,23 @@ def _open_overlap_event(
             """,
             (epoch_id, m5_runtime_db.base.answer_id),
         )
+        persist_structural_open_identity(
+            cursor,
+            epoch_id=epoch_id,
+            config=m5_runtime_db.operational_config,
+            root_fallback_required={
+                job.logical_job_id: False
+                for _scope, job in roots
+                if job.job_kind is M5JobKind.FORWARD_REQUIREMENT_RETRIEVAL
+            },
+        )
+        persist_structural_open_accounting(
+            cursor,
+            epoch_id=epoch_id,
+            structural_event_id=event_id,
+            payload_hash=payload_hash,
+            structural_work=M5RuntimeWork(),
+        )
         cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
     return epoch_id, roots
 
@@ -532,6 +497,15 @@ def _transition_snapshot(
         "groundloop_m5_requirement_frontier_head",
         "groundloop_m5_owner_pending_counter",
         "groundloop_m5_answer_pending_counter",
+        "groundloop_m5_runtime_operational_config",
+        "groundloop_m5_requirement_root_provenance",
+        "groundloop_m5_dispatch_record",
+        "groundloop_m5_attempt_execution_evidence",
+        "groundloop_m5_runtime_work_contribution",
+        "groundloop_m5_runtime_work_accumulator",
+        "groundloop_m5_runtime_timing_contribution",
+        "groundloop_m5_transition_call_timing",
+        "groundloop_m5_runtime_timing_accumulator",
     )
     snapshot = []
     for table in tables:
@@ -574,7 +548,7 @@ def test_empty_roots_stage_exactly_and_close_with_forward_heads(
 ) -> None:
     plan = m5_runtime_db.register_plan(event_id="root-empty-close")
     store = PostgresM5RuntimeStore(m5_runtime_db.connection)
-    receipt = store.open_typed_event_atomically(plan)
+    receipt = _open_recovery_event(store, m5_runtime_db, plan)
     roots = _roots(plan, m5_runtime_db.manifest)
     revision = 1
     staged: list[
@@ -615,6 +589,10 @@ def test_empty_roots_stage_exactly_and_close_with_forward_heads(
         job,
         result,
         output,
+        M5ExecutionEvidenceDisposition.RETURNED,
+        _attempt_work(job),
+        M5RuntimeTiming(),
+        eligible_snapshot_exhausted=True,
     )
     assert replay.exact_replay
     assert replay.resulting_revision == revision
@@ -666,9 +644,11 @@ def test_incomplete_barrier_and_conflicting_attempt_output_write_nothing(
     m5_runtime_db: Any,
 ) -> None:
     plan = m5_runtime_db.register_plan(event_id="root-incomplete-conflict")
-    opened = PostgresM5RuntimeStore(
-        m5_runtime_db.connection
-    ).open_typed_event_atomically(plan)
+    opened = _open_recovery_event(
+        PostgresM5RuntimeStore(m5_runtime_db.connection),
+        m5_runtime_db,
+        plan,
+    )
     roots = _roots(plan, m5_runtime_db.manifest)
     _scope, job = roots[0]
     lease = _acquire(
@@ -688,13 +668,13 @@ def test_incomplete_barrier_and_conflicting_attempt_output_write_nothing(
     )
     before = _transition_snapshot(m5_runtime_db.connection, opened.epoch_id)
     with pytest.raises(InvalidEventError):
-        with m5_runtime_db.connection.transaction():
-            close_m5_requirement_roots(
-                m5_runtime_db.connection.cursor(),
-                opened.epoch_id,
-                3,
-                _root_set_hash(roots),
-            )
+        PostgresM5RuntimeStore(
+            m5_runtime_db.connection
+        ).close_m5_requirement_roots_atomically(
+            opened.epoch_id,
+            3,
+            _root_set_hash(roots),
+        )
     assert _transition_snapshot(m5_runtime_db.connection, opened.epoch_id) == before
 
     conflict_pair = SemanticPairKey(
@@ -705,6 +685,7 @@ def test_incomplete_barrier_and_conflicting_attempt_output_write_nothing(
     conflicting_result = _result(
         epoch_id=opened.epoch_id, root=job, pairs=(conflict_pair,)
     )
+    assert lease.attempt is not None
     conflicting = M5AttemptOutput.build(
         attempt=lease.attempt,
         job_epoch_id=opened.epoch_id,
@@ -713,16 +694,20 @@ def test_incomplete_barrier_and_conflicting_attempt_output_write_nothing(
         result_artifact_hash=conflicting_result.result_artifact_hash,
     )
     with pytest.raises(EventConflictError):
-        with m5_runtime_db.connection.transaction():
-            stage_m5_discovery_result(
-                m5_runtime_db.connection.cursor(),
-                opened.epoch_id,
-                2,
-                lease,
-                job,
-                conflicting_result,
-                conflicting,
-            )
+        PostgresM5RuntimeStore(
+            m5_runtime_db.connection
+        ).stage_m5_discovery_result_atomically(
+            opened.epoch_id,
+            2,
+            lease,
+            job,
+            conflicting_result,
+            conflicting,
+            M5ExecutionEvidenceDisposition.RETURNED,
+            _attempt_work(job),
+            M5RuntimeTiming(),
+            eligible_snapshot_exhausted=True,
+        )
     assert output != conflicting
     assert _transition_snapshot(m5_runtime_db.connection, opened.epoch_id) == before
 
@@ -756,13 +741,13 @@ def test_forward_reverse_overlap_uses_least_root_and_retains_both_sources(
         )
         revision = staged.resulting_revision
 
-    with m5_runtime_db.connection.transaction():
-        barrier = close_m5_requirement_roots(
-            m5_runtime_db.connection.cursor(),
-            epoch_id,
-            revision,
-            _root_set_hash(roots),
-        )
+    barrier = PostgresM5RuntimeStore(
+        m5_runtime_db.connection
+    ).close_m5_requirement_roots_atomically(
+        epoch_id,
+        revision,
+        _root_set_hash(roots),
+    )
     assert not barrier.exact_replay
     revision += 1
     expected_owner = min(job.logical_job_id for _scope, job in roots)
@@ -805,13 +790,13 @@ def test_forward_reverse_overlap_uses_least_root_and_retains_both_sources(
     m5_runtime_db.connection.commit()
 
     before = _transition_snapshot(m5_runtime_db.connection, epoch_id)
-    with m5_runtime_db.connection.transaction():
-        replay = close_m5_requirement_roots(
-            m5_runtime_db.connection.cursor(),
-            epoch_id,
-            revision - 1,
-            _root_set_hash(roots),
-        )
+    replay = PostgresM5RuntimeStore(
+        m5_runtime_db.connection
+    ).close_m5_requirement_roots_atomically(
+        epoch_id,
+        revision - 1,
+        _root_set_hash(roots),
+    )
     assert replay.exact_replay
     assert replay.resulting_revision == revision
     assert _transition_snapshot(m5_runtime_db.connection, epoch_id) == before
@@ -843,9 +828,11 @@ def test_stage_failure_injection_rolls_back_and_clean_retry_succeeds(
     m5_runtime_db: Any, failure_point: str
 ) -> None:
     plan = m5_runtime_db.register_plan(event_id=f"stage-rollback-{failure_point}")
-    opened = PostgresM5RuntimeStore(
-        m5_runtime_db.connection
-    ).open_typed_event_atomically(plan)
+    opened = _open_recovery_event(
+        PostgresM5RuntimeStore(m5_runtime_db.connection),
+        m5_runtime_db,
+        plan,
+    )
     roots = _roots(plan, m5_runtime_db.manifest)
     _scope, job = roots[0]
     lease = _acquire(
@@ -893,9 +880,11 @@ def test_barrier_failure_injection_rolls_back_and_clean_retry_succeeds(
     m5_runtime_db: Any, failure_point: str
 ) -> None:
     plan = m5_runtime_db.register_plan(event_id=f"barrier-rollback-{failure_point}")
-    opened = PostgresM5RuntimeStore(
-        m5_runtime_db.connection
-    ).open_typed_event_atomically(plan)
+    opened = _open_recovery_event(
+        PostgresM5RuntimeStore(m5_runtime_db.connection),
+        m5_runtime_db,
+        plan,
+    )
     epoch_id = opened.epoch_id
     roots = _roots(plan, m5_runtime_db.manifest)
     revision = 1
@@ -918,22 +907,22 @@ def test_barrier_failure_injection_rolls_back_and_clean_retry_succeeds(
         revision = staged.resulting_revision
     before = _transition_snapshot(m5_runtime_db.connection, epoch_id)
     with pytest.raises(_InjectedRootFailure):
-        with m5_runtime_db.connection.transaction():
-            close_m5_requirement_roots(
-                m5_runtime_db.connection.cursor(),
-                epoch_id,
-                revision,
-                _root_set_hash(roots),
-                failure_injector=_raise_at(failure_point),
-            )
-    assert _transition_snapshot(m5_runtime_db.connection, epoch_id) == before
-    with m5_runtime_db.connection.transaction():
-        retry = close_m5_requirement_roots(
-            m5_runtime_db.connection.cursor(),
+        PostgresM5RuntimeStore(
+            m5_runtime_db.connection
+        ).close_m5_requirement_roots_atomically(
             epoch_id,
             revision,
             _root_set_hash(roots),
+            failure_injector=_raise_at(failure_point),
         )
+    assert _transition_snapshot(m5_runtime_db.connection, epoch_id) == before
+    retry = PostgresM5RuntimeStore(
+        m5_runtime_db.connection
+    ).close_m5_requirement_roots_atomically(
+        epoch_id,
+        revision,
+        _root_set_hash(roots),
+    )
     assert not retry.exact_replay
     assert retry.resulting_revision == revision + 1
 
@@ -942,9 +931,11 @@ def test_concurrent_identical_stage_and_barrier_have_one_writer_each(
     m5_runtime_db: Any,
 ) -> None:
     plan = m5_runtime_db.register_plan(event_id="root-concurrent-identical")
-    opened = PostgresM5RuntimeStore(
-        m5_runtime_db.connection
-    ).open_typed_event_atomically(plan)
+    opened = _open_recovery_event(
+        PostgresM5RuntimeStore(m5_runtime_db.connection),
+        m5_runtime_db,
+        plan,
+    )
     roots = _roots(plan, m5_runtime_db.manifest)
     _scope, first_job = roots[0]
     first_lease = _acquire(
@@ -990,13 +981,13 @@ def test_concurrent_identical_stage_and_barrier_have_one_writer_each(
 
     def close_once() -> Any:
         with m5_runtime_db.reconnect() as connection:
-            with connection.transaction():
-                return close_m5_requirement_roots(
-                    connection.cursor(),
-                    opened.epoch_id,
-                    revision,
-                    _root_set_hash(roots),
-                )
+            return PostgresM5RuntimeStore(
+                connection
+            ).close_m5_requirement_roots_atomically(
+                opened.epoch_id,
+                revision,
+                _root_set_hash(roots),
+            )
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         barrier_receipts = tuple(executor.map(lambda _: close_once(), range(2)))
@@ -1013,9 +1004,11 @@ def test_final_stage_and_barrier_race_never_closes_a_partial_root_set(
     m5_runtime_db: Any,
 ) -> None:
     plan = m5_runtime_db.register_plan(event_id="root-final-stage-barrier-race")
-    opened = PostgresM5RuntimeStore(
-        m5_runtime_db.connection
-    ).open_typed_event_atomically(plan)
+    opened = _open_recovery_event(
+        PostgresM5RuntimeStore(m5_runtime_db.connection),
+        m5_runtime_db,
+        plan,
+    )
     roots = _roots(plan, m5_runtime_db.manifest)
     revision = 1
     _first_scope, first_job = roots[0]
@@ -1059,13 +1052,13 @@ def test_final_stage_and_barrier_race_never_closes_a_partial_root_set(
     def premature_barrier() -> Exception | None:
         try:
             with m5_runtime_db.reconnect() as connection:
-                with connection.transaction():
-                    close_m5_requirement_roots(
-                        connection.cursor(),
-                        opened.epoch_id,
-                        revision,
-                        _root_set_hash(roots),
-                    )
+                PostgresM5RuntimeStore(
+                    connection
+                ).close_m5_requirement_roots_atomically(
+                    opened.epoch_id,
+                    revision,
+                    _root_set_hash(roots),
+                )
         except (EventConflictError, InvalidEventError) as error:
             return error
         return None
@@ -1086,12 +1079,12 @@ def test_final_stage_and_barrier_race_never_closes_a_partial_root_set(
         (opened.epoch_id,),
     ).fetchone() == (2,)
     m5_runtime_db.connection.commit()
-    with m5_runtime_db.connection.transaction():
-        completed = close_m5_requirement_roots(
-            m5_runtime_db.connection.cursor(),
-            opened.epoch_id,
-            revision + 1,
-            _root_set_hash(roots),
-        )
+    completed = PostgresM5RuntimeStore(
+        m5_runtime_db.connection
+    ).close_m5_requirement_roots_atomically(
+        opened.epoch_id,
+        revision + 1,
+        _root_set_hash(roots),
+    )
     assert completed.resulting_revision == revision + 2
     assert not completed.exact_replay

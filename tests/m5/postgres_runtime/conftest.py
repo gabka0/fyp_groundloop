@@ -26,6 +26,7 @@ from groundloop.m5.runtime.contracts import (
     ActiveChunkSnapshot,
     ActiveChunkSnapshotEntry,
     M5CandidatePolicyManifest,
+    M5RuntimeOperationalConfig,
     M5TypedEventPlan,
     RequirementRegistrySnapshot,
     RequirementRegistrySnapshotEntry,
@@ -35,6 +36,7 @@ from groundloop.postgres.migrations import (
     apply_legacy_migrations,
     install_m5_core_bundle,
     install_m5_runtime_bundle,
+    install_m5_runtime_recovery_bundle,
 )
 from tests.m5.postgres.helpers import (
     SeededBase,
@@ -42,6 +44,14 @@ from tests.m5.postgres.helpers import (
     install_test_activation_barrier,
     make_group,
     seed_base,
+)
+
+ACCEPTED_016_LEDGER = (
+    "m5-runtime-recovery-schema-bundle-v1",
+    "28a31f37c13cdaa2b89676e6279740a1f366e1acd16502c4fa722c2e0be21565",
+    "a63d2a878a5196e071e3e51c6e6737cf76552057ade65da4112e0f0bafb412d7",
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "b7b03574dc2ba62fd6ba7be22744e2fe6d9ec178ffb2b4b9b552c5ff6281dacd",
 )
 
 
@@ -120,6 +130,7 @@ class M5RuntimeDatabase:
     manifest: M5CandidatePolicyManifest
     requirement_snapshot: RequirementRegistrySnapshot
     chunk_snapshot: ActiveChunkSnapshot
+    operational_config: M5RuntimeOperationalConfig
 
     @contextmanager
     def reconnect(self) -> Iterator[Connection[Any]]:
@@ -235,7 +246,7 @@ class M5RuntimeDatabase:
 
 @pytest.fixture
 def m5_runtime_db() -> Iterator[M5RuntimeDatabase]:
-    """Create an activated one-group database with migration 015 installed."""
+    """Create an activated one-group database with accepted migration 016."""
 
     dsn = _database_url()
     schema_name = f"groundloop_m5_failure_replay_{uuid.uuid4().hex}"
@@ -249,6 +260,21 @@ def m5_runtime_db() -> Iterator[M5RuntimeDatabase]:
                 apply_legacy_migrations(connection)
             install_m5_core_bundle(connection)
             install_m5_runtime_bundle(connection)
+            install_m5_runtime_recovery_bundle(connection)
+            ledger = connection.execute(
+                """
+                SELECT bundle_id, bundle_sha256, migration_sha256,
+                       oracle_sha256, prerequisite_sha256
+                FROM groundloop_m5_schema_bundle
+                WHERE bundle_id = %s
+                """,
+                (ACCEPTED_016_LEDGER[0],),
+            ).fetchone()
+            assert ledger is not None
+            assert tuple(str(value).strip() for value in ledger) == (
+                ACCEPTED_016_LEDGER
+            )
+            connection.commit()
 
             with connection.transaction():
                 base = seed_base(
@@ -313,6 +339,7 @@ def m5_runtime_db() -> Iterator[M5RuntimeDatabase]:
                 manifest=manifest,
                 requirement_snapshot=requirement_snapshot,
                 chunk_snapshot=chunk_snapshot,
+                operational_config=M5RuntimeOperationalConfig.build(300),
             )
     finally:
         with psycopg.connect(dsn, autocommit=True) as admin:

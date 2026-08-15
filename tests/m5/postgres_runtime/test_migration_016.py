@@ -21,7 +21,7 @@ import pytest
 from psycopg import Connection, sql
 from psycopg.types.json import Jsonb
 
-from groundloop.domain import DecisionPolicy
+from groundloop.domain import DecisionPolicy, SubjectKind
 from groundloop.m4.contracts import stable_m4_digest
 from groundloop.m5.digests import (
     bool_field,
@@ -34,18 +34,39 @@ from groundloop.m5.digests import (
     stable_m5_digest,
     text_field,
 )
+from groundloop.m5.runtime import digests as runtime_digests
 from groundloop.m5.runtime.contracts import (
     M5AttemptArchiveReason,
+    M5AttemptCompletionReceipt,
     M5AttemptDisposition,
     M5AttemptOutput,
     M5AttemptResultArtifact,
+    M5DiscoveryDirection,
+    M5DiscoveryScopeContract,
     M5JobAttempt,
     M5JobCompletion,
+    M5JobKind,
     M5JobLease,
     M5JobState,
+    M5LogicalJobSpec,
+    M5RequirementAdmissionChannel,
+    M5RequirementChannelHit,
+    M5RequirementDiscoveryResult,
     M5RequirementPairInput,
+    M5RequirementScopeSelection,
     M5RequirementVerifierArtifact,
+    M5RetrievalTermination,
+    M5RootBarrierReceipt,
+    M5RuntimeOperationalConfig,
     M5TerminalReason,
+    RequirementRegistrySnapshot,
+    RequirementRegistrySnapshotEntry,
+    SemanticPairKey,
+)
+from groundloop.m5.runtime.frontier import (
+    build_forward_frontier_head,
+    build_root_barrier_plan,
+    deduplicate_discovery_results,
 )
 from groundloop.postgres.migrations import (
     M5_ACCEPTED_RUNTIME_BUNDLE_ID,
@@ -68,7 +89,6 @@ from groundloop.postgres.migrations import (
 from tests.m5.postgres_runtime import conftest as runtime_support
 from tests.m5.postgres_runtime import test_direct_m4_composition as direct_support
 from tests.m5.postgres_runtime import test_job_lifecycle as lifecycle_support
-from tests.m5.postgres_runtime import test_root_transitions as root_support
 
 RECOVERY_RELATIONS = (
     "groundloop_m5_runtime_operational_config",
@@ -262,81 +282,22 @@ def _attempt_result_catalog(
     return constraints, tuple(trigger), function_definition
 
 
-def _seed_requirement_attempt(
+def _seed_legacy_requirement_attempt(
     connection: Connection[Any], *, acquire: bool = True
 ) -> int:
-    with connection.transaction():
-        base = runtime_support.seed_base(
-            connection,
-            prefix="recovery-install-guard",
-            claim_count=1,
-            chunk_texts=("alpha", "beta"),
-        )
-        group = runtime_support.make_group(
-            group_id="recovery-install-guard-group-v1",
-            family_id="recovery-install-guard-family",
-            claim_id=base.claim_ids[0],
-            texts=("required fact",),
-            source_id="recovery-install-guard-fixture",
-        )
-        runtime_support.insert_published_group(
-            connection,
-            group=group,
-            epoch_id=base.epoch_id,
-        )
-        connection.execute(
-            """
-            INSERT INTO groundloop_model_artifact (
-                model_artifact_id, task, provider, model_id,
-                immutable_revision, tokenizer_revision, license_id,
-                config_hash
-            ) VALUES (
-                'failure-replay-embedding', 'embedding', 'fixture',
-                'fixture-embedding', 'v1', 'v1', 'MIT', %s
-            )
-            """,
-            (_sha("embedding-config"),),
-        )
-    with connection.transaction():
-        runtime_support.install_test_activation_barrier(
-            connection,
-            base,
-            activation_id="recovery-install-guard-activation",
-        )
-    manifest = runtime_support._manifest(base)
-    runtime_support.PostgresM5RuntimeStore(connection).register_candidate_policy(
-        manifest
+    database = _prepare_requirement_runtime_for_recovery_test(connection)
+    epoch_id, roots = _legacy_open_overlap_event(
+        database, event_id="recovery-install-guard-event"
     )
-    requirement_snapshot = runtime_support.RequirementRegistrySnapshot.build(())
-    chunk_snapshot = runtime_support.ActiveChunkSnapshot.build(
-        tuple(
-            runtime_support.ActiveChunkSnapshotEntry.build(
-                chunk_version_id=chunk_id,
-                chunk_text=chunk_text,
-            )
-            for chunk_id, chunk_text in zip(
-                base.chunk_ids, ("alpha", "beta"), strict=True
-            )
-        )
-    )
-    database = runtime_support.M5RuntimeDatabase(
-        dsn="",
-        schema_name="",
-        connection=connection,
-        base=base,
-        group=group,
-        manifest=manifest,
-        requirement_snapshot=requirement_snapshot,
-        chunk_snapshot=chunk_snapshot,
-    )
-    plan = database.register_plan(event_id="recovery-install-guard-register")
-    store = runtime_support.PostgresM5RuntimeStore(connection)
-    opened = store.open_typed_event_atomically(plan)
     if acquire:
-        jobs = lifecycle_support._root_jobs(plan, manifest)
-        assert jobs
-        store.acquire_m5_job(opened.epoch_id, 1, jobs[0])
-    return opened.epoch_id
+        _scope, job = roots[0]
+        _acquire_legacy_requirement_job_pre016(
+            connection,
+            epoch_id=epoch_id,
+            expected_revision=1,
+            job=job,
+        )
+    return epoch_id
 
 
 def _prepare_requirement_runtime_for_recovery_test(
@@ -417,7 +378,919 @@ def _prepare_requirement_runtime_for_recovery_test(
         manifest=manifest,
         requirement_snapshot=requirement_snapshot,
         chunk_snapshot=chunk_snapshot,
+        operational_config=M5RuntimeOperationalConfig.build(3_600_000),
     )
+
+
+def _legacy_root_set_hash(
+    roots: tuple[tuple[M5DiscoveryScopeContract, M5LogicalJobSpec], ...],
+) -> str:
+    return runtime_digests.requirement_root_set_digest(
+        job.logical_job_id for _scope, job in roots
+    )
+
+
+def _legacy_open_overlap_event(
+    database: runtime_support.M5RuntimeDatabase,
+    *,
+    event_id: str = "recovery-root-overlap-event",
+) -> tuple[int, tuple[tuple[M5DiscoveryScopeContract, M5LogicalJobSpec], ...]]:
+    """Create a migration-015 root topology without D24 accounting rows."""
+
+    requirement = database.group.requirements[0]
+    requirement_snapshot = RequirementRegistrySnapshot.build(
+        (
+            RequirementRegistrySnapshotEntry.build(
+                requirement_version_id=requirement.requirement_version_id,
+                group_version_id=database.group.group_version_id,
+                group_family_id=database.group.group_family_id,
+                owner_claim_id=database.group.owner_claim_id,
+                requirement_text=requirement.requirement_text,
+            ),
+        )
+    )
+    forward_scope = M5DiscoveryScopeContract.build(
+        direction=M5DiscoveryDirection.FORWARD_REQUIREMENT,
+        requirement_version_id=requirement.requirement_version_id,
+        inserted_chunk_version_id=None,
+        candidate_policy_id=database.manifest.candidate_policy_id,
+        requirement_registry_snapshot_digest=(
+            requirement_snapshot.requirement_registry_snapshot_digest
+        ),
+        active_chunk_snapshot_digest=(
+            database.chunk_snapshot.active_chunk_snapshot_digest
+        ),
+    )
+    reverse_scope = M5DiscoveryScopeContract.build(
+        direction=M5DiscoveryDirection.REVERSE_CHUNK,
+        requirement_version_id=None,
+        inserted_chunk_version_id=database.base.chunk_ids[0],
+        candidate_policy_id=database.manifest.candidate_policy_id,
+        requirement_registry_snapshot_digest=(
+            requirement_snapshot.requirement_registry_snapshot_digest
+        ),
+        active_chunk_snapshot_digest=(
+            database.chunk_snapshot.active_chunk_snapshot_digest
+        ),
+    )
+    roots = tuple(
+        sorted(
+            (
+                (
+                    forward_scope,
+                    M5LogicalJobSpec.build(
+                        structural_event_id=event_id,
+                        job_kind=M5JobKind.FORWARD_REQUIREMENT_RETRIEVAL,
+                        manifest=database.manifest,
+                        scope=forward_scope,
+                    ),
+                ),
+                (
+                    reverse_scope,
+                    M5LogicalJobSpec.build(
+                        structural_event_id=event_id,
+                        job_kind=M5JobKind.REVERSE_REQUIREMENT_DISCOVERY,
+                        manifest=database.manifest,
+                        scope=reverse_scope,
+                    ),
+                ),
+            ),
+            key=lambda item: item[1].logical_job_id,
+        )
+    )
+    connection = database.connection
+    with connection.transaction():
+        row = connection.execute(
+            """
+            INSERT INTO groundloop_epoch (
+                event_id, payload_hash, revision, structural_status,
+                semantic_status, evaluation_state, publication_mode, sealed_at
+            ) VALUES (%s, %s, 1, 'committed', 'pending', 'pending',
+                      'provisional', NULL)
+            RETURNING epoch_id
+            """,
+            (event_id, _sha(f"{event_id}:payload")),
+        ).fetchone()
+        assert row is not None
+        epoch_id = int(row[0])
+        connection.execute(
+            """
+            INSERT INTO groundloop_m5_update (
+                epoch_id, update_kind, previous_published_epoch_id,
+                decision_policy_version, manifest
+            ) VALUES (%s, 'observe_requirement', %s, %s, '{}'::jsonb)
+            """,
+            (
+                epoch_id,
+                database.base.epoch_id,
+                database.manifest.decision_policy_version,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO groundloop_m5_runtime_epoch (
+                epoch_id, structural_event_id, candidate_policy_id,
+                candidate_policy_manifest_hash,
+                requirement_registry_snapshot_digest,
+                active_chunk_snapshot_digest,
+                expected_previous_published_epoch_id,
+                requirement_root_set_hash, runtime_state, revision,
+                open_work_count, open_scope_count, blocking_failure_count
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
+                      'structural_committed', 1, 2, 2, 0)
+            """,
+            (
+                epoch_id,
+                event_id,
+                database.manifest.candidate_policy_id,
+                database.manifest.manifest_hash,
+                requirement_snapshot.requirement_registry_snapshot_digest,
+                database.chunk_snapshot.active_chunk_snapshot_digest,
+                database.base.epoch_id,
+                _legacy_root_set_hash(roots),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO groundloop_m5_requirement_registry_snapshot (
+                requirement_registry_snapshot_digest, requirement_count,
+                created_epoch_id
+            ) VALUES (%s, 1, %s)
+            """,
+            (
+                requirement_snapshot.requirement_registry_snapshot_digest,
+                epoch_id,
+            ),
+        )
+        entry = requirement_snapshot.entries[0]
+        connection.execute(
+            """
+            INSERT INTO groundloop_m5_requirement_registry_snapshot_member (
+                requirement_registry_snapshot_digest, member_ordinal,
+                requirement_version_id, group_version_id, group_family_id,
+                owner_claim_id, normalized_requirement_text,
+                requirement_text_hash
+            ) VALUES (%s, 0, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                requirement_snapshot.requirement_registry_snapshot_digest,
+                entry.requirement_version_id,
+                entry.group_version_id,
+                entry.group_family_id,
+                entry.owner_claim_id,
+                entry.normalized_requirement_text,
+                entry.requirement_text_hash,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO groundloop_m5_active_chunk_snapshot (
+                active_chunk_snapshot_digest, chunk_count, created_epoch_id,
+                normalizer_id, normalizer_provenance_hash
+            ) VALUES (%s, %s, %s, 'm5-normalize-text-v1', %s)
+            ON CONFLICT (active_chunk_snapshot_digest) DO NOTHING
+            """,
+            (
+                database.chunk_snapshot.active_chunk_snapshot_digest,
+                database.chunk_snapshot.chunk_count,
+                epoch_id,
+                "d91b94f256f79c6bc7b29fafa41c7a608b90c17bd479b29a64be00fa538c49fb",
+            ),
+        )
+        for ordinal, chunk in enumerate(database.chunk_snapshot.entries):
+            connection.execute(
+                """
+                INSERT INTO groundloop_m5_active_chunk_snapshot_member (
+                    active_chunk_snapshot_digest, member_ordinal,
+                    chunk_version_id, text_hash
+                ) VALUES (%s, %s, %s, %s)
+                ON CONFLICT (active_chunk_snapshot_digest, chunk_version_id)
+                DO NOTHING
+                """,
+                (
+                    database.chunk_snapshot.active_chunk_snapshot_digest,
+                    ordinal,
+                    chunk.chunk_version_id,
+                    chunk.text_hash,
+                ),
+            )
+        for scope, job in roots:
+            connection.execute(
+                """
+                INSERT INTO groundloop_m5_discovery_scope (
+                    root_job_id, epoch_id, direction,
+                    requirement_version_id, inserted_chunk_version_id,
+                    candidate_policy_id,
+                    requirement_registry_snapshot_digest,
+                    active_chunk_snapshot_digest, scope_contract_digest,
+                    scope_state, created_revision
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'open', 1)
+                """,
+                (
+                    job.logical_job_id,
+                    epoch_id,
+                    scope.direction.value,
+                    scope.requirement_version_id,
+                    scope.inserted_chunk_version_id,
+                    scope.candidate_policy_id,
+                    scope.requirement_registry_snapshot_digest,
+                    scope.active_chunk_snapshot_digest,
+                    scope.scope_contract_digest,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO groundloop_m5_semantic_job (
+                    logical_job_id, epoch_id, structural_event_id, job_kind,
+                    candidate_policy_id, candidate_policy_manifest_hash,
+                    scope_contract_digest,
+                    requirement_registry_snapshot_digest,
+                    active_chunk_snapshot_digest, role_template_hash,
+                    execution_spec_hash, expandable, payload_hash,
+                    job_state, created_revision
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                          %s, TRUE, %s, 'declared', 1)
+                """,
+                (
+                    job.logical_job_id,
+                    epoch_id,
+                    job.structural_event_id,
+                    job.job_kind.value,
+                    job.candidate_policy_id,
+                    job.candidate_policy_manifest_hash,
+                    job.scope_contract_digest,
+                    job.requirement_registry_snapshot_digest,
+                    job.active_chunk_snapshot_digest,
+                    job.role_template_hash,
+                    job.execution_spec_hash,
+                    job.payload_hash,
+                ),
+            )
+        connection.execute(
+            """
+            INSERT INTO groundloop_m5_owner_pending_counter (
+                epoch_id, owner_claim_id, broad_reverse_scope_count,
+                forward_scope_count, verifier_job_count,
+                blocking_failure_count, updated_revision
+            ) VALUES (%s, %s, 1, 1, 0, 0, 1)
+            """,
+            (epoch_id, database.group.owner_claim_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO groundloop_m5_answer_pending_counter (
+                epoch_id, answer_version_id, broad_reverse_scope_count,
+                forward_scope_count, verifier_job_count,
+                blocking_failure_count, updated_revision
+            ) VALUES (%s, %s, 1, 1, 0, 0, 1)
+            """,
+            (epoch_id, database.base.answer_id),
+        )
+        connection.execute("SET CONSTRAINTS ALL IMMEDIATE")
+        connection.execute("SET CONSTRAINTS ALL DEFERRED")
+    return epoch_id, roots
+
+
+def _legacy_requirement_result(
+    *,
+    epoch_id: int,
+    root: M5LogicalJobSpec,
+    pairs: tuple[SemanticPairKey, ...],
+) -> M5RequirementDiscoveryResult:
+    hits = tuple(
+        M5RequirementChannelHit.build(
+            epoch_id=epoch_id,
+            root_job_id=root.logical_job_id,
+            scope_contract_digest=root.scope_contract_digest or "",
+            pair=pair,
+            candidate_policy_id=root.candidate_policy_id,
+            channel=M5RequirementAdmissionChannel.VECTOR,
+            rank=rank,
+            score=1.0 - rank / 10.0,
+            channel_artifact_hash=_sha(
+                f"hit:{root.logical_job_id}:{pair.semantic_pair_digest}"
+            ),
+        )
+        for rank, pair in enumerate(pairs, start=1)
+    )
+    selections = tuple(
+        M5RequirementScopeSelection.build(
+            root_job_id=root.logical_job_id,
+            scope_contract_digest=root.scope_contract_digest or "",
+            pair=pair,
+            fused_rank=rank,
+            reasons=(M5RequirementAdmissionChannel.VECTOR,),
+        )
+        for rank, pair in enumerate(pairs, start=1)
+    )
+    return M5RequirementDiscoveryResult.build(
+        root_job_id=root.logical_job_id,
+        scope_contract_digest=root.scope_contract_digest or "",
+        termination=M5RetrievalTermination.SNAPSHOT_EXHAUSTED,
+        channel_hits=hits,
+        selections=selections,
+    )
+
+
+def _acquire_legacy_requirement_job_pre016(
+    connection: Connection[Any],
+    *,
+    epoch_id: int,
+    expected_revision: int,
+    job: M5LogicalJobSpec,
+) -> M5JobLease:
+    attempt = M5JobAttempt.build(
+        logical_job_id=job.logical_job_id,
+        attempt_ordinal=1,
+        execution_spec_hash=job.execution_spec_hash,
+        lease_token_hash=_sha(f"legacy-lease:{job.logical_job_id}:1"),
+    )
+    resulting_revision = expected_revision + 1
+    with connection.transaction():
+        connection.execute(
+            "SELECT groundloop_m5_authorize_checked_transition(%s, %s)",
+            (epoch_id, expected_revision),
+        )
+        assert (
+            connection.execute(
+                """
+            UPDATE groundloop_m5_semantic_job
+            SET job_state = 'running'
+            WHERE epoch_id = %s AND logical_job_id = %s
+              AND job_state = 'declared'
+            """,
+                (epoch_id, job.logical_job_id),
+            ).rowcount
+            == 1
+        )
+        connection.execute(
+            """
+            INSERT INTO groundloop_m5_job_attempt (
+                attempt_id, logical_job_id, attempt_ordinal,
+                execution_spec_hash, lease_token_hash, attempt_state
+            ) VALUES (%s, %s, 1, %s, %s, 'dispatched')
+            """,
+            (
+                attempt.attempt_id,
+                attempt.logical_job_id,
+                attempt.execution_spec_hash,
+                attempt.lease_token_hash,
+            ),
+        )
+        for relation in (
+            "groundloop_m5_owner_pending_counter",
+            "groundloop_m5_answer_pending_counter",
+        ):
+            connection.execute(
+                sql.SQL(
+                    "UPDATE {} SET updated_revision = %s WHERE epoch_id = %s"
+                ).format(sql.Identifier(relation)),
+                (resulting_revision, epoch_id),
+            )
+        connection.execute(
+            "UPDATE groundloop_epoch SET revision = %s WHERE epoch_id = %s",
+            (resulting_revision, epoch_id),
+        )
+        connection.execute(
+            """
+            UPDATE groundloop_m5_runtime_epoch
+            SET revision = %s, runtime_state = 'semantic_pending'
+            WHERE epoch_id = %s
+            """,
+            (resulting_revision, epoch_id),
+        )
+        connection.execute("SET CONSTRAINTS ALL IMMEDIATE")
+        connection.execute("SET CONSTRAINTS ALL DEFERRED")
+    return M5JobLease(job.logical_job_id, attempt, resulting_revision, True, False)
+
+
+def _stage_legacy_requirement_root(
+    connection: Connection[Any],
+    *,
+    epoch_id: int,
+    expected_revision: int,
+    lease: M5JobLease,
+    job: M5LogicalJobSpec,
+    result: M5RequirementDiscoveryResult,
+) -> tuple[M5AttemptCompletionReceipt, M5AttemptOutput]:
+    """Install legacy root-result rows without D24 work contributions."""
+
+    assert lease.attempt is not None
+    attempt = lease.attempt
+    output = M5AttemptOutput.build(
+        attempt=attempt,
+        job_epoch_id=epoch_id,
+        payload_hash=job.payload_hash,
+        result_artifact_id=result.result_artifact_id,
+        result_artifact_hash=result.result_artifact_hash,
+    )
+    if job.job_kind is M5JobKind.FORWARD_REQUIREMENT_RETRIEVAL:
+        chunk_active = None
+        requirement_active = True
+        group_active = True
+    else:
+        assert job.job_kind is M5JobKind.REVERSE_REQUIREMENT_DISCOVERY
+        chunk_active = True
+        requirement_active = None
+        group_active = None
+    artifact = M5AttemptResultArtifact.build(
+        attempt_output=output,
+        job_state_at_receipt=M5JobState.RUNNING,
+        job_state_after=M5JobState.RUNNING,
+        disposition=M5AttemptDisposition.ROOT_RESULT_STAGED,
+        activity_snapshot_epoch_id=epoch_id,
+        activity_snapshot_revision=expected_revision,
+        epoch_active=True,
+        chunk_active=chunk_active,
+        requirement_active=requirement_active,
+        group_active=group_active,
+        archive_reason=None,
+    )
+    resulting_revision = expected_revision + 1
+    with connection.transaction():
+        connection.execute(
+            "SELECT groundloop_m5_authorize_checked_transition(%s, %s)",
+            (epoch_id, expected_revision),
+        )
+        assert (
+            connection.execute(
+                """
+            UPDATE groundloop_m5_job_attempt
+            SET attempt_state = 'result_reserved', attempt_output_digest = %s
+            WHERE attempt_id = %s AND logical_job_id = %s
+              AND attempt_state = 'dispatched' AND attempt_output_digest IS NULL
+            """,
+                (output.attempt_output_digest, attempt.attempt_id, job.logical_job_id),
+            ).rowcount
+            == 1
+        )
+        connection.execute(
+            """
+            INSERT INTO groundloop_m5_attempt_result_artifact (
+                attempt_result_artifact_id, attempt_result_artifact_hash,
+                attempt_output_digest, attempt_id, logical_job_id, job_epoch_id,
+                payload_hash, execution_spec_hash, result_artifact_id,
+                result_artifact_hash, job_state_at_receipt, job_state_after,
+                disposition, activity_snapshot_epoch_id,
+                activity_snapshot_revision, epoch_active, chunk_active,
+                requirement_active, group_active, archive_reason,
+                cancelled_by_event_id, cancelled_by_epoch_id, cancellation_reason
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL, NULL, NULL, NULL
+            )
+            """,
+            (
+                artifact.attempt_result_artifact_id,
+                artifact.attempt_result_artifact_hash,
+                artifact.attempt_output_digest,
+                artifact.attempt_id,
+                artifact.logical_job_id,
+                artifact.job_epoch_id,
+                output.payload_hash,
+                output.execution_spec_hash,
+                output.result_artifact_id,
+                output.result_artifact_hash,
+                artifact.job_state_at_receipt.value,
+                artifact.job_state_after.value,
+                artifact.disposition.value,
+                artifact.activity_snapshot_epoch_id,
+                artifact.activity_snapshot_revision,
+                artifact.epoch_active,
+                artifact.chunk_active,
+                artifact.requirement_active,
+                artifact.group_active,
+            ),
+        )
+        for hit in result.channel_hits:
+            connection.execute(
+                """
+                INSERT INTO groundloop_m5_requirement_channel_hit (
+                    hit_digest, epoch_id, root_job_id, scope_contract_digest,
+                    subject_kind, subject_id, chunk_version_id,
+                    semantic_pair_digest, candidate_policy_id, channel, rank,
+                    score, channel_artifact_hash
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    hit.hit_digest,
+                    hit.epoch_id,
+                    hit.root_job_id,
+                    hit.scope_contract_digest,
+                    hit.pair.subject_kind.value,
+                    hit.pair.subject_id,
+                    hit.pair.chunk_version_id,
+                    hit.semantic_pair_digest,
+                    hit.candidate_policy_id,
+                    hit.channel.value,
+                    hit.rank,
+                    hit.score,
+                    hit.channel_artifact_hash,
+                ),
+            )
+        for selection in result.selections:
+            connection.execute(
+                """
+                INSERT INTO groundloop_m5_requirement_scope_selection (
+                    selection_digest, root_job_id, scope_contract_digest,
+                    subject_kind, subject_id, chunk_version_id,
+                    semantic_pair_digest, fused_rank, reasons, mandatory_lineage
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    selection.selection_digest,
+                    selection.root_job_id,
+                    selection.scope_contract_digest,
+                    selection.pair.subject_kind.value,
+                    selection.pair.subject_id,
+                    selection.pair.chunk_version_id,
+                    selection.semantic_pair_digest,
+                    selection.fused_rank,
+                    [reason.value for reason in selection.reasons],
+                    selection.mandatory_lineage,
+                ),
+            )
+        connection.execute(
+            """
+            INSERT INTO groundloop_m5_requirement_discovery_result (
+                result_artifact_id, result_artifact_hash, root_job_id,
+                scope_contract_digest, termination, channel_hit_count,
+                selection_count, approximate_selection_count,
+                mandatory_lineage_only_count, staged_epoch_id, staged_revision
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                result.result_artifact_id,
+                result.result_artifact_hash,
+                result.root_job_id,
+                result.scope_contract_digest,
+                result.termination.value,
+                len(result.channel_hits),
+                len(result.selections),
+                result.approximate_selection_count,
+                result.mandatory_lineage_only_count,
+                epoch_id,
+                resulting_revision,
+            ),
+        )
+        assert (
+            connection.execute(
+                """
+            UPDATE groundloop_m5_discovery_scope
+            SET scope_state = 'result_staged', staged_result_artifact_hash = %s,
+                staged_revision = %s
+            WHERE epoch_id = %s AND root_job_id = %s AND scope_state = 'open'
+            """,
+                (
+                    result.result_artifact_hash,
+                    resulting_revision,
+                    epoch_id,
+                    job.logical_job_id,
+                ),
+            ).rowcount
+            == 1
+        )
+        assert (
+            connection.execute(
+                """
+            UPDATE groundloop_m5_job_attempt
+            SET attempt_state = 'completed', finished_at = now()
+            WHERE attempt_id = %s AND logical_job_id = %s
+              AND attempt_state = 'result_reserved'
+              AND attempt_output_digest = %s
+            """,
+                (attempt.attempt_id, job.logical_job_id, output.attempt_output_digest),
+            ).rowcount
+            == 1
+        )
+        for relation in (
+            "groundloop_m5_owner_pending_counter",
+            "groundloop_m5_answer_pending_counter",
+        ):
+            connection.execute(
+                sql.SQL(
+                    "UPDATE {} SET updated_revision = %s WHERE epoch_id = %s"
+                ).format(sql.Identifier(relation)),
+                (resulting_revision, epoch_id),
+            )
+        connection.execute(
+            "UPDATE groundloop_epoch SET revision = %s WHERE epoch_id = %s",
+            (resulting_revision, epoch_id),
+        )
+        connection.execute(
+            """
+            UPDATE groundloop_m5_runtime_epoch
+            SET revision = %s, runtime_state = 'semantic_pending'
+            WHERE epoch_id = %s
+            """,
+            (resulting_revision, epoch_id),
+        )
+        connection.execute("SET CONSTRAINTS ALL IMMEDIATE")
+        connection.execute("SET CONSTRAINTS ALL DEFERRED")
+    return (
+        M5AttemptCompletionReceipt(
+            logical_job_id=job.logical_job_id,
+            attempt_id=attempt.attempt_id,
+            resulting_revision=resulting_revision,
+            exact_replay=False,
+        ),
+        output,
+    )
+
+
+def _close_legacy_requirement_roots(
+    connection: Connection[Any],
+    *,
+    epoch_id: int,
+    expected_revision: int,
+    manifest: Any,
+    roots: tuple[tuple[M5DiscoveryScopeContract, M5LogicalJobSpec], ...],
+    results: tuple[M5RequirementDiscoveryResult, ...],
+) -> M5RootBarrierReceipt:
+    """Install the migration-015 barrier image without D24 contributions."""
+
+    structural_event_id = roots[0][1].structural_event_id
+    candidate_policy_id = roots[0][1].candidate_policy_id
+    deduplication = deduplicate_discovery_results(
+        epoch_id=epoch_id,
+        candidate_policy_id=candidate_policy_id,
+        results=results,
+        inactive_root_job_ids=(),
+    )
+    scope_by_root = {job.logical_job_id: scope for scope, job in roots}
+    child_jobs = tuple(
+        sorted(
+            (
+                M5LogicalJobSpec.build(
+                    structural_event_id=structural_event_id,
+                    job_kind=M5JobKind.VERIFY_REQUIREMENT_PAIR,
+                    manifest=manifest,
+                    scope=scope_by_root[pair.owner_root_job_id],
+                    parent_job_id=pair.owner_root_job_id,
+                    pair=pair.pair,
+                )
+                for pair in deduplication.admitted_pairs
+            ),
+            key=lambda child: child.logical_job_id,
+        )
+    )
+    plan = build_root_barrier_plan(
+        structural_event_id=structural_event_id,
+        results=results,
+        deduplication=deduplication,
+        child_jobs=child_jobs,
+    )
+    closure_by_root = {closure.root_job_id: closure for closure in plan.root_closures}
+    result_by_root = {result.root_job_id: result for result in results}
+    completion_by_root = {
+        job.logical_job_id: M5JobCompletion.build(
+            job=job,
+            terminal_state=M5JobState.COMPLETED_ACTIVE,
+            result_artifact_id=result_by_root[job.logical_job_id].result_artifact_id,
+            result_artifact_hash=result_by_root[
+                job.logical_job_id
+            ].result_artifact_hash,
+            scope_closure_digest=closure_by_root[
+                job.logical_job_id
+            ].scope_closure_digest,
+            child_set_hash=closure_by_root[job.logical_job_id].child_set_hash,
+            archive_reason=None,
+        )
+        for _scope, job in roots
+    }
+    resulting_revision = expected_revision + 1
+    with connection.transaction():
+        connection.execute(
+            "SELECT groundloop_m5_authorize_checked_transition(%s, %s)",
+            (epoch_id, expected_revision),
+        )
+        for admitted in plan.admitted_pairs:
+            connection.execute(
+                """
+                INSERT INTO groundloop_m5_requirement_admitted_pair (
+                    admitted_pair_digest, epoch_id, subject_kind, subject_id,
+                    chunk_version_id, semantic_pair_digest, candidate_policy_id,
+                    owner_root_job_id, reasons, mandatory_lineage
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    admitted.admitted_pair_digest,
+                    admitted.epoch_id,
+                    admitted.pair.subject_kind.value,
+                    admitted.pair.subject_id,
+                    admitted.pair.chunk_version_id,
+                    admitted.semantic_pair_digest,
+                    admitted.candidate_policy_id,
+                    admitted.owner_root_job_id,
+                    [reason.value for reason in admitted.reasons],
+                    admitted.mandatory_lineage,
+                ),
+            )
+            for source in admitted.sources:
+                connection.execute(
+                    """
+                    INSERT INTO groundloop_m5_requirement_admitted_pair_source (
+                        admitted_pair_digest, root_job_id,
+                        scope_contract_digest, selection_digest
+                    ) VALUES (%s, %s, %s, %s)
+                    """,
+                    (
+                        admitted.admitted_pair_digest,
+                        source.root_job_id,
+                        source.scope_contract_digest,
+                        source.selection_digest,
+                    ),
+                )
+        admitted_by_pair = {
+            admitted.semantic_pair_digest: admitted for admitted in plan.admitted_pairs
+        }
+        for child in child_jobs:
+            assert child.pair is not None
+            assert child.semantic_pair_digest is not None
+            admitted = admitted_by_pair[child.semantic_pair_digest]
+            connection.execute(
+                """
+                INSERT INTO groundloop_m5_semantic_job (
+                    logical_job_id, epoch_id, structural_event_id, job_kind,
+                    candidate_policy_id, candidate_policy_manifest_hash,
+                    parent_job_id, subject_kind, subject_id, chunk_version_id,
+                    semantic_pair_digest, admitted_pair_digest,
+                    scope_contract_digest, requirement_registry_snapshot_digest,
+                    active_chunk_snapshot_digest, role_template_hash,
+                    execution_spec_hash, expandable, payload_hash, job_state,
+                    created_revision
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, FALSE, %s, 'declared', %s
+                )
+                """,
+                (
+                    child.logical_job_id,
+                    epoch_id,
+                    child.structural_event_id,
+                    child.job_kind.value,
+                    child.candidate_policy_id,
+                    child.candidate_policy_manifest_hash,
+                    child.parent_job_id,
+                    child.pair.subject_kind.value,
+                    child.pair.subject_id,
+                    child.pair.chunk_version_id,
+                    child.semantic_pair_digest,
+                    admitted.admitted_pair_digest,
+                    child.scope_contract_digest,
+                    child.requirement_registry_snapshot_digest,
+                    child.active_chunk_snapshot_digest,
+                    child.role_template_hash,
+                    child.execution_spec_hash,
+                    child.payload_hash,
+                    resulting_revision,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO groundloop_m5_job_dependency (
+                    epoch_id, parent_job_id, child_job_id
+                ) VALUES (%s, %s, %s)
+                """,
+                (epoch_id, child.parent_job_id, child.logical_job_id),
+            )
+        for scope, job in roots:
+            completion = completion_by_root[job.logical_job_id]
+            assert (
+                connection.execute(
+                    """
+                UPDATE groundloop_m5_semantic_job
+                SET job_state = 'completed_active', result_artifact_id = %s,
+                    result_artifact_hash = %s, scope_closure_digest = %s,
+                    child_set_hash = %s, archive_reason = NULL,
+                    completion_digest = %s, completed_revision = %s,
+                    completed_at = now()
+                WHERE epoch_id = %s AND logical_job_id = %s
+                  AND job_state = 'running'
+                """,
+                    (
+                        completion.result_artifact_id,
+                        completion.result_artifact_hash,
+                        completion.scope_closure_digest,
+                        completion.child_set_hash,
+                        completion.completion_digest,
+                        resulting_revision,
+                        epoch_id,
+                        job.logical_job_id,
+                    ),
+                ).rowcount
+                == 1
+            )
+            assert (
+                connection.execute(
+                    """
+                UPDATE groundloop_m5_discovery_scope
+                SET scope_state = 'closed_active', scope_closure_digest = %s,
+                    child_set_hash = %s, completion_digest = %s,
+                    closed_revision = %s, closed_at = now()
+                WHERE epoch_id = %s AND root_job_id = %s
+                  AND scope_state = 'result_staged'
+                """,
+                    (
+                        completion.scope_closure_digest,
+                        completion.child_set_hash,
+                        completion.completion_digest,
+                        resulting_revision,
+                        epoch_id,
+                        job.logical_job_id,
+                    ),
+                ).rowcount
+                == 1
+            )
+            if scope.direction is M5DiscoveryDirection.FORWARD_REQUIREMENT:
+                assert scope.requirement_version_id is not None
+                head = build_forward_frontier_head(
+                    job=job,
+                    scope=scope,
+                    discovery_result=result_by_root[job.logical_job_id],
+                    completion=completion,
+                    completed_epoch_id=epoch_id,
+                    completed_revision=resulting_revision,
+                )
+                connection.execute(
+                    """
+                    INSERT INTO groundloop_m5_requirement_frontier_head (
+                        requirement_version_id, candidate_policy_id,
+                        latest_root_job_id, latest_scope_contract_digest,
+                        latest_active_chunk_snapshot_digest,
+                        latest_discovery_result_artifact_hash,
+                        latest_scope_closure_digest, latest_completion_digest,
+                        completed_epoch_id, completed_revision
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        head.requirement_version_id,
+                        head.candidate_policy_id,
+                        head.latest_root_job_id,
+                        head.latest_scope_contract_digest,
+                        head.latest_active_chunk_snapshot_digest,
+                        head.latest_discovery_result_artifact_hash,
+                        head.latest_scope_closure_digest,
+                        head.latest_completion_digest,
+                        head.completed_epoch_id,
+                        head.completed_revision,
+                    ),
+                )
+        for relation in (
+            "groundloop_m5_owner_pending_counter",
+            "groundloop_m5_answer_pending_counter",
+        ):
+            connection.execute(
+                sql.SQL(
+                    "UPDATE {} SET broad_reverse_scope_count = 0, "
+                    "forward_scope_count = 0, verifier_job_count = %s, "
+                    "updated_revision = %s WHERE epoch_id = %s"
+                ).format(sql.Identifier(relation)),
+                (len(child_jobs), resulting_revision, epoch_id),
+            )
+        connection.execute(
+            "UPDATE groundloop_epoch SET revision = %s WHERE epoch_id = %s",
+            (resulting_revision, epoch_id),
+        )
+        connection.execute(
+            """
+            UPDATE groundloop_m5_runtime_epoch
+            SET revision = %s, runtime_state = 'semantic_pending',
+                open_work_count = %s, open_scope_count = 0
+            WHERE epoch_id = %s
+            """,
+            (resulting_revision, len(child_jobs), epoch_id),
+        )
+        connection.execute("SET CONSTRAINTS ALL IMMEDIATE")
+        connection.execute("SET CONSTRAINTS ALL DEFERRED")
+    return M5RootBarrierReceipt(
+        requirement_root_set_hash=plan.requirement_root_set_hash,
+        barrier_completion_hash=plan.barrier_completion_hash,
+        resulting_revision=resulting_revision,
+        exact_replay=False,
+    )
+
+
+def _open_requirement_event_after_016(
+    connection: Connection[Any],
+    *,
+    event_id: str,
+) -> tuple[
+    runtime_support.M5RuntimeDatabase,
+    int,
+    tuple[M5LogicalJobSpec, ...],
+]:
+    database = _prepare_requirement_runtime_for_recovery_test(connection)
+    plan = database.register_plan(event_id=event_id)
+    jobs = lifecycle_support._root_jobs(plan, database.manifest)
+    opened = runtime_support.PostgresM5RuntimeStore(
+        connection
+    ).open_typed_event_atomically(
+        plan,
+        recovery_operational_config=database.operational_config,
+        recovery_root_fallback_required={job.logical_job_id: False for job in jobs},
+    )
+    return database, opened.epoch_id, jobs
 
 
 def _acquire_requirement_job_for_recovery_test(
@@ -556,22 +1429,22 @@ def _seed_requirement_job_kind_for_recovery_test(
         "reverse_requirement_discovery",
         "verify_requirement_pair",
     }
-    database = _prepare_requirement_runtime_for_recovery_test(connection)
     if job_kind == "forward_requirement_retrieval":
-        plan = database.register_plan(event_id="recovery-kind-forward")
-        opened = runtime_support.PostgresM5RuntimeStore(
-            connection
-        ).open_typed_event_atomically(plan)
-        job = lifecycle_support._root_jobs(plan, database.manifest)[0]
+        _database, epoch_id, jobs = _open_requirement_event_after_016(
+            connection,
+            event_id="recovery-kind-forward",
+        )
+        job = jobs[0]
         row, _ = _acquire_requirement_job_for_recovery_test(
             connection,
-            epoch_id=opened.epoch_id,
+            epoch_id=epoch_id,
             expected_revision=1,
             job=job,
         )
         return row
 
-    epoch_id, roots = root_support._open_overlap_event(database)
+    database = _prepare_requirement_runtime_for_recovery_test(connection)
+    epoch_id, roots = _legacy_open_overlap_event(database)
     if job_kind == "reverse_requirement_discovery":
         job = next(
             job
@@ -586,12 +1459,13 @@ def _seed_requirement_job_kind_for_recovery_test(
         )
         return row
 
-    pair = root_support.SemanticPairKey(
-        root_support.SubjectKind.REQUIREMENT,
+    pair = SemanticPairKey(
+        SubjectKind.REQUIREMENT,
         database.group.requirements[0].requirement_version_id,
         database.base.chunk_ids[0],
     )
     revision = 1
+    results = []
     for _scope, root_job in roots:
         _, lease = _acquire_requirement_job_for_recovery_test(
             connection,
@@ -600,12 +1474,12 @@ def _seed_requirement_job_kind_for_recovery_test(
             job=root_job,
         )
         revision += 1
-        result = root_support._result(
+        result = _legacy_requirement_result(
             epoch_id=epoch_id,
             root=root_job,
             pairs=(pair,),
         )
-        staged, _ = root_support._stage(
+        staged, _ = _stage_legacy_requirement_root(
             connection,
             epoch_id=epoch_id,
             expected_revision=revision,
@@ -613,14 +1487,16 @@ def _seed_requirement_job_kind_for_recovery_test(
             job=root_job,
             result=result,
         )
+        results.append(result)
         revision = int(staged.resulting_revision)
-    with connection.transaction():
-        barrier = root_support.close_m5_requirement_roots(
-            connection.cursor(),
-            epoch_id,
-            revision,
-            root_support._root_set_hash(roots),
-        )
+    barrier = _close_legacy_requirement_roots(
+        connection,
+        epoch_id=epoch_id,
+        expected_revision=revision,
+        manifest=database.manifest,
+        roots=roots,
+        results=tuple(results),
+    )
     revision = int(barrier.resulting_revision)
     verifier_jobs = runtime_support.PostgresM5RuntimeStore(connection).verifier_jobs(
         epoch_id
@@ -639,13 +1515,14 @@ def _close_requirement_roots_for_recovery_test(
     connection: Connection[Any],
 ) -> dict[str, Any]:
     database = _prepare_requirement_runtime_for_recovery_test(connection)
-    epoch_id, roots = root_support._open_overlap_event(database)
-    pair = root_support.SemanticPairKey(
-        root_support.SubjectKind.REQUIREMENT,
+    epoch_id, roots = _legacy_open_overlap_event(database)
+    pair = SemanticPairKey(
+        SubjectKind.REQUIREMENT,
         database.group.requirements[0].requirement_version_id,
         database.base.chunk_ids[0],
     )
     revision = 1
+    results = []
     for _scope, root_job in roots:
         _, lease = _acquire_requirement_job_for_recovery_test(
             connection,
@@ -654,12 +1531,12 @@ def _close_requirement_roots_for_recovery_test(
             job=root_job,
         )
         revision += 1
-        result = root_support._result(
+        result = _legacy_requirement_result(
             epoch_id=epoch_id,
             root=root_job,
             pairs=(pair,),
         )
-        staged, _ = root_support._stage(
+        staged, _ = _stage_legacy_requirement_root(
             connection,
             epoch_id=epoch_id,
             expected_revision=revision,
@@ -667,14 +1544,16 @@ def _close_requirement_roots_for_recovery_test(
             job=root_job,
             result=result,
         )
+        results.append(result)
         revision = int(staged.resulting_revision)
-    with connection.transaction():
-        barrier = root_support.close_m5_requirement_roots(
-            connection.cursor(),
-            epoch_id,
-            revision,
-            root_support._root_set_hash(roots),
-        )
+    barrier = _close_legacy_requirement_roots(
+        connection,
+        epoch_id=epoch_id,
+        expected_revision=revision,
+        manifest=database.manifest,
+        roots=roots,
+        results=tuple(results),
+    )
     event = connection.execute(
         "SELECT structural_event_id FROM groundloop_m5_runtime_epoch "
         "WHERE epoch_id = %s",
@@ -697,7 +1576,7 @@ def _stage_requirement_root_for_recovery_test(
     connection: Connection[Any],
 ) -> dict[str, Any]:
     database = _prepare_requirement_runtime_for_recovery_test(connection)
-    epoch_id, roots = root_support._open_overlap_event(database)
+    epoch_id, roots = _legacy_open_overlap_event(database)
     _scope, root = roots[0]
     _, lease = _acquire_requirement_job_for_recovery_test(
         connection,
@@ -705,13 +1584,13 @@ def _stage_requirement_root_for_recovery_test(
         expected_revision=1,
         job=root,
     )
-    pair = root_support.SemanticPairKey(
-        root_support.SubjectKind.REQUIREMENT,
+    pair = SemanticPairKey(
+        SubjectKind.REQUIREMENT,
         database.group.requirements[0].requirement_version_id,
         database.base.chunk_ids[0],
     )
-    result = root_support._result(epoch_id=epoch_id, root=root, pairs=(pair,))
-    staged, output = root_support._stage(
+    result = _legacy_requirement_result(epoch_id=epoch_id, root=root, pairs=(pair,))
+    staged, output = _stage_legacy_requirement_root(
         connection,
         epoch_id=epoch_id,
         expected_revision=2,
@@ -1145,13 +2024,18 @@ def _complete_requirement_verifier_for_recovery_test(
 def _seed_requirement_audit_attempt(
     connection: Connection[Any],
 ) -> dict[str, Any]:
-    epoch_id = _seed_requirement_attempt(connection, acquire=False)
+    database = _prepare_requirement_runtime_for_recovery_test(connection)
+    epoch_id, _roots = _legacy_open_overlap_event(
+        database,
+        event_id="recovery-requirement-audit",
+    )
     job = connection.execute(
         """
         SELECT logical_job_id, structural_event_id, job_kind, payload_hash,
                execution_spec_hash
         FROM groundloop_m5_semantic_job
         WHERE epoch_id = %s AND parent_job_id IS NULL
+          AND job_kind = 'forward_requirement_retrieval'
         ORDER BY logical_job_id COLLATE "C"
         LIMIT 1
         """,
@@ -1166,9 +2050,6 @@ def _seed_requirement_audit_attempt(
         execution_spec_hash=execution_spec_hash,
         lease_token_hash=_sha(f"requirement-audit-lease:{logical_job_id}:1"),
     )
-    config_digest = stable_m5_digest(
-        "m5-runtime-operational-config-v1", int_field(3_600_000)
-    )
     provenance_digest = stable_m5_digest(
         "m5-requirement-root-provenance-v1",
         int_field(epoch_id),
@@ -1180,9 +2061,13 @@ def _seed_requirement_audit_attempt(
             """
             INSERT INTO groundloop_m5_runtime_operational_config (
                 epoch_id, lease_duration_ms, config_digest
-            ) VALUES (%s, 3600000, %s)
+            ) VALUES (%s, %s, %s)
             """,
-            (epoch_id, config_digest),
+            (
+                epoch_id,
+                database.operational_config.lease_duration_ms,
+                database.operational_config.config_digest,
+            ),
         )
         connection.execute(
             """
@@ -1805,22 +2690,20 @@ def _seed_fake_attempt(
 
     if subgraph == "requirement":
         assert not after_016
-        return _seed_requirement_attempt(connection)
+        return _seed_legacy_requirement_attempt(connection)
 
     database = _prepare_direct_runtime(connection)
-    opened = direct_support._open_direct_epoch(database)
+    opened = _open_legacy_direct_epoch(database)
     with connection.transaction(), connection.cursor() as cursor:
         direct_support._authorize(cursor, opened.epoch_id, 1)
-        opened.adapter.acquire_direct_job(
+        _acquire_legacy_direct_job(
             cursor,
-            opened.epoch_id,
-            1,
-            opened.root,
-            direct_support._deterministic_lease_token(opened.root),
+            opened=opened,
+            expected_revision=1,
+            job=opened.root,
+            after_016=after_016,
         )
-        direct_support._advance_typed_runtime(
-            cursor, opened.epoch_id, 1, "semantic_pending"
-        )
+        _advance_legacy_direct_runtime(cursor, opened.epoch_id, 1, "semantic_pending")
     connection.autocommit = False
     return opened.epoch_id
 
@@ -2021,6 +2904,135 @@ def _prepare_direct_runtime(
     )
 
 
+def _persist_legacy_direct_snapshots(
+    cursor: Any,
+    epoch_id: int,
+    requirements: Any,
+    active_chunks: Any,
+) -> None:
+    """Persist migration-015 snapshots without D24 structural accounting."""
+
+    direct_support._persist_requirement_snapshot(
+        cursor,
+        snapshot=requirements,
+        epoch_id=epoch_id,
+    )
+    direct_support._persist_active_chunk_snapshot(
+        cursor,
+        snapshot=active_chunks,
+        epoch_id=epoch_id,
+    )
+
+
+def _advance_legacy_direct_runtime(
+    cursor: Any,
+    epoch_id: int,
+    expected_revision: int,
+    runtime_state: str,
+) -> None:
+    changed = cursor.execute(
+        """
+        UPDATE groundloop_m5_runtime_epoch
+        SET runtime_state = %s, revision = revision + 1
+        WHERE epoch_id = %s AND revision = %s
+        """,
+        (runtime_state, epoch_id, expected_revision),
+    ).rowcount
+    assert changed == 1
+    cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
+    cursor.execute("SET CONSTRAINTS ALL DEFERRED")
+
+
+def _open_legacy_direct_epoch(
+    database: direct_support.DirectRuntimeDatabase,
+) -> Any:
+    """Open an accounting-free typed-direct image for schema-oracle tests."""
+
+    event, payload = direct_support._event_and_payload(database)
+    withdrawal = database.ports.plan_exact_withdrawal(event)
+    root = direct_support._job(
+        event,
+        kind=direct_support.JobKind.IMPACT_DISCOVERY,
+        execution_hash=direct_support.IMPACT_EXECUTION_HASH,
+        chunk_id=direct_support.NEW_CHUNK_ID,
+    )
+    scope = direct_support.DiscoveryScope(root.job_id, direct_support.REGISTRY_ID, ())
+    adapter = direct_support.PostgresM5DirectM4Adapter(database.ports)
+    with database.connection.transaction(), database.connection.cursor() as cursor:
+        epoch_id, requirements, active_chunks = (
+            direct_support._insert_typed_outer_declaration(cursor, database, event)
+        )
+        opened = adapter.stage_direct_open(
+            cursor,
+            event,
+            payload,
+            withdrawal,
+            (root,),
+            (scope,),
+        )
+        assert opened.epoch_id == epoch_id
+        assert not opened.replayed
+        _persist_legacy_direct_snapshots(
+            cursor,
+            epoch_id,
+            requirements,
+            active_chunks,
+        )
+        cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
+        cursor.execute("SET CONSTRAINTS ALL DEFERRED")
+    adapter._after_outer_commit()
+    return direct_support._OpenedDirectEpoch(
+        event,
+        payload,
+        withdrawal,
+        root,
+        scope,
+        epoch_id,
+        adapter,
+    )
+
+
+def _acquire_legacy_direct_job(
+    cursor: Any,
+    *,
+    opened: Any,
+    expected_revision: int,
+    job: Any,
+    after_016: bool,
+) -> Any:
+    epoch_id = opened.epoch_id
+    if after_016:
+        config = M5RuntimeOperationalConfig.build(3_600_000)
+        cursor.execute(
+            """
+            INSERT INTO groundloop_m5_runtime_operational_config (
+                epoch_id, lease_duration_ms, config_digest
+            ) VALUES (%s, %s, %s)
+            ON CONFLICT (epoch_id) DO NOTHING
+            """,
+            (
+                epoch_id,
+                config.lease_duration_ms,
+                config.config_digest,
+            ),
+        )
+    lease_expires_at = (
+        None
+        if not after_016
+        else cursor.execute("SELECT clock_timestamp() + interval '1 hour'").fetchone()[
+            0
+        ]
+    )
+    return opened.adapter._ports._acquire_direct_job_local(
+        cursor,
+        epoch_id,
+        expected_revision,
+        job,
+        direct_support._deterministic_lease_token(job),
+        lease_expires_at=lease_expires_at,
+    )
+
+
 def _open_alternate_runtime_header(
     connection: Connection[Any],
     database: direct_support.DirectRuntimeDatabase,
@@ -2113,7 +3125,7 @@ def _open_alternate_runtime_header(
                 direct_support.runtime_digests.requirement_root_set_digest(()),
             ),
         )
-        direct_support._persist_typed_outer_snapshots(
+        _persist_legacy_direct_snapshots(
             cursor,
             epoch_id,
             requirements,
@@ -2264,7 +3276,7 @@ def _seed_direct_envelope_support(
     expired_successor_ordinal: int | None = 2,
 ) -> dict[str, Any]:
     database = _prepare_direct_runtime(connection)
-    opened = direct_support._open_direct_epoch(database)
+    opened = _open_legacy_direct_epoch(database)
     with connection.transaction():
         connection.execute(
             """
@@ -2277,16 +3289,14 @@ def _seed_direct_envelope_support(
 
     with connection.transaction(), connection.cursor() as cursor:
         direct_support._authorize(cursor, opened.epoch_id, 1)
-        root_lease = opened.adapter.acquire_direct_job(
+        root_lease = _acquire_legacy_direct_job(
             cursor,
-            opened.epoch_id,
-            1,
-            opened.root,
-            direct_support._deterministic_lease_token(opened.root),
+            opened=opened,
+            expected_revision=1,
+            job=opened.root,
+            after_016=True,
         )
-        direct_support._advance_typed_runtime(
-            cursor, opened.epoch_id, 1, "semantic_pending"
-        )
+        _advance_legacy_direct_runtime(cursor, opened.epoch_id, 1, "semantic_pending")
     assert root_lease.attempt_id is not None
     assert root_lease.lease_token_hash is not None
 
@@ -2319,19 +3329,19 @@ def _seed_direct_envelope_support(
                 discovery_completion,
                 (child,),
             )
-            direct_support._advance_typed_runtime(
+            _advance_legacy_direct_runtime(
                 cursor, opened.epoch_id, 2, "semantic_pending"
             )
         with connection.transaction(), connection.cursor() as cursor:
             direct_support._authorize(cursor, opened.epoch_id, 3)
-            child_lease = opened.adapter.acquire_direct_job(
+            child_lease = _acquire_legacy_direct_job(
                 cursor,
-                opened.epoch_id,
-                3,
-                child,
-                direct_support._deterministic_lease_token(child),
+                opened=opened,
+                expected_revision=3,
+                job=child,
+                after_016=True,
             )
-            direct_support._advance_typed_runtime(
+            _advance_legacy_direct_runtime(
                 cursor, opened.epoch_id, 3, "semantic_pending"
             )
         assert child_lease.attempt_id is not None
@@ -5005,7 +6015,7 @@ def test_root_barrier_contribution_rejects_partial_root_set() -> None:
         install_m5_runtime_recovery_bundle(connection)
         connection.commit()
         database = _prepare_requirement_runtime_for_recovery_test(connection)
-        epoch_id, roots = root_support._open_overlap_event(database)
+        epoch_id, roots = _legacy_open_overlap_event(database)
         _scope, root = roots[0]
         _, lease = _acquire_requirement_job_for_recovery_test(
             connection,
@@ -5013,18 +6023,20 @@ def test_root_barrier_contribution_rejects_partial_root_set() -> None:
             expected_revision=1,
             job=root,
         )
-        pair = root_support.SemanticPairKey(
-            root_support.SubjectKind.REQUIREMENT,
+        pair = SemanticPairKey(
+            SubjectKind.REQUIREMENT,
             database.group.requirements[0].requirement_version_id,
             database.base.chunk_ids[0],
         )
-        staged, _ = root_support._stage(
+        staged, _ = _stage_legacy_requirement_root(
             connection,
             epoch_id=epoch_id,
             expected_revision=2,
             lease=lease,
             job=root,
-            result=root_support._result(epoch_id=epoch_id, root=root, pairs=(pair,)),
+            result=_legacy_requirement_result(
+                epoch_id=epoch_id, root=root, pairs=(pair,)
+            ),
         )
         source = connection.execute(
             "SELECT structural_event_id FROM groundloop_m5_runtime_epoch "
@@ -5072,17 +6084,17 @@ def test_root_barrier_contribution_rejects_orphan_root_job() -> None:
             (closed["epoch_id"],),
         ).fetchone()
         assert runtime is not None
-        orphan_scope = root_support.M5DiscoveryScopeContract.build(
-            direction=root_support.M5DiscoveryDirection.REVERSE_CHUNK,
+        orphan_scope = M5DiscoveryScopeContract.build(
+            direction=M5DiscoveryDirection.REVERSE_CHUNK,
             requirement_version_id=None,
             inserted_chunk_version_id=database.base.chunk_ids[1],
             candidate_policy_id=database.manifest.candidate_policy_id,
             requirement_registry_snapshot_digest=str(runtime[1]).strip(),
             active_chunk_snapshot_digest=str(runtime[2]).strip(),
         )
-        orphan = root_support.M5LogicalJobSpec.build(
+        orphan = M5LogicalJobSpec.build(
             structural_event_id=str(runtime[0]),
-            job_kind=root_support.M5JobKind.REVERSE_REQUIREMENT_DISCOVERY,
+            job_kind=M5JobKind.REVERSE_REQUIREMENT_DISCOVERY,
             manifest=database.manifest,
             scope=orphan_scope,
         )
@@ -5595,7 +6607,7 @@ def test_operational_config_digest_is_reusable_across_epochs() -> None:
         install_m5_runtime_recovery_bundle(connection)
         connection.commit()
         database = _prepare_direct_runtime(connection)
-        first = direct_support._open_direct_epoch(database)
+        first = _open_legacy_direct_epoch(database)
         _terminalize_direct_epoch_for_audit(
             connection,
             epoch_id=first.epoch_id,

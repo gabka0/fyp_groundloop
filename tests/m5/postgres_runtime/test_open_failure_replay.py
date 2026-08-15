@@ -26,6 +26,8 @@ from groundloop.m5.runtime.contracts import (
     M5ReplayedOutcome,
     M5RunFailureReason,
     M5RunState,
+    M5RuntimeTiming,
+    M5RuntimeTimingCoverage,
     M5RuntimeWork,
     M5TerminalReason,
     M5TypedEventPlan,
@@ -47,19 +49,29 @@ OPEN_FAILURE_CASES = (
     ("register", "typed_open_group_staged"),
     ("replace", "typed_open_deactivation_staged"),
     ("register", "typed_open_roots_persisted"),
+    ("register", "typed_open_recovery_initialized"),
     ("register", "typed_open_snapshots_persisted"),
     ("register", "typed_open_before_commit"),
 )
 
 FAILURE_TRANSITION_POINTS = (
+    "typed_fail_jobs_locked",
+    "typed_fail_attempts_locked",
+    "typed_fail_accounting_started",
     "typed_fail_authorized",
     "typed_fail_jobs_cancelled",
+    "typed_fail_scopes_closed",
     "typed_fail_counters_updated",
     "typed_fail_structure_failed",
-    "typed_fail_work_inserted",
-    "typed_fail_result_inserted",
+    "typed_fail_cancellation_contribution_inserted",
+    "typed_fail_epoch_failure_contribution_inserted",
     "typed_fail_base_updated",
     "typed_fail_runtime_updated",
+    "typed_fail_work_accumulator_terminalized",
+    "typed_fail_timing_accumulator_terminalized",
+    "typed_fail_work_inserted",
+    "typed_fail_result_inserted",
+    "typed_fail_timing_coverage_inserted",
     "typed_fail_before_constraints",
     "typed_fail_after_constraints",
 )
@@ -233,6 +245,24 @@ def _root_expectations(
     return tuple(sorted(expected, key=lambda item: item[1].logical_job_id))
 
 
+def _open_recovery_event(
+    store: PostgresM5RuntimeStore,
+    database: Any,
+    plan: M5TypedEventPlan,
+    *,
+    failure_injector: Callable[[str], None] | None = None,
+) -> OpenEventReceipt:
+    roots = _root_expectations(plan, database.manifest)
+    return store.open_typed_event_atomically(
+        plan,
+        recovery_operational_config=database.operational_config,
+        recovery_root_fallback_required={
+            job.logical_job_id: False for _scope, job, _completion in roots
+        },
+        failure_injector=failure_injector,
+    )
+
+
 def _raise_at(target: str, seen: list[str]) -> Callable[[str], None]:
     def inject(point: str) -> None:
         seen.append(point)
@@ -242,17 +272,160 @@ def _raise_at(target: str, seen: list[str]) -> Callable[[str], None]:
     return inject
 
 
+def _sum_work(*parts: M5RuntimeWork) -> M5RuntimeWork:
+    return M5RuntimeWork(
+        **{
+            name: sum(getattr(part, name) for part in parts)
+            for name in M5RuntimeWork.counter_names()
+        }
+    )
+
+
+def _missing_timing_coverage(point_count: int) -> M5RuntimeTimingCoverage:
+    return M5RuntimeTimingCoverage(
+        required_expected_count=point_count,
+        required_observed_count=0,
+        required_missing_count=point_count,
+        postgres_server_execution_expected_count=point_count,
+        postgres_server_execution_observed_count=0,
+        postgres_server_execution_missing_count=point_count,
+        postgres_lock_wait_expected_count=point_count,
+        postgres_lock_wait_observed_count=0,
+        postgres_lock_wait_missing_count=point_count,
+        postgres_wal_bytes_expected_count=point_count,
+        postgres_wal_bytes_observed_count=0,
+        postgres_wal_bytes_missing_count=point_count,
+        postgres_shared_block_reads_expected_count=point_count,
+        postgres_shared_block_reads_observed_count=0,
+        postgres_shared_block_reads_missing_count=point_count,
+        terminal_client_roundtrip_included=False,
+    )
+
+
+def _coverage_values(
+    coverage: M5RuntimeTimingCoverage,
+) -> tuple[int | bool, ...]:
+    return (
+        coverage.required_expected_count,
+        coverage.required_observed_count,
+        coverage.required_missing_count,
+        coverage.postgres_server_execution_expected_count,
+        coverage.postgres_server_execution_observed_count,
+        coverage.postgres_server_execution_missing_count,
+        coverage.postgres_lock_wait_expected_count,
+        coverage.postgres_lock_wait_observed_count,
+        coverage.postgres_lock_wait_missing_count,
+        coverage.postgres_wal_bytes_expected_count,
+        coverage.postgres_wal_bytes_observed_count,
+        coverage.postgres_wal_bytes_missing_count,
+        coverage.postgres_shared_block_reads_expected_count,
+        coverage.postgres_shared_block_reads_observed_count,
+        coverage.postgres_shared_block_reads_missing_count,
+        coverage.terminal_client_roundtrip_included,
+    )
+
+
+def _assert_failure_timing(result: M5EventRunResult) -> None:
+    assert result.event_timing == M5RuntimeTiming()
+    assert result.call_timing == M5RuntimeTiming()
+    assert result.event_timing_coverage == _missing_timing_coverage(2)
+    assert result.call_timing_coverage == _missing_timing_coverage(1)
+
+
+def _assert_persisted_failure_timing(
+    connection: Connection[Any],
+    *,
+    event_id: str,
+    epoch_id: int,
+    resulting_revision: int,
+    result: M5EventRunResult,
+) -> None:
+    coverage = result.event_timing_coverage
+    assert coverage is not None
+    coverage_values = _coverage_values(coverage)
+    assert (
+        connection.execute(
+            """
+        SELECT required_expected_count, required_observed_count,
+               required_missing_count,
+               postgres_server_execution_expected_count,
+               postgres_server_execution_observed_count,
+               postgres_server_execution_missing_count,
+               postgres_lock_wait_expected_count,
+               postgres_lock_wait_observed_count,
+               postgres_lock_wait_missing_count,
+               postgres_wal_bytes_expected_count,
+               postgres_wal_bytes_observed_count,
+               postgres_wal_bytes_missing_count,
+               postgres_shared_block_reads_expected_count,
+               postgres_shared_block_reads_observed_count,
+               postgres_shared_block_reads_missing_count,
+               terminal_client_roundtrip_included
+        FROM groundloop_m5_event_timing_coverage
+        WHERE structural_event_id = %s AND epoch_id = %s
+        """,
+            (event_id, epoch_id),
+        ).fetchone()
+        == coverage_values
+    )
+    assert connection.execute(
+        """
+        SELECT required_expected_count, required_observed_count,
+               required_missing_count,
+               postgres_server_execution_expected_count,
+               postgres_server_execution_observed_count,
+               postgres_server_execution_missing_count,
+               postgres_lock_wait_expected_count,
+               postgres_lock_wait_observed_count,
+               postgres_lock_wait_missing_count,
+               postgres_wal_bytes_expected_count,
+               postgres_wal_bytes_observed_count,
+               postgres_wal_bytes_missing_count,
+               postgres_shared_block_reads_expected_count,
+               postgres_shared_block_reads_observed_count,
+               postgres_shared_block_reads_missing_count,
+               updated_revision, terminalized,
+               pending_contribution_kind, pending_source_id,
+               pending_contribution_key_digest, pending_anchor_revision
+        FROM groundloop_m5_runtime_timing_accumulator
+        WHERE epoch_id = %s
+        """,
+        (epoch_id,),
+    ).fetchone() == (
+        *coverage_values[:-1],
+        resulting_revision,
+        True,
+        None,
+        None,
+        None,
+        None,
+    )
+
+
 def _terminal_fail(
     m5_runtime_db: Any,
-) -> tuple[M5TypedEventPlan, OpenEventReceipt, M5EventRunResult]:
+) -> tuple[
+    M5TypedEventPlan,
+    OpenEventReceipt,
+    M5EventRunResult,
+    M5RuntimeWork,
+    int,
+]:
     plan = m5_runtime_db.retire_plan()
     store = PostgresM5RuntimeStore(m5_runtime_db.connection)
-    receipt = store.open_typed_event_atomically(plan)
+    receipt = _open_recovery_event(store, m5_runtime_db, plan)
+    failure_revision = store.current_revision(receipt.epoch_id)
+    work_before_failure = store.current_event_work(receipt.epoch_id)
     result = store.fail_typed_epoch_atomically(
         receipt.epoch_id,
+        expected_revision=failure_revision,
         failure_reason=M5RunFailureReason.INVARIANT_FAILURE,
+        call_work=M5RuntimeWork(),
     )
-    return plan, receipt, result
+    assert result.event_work == work_before_failure
+    assert result.call_work.is_zero
+    _assert_failure_timing(result)
+    return plan, receipt, result, work_before_failure, failure_revision
 
 
 def _assert_open_roots(
@@ -368,6 +541,7 @@ def _assert_failed_roots(
     plan: M5TypedEventPlan,
     epoch_id: int,
     result: M5EventRunResult,
+    work_before_failure: M5RuntimeWork,
     roots: tuple[
         tuple[M5DiscoveryScopeContract, M5LogicalJobSpec, M5JobCompletion], ...
     ],
@@ -448,9 +622,12 @@ def _assert_failed_roots(
             2,
         )
 
-    expected_work = M5RuntimeWork(requirement_cancelled_job_count=len(roots))
-    assert result.event_work == expected_work
-    assert result.call_work == expected_work
+    cancellation_work = M5RuntimeWork(requirement_cancelled_job_count=len(roots))
+    expected_event_work = _sum_work(work_before_failure, cancellation_work)
+    zero_work = M5RuntimeWork()
+    assert result.event_work == expected_event_work
+    assert result.call_work == zero_work
+    _assert_failure_timing(result)
     assert connection.execute(
         """
         SELECT work_kind, work_digest, requirement_cancelled_job_count
@@ -459,9 +636,34 @@ def _assert_failed_roots(
         """,
         (plan.structural_event_id,),
     ).fetchall() == [
-        ("call", expected_work.work_digest, len(roots)),
-        ("event", expected_work.work_digest, len(roots)),
+        ("call", zero_work.work_digest, 0),
+        (
+            "event",
+            expected_event_work.work_digest,
+            expected_event_work.requirement_cancelled_job_count,
+        ),
     ]
+    assert connection.execute(
+        """
+        SELECT contribution_kind, work_digest, applied_revision
+        FROM groundloop_m5_runtime_work_contribution
+        WHERE epoch_id = %s
+        ORDER BY contribution_kind COLLATE "C"
+        """,
+        (epoch_id,),
+    ).fetchall() == [
+        ("cancellation", cancellation_work.work_digest, 2),
+        ("epoch_failure", zero_work.work_digest, 2),
+        ("structural_open", work_before_failure.work_digest, 1),
+    ]
+    assert connection.execute(
+        """
+        SELECT work_digest, updated_revision, terminalized
+        FROM groundloop_m5_runtime_work_accumulator
+        WHERE epoch_id = %s
+        """,
+        (epoch_id,),
+    ).fetchone() == (expected_event_work.work_digest, 2, True)
     assert connection.execute(
         """
         SELECT event_work_digest, failure_reason, logical_result_hash,
@@ -470,11 +672,18 @@ def _assert_failed_roots(
         """,
         (plan.structural_event_id,),
     ).fetchone() == (
-        expected_work.work_digest,
+        expected_event_work.work_digest,
         M5RunFailureReason.INVARIANT_FAILURE.value,
         result.logical_result_hash,
         0,
         0,
+    )
+    _assert_persisted_failure_timing(
+        connection,
+        event_id=plan.structural_event_id,
+        epoch_id=epoch_id,
+        resulting_revision=2,
+        result=result,
     )
     connection.commit()
 
@@ -508,8 +717,10 @@ def test_rejected_declaration_consumes_no_event_or_epoch(
 
     before = _database_snapshot(m5_runtime_db.connection)
     with pytest.raises(InvalidEventError):
-        PostgresM5RuntimeStore(m5_runtime_db.connection).open_typed_event_atomically(
-            plan
+        _open_recovery_event(
+            PostgresM5RuntimeStore(m5_runtime_db.connection),
+            m5_runtime_db,
+            plan,
         )
 
     with m5_runtime_db.reconnect() as reconnect:
@@ -538,7 +749,9 @@ def test_every_open_failure_point_rolls_back_and_allows_clean_retry(
     seen: list[str] = []
 
     with pytest.raises(InjectedRuntimeFailure, match=failure_point):
-        store.open_typed_event_atomically(
+        _open_recovery_event(
+            store,
+            m5_runtime_db,
             plan,
             failure_injector=_raise_at(failure_point, seen),
         )
@@ -551,7 +764,7 @@ def test_every_open_failure_point_rolls_back_and_allows_clean_retry(
             (plan.structural_event_id,),
         ).fetchone() == (0,)
 
-    retry = store.open_typed_event_atomically(plan)
+    retry = _open_recovery_event(store, m5_runtime_db, plan)
     assert not retry.replayed
     assert not retry.already_failed
     assert not retry.already_sealed
@@ -561,13 +774,16 @@ def test_durable_retire_failure_keeps_exact_audit_and_published_truth(
     m5_runtime_db: Any,
 ) -> None:
     published_before = _published_snapshot(m5_runtime_db.connection)
-    plan, receipt, result = _terminal_fail(m5_runtime_db)
+    plan, receipt, result, work_before_failure, failure_revision = _terminal_fail(
+        m5_runtime_db
+    )
     zero_work = M5RuntimeWork()
 
     assert result.state is M5RunState.FAILED
     assert result.replayed_outcome is None
     assert result.failure_reason is M5RunFailureReason.INVARIANT_FAILURE
-    assert result.event_work == zero_work
+    assert not work_before_failure.is_zero
+    assert result.event_work == work_before_failure
     assert result.call_work == zero_work
     assert result.combined_deltas == ()
     assert result.changed_state_references == ()
@@ -683,9 +899,13 @@ def test_durable_retire_failure_keeps_exact_audit_and_published_truth(
         ).fetchall()
         assert work_rows == [
             ("call", zero_work.work_digest),
-            ("event", zero_work.work_digest),
+            ("event", work_before_failure.work_digest),
         ]
-        for work_kind in ("event", "call"):
+        expected_work_by_kind = {
+            "call": zero_work,
+            "event": work_before_failure,
+        }
+        for work_kind, expected_work in expected_work_by_kind.items():
             work_json = reconnect.execute(
                 """
                 SELECT to_jsonb(work_row)
@@ -696,7 +916,38 @@ def test_durable_retire_failure_keeps_exact_audit_and_published_truth(
             ).fetchone()
             assert work_json is not None
             for counter_name in M5RuntimeWork.counter_names():
-                assert work_json[0][counter_name] == 0
+                assert work_json[0][counter_name] == getattr(
+                    expected_work, counter_name
+                )
+
+        assert reconnect.execute(
+            """
+            SELECT contribution_kind, work_digest, applied_revision
+            FROM groundloop_m5_runtime_work_contribution
+            WHERE epoch_id = %s
+            ORDER BY contribution_kind COLLATE "C"
+            """,
+            (receipt.epoch_id,),
+        ).fetchall() == [
+            ("epoch_failure", zero_work.work_digest, failure_revision + 1),
+            (
+                "structural_open",
+                work_before_failure.work_digest,
+                failure_revision,
+            ),
+        ]
+        assert reconnect.execute(
+            """
+            SELECT work_digest, updated_revision, terminalized
+            FROM groundloop_m5_runtime_work_accumulator
+            WHERE epoch_id = %s
+            """,
+            (receipt.epoch_id,),
+        ).fetchone() == (
+            work_before_failure.work_digest,
+            failure_revision + 1,
+            True,
+        )
 
         event_result = reconnect.execute(
             """
@@ -724,13 +975,20 @@ def test_durable_retire_failure_keeps_exact_audit_and_published_truth(
             None,
             None,
             "event",
-            zero_work.work_digest,
+            work_before_failure.work_digest,
             digests.combined_status_delta_set_digest(()),
             digests.changed_state_set_digest(()),
             M5RunFailureReason.INVARIANT_FAILURE.value,
             result.logical_result_hash,
             0,
             0,
+        )
+        _assert_persisted_failure_timing(
+            reconnect,
+            event_id=plan.structural_event_id,
+            epoch_id=receipt.epoch_id,
+            resulting_revision=failure_revision + 1,
+            result=result,
         )
         assert reconnect.execute(
             """
@@ -755,14 +1013,21 @@ def test_failed_staged_group_keeps_audit_cancels_roots_and_preserves_strict_trut
         f"durable-staged-{event_kind}",
     )
     store = PostgresM5RuntimeStore(m5_runtime_db.connection)
-    receipt = store.open_typed_event_atomically(plan)
+    receipt = _open_recovery_event(store, m5_runtime_db, plan)
     roots = _assert_open_roots(
         m5_runtime_db.connection,
         m5_runtime_db=m5_runtime_db,
         plan=plan,
         epoch_id=receipt.epoch_id,
     )
-    result = store.fail_typed_epoch_atomically(receipt.epoch_id)
+    failure_revision = store.current_revision(receipt.epoch_id)
+    work_before_failure = store.current_event_work(receipt.epoch_id)
+    result = store.fail_typed_epoch_atomically(
+        receipt.epoch_id,
+        expected_revision=failure_revision,
+        failure_reason=M5RunFailureReason.INVARIANT_FAILURE,
+        call_work=M5RuntimeWork(),
+    )
 
     assert result.state is M5RunState.FAILED
     assert result.failure_reason is M5RunFailureReason.INVARIANT_FAILURE
@@ -773,6 +1038,7 @@ def test_failed_staged_group_keeps_audit_cancels_roots_and_preserves_strict_trut
             plan=plan,
             epoch_id=receipt.epoch_id,
             result=result,
+            work_before_failure=work_before_failure,
             roots=roots,
         )
         assert _strict_published_truth_snapshot(reconnect) == strict_before
@@ -866,6 +1132,11 @@ def test_failed_staged_group_keeps_audit_cancels_roots_and_preserves_strict_trut
     assert replay.replayed_outcome is M5ReplayedOutcome.FAILED
     assert replay.event_work == result.event_work
     assert replay.call_work.is_zero
+    assert replay.event_timing == result.event_timing
+    assert replay.call_timing == M5RuntimeTiming()
+    assert replay.event_timing_coverage == result.event_timing_coverage
+    assert replay.call_timing_coverage == result.call_timing_coverage
+    _assert_failure_timing(replay)
     assert replay.logical_result_hash == result.logical_result_hash
 
 
@@ -875,14 +1146,18 @@ def test_every_terminal_failure_point_rolls_back_then_retries_exactly_once(
 ) -> None:
     plan = m5_runtime_db.register_plan(event_id=f"fail-rollback-{failure_point}")
     store = PostgresM5RuntimeStore(m5_runtime_db.connection)
-    receipt = store.open_typed_event_atomically(plan)
+    receipt = _open_recovery_event(store, m5_runtime_db, plan)
+    failure_revision = store.current_revision(receipt.epoch_id)
+    work_before_failure = store.current_event_work(receipt.epoch_id)
     before = _database_snapshot(m5_runtime_db.connection)
     seen: list[str] = []
 
     with pytest.raises(InjectedRuntimeFailure, match=failure_point):
         store.fail_typed_epoch_atomically(
             receipt.epoch_id,
+            expected_revision=failure_revision,
             failure_reason=M5RunFailureReason.INVARIANT_FAILURE,
+            call_work=M5RuntimeWork(),
             failure_injector=_raise_at(failure_point, seen),
         )
     assert failure_point in seen
@@ -895,27 +1170,50 @@ def test_every_terminal_failure_point_rolls_back_then_retries_exactly_once(
             FROM groundloop_epoch WHERE epoch_id = %s
             """,
             (receipt.epoch_id,),
-        ).fetchone() == (1, "committed", "pending", "pending")
+        ).fetchone() == (
+            failure_revision,
+            "committed",
+            "pending",
+            "pending",
+        )
         assert reconnect.execute(
             """
             SELECT runtime_state, revision, terminal_at
             FROM groundloop_m5_runtime_epoch WHERE epoch_id = %s
             """,
             (receipt.epoch_id,),
-        ).fetchone() == ("structural_committed", 1, None)
+        ).fetchone() == ("structural_committed", failure_revision, None)
 
-    retry = store.fail_typed_epoch_atomically(receipt.epoch_id)
+    retry = store.fail_typed_epoch_atomically(
+        receipt.epoch_id,
+        expected_revision=failure_revision,
+        failure_reason=M5RunFailureReason.INVARIANT_FAILURE,
+        call_work=M5RuntimeWork(),
+    )
+    expected_event_work = _sum_work(
+        work_before_failure,
+        M5RuntimeWork(requirement_cancelled_job_count=2),
+    )
     assert retry.state is M5RunState.FAILED
     assert retry.failure_reason is M5RunFailureReason.INVARIANT_FAILURE
     assert retry.event_id == plan.structural_event_id
-    assert retry.event_work.requirement_cancelled_job_count == 2
-    assert retry.call_work.requirement_cancelled_job_count == 2
+    assert retry.event_work == expected_event_work
+    assert retry.call_work.is_zero
+    assert store.current_event_work(receipt.epoch_id) == expected_event_work
+    _assert_failure_timing(retry)
+    _assert_persisted_failure_timing(
+        m5_runtime_db.connection,
+        event_id=plan.structural_event_id,
+        epoch_id=receipt.epoch_id,
+        resulting_revision=failure_revision + 1,
+        result=retry,
+    )
 
 
 def test_fresh_connection_failed_replay_is_exact_and_read_only(
     m5_runtime_db: Any,
 ) -> None:
-    plan, receipt, original = _terminal_fail(m5_runtime_db)
+    plan, receipt, original, _, failure_revision = _terminal_fail(m5_runtime_db)
 
     with m5_runtime_db.reconnect() as reconnect:
         before = _database_snapshot(reconnect)
@@ -924,10 +1222,12 @@ def test_fresh_connection_failed_replay_is_exact_and_read_only(
             plan.structural_event_id, plan.payload_hash
         )
         assert read_result is not None
-        open_replay = store.open_typed_event_atomically(plan)
+        open_replay = _open_recovery_event(store, m5_runtime_db, plan)
         fail_replay = store.fail_typed_epoch_atomically(
             receipt.epoch_id,
+            expected_revision=failure_revision,
             failure_reason=M5RunFailureReason.INVARIANT_FAILURE,
+            call_work=M5RuntimeWork(),
         )
         after = _database_snapshot(reconnect)
 
@@ -946,6 +1246,10 @@ def test_fresh_connection_failed_replay_is_exact_and_read_only(
         assert replay.event_work == original.event_work
         assert replay.call_work.is_zero
         assert replay.event_timing == original.event_timing
+        assert replay.call_timing == original.call_timing
+        assert replay.event_timing_coverage == original.event_timing_coverage
+        assert replay.call_timing_coverage == original.call_timing_coverage
+        _assert_failure_timing(replay)
         assert replay.combined_deltas == original.combined_deltas
         assert replay.changed_state_references == original.changed_state_references
         assert replay.logical_result_hash == original.logical_result_hash
@@ -954,7 +1258,7 @@ def test_fresh_connection_failed_replay_is_exact_and_read_only(
 def test_conflicting_payload_and_declaration_replay_change_no_row(
     m5_runtime_db: Any,
 ) -> None:
-    plan, _, _ = _terminal_fail(m5_runtime_db)
+    plan, _, _, _, _ = _terminal_fail(m5_runtime_db)
     alternate = m5_runtime_db.register_manifest(m5_runtime_db.alternate_manifest())
     conflicting_payload = m5_runtime_db.retire_plan(
         event_id=plan.structural_event_id,
@@ -968,9 +1272,9 @@ def test_conflicting_payload_and_declaration_replay_change_no_row(
     store = PostgresM5RuntimeStore(m5_runtime_db.connection)
 
     with pytest.raises(EventConflictError, match="another payload"):
-        store.open_typed_event_atomically(conflicting_payload)
+        _open_recovery_event(store, m5_runtime_db, conflicting_payload)
     with pytest.raises(EventConflictError, match="declaration differs"):
-        store.open_typed_event_atomically(conflicting_declaration)
+        _open_recovery_event(store, m5_runtime_db, conflicting_declaration)
     with pytest.raises(EventConflictError, match="another payload"):
         store.read_typed_event_result(
             plan.structural_event_id, conflicting_payload.payload_hash
@@ -995,13 +1299,18 @@ def test_concurrent_exact_open_commits_one_epoch_and_replays_the_other(
                     raise TimeoutError("test did not release first typed opener")
 
         with m5_runtime_db.reconnect() as connection:
-            return PostgresM5RuntimeStore(connection).open_typed_event_atomically(
-                plan, failure_injector=hold_after_insert
+            return _open_recovery_event(
+                PostgresM5RuntimeStore(connection),
+                m5_runtime_db,
+                plan,
+                failure_injector=hold_after_insert,
             )
 
     def second_open() -> OpenEventReceipt:
         with m5_runtime_db.reconnect() as connection:
-            return PostgresM5RuntimeStore(connection).open_typed_event_atomically(plan)
+            return _open_recovery_event(
+                PostgresM5RuntimeStore(connection), m5_runtime_db, plan
+            )
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         first_future = executor.submit(first_open)

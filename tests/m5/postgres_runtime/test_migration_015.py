@@ -14,6 +14,7 @@ import psycopg
 import pytest
 from psycopg import Connection, errors, sql
 
+from groundloop.m4.contracts import VectorIndexKind
 from groundloop.m5.digests import (
     bool_field,
     enum_field,
@@ -25,15 +26,16 @@ from groundloop.m5.digests import (
     text_field,
 )
 from groundloop.m5.domain import EvidenceGroupVersion, EvidenceRequirementVersion
-from groundloop.m5.events import RegisterGroupEvent, m5_event_payload_digest
 from groundloop.m5.runtime import digests as runtime_digests
 from groundloop.m5.runtime.contracts import (
-    ActiveChunkSnapshot,
-    M5TypedEventPlan,
+    M5CandidatePolicyManifest,
+    M5DiscoveryDirection,
+    M5DiscoveryScopeContract,
+    M5JobKind,
+    M5LogicalJobSpec,
     RequirementRegistrySnapshot,
     RequirementRegistrySnapshotEntry,
 )
-from groundloop.m5.runtime.persistence import PostgresM5RuntimeStore
 from groundloop.postgres.migrations import (
     M5_BUNDLE_ID,
     M5_RUNTIME_BUNDLE_ID,
@@ -528,6 +530,9 @@ def _insert_typed_header(
     runtime_state: str = "structural_committed",
     requirement_snapshot_digest: str = EMPTY_REQUIREMENT_SNAPSHOT_DIGEST,
     active_snapshot_digest: str = EMPTY_ACTIVE_CHUNK_SNAPSHOT_DIGEST,
+    requirement_root_set_hash: str = EMPTY_REQUIREMENT_ROOT_SET_HASH,
+    open_work_count: int = 0,
+    open_scope_count: int = 0,
 ) -> int:
     event_id = f"{prefix}-event"
     row = connection.execute(
@@ -567,7 +572,7 @@ def _insert_typed_header(
             expected_previous_published_epoch_id,
             requirement_root_set_hash, runtime_state, revision,
             open_work_count, open_scope_count, blocking_failure_count
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, 0, 0)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0)
         """,
         (
             epoch_id,
@@ -581,9 +586,11 @@ def _insert_typed_header(
                 if runtime_previous_epoch_id is None
                 else runtime_previous_epoch_id
             ),
-            EMPTY_REQUIREMENT_ROOT_SET_HASH,
+            requirement_root_set_hash,
             runtime_state,
             runtime_revision,
+            open_work_count,
+            open_scope_count,
         ),
     )
     return epoch_id
@@ -737,6 +744,7 @@ def _insert_header_snapshots_and_counters(
     group: EvidenceGroupVersion,
     requirement_snapshot_digest: str,
     epoch_id: int,
+    forward_scope_count: int = 0,
 ) -> None:
     requirement = group.requirements[0]
     connection.execute(
@@ -773,6 +781,7 @@ def _insert_header_snapshots_and_counters(
             active_chunk_snapshot_digest, chunk_count, created_epoch_id,
             normalizer_id, normalizer_provenance_hash
         ) VALUES (%s, 0, %s, 'm5-normalize-text-v1', %s)
+        ON CONFLICT (active_chunk_snapshot_digest) DO NOTHING
         """,
         (
             EMPTY_ACTIVE_CHUNK_SNAPSHOT_DIGEST,
@@ -786,9 +795,9 @@ def _insert_header_snapshots_and_counters(
             epoch_id, owner_claim_id, broad_reverse_scope_count,
             forward_scope_count, verifier_job_count,
             blocking_failure_count, updated_revision
-        ) VALUES (%s, %s, 0, 0, 0, 0, 1)
+        ) VALUES (%s, %s, 0, %s, 0, 0, 1)
         """,
-        (epoch_id, fixture.owner_claim_id),
+        (epoch_id, fixture.owner_claim_id, forward_scope_count),
     )
     connection.execute(
         """
@@ -796,10 +805,160 @@ def _insert_header_snapshots_and_counters(
             epoch_id, answer_version_id, broad_reverse_scope_count,
             forward_scope_count, verifier_job_count,
             blocking_failure_count, updated_revision
-        ) VALUES (%s, %s, 0, 0, 0, 0, 1)
+        ) VALUES (%s, %s, 0, %s, 0, 0, 1)
         """,
-        (epoch_id, fixture.answer_version_id),
+        (epoch_id, fixture.answer_version_id, forward_scope_count),
     )
+
+
+def _load_legacy_candidate_manifest(
+    connection: Connection[Any], candidate_policy_id: str
+) -> M5CandidatePolicyManifest:
+    row = connection.execute(
+        """
+        SELECT candidate_policy_id, embedding_model_artifact_id,
+               requirement_role_template_hash, chunk_role_template_hash,
+               vector_method_version, vector_index_kind,
+               vector_index_build_config_hash, vector_search_config_hash,
+               lexical_method_version, lexical_config_hash,
+               lexical_postgres_version, lexical_regconfig_identity,
+               fusion_version, reverse_budget_per_inserted_chunk,
+               forward_budget_per_requirement, verifier_execution_spec_hash,
+               decision_policy_version, lineage_safety_override
+        FROM groundloop_m5_candidate_policy
+        WHERE candidate_policy_id = %s
+        """,
+        (candidate_policy_id,),
+    ).fetchone()
+    assert row is not None
+    return M5CandidatePolicyManifest(
+        candidate_policy_id=str(row[0]).strip(),
+        embedding_model_artifact_id=str(row[1]),
+        requirement_role_template_hash=str(row[2]).strip(),
+        chunk_role_template_hash=str(row[3]).strip(),
+        vector_method_version=str(row[4]),
+        vector_index_kind=VectorIndexKind(str(row[5])),
+        vector_index_build_config_hash=str(row[6]).strip(),
+        vector_search_config_hash=str(row[7]).strip(),
+        lexical_method_version=str(row[8]),
+        lexical_config_hash=str(row[9]).strip(),
+        lexical_postgres_version=str(row[10]),
+        lexical_regconfig_identity=str(row[11]),
+        fusion_version=str(row[12]),
+        reverse_budget_per_inserted_chunk=int(row[13]),
+        forward_budget_per_requirement=int(row[14]),
+        verifier_execution_spec_hash=str(row[15]).strip(),
+        decision_policy_version=str(row[16]),
+        lineage_safety_override=bool(row[17]),
+    )
+
+
+def _seed_legacy_register_group_root(
+    connection: Connection[Any],
+    *,
+    fixture: _BridgeFixture,
+    group: EvidenceGroupVersion,
+    requirement_snapshot: RequirementRegistrySnapshot,
+    structural_event_id: str,
+) -> tuple[int, M5LogicalJobSpec]:
+    """Seed the migration-015 structural image without invoking D24 open."""
+
+    manifest = _load_legacy_candidate_manifest(connection, fixture.direct_policy_id)
+    requirement = group.requirements[0]
+    scope = M5DiscoveryScopeContract.build(
+        direction=M5DiscoveryDirection.FORWARD_REQUIREMENT,
+        requirement_version_id=requirement.requirement_version_id,
+        inserted_chunk_version_id=None,
+        candidate_policy_id=manifest.candidate_policy_id,
+        requirement_registry_snapshot_digest=(
+            requirement_snapshot.requirement_registry_snapshot_digest
+        ),
+        active_chunk_snapshot_digest=EMPTY_ACTIVE_CHUNK_SNAPSHOT_DIGEST,
+    )
+    job = M5LogicalJobSpec.build(
+        structural_event_id=structural_event_id,
+        job_kind=M5JobKind.FORWARD_REQUIREMENT_RETRIEVAL,
+        manifest=manifest,
+        scope=scope,
+    )
+    root_set_hash = runtime_digests.requirement_root_set_digest((job.logical_job_id,))
+    prefix = structural_event_id.removesuffix("-event")
+    epoch_id = _insert_typed_header(
+        connection,
+        fixture,
+        prefix=prefix,
+        typed_kind="register_group",
+        requirement_snapshot_digest=(
+            requirement_snapshot.requirement_registry_snapshot_digest
+        ),
+        requirement_root_set_hash=root_set_hash,
+        open_work_count=1,
+        open_scope_count=1,
+    )
+    _insert_staged_group(connection, group=group, epoch_id=epoch_id)
+    _insert_header_snapshots_and_counters(
+        connection,
+        fixture=fixture,
+        group=group,
+        requirement_snapshot_digest=(
+            requirement_snapshot.requirement_registry_snapshot_digest
+        ),
+        epoch_id=epoch_id,
+        forward_scope_count=1,
+    )
+    connection.execute(
+        """
+        INSERT INTO groundloop_m5_discovery_scope (
+            root_job_id, epoch_id, direction,
+            requirement_version_id, inserted_chunk_version_id,
+            candidate_policy_id, requirement_registry_snapshot_digest,
+            active_chunk_snapshot_digest, scope_contract_digest,
+            scope_state, created_revision
+        ) VALUES (%s, %s, %s, %s, NULL, %s, %s, %s, %s, 'open', 1)
+        """,
+        (
+            job.logical_job_id,
+            epoch_id,
+            scope.direction.value,
+            scope.requirement_version_id,
+            scope.candidate_policy_id,
+            scope.requirement_registry_snapshot_digest,
+            scope.active_chunk_snapshot_digest,
+            scope.scope_contract_digest,
+        ),
+    )
+    connection.execute(
+        """
+        INSERT INTO groundloop_m5_semantic_job (
+            logical_job_id, epoch_id, structural_event_id, job_kind,
+            candidate_policy_id, candidate_policy_manifest_hash,
+            scope_contract_digest, requirement_registry_snapshot_digest,
+            active_chunk_snapshot_digest, role_template_hash,
+            execution_spec_hash, expandable, payload_hash,
+            job_state, created_revision
+        ) VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            TRUE, %s, 'declared', 1
+        )
+        """,
+        (
+            job.logical_job_id,
+            epoch_id,
+            job.structural_event_id,
+            job.job_kind.value,
+            job.candidate_policy_id,
+            job.candidate_policy_manifest_hash,
+            job.scope_contract_digest,
+            job.requirement_registry_snapshot_digest,
+            job.active_chunk_snapshot_digest,
+            job.role_template_hash,
+            job.execution_spec_hash,
+            job.payload_hash,
+        ),
+    )
+    connection.execute("SET CONSTRAINTS ALL IMMEDIATE")
+    connection.execute("SET CONSTRAINTS ALL DEFERRED")
+    return epoch_id, job
 
 
 def _insert_zero_work(
@@ -971,14 +1130,17 @@ def test_fresh_install_creates_exact_named_relations_and_immutable_ledger() -> N
         assert installed.applied
         assert _current_tables(connection) - before_tables == set(RUNTIME_RELATIONS)
         assert _protected_runtime_snapshot(connection) == protected_before
-        assert connection.execute(
-            """
+        assert (
+            connection.execute(
+                """
             SELECT pg_get_triggerdef(oid, true)
             FROM pg_trigger
             WHERE tgrelid = 'groundloop_m4_update'::regclass
               AND tgname = 'groundloop_m4_update_runtime_mode_guard'
             """
-        ).fetchone() == trigger_before
+            ).fetchone()
+            == trigger_before
+        )
         guard_after = connection.execute(
             """
             SELECT pg_get_functiondef('groundloop_m5_guard_v1_open()'::regprocedure)
@@ -1007,24 +1169,28 @@ def test_fresh_install_creates_exact_named_relations_and_immutable_ledger() -> N
             M5_RUNTIME_ORACLE_SHA256,
             installed.identity.prerequisite_sha256,
         )
-        assert installed.identity.migration_sha256 == hashlib.sha256(
-            M5_RUNTIME_MIGRATION_PATH.read_bytes()
-        ).hexdigest()
-        assert connection.execute(
-            """
+        assert (
+            installed.identity.migration_sha256
+            == hashlib.sha256(M5_RUNTIME_MIGRATION_PATH.read_bytes()).hexdigest()
+        )
+        assert (
+            connection.execute(
+                """
             SELECT prerequisite_sha256
             FROM groundloop_m5_schema_bundle
             WHERE bundle_id = %s
             """,
-            (M5_RUNTIME_BUNDLE_ID,),
-        ).fetchone() == connection.execute(
-            """
+                (M5_RUNTIME_BUNDLE_ID,),
+            ).fetchone()
+            == connection.execute(
+                """
             SELECT bundle_sha256
             FROM groundloop_m5_schema_bundle
             WHERE bundle_id = %s
             """,
-            (M5_BUNDLE_ID,),
-        ).fetchone()
+                (M5_BUNDLE_ID,),
+            ).fetchone()
+        )
 
         with pytest.raises(errors.RaiseException, match="immutable M5 table"):
             connection.execute(
@@ -1172,11 +1338,14 @@ def test_mid_ddl_failure_and_live_epoch_guard_leave_no_partial_schema() -> None:
             """,
             (M5_RUNTIME_BUNDLE_ID,),
         ).fetchone() == (0,)
-        assert connection.execute(
-            """
+        assert (
+            connection.execute(
+                """
             SELECT pg_get_functiondef('groundloop_m5_guard_v1_open()'::regprocedure)
             """
-        ).fetchone() == original_guard
+            ).fetchone()
+            == original_guard
+        )
 
     with _isolated_schema() as connection:
         connection.execute(
@@ -1849,20 +2018,14 @@ def test_deferred_root_bijection_accepts_production_root_declaration() -> None:
                 ),
             )
         )
-        event = RegisterGroupEvent("root-record-fields-event", group)
-        plan = M5TypedEventPlan(
-            structural_event_id=event.event_id,
-            event=event,
-            payload_hash=m5_event_payload_digest(event),
-            direct_plan=None,
-            candidate_policy_id=fixture.direct_policy_id,
-            candidate_policy_manifest_hash=fixture.typed_policy_manifest_hash,
-            requirement_registry_snapshot=snapshot,
-            active_chunk_snapshot=ActiveChunkSnapshot.build(()),
-            expected_previous_published_epoch_id=fixture.base_epoch_id,
+        epoch_id, _job = _seed_legacy_register_group_root(
+            connection,
+            fixture=fixture,
+            group=group,
+            requirement_snapshot=snapshot,
+            structural_event_id="root-record-fields-event",
         )
-
-        receipt = PostgresM5RuntimeStore(connection).open_typed_event_atomically(plan)
+        connection.commit()
 
         assert connection.execute(
             """
@@ -1873,7 +2036,7 @@ def test_deferred_root_bijection_accepts_production_root_declaration() -> None:
             JOIN groundloop_m5_discovery_scope AS scope USING (epoch_id)
             WHERE runtime.epoch_id = %s
             """,
-            (receipt.epoch_id,),
+            (epoch_id,),
         ).fetchone() == ("declared", "open", 1, 1)
 
 
@@ -1903,40 +2066,23 @@ def test_attempt_error_hash_is_separate_and_state_checked() -> None:
                 ),
             )
         )
-        event = RegisterGroupEvent("attempt-error-event", group)
-        plan = M5TypedEventPlan(
-            structural_event_id=event.event_id,
-            event=event,
-            payload_hash=m5_event_payload_digest(event),
-            direct_plan=None,
-            candidate_policy_id=fixture.direct_policy_id,
-            candidate_policy_manifest_hash=fixture.typed_policy_manifest_hash,
-            requirement_registry_snapshot=snapshot,
-            active_chunk_snapshot=ActiveChunkSnapshot.build(()),
-            expected_previous_published_epoch_id=fixture.base_epoch_id,
+        epoch_id, job = _seed_legacy_register_group_root(
+            connection,
+            fixture=fixture,
+            group=group,
+            requirement_snapshot=snapshot,
+            structural_event_id="attempt-error-event",
         )
-        receipt = PostgresM5RuntimeStore(connection).open_typed_event_atomically(plan)
-        job_row = connection.execute(
-            """
-            SELECT logical_job_id, execution_spec_hash
-            FROM groundloop_m5_semantic_job
-            WHERE epoch_id = %s
-            """,
-            (receipt.epoch_id,),
-        ).fetchone()
-        assert job_row is not None
-        job_id = str(job_row[0]).strip()
-        execution_spec_hash = str(job_row[1]).strip()
+        job_id = job.logical_job_id
+        execution_spec_hash = job.execution_spec_hash
         lease_token_hash = _sha("attempt-error-lease")
-        attempt_id = runtime_digests.job_attempt_id(
-            job_id, 1, execution_spec_hash
-        )
+        attempt_id = runtime_digests.job_attempt_id(job_id, 1, execution_spec_hash)
         connection.commit()
 
         with connection.transaction():
             connection.execute(
                 "SELECT groundloop_m5_authorize_checked_transition(%s, 1)",
-                (receipt.epoch_id,),
+                (epoch_id,),
             )
             connection.execute(
                 """
@@ -1958,21 +2104,21 @@ def test_attempt_error_hash_is_separate_and_state_checked() -> None:
             )
             connection.execute(
                 "UPDATE groundloop_epoch SET revision = 2 WHERE epoch_id = %s",
-                (receipt.epoch_id,),
+                (epoch_id,),
             )
             connection.execute(
                 """
                 UPDATE groundloop_m5_owner_pending_counter
                 SET updated_revision = 2 WHERE epoch_id = %s
                 """,
-                (receipt.epoch_id,),
+                (epoch_id,),
             )
             connection.execute(
                 """
                 UPDATE groundloop_m5_answer_pending_counter
                 SET updated_revision = 2 WHERE epoch_id = %s
                 """,
-                (receipt.epoch_id,),
+                (epoch_id,),
             )
             connection.execute(
                 """
@@ -1980,7 +2126,7 @@ def test_attempt_error_hash_is_separate_and_state_checked() -> None:
                 SET runtime_state = 'semantic_pending', revision = 2
                 WHERE epoch_id = %s
                 """,
-                (receipt.epoch_id,),
+                (epoch_id,),
             )
             connection.execute("SET CONSTRAINTS ALL IMMEDIATE")
 
@@ -1988,7 +2134,7 @@ def test_attempt_error_hash_is_separate_and_state_checked() -> None:
             with connection.transaction():
                 connection.execute(
                     "SELECT groundloop_m5_authorize_checked_transition(%s, 2)",
-                    (receipt.epoch_id,),
+                    (epoch_id,),
                 )
                 connection.execute(
                     """
@@ -2003,7 +2149,7 @@ def test_attempt_error_hash_is_separate_and_state_checked() -> None:
         with connection.transaction():
             connection.execute(
                 "SELECT groundloop_m5_authorize_checked_transition(%s, 2)",
-                (receipt.epoch_id,),
+                (epoch_id,),
             )
             connection.execute(
                 """
@@ -2024,21 +2170,21 @@ def test_attempt_error_hash_is_separate_and_state_checked() -> None:
             )
             connection.execute(
                 "UPDATE groundloop_epoch SET revision = 3 WHERE epoch_id = %s",
-                (receipt.epoch_id,),
+                (epoch_id,),
             )
             connection.execute(
                 """
                 UPDATE groundloop_m5_owner_pending_counter
                 SET updated_revision = 3 WHERE epoch_id = %s
                 """,
-                (receipt.epoch_id,),
+                (epoch_id,),
             )
             connection.execute(
                 """
                 UPDATE groundloop_m5_answer_pending_counter
                 SET updated_revision = 3 WHERE epoch_id = %s
                 """,
-                (receipt.epoch_id,),
+                (epoch_id,),
             )
             connection.execute(
                 """
@@ -2046,7 +2192,7 @@ def test_attempt_error_hash_is_separate_and_state_checked() -> None:
                 SET runtime_state = 'semantic_pending', revision = 3
                 WHERE epoch_id = %s
                 """,
-                (receipt.epoch_id,),
+                (epoch_id,),
             )
             connection.execute("SET CONSTRAINTS ALL IMMEDIATE")
 

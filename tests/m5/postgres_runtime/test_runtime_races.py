@@ -36,6 +36,7 @@ from groundloop.m5.runtime.contracts import (
     M5ActivationReceipt,
     M5ActivationRequest,
     M5CandidatePolicyManifest,
+    M5RuntimeOperationalConfig,
     M5TypedEventPlan,
     RequirementRegistrySnapshot,
 )
@@ -44,6 +45,7 @@ from groundloop.postgres.migrations import (
     apply_legacy_migrations,
     install_m5_core_bundle,
     install_m5_runtime_bundle,
+    install_m5_runtime_recovery_bundle,
 )
 from tests.m5.postgres.helpers import (
     SeededBase,
@@ -51,6 +53,7 @@ from tests.m5.postgres.helpers import (
     make_group,
     seed_base,
 )
+from tests.m5.postgres_runtime.conftest import ACCEPTED_016_LEDGER
 
 
 def _sha(value: str) -> str:
@@ -133,6 +136,7 @@ class RuntimeRaceDatabase:
     legacy_candidate_policy_id: str
     activation_request: M5ActivationRequest
     retire_plan: M5TypedEventPlan
+    operational_config: M5RuntimeOperationalConfig
 
     @contextmanager
     def reconnect(self) -> Iterator[Connection[Any]]:
@@ -157,6 +161,21 @@ def runtime_race_db() -> Iterator[RuntimeRaceDatabase]:
                 apply_legacy_migrations(connection)
             install_m5_core_bundle(connection)
             install_m5_runtime_bundle(connection)
+            install_m5_runtime_recovery_bundle(connection)
+            ledger = connection.execute(
+                """
+                SELECT bundle_id, bundle_sha256, migration_sha256,
+                       oracle_sha256, prerequisite_sha256
+                FROM groundloop_m5_schema_bundle
+                WHERE bundle_id = %s
+                """,
+                (ACCEPTED_016_LEDGER[0],),
+            ).fetchone()
+            assert ledger is not None
+            assert tuple(str(value).strip() for value in ledger) == (
+                ACCEPTED_016_LEDGER
+            )
+            connection.commit()
 
             chunk_texts = ("alpha", "beta")
             with connection.transaction():
@@ -239,6 +258,7 @@ def runtime_race_db() -> Iterator[RuntimeRaceDatabase]:
                 legacy_candidate_policy_id=m4_manifest.policy_id,
                 activation_request=activation_request,
                 retire_plan=retire_plan,
+                operational_config=M5RuntimeOperationalConfig.build(300),
             )
     finally:
         with psycopg.connect(dsn, autocommit=True) as admin:
@@ -662,7 +682,9 @@ def test_typed_open_arrives_first_and_rejects_before_activation_consumes_no_even
         try:
             with runtime_race_db.reconnect() as connection:
                 PostgresM5RuntimeStore(connection).open_typed_event_atomically(
-                    runtime_race_db.retire_plan
+                    runtime_race_db.retire_plan,
+                    recovery_operational_config=runtime_race_db.operational_config,
+                    recovery_root_fallback_required={},
                 )
         except InvalidEventError as error:
             typed_rejected.set()
@@ -737,6 +759,8 @@ def test_activation_arrives_first_then_typed_open_uses_head_equal_route(
         with runtime_race_db.reconnect() as connection:
             return PostgresM5RuntimeStore(connection).open_typed_event_atomically(
                 runtime_race_db.retire_plan,
+                recovery_operational_config=runtime_race_db.operational_config,
+                recovery_root_fallback_required={},
                 failure_injector=hold,
             )
 

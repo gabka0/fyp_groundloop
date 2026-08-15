@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from threading import Barrier
 from typing import Any
 
@@ -13,6 +14,7 @@ from psycopg import Connection, sql
 from groundloop.errors import EventConflictError
 from groundloop.m5.events import RegisterGroupEvent
 from groundloop.m5.runtime.contracts import (
+    M5AcquisitionDisposition,
     M5AttemptCompletionReceipt,
     M5CandidatePolicyManifest,
     M5DiscoveryDirection,
@@ -21,6 +23,8 @@ from groundloop.m5.runtime.contracts import (
     M5JobKind,
     M5JobLease,
     M5LogicalJobSpec,
+    M5RunFailureReason,
+    M5RuntimeTiming,
     M5RuntimeWork,
     M5TypedEventPlan,
 )
@@ -34,6 +38,17 @@ LIFECYCLE_TABLES = (
     "groundloop_m5_owner_pending_counter",
     "groundloop_m5_answer_pending_counter",
     "groundloop_m5_runtime_work",
+    "groundloop_m5_runtime_operational_config",
+    "groundloop_m5_requirement_root_provenance",
+    "groundloop_m5_dispatch_record",
+    "groundloop_m5_attempt_execution_evidence",
+    "groundloop_m5_runtime_work_contribution",
+    "groundloop_m5_runtime_work_accumulator",
+    "groundloop_m5_runtime_timing_contribution",
+    "groundloop_m5_transition_call_timing",
+    "groundloop_m5_runtime_timing_accumulator",
+    "groundloop_m5_event_result",
+    "groundloop_m5_event_timing_coverage",
 )
 
 
@@ -68,6 +83,30 @@ def _root_jobs(
             )
         )
     return tuple(sorted(jobs, key=lambda job: job.logical_job_id))
+
+
+def _open_recovery_event(
+    store: PostgresM5RuntimeStore,
+    database: Any,
+    plan: M5TypedEventPlan,
+) -> Any:
+    jobs = _root_jobs(plan, database.manifest)
+    return store.open_typed_event_atomically(
+        plan,
+        recovery_operational_config=database.operational_config,
+        recovery_root_fallback_required={job.logical_job_id: False for job in jobs},
+    )
+
+
+def _forward_attempt_work() -> M5RuntimeWork:
+    return M5RuntimeWork(
+        requirement_forward_retrieval_call_count=1,
+        embedding_model_call_count=1,
+    )
+
+
+def _attempt_timing() -> M5RuntimeTiming:
+    return M5RuntimeTiming()
 
 
 def _snapshot(
@@ -133,14 +172,15 @@ def test_acquire_persists_complete_attempt_and_exact_running_replay(
 ) -> None:
     plan = m5_runtime_db.register_plan(event_id="job-acquire")
     store = PostgresM5RuntimeStore(m5_runtime_db.connection)
-    opened = store.open_typed_event_atomically(plan)
+    opened = _open_recovery_event(store, m5_runtime_db, plan)
     jobs = _root_jobs(plan, m5_runtime_db.manifest)
     assert len(jobs) == 2
 
+    opened_work = store.current_event_work(opened.epoch_id)
     before_reads = _snapshot(m5_runtime_db.connection)
     assert store.current_revision(opened.epoch_id) == 1
     assert store.verifier_jobs(opened.epoch_id) == ()
-    assert store.current_event_work(opened.epoch_id) == M5RuntimeWork()
+    assert store.current_event_work(opened.epoch_id) == opened_work
     assert _snapshot(m5_runtime_db.connection) == before_reads
 
     before_pending = _pending_rows(m5_runtime_db.connection, opened.epoch_id)
@@ -154,6 +194,7 @@ def test_acquire_persists_complete_attempt_and_exact_running_replay(
     assert lease.should_execute
     assert not lease.exact_replay
     assert lease.resulting_revision == 2
+    assert lease.disposition is M5AcquisitionDisposition.DISPATCH_NEW
 
     assert m5_runtime_db.connection.execute(
         """
@@ -210,13 +251,12 @@ def test_acquire_persists_complete_attempt_and_exact_running_replay(
 
     before_replay = _snapshot(m5_runtime_db.connection)
     replay = store.acquire_m5_job(opened.epoch_id, 1, jobs[0])
-    assert replay == M5JobLease(
-        jobs[0].logical_job_id,
-        lease.attempt,
-        2,
-        False,
-        True,
-    )
+    assert replay.attempt == lease.attempt
+    assert replay.resulting_revision == 2
+    assert not replay.should_execute and replay.exact_replay
+    assert replay.lease_expires_at == lease.lease_expires_at
+    assert replay.dispatch_record_digest == lease.dispatch_record_digest
+    assert replay.disposition is M5AcquisitionDisposition.LIVE_LEASE
     assert _snapshot(m5_runtime_db.connection) == before_replay
 
     with pytest.raises(EventConflictError, match="stale typed runtime revision"):
@@ -229,7 +269,7 @@ def test_retryable_failure_has_distinct_error_identity_and_dense_retry(
 ) -> None:
     plan = m5_runtime_db.register_plan(event_id="job-retryable-failure")
     store = PostgresM5RuntimeStore(m5_runtime_db.connection)
-    opened = store.open_typed_event_atomically(plan)
+    opened = _open_recovery_event(store, m5_runtime_db, plan)
     job = _root_jobs(plan, m5_runtime_db.manifest)[0]
     lease = store.acquire_m5_job(opened.epoch_id, 1, job)
     assert lease.attempt is not None
@@ -237,7 +277,16 @@ def test_retryable_failure_has_distinct_error_identity_and_dense_retry(
     before_pending = _pending_rows(m5_runtime_db.connection, opened.epoch_id)
     m5_runtime_db.connection.commit()
     error_hash = _sha("temporary retrieval failure")
-    receipt = store.mark_m5_retryable_failure(opened.epoch_id, 2, lease, error_hash)
+    attempt_work = _forward_attempt_work()
+    attempt_timing = _attempt_timing()
+    receipt = store.mark_m5_retryable_failure(
+        opened.epoch_id,
+        2,
+        lease,
+        error_hash,
+        attempt_work,
+        attempt_timing,
+    )
     assert receipt.logical_job_id == job.logical_job_id
     assert receipt.attempt_id == lease.attempt.attempt_id
     assert receipt.resulting_revision == 3
@@ -276,16 +325,28 @@ def test_retryable_failure_has_distinct_error_identity_and_dense_retry(
     assert {int(row[-1]) for rows in after_pending for row in rows} == {3}
 
     before_replay = _snapshot(m5_runtime_db.connection)
-    exact = store.mark_m5_retryable_failure(opened.epoch_id, 2, lease, error_hash)
+    exact = store.mark_m5_retryable_failure(
+        opened.epoch_id,
+        2,
+        lease,
+        error_hash,
+        attempt_work,
+        attempt_timing,
+    )
     assert exact.logical_job_id == receipt.logical_job_id
     assert exact.attempt_id == receipt.attempt_id
     assert exact.resulting_revision == receipt.resulting_revision
     assert exact.exact_replay
     assert _snapshot(m5_runtime_db.connection) == before_replay
 
-    with pytest.raises(EventConflictError, match="changed its error hash"):
+    with pytest.raises(EventConflictError, match="changed immutable evidence"):
         store.mark_m5_retryable_failure(
-            opened.epoch_id, 2, lease, _sha("different retrieval failure")
+            opened.epoch_id,
+            2,
+            lease,
+            _sha("different retrieval failure"),
+            attempt_work,
+            attempt_timing,
         )
     assert _snapshot(m5_runtime_db.connection) == before_replay
 
@@ -294,16 +355,21 @@ def test_retryable_failure_has_distinct_error_identity_and_dense_retry(
         attempt_ordinal=lease.attempt.attempt_ordinal,
         execution_spec_hash=lease.attempt.execution_spec_hash,
         lease_token_hash=_sha("forged lease token"),
+        lease_expires_at=lease.attempt.lease_expires_at,
+        attempt_work_digest=lease.attempt.attempt_work_digest,
     )
-    forged_lease = M5JobLease(
-        lease.logical_job_id,
-        forged_attempt,
-        lease.resulting_revision,
-        True,
-        False,
-    )
-    with pytest.raises(EventConflictError, match="lease identity differs"):
-        store.mark_m5_retryable_failure(opened.epoch_id, 2, forged_lease, error_hash)
+    forged_lease = replace(lease, attempt=forged_attempt)
+    with pytest.raises(
+        EventConflictError, match="lease attempt identity is not durable"
+    ):
+        store.mark_m5_retryable_failure(
+            opened.epoch_id,
+            2,
+            forged_lease,
+            error_hash,
+            attempt_work,
+            attempt_timing,
+        )
     assert _snapshot(m5_runtime_db.connection) == before_replay
 
     retry = store.acquire_m5_job(opened.epoch_id, 3, job)
@@ -324,17 +390,29 @@ def test_retryable_failure_has_distinct_error_identity_and_dense_retry(
         (job.logical_job_id,),
     ).fetchall() == [(1, "failed", None, error_hash), (2, "dispatched", None, None)]
 
-    with pytest.raises(EventConflictError, match="current durable attempt"):
-        store.mark_m5_retryable_failure(opened.epoch_id, 2, lease, error_hash)
+    before_successor_replay = _snapshot(m5_runtime_db.connection)
+    successor_replay = store.mark_m5_retryable_failure(
+        opened.epoch_id,
+        2,
+        lease,
+        error_hash,
+        attempt_work,
+        attempt_timing,
+    )
+    assert successor_replay.exact_replay
+    assert successor_replay.resulting_revision == 4
+    assert _snapshot(m5_runtime_db.connection) == before_successor_replay
 
 
 def test_two_acquirers_commit_one_attempt_and_one_dispatch(
     m5_runtime_db: Any,
 ) -> None:
     plan = m5_runtime_db.register_plan(event_id="job-acquire-race")
-    opened = PostgresM5RuntimeStore(
-        m5_runtime_db.connection
-    ).open_typed_event_atomically(plan)
+    opened = _open_recovery_event(
+        PostgresM5RuntimeStore(m5_runtime_db.connection),
+        m5_runtime_db,
+        plan,
+    )
     job = _root_jobs(plan, m5_runtime_db.manifest)[0]
     m5_runtime_db.connection.commit()
     start = Barrier(2)
@@ -382,7 +460,7 @@ def test_two_retryable_failures_commit_once_and_replay_once(
 ) -> None:
     plan = m5_runtime_db.register_plan(event_id="job-failure-race")
     store = PostgresM5RuntimeStore(m5_runtime_db.connection)
-    opened = store.open_typed_event_atomically(plan)
+    opened = _open_recovery_event(store, m5_runtime_db, plan)
     job = _root_jobs(plan, m5_runtime_db.manifest)[0]
     lease = store.acquire_m5_job(opened.epoch_id, 1, job)
     assert lease.attempt is not None
@@ -394,7 +472,12 @@ def test_two_retryable_failures_commit_once_and_replay_once(
         with m5_runtime_db.reconnect() as connection:
             start.wait(timeout=10)
             return PostgresM5RuntimeStore(connection).mark_m5_retryable_failure(
-                opened.epoch_id, 2, lease, error_hash
+                opened.epoch_id,
+                2,
+                lease,
+                error_hash,
+                _forward_attempt_work(),
+                _attempt_timing(),
             )
 
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -433,14 +516,33 @@ def test_terminal_event_work_is_read_from_immutable_persisted_row(
 ) -> None:
     plan = m5_runtime_db.register_plan(event_id="job-event-work")
     store = PostgresM5RuntimeStore(m5_runtime_db.connection)
-    opened = store.open_typed_event_atomically(plan)
-    assert store.current_event_work(opened.epoch_id) == M5RuntimeWork()
+    opened = _open_recovery_event(store, m5_runtime_db, plan)
+    failure_revision = store.current_revision(opened.epoch_id)
+    work_before_failure = store.current_event_work(opened.epoch_id)
+    assert work_before_failure == store.current_event_work(opened.epoch_id)
 
-    result = store.fail_typed_epoch_atomically(opened.epoch_id)
+    result = store.fail_typed_epoch_atomically(
+        opened.epoch_id,
+        expected_revision=failure_revision,
+        failure_reason=M5RunFailureReason.INVARIANT_FAILURE,
+        call_work=M5RuntimeWork(),
+    )
     before_reads = _snapshot(m5_runtime_db.connection)
-    expected_work = M5RuntimeWork(requirement_cancelled_job_count=2)
+    root_count = len(_root_jobs(plan, m5_runtime_db.manifest))
+    expected_work = replace(
+        work_before_failure,
+        requirement_cancelled_job_count=(
+            work_before_failure.requirement_cancelled_job_count + root_count
+        ),
+        work_digest="",
+    )
     assert result.event_work == expected_work
-    assert store.current_revision(opened.epoch_id) == 2
+    assert result.call_work.is_zero
+    assert store.current_revision(opened.epoch_id) == failure_revision + 1
     assert store.current_event_work(opened.epoch_id) == expected_work
+    assert store.current_event_timing(opened.epoch_id) == (
+        result.event_timing,
+        result.event_timing_coverage,
+    )
     assert store.verifier_jobs(opened.epoch_id) == ()
     assert _snapshot(m5_runtime_db.connection) == before_reads
