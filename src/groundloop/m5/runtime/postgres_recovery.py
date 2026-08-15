@@ -23,6 +23,7 @@ from groundloop.m5.runtime.contracts import (
     M5JobAttempt,
     M5JobKind,
     M5RequirementRootProvenance,
+    M5RunFailureReason,
     M5RuntimeOperationalConfig,
     M5RuntimeSubgraph,
     M5RuntimeTiming,
@@ -2162,6 +2163,68 @@ def persist_terminal_job_failure_contribution(
     )
 
 
+def persist_epoch_failure_contribution(
+    cursor: Cursor[Any],
+    *,
+    epoch_id: int,
+    structural_event_id: str,
+    failure_reason: M5RunFailureReason,
+    resulting_revision: int,
+) -> M5TransitionTimingAnchor:
+    """Insert the canonical-zero epoch-failure contribution and terminal anchor."""
+
+    if not isinstance(failure_reason, M5RunFailureReason):
+        raise ValidationError("failure_reason must be an M5RunFailureReason")
+    kind = M5RuntimeWorkContributionKind.EPOCH_FAILURE
+    source_identity_hash = digests.epoch_failure_contribution_source_digest(
+        structural_event_id=structural_event_id,
+        failure_reason=failure_reason,
+    )
+    key = digests.runtime_work_contribution_key_digest(
+        epoch_id=epoch_id,
+        contribution_kind=kind,
+        source_id=structural_event_id,
+    )
+    anchor = M5TransitionTimingAnchor(
+        epoch_id=epoch_id,
+        contribution_kind=kind,
+        source_id=structural_event_id,
+        contribution_key_digest=key,
+        anchor_revision=resulting_revision,
+        terminal_transition=True,
+    )
+    zero = M5RuntimeWork()
+    columns = (
+        "epoch_id",
+        *_WORK_COUNTER_COLUMNS,
+        "work_digest",
+        "contribution_kind",
+        "source_id",
+        "source_identity_hash",
+        "contribution_key_digest",
+        "applied_revision",
+    )
+    cursor.execute(
+        sql.SQL(
+            "INSERT INTO groundloop_m5_runtime_work_contribution ({}) VALUES ({})"
+        ).format(
+            sql.SQL(", ").join(map(sql.Identifier, columns)),
+            sql.SQL(", ").join(sql.Placeholder() for _ in columns),
+        ),
+        (
+            epoch_id,
+            *zero.counter_values(),
+            zero.work_digest,
+            kind.value,
+            structural_event_id,
+            source_identity_hash,
+            key,
+            resulting_revision,
+        ),
+    )
+    return anchor
+
+
 def persist_root_result_stage_contribution(
     cursor: Cursor[Any],
     *,
@@ -2397,6 +2460,118 @@ def _sum_work(left: M5RuntimeWork, right: M5RuntimeWork) -> M5RuntimeWork:
             for name in _WORK_COUNTER_COLUMNS
         }
     )
+
+
+def finish_epoch_failure_work_accounting(
+    cursor: Cursor[Any],
+    *,
+    epoch_id: int,
+    expected_revision: int,
+    start: EventAccountingStart,
+    terminal_work: M5RuntimeWork,
+) -> M5RuntimeWork:
+    """Point-CAS and freeze the exact work image at the failure cutoff."""
+
+    if not isinstance(terminal_work, M5RuntimeWork):
+        raise ValidationError("terminal_work must be an M5RuntimeWork")
+    resulting_revision = expected_revision + 1
+    work = _sum_work(start.work, terminal_work)
+    assignments = tuple(
+        sql.SQL("{} = {}").format(sql.Identifier(name), sql.Placeholder())
+        for name in _WORK_COUNTER_COLUMNS
+    )
+    updated = cursor.execute(
+        sql.SQL(
+            "UPDATE groundloop_m5_runtime_work_accumulator SET {}, "
+            "work_digest = %s, updated_revision = %s, terminalized = true, "
+            "updated_at = clock_timestamp() "
+            "WHERE epoch_id = %s AND updated_revision = %s "
+            "AND work_digest = %s AND NOT terminalized"
+        ).format(sql.SQL(", ").join(assignments)),
+        (
+            *work.counter_values(),
+            work.work_digest,
+            resulting_revision,
+            epoch_id,
+            expected_revision,
+            start.work.work_digest,
+        ),
+    ).rowcount
+    if updated != 1:
+        raise ValidationError("M5 work accumulator changed before epoch failure")
+    return work
+
+
+def finish_epoch_failure_timing_accounting(
+    cursor: Cursor[Any],
+    *,
+    epoch_id: int,
+    expected_revision: int,
+    start: EventAccountingStart,
+    anchor: M5TransitionTimingAnchor,
+) -> tuple[M5RuntimeTiming, M5RuntimeTimingCoverage]:
+    """Freeze failure timing with the terminal point immediately missing."""
+
+    resulting_revision = expected_revision + 1
+    if (
+        anchor.epoch_id != epoch_id
+        or anchor.contribution_kind is not M5RuntimeWorkContributionKind.EPOCH_FAILURE
+        or anchor.anchor_revision != resulting_revision
+        or not anchor.terminal_transition
+    ):
+        raise ValidationError("epoch-failure timing anchor is inconsistent")
+    prior_missing = int(start.timing.has_pending_anchor)
+    returned_columns = ", ".join((*_TIMING_SUM_COLUMNS, *_TIMING_COVERAGE_COLUMNS))
+    row = cursor.execute(
+        f"""
+        UPDATE groundloop_m5_runtime_timing_accumulator
+        SET required_expected_count = required_expected_count + 1,
+            required_missing_count = required_missing_count + %s + 1,
+            postgres_server_execution_expected_count =
+                postgres_server_execution_expected_count + 1,
+            postgres_server_execution_missing_count =
+                postgres_server_execution_missing_count + %s + 1,
+            postgres_lock_wait_expected_count =
+                postgres_lock_wait_expected_count + 1,
+            postgres_lock_wait_missing_count =
+                postgres_lock_wait_missing_count + %s + 1,
+            postgres_wal_bytes_expected_count =
+                postgres_wal_bytes_expected_count + 1,
+            postgres_wal_bytes_missing_count =
+                postgres_wal_bytes_missing_count + %s + 1,
+            postgres_shared_block_reads_expected_count =
+                postgres_shared_block_reads_expected_count + 1,
+            postgres_shared_block_reads_missing_count =
+                postgres_shared_block_reads_missing_count + %s + 1,
+            pending_contribution_kind = NULL,
+            pending_source_id = NULL,
+            pending_contribution_key_digest = NULL,
+            pending_anchor_revision = NULL,
+            updated_revision = %s,
+            terminalized = true,
+            updated_at = clock_timestamp()
+        WHERE epoch_id = %s AND updated_revision = %s AND NOT terminalized
+        RETURNING {returned_columns}, updated_revision, terminalized,
+                  pending_contribution_kind, pending_source_id,
+                  pending_contribution_key_digest, pending_anchor_revision
+        """,
+        (
+            prior_missing,
+            prior_missing,
+            prior_missing,
+            prior_missing,
+            prior_missing,
+            resulting_revision,
+            epoch_id,
+            expected_revision,
+        ),
+    ).fetchone()
+    if row is None:
+        raise ValidationError("M5 timing accumulator changed before epoch failure")
+    updated = _timing_accumulator_from_row(tuple(row))
+    if not updated.terminalized or updated.has_pending_anchor:
+        raise ValidationError("terminal M5 timing cutoff did not freeze exactly")
+    return updated.project(pending_as_missing=False)
 
 
 def finish_root_barrier_accounting(

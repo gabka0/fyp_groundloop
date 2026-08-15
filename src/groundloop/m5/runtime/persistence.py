@@ -83,9 +83,13 @@ from groundloop.m5.runtime.postgres_recovery import (
     StoredRequirementAttempt,
     append_transition_call_timing_checked,
     build_requirement_execution_accounting,
+    finish_epoch_failure_timing_accounting,
+    finish_epoch_failure_work_accounting,
     finish_requirement_dispatch_accounting,
     finish_requirement_execution_accounting,
     load_requirement_dispatch,
+    persist_cancellation_contribution,
+    persist_epoch_failure_contribution,
     persist_requirement_dispatch,
     persist_requirement_execution_accounting,
     persist_structural_open_accounting,
@@ -107,6 +111,7 @@ from groundloop.m5.runtime.postgres_roots import (
     cancel_m5_work,
     close_m5_requirement_roots,
     stage_m5_discovery_result,
+    terminalize_m5_requirement_work_for_epoch_failure,
 )
 from groundloop.m5.runtime.postgres_verifier import complete_m5_verifier
 from groundloop.postgres.m5 import (
@@ -138,6 +143,10 @@ _STRUCTURAL_OPEN_EPOCH_ROWS = (
     ("groundloop_m5_answer_pending_counter", "epoch_id"),
     ("groundloop_m5_runtime_operational_config", "epoch_id"),
     ("groundloop_m5_requirement_root_provenance", "epoch_id"),
+)
+
+_SELF_CONTAINED_FAILURE_UPDATE_KINDS = frozenset(
+    {"register_group", "replace_group", "retire_group", "observe_requirement"}
 )
 
 
@@ -1130,12 +1139,63 @@ def _stage_structure(
         _inject(failure_injector, "typed_open_deactivation_staged")
 
 
+def _lock_event_staged_structure_for_failure(
+    cursor: Cursor[Any], epoch_id: int, *, update_kind: str
+) -> None:
+    """Guard the R2a scope and lock its tier-7 rows in canonical order."""
+
+    if update_kind not in _SELF_CONTAINED_FAILURE_UPDATE_KINDS:
+        raise InvalidEventError(
+            "typed update requires direct failure composition outside R2a"
+        )
+    cursor.execute(
+        """
+        SELECT group_family_id
+        FROM groundloop_m5_group_family
+        WHERE creator_epoch_id = %s
+        ORDER BY group_family_id COLLATE "C"
+        FOR UPDATE
+        """,
+        (epoch_id,),
+    ).fetchall()
+    cursor.execute(
+        """
+        SELECT group_version_id
+        FROM groundloop_m5_group_version
+        WHERE creator_epoch_id = %s
+        ORDER BY group_version_id COLLATE "C"
+        FOR UPDATE
+        """,
+        (epoch_id,),
+    ).fetchall()
+    cursor.execute(
+        """
+        SELECT requirement_version_id
+        FROM groundloop_m5_requirement_version
+        WHERE creator_epoch_id = %s
+        ORDER BY requirement_version_id COLLATE "C"
+        FOR UPDATE
+        """,
+        (epoch_id,),
+    ).fetchall()
+    cursor.execute(
+        """
+        SELECT group_version_id
+        FROM groundloop_m5_group_deactivation
+        WHERE epoch_id = %s
+        ORDER BY group_version_id COLLATE "C"
+        FOR UPDATE
+        """,
+        (epoch_id,),
+    ).fetchall()
+
+
 def _mark_event_staged_structure_failed(cursor: Cursor[Any], epoch_id: int) -> None:
     """Retain staged audit rows while making them terminally non-publishable."""
 
     cursor.execute(
         """
-        UPDATE groundloop_m5_requirement_version
+        UPDATE groundloop_m5_group_family
         SET lifecycle_state = 'FAILED'
         WHERE creator_epoch_id = %s AND lifecycle_state = 'STAGED'
         """,
@@ -1151,7 +1211,7 @@ def _mark_event_staged_structure_failed(cursor: Cursor[Any], epoch_id: int) -> N
     )
     cursor.execute(
         """
-        UPDATE groundloop_m5_group_family
+        UPDATE groundloop_m5_requirement_version
         SET lifecycle_state = 'FAILED'
         WHERE creator_epoch_id = %s AND lifecycle_state = 'STAGED'
         """,
@@ -3719,39 +3779,28 @@ class PostgresM5RuntimeStore:
     def fail_typed_epoch_atomically(
         self,
         epoch_id: int,
+        expected_revision: int,
+        failure_reason: M5RunFailureReason,
+        call_work: M5RuntimeWork,
         *,
-        expected_revision: int = 1,
-        failure_reason: M5RunFailureReason = M5RunFailureReason.INVARIANT_FAILURE,
         failure_injector: RuntimeFailureInjector | None = None,
     ) -> M5EventRunResult:
-        """Terminally fail the production M5.3-07 revision-1 slice."""
+        """Fail one active typed epoch with an exact migration-016 cutoff."""
 
-        if expected_revision < 1:
+        if isinstance(epoch_id, bool) or not isinstance(epoch_id, int) or epoch_id < 1:
+            raise InvalidEventError("typed epoch ID must be positive")
+        if (
+            isinstance(expected_revision, bool)
+            or not isinstance(expected_revision, int)
+            or expected_revision < 1
+        ):
             raise InvalidEventError("expected runtime revision must be positive")
         if not isinstance(failure_reason, M5RunFailureReason):
             raise ValidationError("failure_reason must be an M5RunFailureReason")
-
-        with self._connection.transaction(), self._connection.cursor() as cursor:
-            cursor.execute("SET TRANSACTION READ ONLY")
-            identity = cursor.execute(
-                """
-                SELECT event_id, payload_hash
-                FROM groundloop_epoch
-                WHERE epoch_id = %s
-                """,
-                (epoch_id,),
-            ).fetchone()
-            if identity is None:
-                raise InvalidEventError("typed epoch does not exist")
-            structural_event_id = str(identity[0])
-            payload_hash = str(identity[1]).strip()
-            terminal = _load_terminal_result(
-                cursor,
-                structural_event_id=structural_event_id,
-                payload_hash=payload_hash,
-            )
-            if terminal is not None:
-                return self._validate_failed_replay(terminal, failure_reason)
+        if failure_reason is M5RunFailureReason.WORK_IN_PROGRESS:
+            raise InvalidEventError("work_in_progress is not a terminal failure reason")
+        if not isinstance(call_work, M5RuntimeWork):
+            raise ValidationError("call_work must be an M5RuntimeWork")
 
         with self._connection.transaction(), self._connection.cursor() as cursor:
             mode_row = cursor.execute(
@@ -3799,25 +3848,56 @@ class PostgresM5RuntimeStore:
             if activation is None:
                 raise InvalidEventError("typed M5 runtime lacks an activation record")
 
-            epoch_row = cursor.execute(
+            update_row = cursor.execute(
                 """
-                SELECT base.event_id, base.payload_hash, base.revision,
-                       base.structural_status, base.semantic_status,
-                       base.evaluation_state, runtime.revision,
-                       runtime.runtime_state,
-                       runtime.expected_previous_published_epoch_id
-                FROM groundloop_epoch AS base
-                JOIN groundloop_m5_runtime_epoch AS runtime
-                  ON runtime.epoch_id = base.epoch_id
-                WHERE base.epoch_id = %s
-                FOR UPDATE OF base, runtime
+                SELECT update_kind
+                FROM groundloop_m5_update
+                WHERE epoch_id = %s
+                FOR UPDATE
                 """,
                 (epoch_id,),
             ).fetchone()
-            if epoch_row is None:
+            if update_row is None:
+                raise InvalidEventError("typed epoch lacks its update declaration")
+            update_kind = str(update_row[0])
+
+            base_row = cursor.execute(
+                """
+                SELECT event_id, payload_hash, revision, structural_status,
+                       semantic_status, evaluation_state
+                FROM groundloop_epoch
+                WHERE epoch_id = %s
+                FOR UPDATE
+                """,
+                (epoch_id,),
+            ).fetchone()
+            if base_row is None:
+                raise InvalidEventError("typed epoch does not exist")
+            runtime_row = cursor.execute(
+                """
+                SELECT structural_event_id, revision, runtime_state,
+                       expected_previous_published_epoch_id
+                FROM groundloop_m5_runtime_epoch
+                WHERE epoch_id = %s
+                FOR UPDATE
+                """,
+                (epoch_id,),
+            ).fetchone()
+            if runtime_row is None:
                 raise InvalidEventError("epoch is not a typed M5 runtime epoch")
-            structural_event_id = str(epoch_row[0])
-            payload_hash = str(epoch_row[1]).strip()
+            structural_event_id = str(base_row[0])
+            payload_hash = str(base_row[1]).strip()
+            base_revision = int(base_row[2])
+            runtime_revision = int(runtime_row[1])
+            if (
+                structural_event_id != str(runtime_row[0])
+                or base_revision != runtime_revision
+            ):
+                raise ValidationError("base and typed runtime revisions diverged")
+            if expected_revision > runtime_revision:
+                raise EventConflictError(
+                    "expected revision is newer than durable runtime"
+                )
 
             terminal = _load_terminal_result(
                 cursor,
@@ -3827,101 +3907,111 @@ class PostgresM5RuntimeStore:
             if terminal is not None:
                 return self._validate_failed_replay(terminal, failure_reason)
 
-            if int(epoch_row[8]) != m5_head:
+            require_runtime_recovery_bundle(cursor)
+            if int(runtime_row[3]) != m5_head:
                 raise InvalidEventError(
                     "typed epoch predecessor no longer equals both publication heads"
                 )
-            if (
-                int(epoch_row[2]) != expected_revision
-                or int(epoch_row[6]) != expected_revision
-            ):
+            if runtime_revision != expected_revision:
                 raise EventConflictError("stale typed runtime revision")
-            if (
-                str(epoch_row[3]),
-                str(epoch_row[4]),
-                str(epoch_row[5]),
-                str(epoch_row[7]),
-            ) != ("committed", "pending", "pending", "structural_committed"):
-                raise InvalidEventError(
-                    "M5.3-07 failure requires a revision-1 structural epoch"
-                )
-            if (
-                cursor.execute(
-                    "SELECT 1 FROM groundloop_m4_update WHERE epoch_id = %s",
-                    (epoch_id,),
-                ).fetchone()
-                is not None
-            ):
-                raise InvalidEventError(
-                    "M5.3-07 retire failure cannot contain direct M4 work"
-                )
-            roots = _load_root_declarations_for_failure(cursor, epoch_id=epoch_id)
-            runtime_children = cursor.execute(
-                """
-                SELECT
-                    (SELECT count(*) FROM groundloop_m5_semantic_job
-                     WHERE epoch_id = %s),
-                    (SELECT count(*) FROM groundloop_m5_discovery_scope
-                     WHERE epoch_id = %s),
-                    (SELECT count(*) FROM groundloop_m5_job_attempt AS attempt
-                     JOIN groundloop_m5_semantic_job AS job
-                       ON job.logical_job_id = attempt.logical_job_id
-                     WHERE job.epoch_id = %s)
-                """,
-                (epoch_id, epoch_id, epoch_id),
-            ).fetchone()
-            expected_children = (len(roots), len(roots), 0)
-            if runtime_children is None or tuple(map(int, runtime_children)) != (
-                expected_children
-            ):
-                raise InvalidEventError(
-                    "M5.3-07 staged failure contains non-root requirement work"
-                )
-
-            cursor.execute(
-                "SELECT groundloop_m5_authorize_checked_transition(%s, %s)",
-                (epoch_id, expected_revision),
-            )
-            _inject(failure_injector, "typed_fail_authorized")
-            _cancel_root_declarations(
+            _lock_event_staged_structure_for_failure(
                 cursor,
-                structural_event_id=structural_event_id,
-                epoch_id=epoch_id,
-                resulting_revision=expected_revision + 1,
-                roots=roots,
+                epoch_id,
+                update_kind=update_kind,
             )
-            _inject(failure_injector, "typed_fail_jobs_cancelled")
-
-            cursor.execute(
-                """
-                UPDATE groundloop_m5_owner_pending_counter
-                SET broad_reverse_scope_count = 0,
-                    forward_scope_count = 0,
-                    verifier_job_count = 0,
-                    blocking_failure_count = 0,
-                    updated_revision = %s
-                WHERE epoch_id = %s
-                """,
-                (expected_revision + 1, epoch_id),
+            closure = terminalize_m5_requirement_work_for_epoch_failure(
+                cursor,
+                epoch_id,
+                expected_revision,
+                failure_injector=failure_injector,
             )
-            cursor.execute(
-                """
-                UPDATE groundloop_m5_answer_pending_counter
-                SET broad_reverse_scope_count = 0,
-                    forward_scope_count = 0,
-                    verifier_job_count = 0,
-                    blocking_failure_count = 0,
-                    updated_revision = %s
-                WHERE epoch_id = %s
-                """,
-                (expected_revision + 1, epoch_id),
-            )
-            _inject(failure_injector, "typed_fail_counters_updated")
 
             _mark_event_staged_structure_failed(cursor, epoch_id)
             _inject(failure_injector, "typed_fail_structure_failed")
 
-            event_work = M5RuntimeWork(requirement_cancelled_job_count=len(roots))
+            if closure.cancellation_plan is not None:
+                persist_cancellation_contribution(
+                    cursor,
+                    epoch_id=epoch_id,
+                    plan_digest=closure.cancellation_plan.plan_digest,
+                    resulting_revision=expected_revision + 1,
+                    cancellation_work=closure.cancellation_work,
+                )
+                _inject(
+                    failure_injector,
+                    "typed_fail_cancellation_contribution_inserted",
+                )
+            failure_anchor = persist_epoch_failure_contribution(
+                cursor,
+                epoch_id=epoch_id,
+                structural_event_id=structural_event_id,
+                failure_reason=failure_reason,
+                resulting_revision=expected_revision + 1,
+            )
+            _inject(failure_injector, "typed_fail_epoch_failure_contribution_inserted")
+
+            updated_base = cursor.execute(
+                """
+                UPDATE groundloop_epoch
+                SET revision = %s, structural_status = 'failed',
+                    semantic_status = 'failed', evaluation_state = 'failed',
+                    publication_mode = 'provisional', sealed_at = NULL
+                WHERE epoch_id = %s AND revision = %s
+                  AND structural_status = 'committed'
+                  AND semantic_status IN ('pending', 'complete')
+                  AND evaluation_state IN ('pending', 'complete')
+                """,
+                (expected_revision + 1, epoch_id, expected_revision),
+            ).rowcount
+            if updated_base != 1:
+                raise EventConflictError("stale base epoch revision")
+            _inject(failure_injector, "typed_fail_base_updated")
+
+            updated_runtime = cursor.execute(
+                """
+                UPDATE groundloop_m5_runtime_epoch
+                SET runtime_state = 'failed', revision = %s,
+                    open_work_count = %s, open_scope_count = %s,
+                    blocking_failure_count = %s,
+                    terminal_at = clock_timestamp()
+                WHERE epoch_id = %s AND revision = %s
+                  AND runtime_state IN (
+                      'structural_committed', 'semantic_pending',
+                      'semantic_complete'
+                  )
+                """,
+                (
+                    expected_revision + 1,
+                    closure.open_work_count,
+                    closure.open_scope_count,
+                    closure.blocking_failure_count,
+                    epoch_id,
+                    expected_revision,
+                ),
+            ).rowcount
+            if updated_runtime != 1:
+                raise EventConflictError("stale typed runtime revision")
+            _inject(failure_injector, "typed_fail_runtime_updated")
+
+            event_work = finish_epoch_failure_work_accounting(
+                cursor,
+                epoch_id=epoch_id,
+                expected_revision=expected_revision,
+                start=closure.accounting_start,
+                terminal_work=closure.cancellation_work,
+            )
+            _inject(failure_injector, "typed_fail_work_accumulator_terminalized")
+            event_timing, event_timing_coverage = (
+                finish_epoch_failure_timing_accounting(
+                    cursor,
+                    epoch_id=epoch_id,
+                    expected_revision=expected_revision,
+                    start=closure.accounting_start,
+                    anchor=failure_anchor,
+                )
+            )
+            _inject(failure_injector, "typed_fail_timing_accumulator_terminalized")
+
             _insert_runtime_work(
                 cursor,
                 structural_event_id=structural_event_id,
@@ -3934,11 +4024,15 @@ class PostgresM5RuntimeStore:
                 structural_event_id=structural_event_id,
                 epoch_id=epoch_id,
                 work_kind="call",
-                work=event_work,
+                work=call_work,
             )
             _inject(failure_injector, "typed_fail_work_inserted")
 
-            event_timing = M5RuntimeTiming()
+            call_timing = M5RuntimeTiming()
+            call_timing_coverage = M5RuntimeTimingCoverage.single_point(
+                None,
+                terminal_client_roundtrip_included=False,
+            )
             result = M5EventRunResult.build(
                 event_id=structural_event_id,
                 payload_hash=payload_hash,
@@ -3952,12 +4046,14 @@ class PostgresM5RuntimeStore:
                 ),
                 publication_receipt=None,
                 event_work=event_work,
-                call_work=event_work,
+                call_work=call_work,
                 event_timing=event_timing,
-                call_timing=M5RuntimeTiming(),
+                call_timing=call_timing,
                 combined_deltas=(),
                 changed_state_references=(),
                 failure_reason=failure_reason,
+                event_timing_coverage=event_timing_coverage,
+                call_timing_coverage=call_timing_coverage,
             )
             assert result.logical_result_hash is not None
             cursor.execute(
@@ -4010,35 +4106,43 @@ class PostgresM5RuntimeStore:
                 ),
             )
             _inject(failure_injector, "typed_fail_result_inserted")
-
-            updated_base = cursor.execute(
-                """
-                UPDATE groundloop_epoch
-                SET revision = %s, structural_status = 'failed',
-                    semantic_status = 'failed', evaluation_state = 'failed',
-                    publication_mode = 'provisional', sealed_at = NULL
-                WHERE epoch_id = %s AND revision = %s
-                """,
-                (expected_revision + 1, epoch_id, expected_revision),
-            ).rowcount
-            if updated_base != 1:
-                raise EventConflictError("stale base epoch revision")
-            _inject(failure_injector, "typed_fail_base_updated")
-
-            updated_runtime = cursor.execute(
-                """
-                UPDATE groundloop_m5_runtime_epoch
-                SET runtime_state = 'failed', revision = %s,
-                    open_work_count = 0, open_scope_count = 0,
-                    blocking_failure_count = 0, terminal_at = now()
-                WHERE epoch_id = %s AND revision = %s
-                  AND runtime_state = 'structural_committed'
-                """,
-                (expected_revision + 1, epoch_id, expected_revision),
-            ).rowcount
-            if updated_runtime != 1:
-                raise EventConflictError("stale typed runtime revision")
-            _inject(failure_injector, "typed_fail_runtime_updated")
+            coverage_columns = (
+                "required_expected_count",
+                "required_observed_count",
+                "required_missing_count",
+                "postgres_server_execution_expected_count",
+                "postgres_server_execution_observed_count",
+                "postgres_server_execution_missing_count",
+                "postgres_lock_wait_expected_count",
+                "postgres_lock_wait_observed_count",
+                "postgres_lock_wait_missing_count",
+                "postgres_wal_bytes_expected_count",
+                "postgres_wal_bytes_observed_count",
+                "postgres_wal_bytes_missing_count",
+                "postgres_shared_block_reads_expected_count",
+                "postgres_shared_block_reads_observed_count",
+                "postgres_shared_block_reads_missing_count",
+            )
+            cursor.execute(
+                sql.SQL(
+                    "INSERT INTO groundloop_m5_event_timing_coverage "
+                    "(structural_event_id, epoch_id, {}, "
+                    "terminal_client_roundtrip_included) "
+                    "VALUES (%s, %s, {}, false)"
+                ).format(
+                    sql.SQL(", ").join(map(sql.Identifier, coverage_columns)),
+                    sql.SQL(", ").join(sql.Placeholder() for _ in coverage_columns),
+                ),
+                (
+                    structural_event_id,
+                    epoch_id,
+                    *(
+                        getattr(event_timing_coverage, column)
+                        for column in coverage_columns
+                    ),
+                ),
+            )
+            _inject(failure_injector, "typed_fail_timing_coverage_inserted")
             _inject(failure_injector, "typed_fail_before_constraints")
             _force_deferred_validation(cursor)
             _inject(failure_injector, "typed_fail_after_constraints")

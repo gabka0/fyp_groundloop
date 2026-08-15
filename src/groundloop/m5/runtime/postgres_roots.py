@@ -70,6 +70,7 @@ from groundloop.m5.runtime.frontier import (
     validate_directional_hit_order,
 )
 from groundloop.m5.runtime.postgres_recovery import (
+    EventAccountingStart,
     RequirementExecutionAccounting,
     RequirementPostterminalReplay,
     StoredRequirementAttempt,
@@ -194,6 +195,18 @@ class _PendingDelta:
             self.forward_scope_count,
             self.verifier_job_count,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class M5EpochFailureRequirementClosure:
+    """Locked accounting start and exact requirement closure at failure."""
+
+    accounting_start: EventAccountingStart
+    cancellation_plan: M5CancellationPlan | None
+    cancellation_work: M5RuntimeWork
+    open_work_count: int
+    open_scope_count: int
+    blocking_failure_count: int
 
 
 def _inject(injector: RuntimeRootFailureInjector | None, point: str) -> None:
@@ -3957,6 +3970,228 @@ def _persist_new_cancellation(
     _force_deferred_validation(cursor)
     _inject(failure_injector, "cancellation_constraints_validated")
     return M5CancellationReceipt(plan.cancelled_job_ids, resulting_revision, False)
+
+
+def terminalize_m5_requirement_work_for_epoch_failure(
+    cursor: Cursor[Any],
+    epoch_id: int,
+    expected_revision: int,
+    *,
+    failure_injector: RuntimeRootFailureInjector | None = None,
+) -> M5EpochFailureRequirementClosure:
+    """Cancel every open requirement job at the single epoch-failure cutoff."""
+
+    if (
+        isinstance(expected_revision, bool)
+        or not isinstance(expected_revision, int)
+        or expected_revision < 1
+    ):
+        raise InvalidEventError("expected runtime revision must be positive")
+    header = _lock_epoch(cursor, epoch_id)
+    if expected_revision > header.revision:
+        raise EventConflictError("expected revision is newer than durable runtime")
+    if expected_revision != header.revision:
+        raise EventConflictError("stale typed runtime revision")
+    pending_shape = (
+        header.structural_status,
+        header.semantic_status,
+        header.evaluation_state,
+    ) == ("committed", "pending", "pending") and header.runtime_state in {
+        "structural_committed",
+        "semantic_pending",
+    }
+    complete_shape = (
+        header.structural_status,
+        header.semantic_status,
+        header.evaluation_state,
+        header.runtime_state,
+    ) == ("committed", "complete", "complete", "semantic_complete")
+    if not pending_shape and not complete_shape:
+        raise InvalidEventError("epoch failure requires an active typed epoch")
+
+    manifest = _load_manifest(cursor, header.candidate_policy_id)
+    scopes = _read_all_root_scopes(cursor, epoch_id=epoch_id)
+    job_rows = cursor.execute(
+        _JOB_SELECT
+        + ' WHERE epoch_id = %s ORDER BY logical_job_id COLLATE "C" FOR UPDATE',
+        (epoch_id,),
+    ).fetchall()
+    jobs = tuple(_job_from_row(tuple(row)) for row in job_rows)
+    _validate_cancellation_bindings(
+        header=header,
+        manifest=manifest,
+        scopes=scopes,
+        jobs=jobs,
+    )
+    _inject(failure_injector, "typed_fail_jobs_locked")
+
+    cursor.execute(
+        """
+        SELECT attempt.attempt_id
+        FROM groundloop_m5_job_attempt AS attempt
+        JOIN groundloop_m5_semantic_job AS job
+          ON job.logical_job_id = attempt.logical_job_id
+        WHERE job.epoch_id = %s
+        ORDER BY job.logical_job_id COLLATE "C", attempt.attempt_ordinal,
+                 attempt.attempt_id COLLATE "C"
+        FOR UPDATE OF attempt
+        """,
+        (epoch_id,),
+    ).fetchall()
+    _inject(failure_injector, "typed_fail_attempts_locked")
+
+    open_job_states = {
+        M5JobState.DECLARED,
+        M5JobState.RUNNING,
+        M5JobState.RETRYABLE_FAILED,
+    }
+    open_scope_states = {M5ScopeState.OPEN, M5ScopeState.RESULT_STAGED}
+    selected_jobs = tuple(job for job in jobs if job.state in open_job_states)
+    selected_root_ids = {
+        job.spec.logical_job_id
+        for job in selected_jobs
+        if job.spec.parent_job_id is None
+    }
+    selected_scopes = tuple(
+        scope for scope in scopes if scope.state in open_scope_states
+    )
+    if {scope.root_job_id for scope in selected_scopes} != selected_root_ids:
+        raise ValidationError("open requirement root jobs and scopes diverged")
+    terminal_failed_count = sum(job.state is M5JobState.TERMINAL_FAILED for job in jobs)
+    if (
+        header.open_work_count != len(selected_jobs)
+        or header.open_scope_count != len(selected_scopes)
+        or header.blocking_failure_count != terminal_failed_count
+    ):
+        raise ValidationError("runtime requirement counts are not exact")
+
+    accounting_start = start_event_accounting(
+        cursor, epoch_id=epoch_id, expected_revision=expected_revision
+    )
+    _inject(failure_injector, "typed_fail_accounting_started")
+    _authorize(cursor, header)
+    _inject(failure_injector, "typed_fail_authorized")
+
+    cancellation_plan = (
+        None
+        if not selected_jobs
+        else M5CancellationPlan.build(
+            structural_event_id=header.structural_event_id,
+            epoch_id=epoch_id,
+            cancelled_job_ids=tuple(job.spec.logical_job_id for job in selected_jobs),
+            reason=M5TerminalReason.EPOCH_FAILED,
+        )
+    )
+    settled_row = cursor.execute("SELECT clock_timestamp()").fetchone()
+    if settled_row is None or not isinstance(settled_row[0], datetime):
+        raise ValidationError("PostgreSQL did not return a failure timestamp")
+    settled_at = settled_row[0]
+    completions = {
+        job.spec.logical_job_id: M5JobCompletion.build(
+            job=job.spec,
+            terminal_state=M5JobState.CANCELLED,
+            archive_reason=M5TerminalReason.EPOCH_FAILED,
+        )
+        for job in selected_jobs
+    }
+    for job in selected_jobs:
+        completion = completions[job.spec.logical_job_id]
+        updated = cursor.execute(
+            """
+            UPDATE groundloop_m5_semantic_job
+            SET job_state = 'cancelled', archive_reason = 'epoch_failed',
+                result_artifact_id = NULL, result_artifact_hash = NULL,
+                scope_closure_digest = NULL, child_set_hash = NULL,
+                completion_digest = %s, cancelled_by_event_id = %s,
+                cancelled_by_epoch_id = %s,
+                cancellation_reason = 'epoch_failed',
+                completed_revision = %s, completed_at = %s
+            WHERE epoch_id = %s AND logical_job_id = %s AND job_state = %s
+            """,
+            (
+                completion.completion_digest,
+                header.structural_event_id,
+                epoch_id,
+                expected_revision + 1,
+                settled_at,
+                epoch_id,
+                job.spec.logical_job_id,
+                job.state.value,
+            ),
+        ).rowcount
+        if updated != 1:
+            raise EventConflictError("semantic job lost its epoch-failure race")
+    _inject(failure_injector, "typed_fail_jobs_cancelled")
+
+    for scope in selected_scopes:
+        completion = completions[scope.root_job_id]
+        updated = cursor.execute(
+            """
+            UPDATE groundloop_m5_discovery_scope
+            SET scope_state = 'cancelled', completion_digest = %s,
+                closed_revision = %s, closed_at = %s
+            WHERE epoch_id = %s AND root_job_id = %s AND scope_state = %s
+            """,
+            (
+                completion.completion_digest,
+                expected_revision + 1,
+                settled_at,
+                epoch_id,
+                scope.root_job_id,
+                scope.state.value,
+            ),
+        ).rowcount
+        if updated != 1:
+            raise EventConflictError("root scope lost its epoch-failure race")
+    _inject(failure_injector, "typed_fail_scopes_closed")
+
+    owner_deltas, answer_deltas = _cancellation_pending_projection(
+        cursor,
+        header=header,
+        scopes=scopes,
+        jobs=selected_jobs,
+    )
+    _apply_cancellation_pending_deltas(
+        cursor,
+        epoch_id=epoch_id,
+        expected_revision=expected_revision,
+        resulting_revision=expected_revision + 1,
+        owner_deltas=owner_deltas,
+        answer_deltas=answer_deltas,
+    )
+    _inject(failure_injector, "typed_fail_counters_updated")
+
+    counts = cursor.execute(
+        """
+        SELECT count(*) FILTER (
+                   WHERE job_state IN ('declared', 'running', 'retryable_failed')
+               ),
+               count(*) FILTER (WHERE job_state = 'terminal_failed'),
+               (SELECT count(*)
+                FROM groundloop_m5_discovery_scope
+                WHERE epoch_id = %s
+                  AND scope_state IN ('open', 'result_staged'))
+        FROM groundloop_m5_semantic_job
+        WHERE epoch_id = %s
+        """,
+        (epoch_id, epoch_id),
+    ).fetchone()
+    if counts is None:
+        raise ValidationError("failed to read terminal requirement counts")
+    exact_counts = tuple(map(int, counts))
+    if exact_counts != (0, terminal_failed_count, 0):
+        raise ValidationError("epoch failure did not close exact requirement counts")
+    cancellation_work = M5RuntimeWork(
+        requirement_cancelled_job_count=len(selected_jobs)
+    )
+    return M5EpochFailureRequirementClosure(
+        accounting_start=accounting_start,
+        cancellation_plan=cancellation_plan,
+        cancellation_work=cancellation_work,
+        open_work_count=exact_counts[0],
+        blocking_failure_count=exact_counts[1],
+        open_scope_count=exact_counts[2],
+    )
 
 
 def cancel_m5_work(
