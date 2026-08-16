@@ -1,6 +1,6 @@
 # M5-D24 R2b Application-Failure Activation
 
-Status: active path-exclusive four-path R2b lane under the integrated
+Status: active path-exclusive five-path R2b lane under the integrated
 M5-D24-C5 contract micro-lane; implementation evidence remains pending
 
 Date: 2026-08-15; freshly repinned/reactivated 2026-08-16
@@ -55,7 +55,7 @@ admits the two exact accepted replay shapes while preserving ordinary replay's
 terminal receipt and zero-work requirement. M5.0-24's contract half remains
 `PASS`, while implementation remains `PENDING`.
 
-This note now activates the four paths below from the exact parent barrier and
+This note now activates the five paths below from the exact parent barrier and
 the full commit containing this reactivation. It does not revive the old
 branch base or grant access to any historical patch outside the newly reset
 lane. The superseded `f5902ff0d2c21865f2c633ed404163aef3f937d7` base remains
@@ -66,19 +66,26 @@ Typed-direct outer-settlement application composition remains deferred to a
 separate future path-exclusive manifest and cannot inherit this R2b
 activation.
 
-## 2. Active four-path ownership
+## 2. Active five-path ownership
 
 ```text
 branch:   workstream/m5-d24-r2b-application-failure
 worktree: /tmp/groundloop-m5-d24-r2b-application-failure
 ```
 
-R2b owns exactly four paths:
+R2b owns exactly five paths:
 
 1. `src/groundloop/m5/runtime/application.py`
 2. `tests/m5/runtime/fake_ports.py`
 3. `tests/m5/runtime/test_d24_application_composition.py` (new)
 4. `docs/workstreams/m5_runtime_implementation/D24_R2B_APPLICATION_FAILURE_HANDOFF.md` (new)
+5. `tests/m5/runtime/test_typed_history.py`
+
+The fifth path is authorized for one contract correction only: the terminal-
+failure history must expect the already settled requirement job to remain
+`TERMINAL_FAILED`, not become `CANCELLED`, when the later epoch-failure cutoff
+cancels only nonterminal jobs. No other assertion or test in that path may be
+changed.
 
 No other path may be edited, staged, or included in the R2b commit. This is
 current ownership only after the literal branch/worktree is cleanly based on
@@ -130,7 +137,8 @@ the full commit containing this note.
   the ordinary terminal-projected replay with canonical-zero call work. It
   performs no repeated discovery/verifier execution.
 - Existing typed-history behavior remains a regression gate and may not be
-  weakened with skips or expected failures.
+  weakened with skips or expected failures. Its single stale terminal-job
+  state expectation must be corrected exactly as bounded in Section 2.
 
 ## 4. Explicit exclusions
 
@@ -168,10 +176,11 @@ Before integration the freshly based lane must provide:
   frozen event totals and no telemetry work field;
 - ordinary entry reconnect with terminal-projected receipt, canonical-zero
   call work, and no repeated external work;
-- unchanged `tests/m5/runtime/test_typed_history.py` regression evidence;
+- `tests/m5/runtime/test_typed_history.py` regression evidence with only the
+  Section 2 `CANCELLED` -> `TERMINAL_FAILED` expectation correction;
 - Ruff check/format, strict mypy, cache-isolated compile, collection, pure
   runtime regression, and `git diff --check`;
-- an exact four-path handoff and independent read-only audit of the complete
+- an exact five-path handoff and independent read-only audit of the complete
   reactivation-base-to-head diff.
 
 This gate is requirement-only application evidence. It cannot satisfy the
