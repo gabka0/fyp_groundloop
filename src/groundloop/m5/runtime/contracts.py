@@ -4929,36 +4929,51 @@ class M5EventRunResult:
             )
 
     def _validate_replay_shape(self) -> None:
-        if self.replayed_outcome is None or not self.call_work.is_zero:
-            raise ValidationError("replay requires an outcome and zero call work")
+        if self.replayed_outcome is None:
+            raise ValidationError("replay requires its durable outcome")
+        active_cutoff_projection = (
+            isinstance(self.open_receipt.replayed, bool)
+            and self.open_receipt.already_sealed is False
+            and self.open_receipt.publication_id is None
+            and self.open_receipt.already_failed is False
+            and self.open_receipt.failure_reason is None
+        )
         if self.replayed_outcome is M5ReplayedOutcome.SEALED:
             if (
-                not self.open_receipt.replayed
-                or not self.open_receipt.already_sealed
-                or self.open_receipt.already_failed
-                or self.publication_receipt is None
-                or not self.publication_receipt.replayed
+                self.publication_receipt is None
+                or self.publication_receipt.replayed is not True
                 or self.failure_reason is not None
                 or self.logical_result_hash is None
             ):
                 raise ValidationError("sealed replay shape is invalid")
             assert self.publication_receipt is not None
-            if self.open_receipt.publication_id != (
-                self.publication_receipt.publication_id
-            ):
+            ordinary_projection = (
+                self.open_receipt.replayed is True
+                and self.open_receipt.already_sealed is True
+                and self.open_receipt.publication_id
+                == self.publication_receipt.publication_id
+                and self.open_receipt.already_failed is False
+                and self.open_receipt.failure_reason is None
+                and self.call_work.is_zero
+            )
+            if not ordinary_projection and not active_cutoff_projection:
                 raise ValidationError("sealed replay receipt identities disagree")
-        elif (
-            not self.open_receipt.replayed
-            or not self.open_receipt.already_failed
-            or self.open_receipt.already_sealed
-            or self.publication_receipt is not None
-            or self.failure_reason is None
-            or self.logical_result_hash is None
-        ):
-            raise ValidationError("failed replay shape is invalid")
         else:
-            assert self.failure_reason is not None
-            if self.open_receipt.failure_reason != self.failure_reason.value:
+            if (
+                self.publication_receipt is not None
+                or self.failure_reason is None
+                or self.logical_result_hash is None
+            ):
+                raise ValidationError("failed replay shape is invalid")
+            ordinary_projection = (
+                self.open_receipt.replayed is True
+                and self.open_receipt.already_failed is True
+                and self.open_receipt.failure_reason == self.failure_reason.value
+                and self.open_receipt.already_sealed is False
+                and self.open_receipt.publication_id is None
+                and self.call_work.is_zero
+            )
+            if not ordinary_projection and not active_cutoff_projection:
                 raise ValidationError(
                     "failed replay reason disagrees with durable result"
                 )

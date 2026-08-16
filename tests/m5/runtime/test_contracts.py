@@ -900,6 +900,390 @@ def _logical_hash(
     )
 
 
+def _c5_replayed_result(
+    *,
+    outcome: M5ReplayedOutcome,
+    active_cutoff: bool,
+    receipt_replayed: bool,
+    call_work: M5RuntimeWork,
+    with_coverage: bool = False,
+) -> M5EventRunResult:
+    epoch_id = 5
+    publication_id = stable_m4_digest("m4-publication-v1", str(epoch_id))
+    sealed = outcome is M5ReplayedOutcome.SEALED
+    failure_reason = None if sealed else M5RunFailureReason.INVALID_ARTIFACT
+    if active_cutoff:
+        open_receipt = OpenEventReceipt(
+            epoch_id=epoch_id,
+            replayed=receipt_replayed,
+            already_sealed=False,
+        )
+    elif sealed:
+        open_receipt = OpenEventReceipt(
+            epoch_id=epoch_id,
+            replayed=True,
+            already_sealed=True,
+            publication_id=publication_id,
+        )
+    else:
+        assert failure_reason is not None
+        open_receipt = OpenEventReceipt(
+            epoch_id=epoch_id,
+            replayed=True,
+            already_sealed=False,
+            already_failed=True,
+            failure_reason=failure_reason.value,
+        )
+    publication_receipt = (
+        PublicationReceipt(epoch_id, publication_id, True) if sealed else None
+    )
+    event_timing = M5RuntimeTiming()
+    call_timing = (
+        M5RuntimeTiming(postgres_roundtrip_wall_ns=3, end_to_end_wall_ns=5)
+        if with_coverage
+        else M5RuntimeTiming()
+    )
+    event_coverage = (
+        M5RuntimeTimingCoverage.single_point(
+            None,
+            terminal_client_roundtrip_included=False,
+        )
+        if with_coverage
+        else None
+    )
+    call_coverage = (
+        M5RuntimeTimingCoverage.single_point(
+            call_timing,
+            terminal_client_roundtrip_included=True,
+        )
+        if with_coverage
+        else None
+    )
+    return M5EventRunResult.build(
+        event_id="event",
+        payload_hash=H1,
+        epoch_id=epoch_id,
+        state=M5RunState.REPLAYED,
+        replayed_outcome=outcome,
+        open_receipt=open_receipt,
+        publication_receipt=publication_receipt,
+        event_work=M5RuntimeWork(requirement_verifier_call_count=1),
+        call_work=call_work,
+        event_timing=event_timing,
+        call_timing=call_timing,
+        combined_deltas=(),
+        changed_state_references=(),
+        failure_reason=failure_reason,
+        event_timing_coverage=event_coverage,
+        call_timing_coverage=call_coverage,
+    )
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    (M5ReplayedOutcome.SEALED, M5ReplayedOutcome.FAILED),
+    ids=("sealed", "failed"),
+)
+def test_c5_ordinary_terminal_known_replay_requires_zero_call_work(
+    outcome: M5ReplayedOutcome,
+) -> None:
+    replay = _c5_replayed_result(
+        outcome=outcome,
+        active_cutoff=False,
+        receipt_replayed=True,
+        call_work=M5RuntimeWork(),
+    )
+
+    assert replay.call_work.is_zero
+    with pytest.raises(ValidationError):
+        replace(replay, call_work=M5RuntimeWork(bytes_hashed=1))
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    (M5ReplayedOutcome.SEALED, M5ReplayedOutcome.FAILED),
+    ids=("sealed", "failed"),
+)
+@pytest.mark.parametrize(
+    "receipt_replayed",
+    (False, True),
+    ids=("fresh-nonterminal-open", "resumed-nonterminal-open"),
+)
+@pytest.mark.parametrize(
+    "call_work",
+    (
+        M5RuntimeWork(),
+        M5RuntimeWork(
+            requirement_verifier_call_count=1,
+            verifier_model_call_count=1,
+            verifier_input_token_count=7,
+            verifier_output_token_count=2,
+            bytes_hashed=11,
+            bytes_serialized=13,
+        ),
+    ),
+    ids=("zero-call-work", "nonzero-call-work"),
+)
+@pytest.mark.parametrize(
+    "with_coverage",
+    (False, True),
+    ids=("coverage-jointly-absent", "coverage-jointly-present"),
+)
+def test_c5_active_cutoff_replay_matrix_preserves_logical_identity(
+    outcome: M5ReplayedOutcome,
+    receipt_replayed: bool,
+    call_work: M5RuntimeWork,
+    with_coverage: bool,
+) -> None:
+    canonical = _c5_replayed_result(
+        outcome=outcome,
+        active_cutoff=False,
+        receipt_replayed=True,
+        call_work=M5RuntimeWork(),
+        with_coverage=with_coverage,
+    )
+    projection = _c5_replayed_result(
+        outcome=outcome,
+        active_cutoff=True,
+        receipt_replayed=receipt_replayed,
+        call_work=call_work,
+        with_coverage=with_coverage,
+    )
+
+    assert projection.state is M5RunState.REPLAYED
+    assert projection.open_receipt.replayed is receipt_replayed
+    assert not projection.open_receipt.already_sealed
+    assert not projection.open_receipt.already_failed
+    assert projection.call_work == call_work
+    assert projection.logical_result_hash == canonical.logical_result_hash
+    assert projection.event_work == canonical.event_work
+    assert projection.publication_receipt == canonical.publication_receipt
+    assert projection.failure_reason is canonical.failure_reason
+
+
+def test_c5_replay_rejects_mixed_publication_failure_and_receipt_shapes() -> None:
+    sealed = _c5_replayed_result(
+        outcome=M5ReplayedOutcome.SEALED,
+        active_cutoff=True,
+        receipt_replayed=False,
+        call_work=M5RuntimeWork(bytes_hashed=1),
+    )
+    failed = _c5_replayed_result(
+        outcome=M5ReplayedOutcome.FAILED,
+        active_cutoff=True,
+        receipt_replayed=True,
+        call_work=M5RuntimeWork(),
+    )
+    publication_id = stable_m4_digest("m4-publication-v1", "5")
+
+    invalid_sealed_changes = (
+        {
+            "publication_receipt": None,
+        },
+        {
+            "publication_receipt": PublicationReceipt(5, publication_id, False),
+        },
+        {
+            "failure_reason": M5RunFailureReason.INVALID_ARTIFACT,
+        },
+        {
+            "open_receipt": OpenEventReceipt(
+                5,
+                True,
+                False,
+                None,
+                True,
+                M5RunFailureReason.INVALID_ARTIFACT.value,
+            ),
+        },
+    )
+    for changes in invalid_sealed_changes:
+        with pytest.raises(ValidationError):
+            replace(sealed, **changes)
+
+    invalid_failed_changes = (
+        {
+            "publication_receipt": PublicationReceipt(5, publication_id, True),
+        },
+        {
+            "failure_reason": None,
+        },
+        {
+            "open_receipt": OpenEventReceipt(
+                5,
+                True,
+                True,
+                publication_id,
+            ),
+        },
+        {
+            "open_receipt": OpenEventReceipt(
+                5,
+                True,
+                False,
+                None,
+                True,
+                M5RunFailureReason.RETRIEVAL_ERROR.value,
+            ),
+        },
+    )
+    for changes in invalid_failed_changes:
+        with pytest.raises(ValidationError):
+            replace(failed, **changes)
+
+    with pytest.raises(ValidationError):
+        replace(sealed, open_receipt=OpenEventReceipt(6, False, False))
+    with pytest.raises(ValidationError):
+        replace(
+            sealed,
+            open_receipt=OpenEventReceipt(
+                5,
+                True,
+                True,
+                stable_m4_digest("m4-publication-v1", "6"),
+            ),
+        )
+    with pytest.raises(ValidationError):
+        OpenEventReceipt(5, False, False, publication_id)
+    with pytest.raises(ValidationError):
+        OpenEventReceipt(
+            5,
+            False,
+            False,
+            None,
+            False,
+            M5RunFailureReason.INVALID_ARTIFACT.value,
+        )
+
+
+@pytest.mark.parametrize(
+    ("replayed", "already_sealed", "already_failed"),
+    (
+        pytest.param(0, False, False, id="active-replayed-int-zero"),
+        pytest.param(1, False, False, id="active-replayed-int-one"),
+        pytest.param(False, 0, False, id="active-sealed-flag-int-zero"),
+        pytest.param(False, False, 0, id="active-failed-flag-int-zero"),
+        pytest.param(True, 1, False, id="ordinary-sealed-flag-int-one"),
+    ),
+)
+def test_c5_replay_rejects_boolean_impostor_receipt_flags(
+    replayed: object,
+    already_sealed: object,
+    already_failed: object,
+) -> None:
+    sealed = _c5_replayed_result(
+        outcome=M5ReplayedOutcome.SEALED,
+        active_cutoff=True,
+        receipt_replayed=False,
+        call_work=M5RuntimeWork(),
+    )
+    publication_id = stable_m4_digest("m4-publication-v1", "5")
+    receipt_publication_id = publication_id if already_sealed == 1 else None
+    malformed = OpenEventReceipt(
+        epoch_id=5,
+        replayed=replayed,  # type: ignore[arg-type]
+        already_sealed=already_sealed,  # type: ignore[arg-type]
+        publication_id=receipt_publication_id,
+        already_failed=already_failed,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ValidationError):
+        replace(sealed, open_receipt=malformed)
+
+    with pytest.raises(ValidationError):
+        replace(
+            sealed,
+            publication_receipt=PublicationReceipt(
+                5,
+                publication_id,
+                1,  # type: ignore[arg-type]
+            ),
+        )
+
+
+def test_c5_active_cutoff_replay_keeps_exact_terminal_timing_coverage_rules() -> None:
+    replay = _c5_replayed_result(
+        outcome=M5ReplayedOutcome.SEALED,
+        active_cutoff=True,
+        receipt_replayed=True,
+        call_work=M5RuntimeWork(bytes_hashed=1),
+        with_coverage=True,
+    )
+    assert replay.event_timing_coverage is not None
+    assert replay.call_timing_coverage is not None
+
+    with pytest.raises(ValidationError):
+        replace(replay, event_timing_coverage=None)
+    with pytest.raises(ValidationError):
+        replace(replay, call_timing_coverage=None)
+    with pytest.raises(ValidationError):
+        replace(
+            replay,
+            event_timing=M5RuntimeTiming(end_to_end_wall_ns=1),
+        )
+    with pytest.raises(ValidationError):
+        replace(
+            replay,
+            call_timing_coverage=M5RuntimeTimingCoverage.single_point(
+                replay.call_timing,
+                terminal_client_roundtrip_included=False,
+            ),
+        )
+    with pytest.raises(ValidationError):
+        replace(
+            replay,
+            event_timing=M5RuntimeTiming(),
+            event_timing_coverage=M5RuntimeTimingCoverage.single_point(
+                M5RuntimeTiming(),
+                terminal_client_roundtrip_included=True,
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    (M5ReplayedOutcome.SEALED, M5ReplayedOutcome.FAILED),
+    ids=("sealed", "failed"),
+)
+@pytest.mark.parametrize(
+    "receipt_replayed",
+    (False, True),
+    ids=("fresh-nonterminal-open", "resumed-nonterminal-open"),
+)
+def test_c5_active_cutoff_replay_accepts_exact_missing_call_coverage(
+    outcome: M5ReplayedOutcome,
+    receipt_replayed: bool,
+) -> None:
+    replay = _c5_replayed_result(
+        outcome=outcome,
+        active_cutoff=True,
+        receipt_replayed=receipt_replayed,
+        call_work=M5RuntimeWork(bytes_hashed=1),
+    )
+    missing = M5RuntimeTimingCoverage.single_point(
+        None,
+        terminal_client_roundtrip_included=False,
+    )
+    covered = replace(
+        replay,
+        event_timing_coverage=missing,
+        call_timing_coverage=missing,
+    )
+
+    assert covered.call_timing_coverage is not None
+    assert covered.call_timing_coverage.required_expected_count == 1
+    assert covered.call_timing_coverage.required_missing_count == 1
+    assert not covered.call_timing_coverage.terminal_client_roundtrip_included
+    with pytest.raises(ValidationError):
+        replace(
+            covered,
+            call_timing_coverage=M5RuntimeTimingCoverage.single_point(
+                M5RuntimeTiming(),
+                terminal_client_roundtrip_included=False,
+            ),
+        )
+
+
 def test_run_result_sealed_replay_has_stable_logical_hash_and_zero_call_work() -> None:
     work = M5RuntimeWork(requirement_verifier_call_count=1)
     publication_id = stable_publication_id = stable_m4_digest("m4-publication-v1", "5")
