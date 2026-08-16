@@ -1,11 +1,11 @@
 # GroundLoop M5 Multi-Agent Execution Plan
 
 Status: frozen M5 ownership contract; historical Waves 0--2 complete;
-M5-D24 recovery R0-C, pure R0-C1, and R0-S accepted on main; R1-D integrated;
-R1-P active from its live-green cancellation checkpoint under the committed
-manifest below; M5-D24-C3 and M5-D24-C4 accepted
+M5-D24 recovery R0-C, pure R0-C1, and R0-S accepted on main; R1-D, R1-P, R2a,
+and R1-C integrated at `1838316`, `56dd2d4`, `6f1ae89`, and `f5902ff`;
+M5-D24-C1 through M5-D24-C5 accepted; R2b paused with no active edit ownership
 
-Date: 2026-08-02; M5-D24 path amendments 2026-08-06 through 2026-08-12
+Date: 2026-08-02; M5-D24 path amendments 2026-08-06 through 2026-08-16
 
 Authority: `docs/m5_design_freeze.md` defines semantics and
 `docs/m5_implementation_plan.md` defines gates. This document defines only
@@ -380,7 +380,7 @@ accepted migration-016 identity and exact path manifest were committed in
 
 ### Wave R1 -- requirement and typed-direct persistence
 
-R1 is active only from the commit containing
+R1 was activated only from the commit containing
 `docs/workstreams/m5_runtime_implementation/D24_R1_ACTIVATION.md`; its exact
 accepted parent is `15415edadb70201ef26f1e5e50b7fe0d63279210`. That note freezes
 the literal accepted migration-016 tuple, exact branch/worktree names, eight
@@ -388,29 +388,30 @@ R1-P paths, nine R1-D paths, shared operational pins and focused gates. No
 broad directory grant is implied. Each lane records the manifest commit as its
 exact branch base before editing.
 
-R1 proves both serial orders of takeover/result/failure races, exact replay,
-dispatch-versus-evidence ambiguity, post-terminal isolation, work/timing point
-maintenance, and frozen public M4-v1 regression. Cross-lane wrappers are
+The R1 manifests required both serial orders of takeover/result/failure races,
+exact replay, dispatch-versus-evidence ambiguity, post-terminal isolation,
+work/timing point maintenance, and frozen public M4-v1 regression. Their
+integrated results are recorded below. Cross-lane wrappers remained
 coordinator work after both lane commits.
 
-Accepted M5-D24-C3 resumes R1-P without changing lane paths. An
+Accepted M5-D24-C3 resumed R1-P without changing lane paths. An
 already-replaced requirement attempt archives preterminal when output wins
 before cancellation, while cancellation-first conflicts with zero writes while
-the event remains nonterminal. R1-P owns the two preterminal orders and
+the event remains nonterminal. R1-P owned the two preterminal orders and
 fixture-backed postterminal persistence-shape evidence. R2 owns production
 seal/failure and the end-to-end postterminal continuation. No R1 lane may edit
 migration 016 or invent a terminal preterminal artifact to bypass that
 accepted closure.
 
-Accepted M5-D24-C4 changes no path ownership. R1-P owns the requirement source,
+Accepted M5-D24-C4 changed no path ownership. R1-P owned the requirement source,
 nested tests, and clearly labelled SQL-only terminal fixture needed to prove
 that `retryable_failed` and every terminal successor (`completed_active`,
 `completed_inactive`, `terminal_failed`, or `cancelled`) cause zero-write
-rejection while the event is nonterminal. R1-P also owns checked-reacquisition
+rejection while the event is nonterminal. R1-P also owned checked-reacquisition
 coverage from `retryable_failed` back to `running`, and SQL-only fixture proof
 that persistence rejects the output while `retryable_failed` and inserts the
 exact five rows only after test-local resolution to one of the four accepted
-terminal states. It also owns proof that a late-only requirement return
+terminal states. It also owned proof that a late-only requirement return
 validates the complete resupplied discovery/verifier DTO, explicit discovery
 exhaustion and nested context, and the verifier pair-input immutable core, but
 inserts no normal semantic artifact rows. Snapshot-exhaustion evidence is true
@@ -419,8 +420,12 @@ material and not replay-bound. R2 retains production seal/failure composition,
 including proof that production terminalization resolves `retryable_failed`,
 and end-to-end continuation.
 
-R1-P resumes under the accepted correction. No lane may edit migration 016/017
-or a public contract/digest to implement it.
+R1-P subsequently resumed under the accepted correction and integrated at
+`56dd2d4`; R1-D had integrated at `1838316`. R2a failure terminalization and
+R1-C shared compatibility then integrated at `6f1ae89` and `f5902ff`.
+These completed manifests are historical evidence, not active ownership. No
+lane may edit migration 016/017 or a public contract/digest under an old R1
+grant.
 
 ### Wave R2 -- application composition
 
@@ -428,6 +433,56 @@ Only after R1 integration may the coordinator or one newly manifested lane
 edit `application.py`, fake ports/history, typed open/resume/failure/seal
 composition, or shared integration tests. R2 must exercise reconnect at every
 nonterminal cutoff and preserve one timing anchor per outer transaction.
+
+The historical R2b activation preflight exposed a contract gap before any R2b
+source/test byte was integrated. Accepted M5-D24-C5 applies semantically to
+checked successful requirement receipts and checked selected successful typed-
+direct outer receipt branches. It restores M5.0-24's contract half to `PASS`
+but grants no path ownership and invalidates the old R2b base for future work.
+Accepted C1--C4 evidence remains unchanged.
+
+After the coordinator commits this accepted C5 freeze, it must separately
+commit a new exact activation note at
+`docs/workstreams/m5_runtime_implementation/D24_C5_TERMINAL_RACE_CALL_WORK_ACTIVATION.md`.
+That note must name the literal branch, worktree, accepted-freeze base, three
+paths, and focused gate. Only then may the planned contract micro-lane own
+exactly these paths:
+
+1. `src/groundloop/m5/runtime/contracts.py`;
+2. `tests/m5/runtime/test_contracts.py`; and
+3. `docs/workstreams/m5_runtime_implementation/D24_C5_TERMINAL_RACE_CALL_WORK_HANDOFF.md`
+   (new).
+
+It may change only `M5EventRunResult` replay-shape validation and focused
+contract tests. It may not edit application, fake ports, persistence,
+migrations, digests, exports, status documents, or any other path. Its gate is
+the exact C5 replay-shape falsifier matrix: unchanged terminal-projected zero-
+work ordinary replay; fresh/resumed nonterminal receipt projections with exact
+zero/nonzero current-invocation work; stable logical identity; and rejection
+of every mixed receipt/outcome branch.
+
+Only after that micro-lane is integrated and independently revalidated may the
+coordinator commit a fresh R2b repin/reactivation from the exact integrated C5
+contract commit. The historical
+`f5902ff0d2c21865f2c633ed404163aef3f937d7` base may not be reused; the R2b
+branch/worktree must be recreated or exactly reset to the new pinned base
+before any edit. The future R2b lane retains exactly its original four paths:
+
+1. `src/groundloop/m5/runtime/application.py`;
+2. `tests/m5/runtime/fake_ports.py`;
+3. `tests/m5/runtime/test_d24_application_composition.py` (new); and
+4. `docs/workstreams/m5_runtime_implementation/D24_R2B_APPLICATION_FAILURE_HANDOFF.md`
+   (new).
+
+R2b must then prove canonical-read-before-projection, exact successful-return
+receipt/hash checks, one-add current-invocation work for discovery and
+verifier terminal races, unchanged frozen event totals, timing-only terminal
+telemetry, zero-work active projection, ordinary reconnect zero work, and no
+provider redispatch. It does not own typed-direct application composition.
+That semantic half of C5 requires a later separate path-exclusive activation
+and equivalent outer-settlement evidence. The contract micro-lane may not
+begin without its new committed activation, and R2b may not begin before that
+lane integrates and the coordinator commits the exact C5-based repin.
 
 No D24 wave owns the untracked persisted-matching draft. M5-D25 and migration
 017 remain blocked until migration 016 is accepted, all five 016 ledger values

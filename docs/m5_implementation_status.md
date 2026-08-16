@@ -1,25 +1,30 @@
 # GroundLoop M5 Implementation Status
 
-Status date: 2026-08-12
+Status date: 2026-08-16
 
-Milestone status: **M5.0 through M5.3 complete; M5.4 is partially complete.**
+Milestone status: **M5.0 contract through accepted C5 and M5.1--M5.3 are
+complete; M5.4 is partially complete.**
 M5.4-01 passes. M5.4-02 through M5.4-09 and every M5.5--M5.6
 implementation/evaluation closure remain pending. M5-D24-C1 through
-M5-D24-C4 are accepted, and M5.0-24 is contract-`PASS` /
-implementation-`PENDING`. C4's accepted reviewed-candidate SHA-256 is
+M5-D24-C5 are accepted, so M5.0-24 is contract-`PASS` /
+implementation-`PENDING`. C5's accepted reviewed-candidate SHA-256 is
+`b4afb8fbbdabcf970ac03865fa1510cd8219cac630dbc5ee2d5dc506889f3b67`.
+C4's accepted reviewed-candidate SHA-256 remains
 `f2e23d0bc4c245004f677f771e45123a619d4b1ad88da207e803cb89dcfec80c`.
 C3's accepted reviewed-candidate SHA-256 remains
 `59fca1859e55af3ff9ffe818205c0ed61cacd17876525cddfc60d448f9eaf723`.
-The R0 contracts and migration 016 remain accepted on main. R1-D is integrated;
-R1-P is resumed under accepted C4; R2 composition and the overall decision-row
-implementation evidence remain pending.
+The R0 contracts and migration 016 remain accepted on main. R1-D, R1-P, R2a,
+and R1-C are integrated at `1838316`, `56dd2d4`, `6f1ae89`, and `f5902ff`,
+respectively. R2b is paused at the accepted C5 post-freeze activation barrier,
+and the overall decision-row implementation evidence remains pending.
 
 The exact disjoint R1-P requirement and R1-D typed-direct persistence paths
-remain governed by
+were governed by
 `docs/workstreams/m5_runtime_implementation/D24_R1_ACTIVATION.md`. R1-D is
-integrated. R1-P remains the owner of the C4 source/tests and SQL-only terminal
-fixture under the unchanged manifest. Activation is an ownership barrier, not
-whole-stage implementation evidence.
+integrated at `1838316`; R1-P is integrated at `56dd2d4`. R2a failure
+terminalization and R1-C shared compatibility then integrated at `6f1ae89` and
+`f5902ff`. Those completed lane manifests are historical ownership evidence,
+not current edit grants or whole-stage implementation evidence.
 
 ## 1. Honest current verdict
 
@@ -79,14 +84,14 @@ m5_multiagent_execution_plan faffae5f839623efd9e387f63e951881cf1f46c5b66f37c3db6
 ```
 
 Those hashes identify the initial audited M5.0 semantic candidate. Later
-accepted amendments M5-D21 through M5-D24-C4 extend or correct that contract
+accepted amendments M5-D21 through M5-D24-C5 extend or correct that contract
 and are identified by their own decision and audit records below. Final
 implementation artifact hashes and the decision-row cross-stage mapping will
 be recorded at M5.6.
 
 ## 3. Frozen M5.0 result
 
-The authoritative documents are:
+The accepted governing documents are:
 
 - `docs/m5_design_freeze.md` -- decisions M5-D1 through M5-D24 and theorems
   M5-T1/M5-T2;
@@ -104,6 +109,8 @@ The authoritative documents are:
 - `docs/workstreams/m5_runtime_contract/TERMINAL_SUCCESSOR_EXPIRED_OUTPUT_CORRECTION.md`
   -- accepted retryable/terminal-successor and requirement late-artifact
   closure correction;
+- `docs/workstreams/m5_runtime_contract/TERMINAL_RACE_INVOCATION_WORK_CORRECTION.md`
+  -- accepted active-invocation terminal-cutoff replay projection correction;
 - `docs/m5_implementation_plan.md` -- stages M5.1 through M5.6;
 - `docs/m5_multiagent_execution_plan.md` -- path-exclusive ownership and
   integration order; and
@@ -209,10 +216,12 @@ and migration SHA-256
 `a63d2a878a5196e071e3e51c6e6737cf76552057ade65da4112e0f0bafb412d7`.
 The exact committed main bytes passed 200/200 migration-016 tests, 26/26
 migration-015 regressions and 292/292 broader live PostgreSQL runtime tests;
-Ruff, strict mypy, compileall and diff-check also passed. This accepts only the
-R0 schema/installer boundary. Contextual C1 checked persistence/application
-composition and every D24 race/crash/reconnect gate remain
-implementation-PENDING. The proposed M5-D25 persisted-matching draft remains
+Ruff, strict mypy, compileall and diff-check also passed. That checkpoint
+accepted only the R0 schema/installer boundary. Checked R1 persistence,
+R2a failure terminalization, and shared compatibility later integrated at the
+commits recorded above; R2 application composition and the remaining D24
+race/crash/reconnect gates remain implementation-PENDING. The proposed M5-D25
+persisted-matching draft remains
 non-authoritative and has unresolved adversarial blockers; migration-016
 acceptance alone does not authorize it.
 
@@ -222,10 +231,10 @@ match accepted migration 016: cancellation has already made the job/scope
 terminal, while the SQL closure permits only `running -> running` until the
 event itself is terminal. Accepted M5-D24-C3 specifies output-first
 preterminal archival, cancellation-first zero-write conflict, and delayed
-`EXPIRED_POSTTERMINAL` archival after seal/failure. R1-P owns the two
+`EXPIRED_POSTTERMINAL` archival after seal/failure. R1-P owned the two
 preterminal orders and may use a clearly labelled owned terminal fixture for
 persistence-shape evidence; production seal/failure and end-to-end
-continuation remain R2. The current cancellation checkpoint passed 34/34 live
+continuation remain R2. That cancellation checkpoint passed 34/34 live
 nested PostgreSQL tests, but that is tranche evidence rather than whole-R1-P
 or M5.4 closure.
 
@@ -251,6 +260,39 @@ replay-bound for `budget_filled`. C3 remains accepted; C4 changes no migration
 or public contract. R1-P's SQL-only fixture proves the storage barrier after
 test-local state resolution; R2 retains proof of production
 `retryable_failed` resolution and the end-to-end continuation.
+
+The bounded D24 execution sequence is current through main commit `f5902ff`:
+R1-D direct persistence integrated at `1838316`, R1-P requirement persistence
+at `56dd2d4`, R2a failure terminalization at `6f1ae89`, and R1-C shared
+compatibility at `f5902ff`. Their focused evidence remains tranche evidence;
+it does not close R2 application composition, production seal, the complete
+race/crash/reconnect matrix, or M5.0-24 implementation.
+
+R2b application preflight then exposed a returned-envelope contradiction not
+covered by C1--C4. A requirement or typed-direct invocation can open/resume
+while nonterminal, perform or reuse exact external work, and receive an
+applicable checked successful-return receipt whose terminal projection names
+another transaction's terminal result. The canonical replay envelope is
+required to carry zero call work, so returning it unchanged would silently
+drop this invocation's work; adding the work to event totals would double
+count it.
+
+Accepted M5-D24-C5 adds no new marker or storage. Ordinary terminal-known-
+at-entry replay remains terminal-projected with zero call work. Only after the
+application validates a canonical terminal read against the checked return
+receipt may it return an active-cutoff `REPLAYED` projection retaining the
+invocation's actual earlier nonterminal open receipt and exact accumulated
+call work, including zero. Frozen event/result bytes, logical identity,
+timing-only terminal telemetry, migration 016, and all digest recipes remain
+unchanged. M5.0-24's contract half is restored to `PASS`; implementation
+remains `PENDING`, R2b is paused, and no source/test lane is authorized. After
+the coordinator commits this accepted C5 freeze, it must separately commit a
+new literal branch/worktree/base activation for the three-path generic
+contract micro-lane. After that lane integrates, R2b must be repinned and
+recreated/reactivated from the exact integrated C5 contract commit; its
+historical `f5902ff` base cannot be reused. R2b covers only requirement
+discovery/verifier application races. Typed-direct application composition
+remains deferred to a separate future path-exclusive manifest.
 
 ## 5. Remaining closure boundary
 

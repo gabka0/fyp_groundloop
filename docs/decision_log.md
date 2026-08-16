@@ -1,5 +1,57 @@
 # GroundLoop Decision Log
 
+## 2026-08-16 — M5-D24-C5 Terminal-Race Invocation Work Accepted
+
+Decision status: accepted narrow correction after two independent exact-byte
+reviews. Accepted reviewed-candidate SHA-256:
+`b4afb8fbbdabcf970ac03865fa1510cd8219cac630dbc5ee2d5dc506889f3b67`.
+No implementation lane is authorized by this entry.
+
+R2b preflight exposed a returned-envelope contradiction after a successful
+requirement result or typed-direct outer settlement loses the terminal cutoff.
+The invocation has already opened or resumed the event while nonterminal and
+may have performed exact external-attempt work. Its checked successful-return
+receipt names the current terminal logical result, so the application must
+return that durable outcome.
+The existing replay shape, however, requires canonical-zero call work and a
+terminal-projected open receipt, which would silently drop this invocation's
+work. Adding the work to frozen event totals would double count it, and
+terminal timing telemetry has no work field.
+
+Accepted M5-D24-C5 uses the invocation's existing checked
+`OpenEventReceipt` as the discriminator. Ordinary terminal-known-at-entry
+replay remains terminal-projected with zero call work. The narrow active-
+cutoff projection remains `REPLAYED`, retains the actual earlier nonterminal
+open receipt, and returns exact accumulated current-invocation call work,
+including zero, only after validating a canonical terminal read against the
+successful-return receipt's terminal logical-result hash. Durable event work,
+result bytes, publication/failure identity, timing/coverage, and logical hash
+remain unchanged.
+
+The same semantic projection applies to a checked selected normal/late branch
+of a successful typed-direct outer receipt, as already required by C1 Section
+5. Typed-direct application implementation is explicitly outside R2b and
+requires a separate future path-exclusive manifest; R2b covers only the
+requirement discovery/verifier application race.
+
+The correction requires no marker, schema, migration, digest, persistence, or
+telemetry-work change. R1-D, R1-P, R2a, and R1-C are already integrated at
+`1838316`, `56dd2d4`, `6f1ae89`, and `f5902ff`, respectively; those tranche
+results do not close R2 composition or M5.0-24.
+
+After the coordinator commits this accepted freeze, it must separately commit
+a new activation note with the literal branch/worktree/accepted-freeze base
+for the three-path contract micro-lane. After that lane integrates, the
+coordinator must repin and recreate/reactivate the unchanged four-path R2b
+lane from the exact integrated C5 contract commit; the historical `f5902ff`
+activation base may not be reused. Typed-direct composition remains separately
+manifested. M5.0-24's contract half is restored to `PASS`, its implementation
+half remains `PENDING`, R2b is paused, C1--C4 remain accepted, and neither
+future lane may edit without its separate committed activation.
+
+The authoritative accepted text is
+`docs/workstreams/m5_runtime_contract/TERMINAL_RACE_INVOCATION_WORK_CORRECTION.md`.
+
 ## 2026-08-12 — M5-D24-C4 Terminal-Successor/Artifact Boundary Accepted
 
 Decision status: accepted narrow correction after independent exact-byte
