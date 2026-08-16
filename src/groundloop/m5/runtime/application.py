@@ -17,8 +17,13 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Protocol
 
+from groundloop.domain import StatusDelta
 from groundloop.errors import GroundLoopError, ValidationError
-from groundloop.m4.application import OpenEventReceipt, StructuralWithdrawal
+from groundloop.m4.application import (
+    OpenEventReceipt,
+    PublicationReceipt,
+    StructuralWithdrawal,
+)
 from groundloop.m4.contracts import (
     DiscoveryScope as M4DiscoveryScope,
 )
@@ -28,30 +33,50 @@ from groundloop.m4.contracts import (
 from groundloop.m4.contracts import (
     LogicalJobSpec as M4LogicalJobSpec,
 )
+from groundloop.m4.contracts import stable_m4_digest
 from groundloop.m4.pipeline import StructuralPayload
 from groundloop.m5.events import RegisterGroupEvent, ReplaceGroupEvent
 from groundloop.m5.runtime import digests
 from groundloop.m5.runtime.contracts import (
+    M5AcquisitionDisposition,
     M5AttemptCompletionReceipt,
     M5AttemptOutput,
     M5CandidatePolicyManifest,
+    M5ChangedStateReference,
     M5DiscoveryDirection,
     M5DiscoveryScopeContract,
     M5EventRunResult,
+    M5ExecutionEvidenceDisposition,
     M5JobKind,
     M5JobLease,
+    M5JobState,
+    M5LeaseTerminalProjection,
     M5LogicalJobSpec,
+    M5ReplayedOutcome,
+    M5RequirementAttemptReturnReceipt,
+    M5RequirementChannelHit,
     M5RequirementDiscoveryResult,
     M5RequirementFallbackKey,
     M5RequirementPairInput,
+    M5RequirementReturnDisposition,
+    M5RequirementScopeSelection,
     M5RequirementVerifierArtifact,
     M5RequirementWithdrawalPlan,
     M5RootBarrierReceipt,
     M5RunFailureReason,
     M5RunState,
     M5RuntimeTiming,
+    M5RuntimeTimingCoverage,
+    M5RuntimeTimingObservation,
     M5RuntimeWork,
+    M5RuntimeWorkContributionKind,
+    M5TerminalReason,
+    M5TransitionTimingAnchor,
+    M5TransitionTimingReceipt,
     M5TypedEventPlan,
+    SemanticPairKey,
+    validate_changed_state_references,
+    validate_combined_deltas,
 )
 from groundloop.m5.runtime.frontier import coalesce_forward_root_keys
 
@@ -139,11 +164,16 @@ class M5DiscoveryExecution:
     result: M5RequirementDiscoveryResult
     attempt_output: M5AttemptOutput
     eligible_snapshot_exhausted: bool
+    execution_disposition: M5ExecutionEvidenceDisposition
     call_work: M5RuntimeWork
+    attempt_timing: M5RuntimeTiming | None
 
     def __post_init__(self) -> None:
         if not isinstance(self.eligible_snapshot_exhausted, bool):
             raise ValidationError("snapshot-exhaustion evidence must be boolean")
+        _validate_successful_execution_evidence(
+            self.execution_disposition, self.call_work, self.attempt_timing
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,7 +207,44 @@ class M5VerifierExecution:
     pair_input: M5RequirementPairInput
     artifact: M5RequirementVerifierArtifact
     attempt_output: M5AttemptOutput
+    execution_disposition: M5ExecutionEvidenceDisposition
     call_work: M5RuntimeWork
+    attempt_timing: M5RuntimeTiming | None
+
+    def __post_init__(self) -> None:
+        _validate_successful_execution_evidence(
+            self.execution_disposition, self.call_work, self.attempt_timing
+        )
+
+
+def _validate_successful_execution_evidence(
+    disposition: M5ExecutionEvidenceDisposition,
+    call_work: M5RuntimeWork,
+    attempt_timing: M5RuntimeTiming | None,
+) -> None:
+    if not isinstance(call_work, M5RuntimeWork):
+        raise ValidationError("execution call_work must be M5RuntimeWork")
+    if attempt_timing is not None and not isinstance(attempt_timing, M5RuntimeTiming):
+        raise ValidationError("attempt_timing must be M5RuntimeTiming or None")
+    if not isinstance(disposition, M5ExecutionEvidenceDisposition):
+        raise ValidationError(
+            "execution_disposition must be M5ExecutionEvidenceDisposition"
+        )
+    if disposition not in {
+        M5ExecutionEvidenceDisposition.RETURNED,
+        M5ExecutionEvidenceDisposition.REUSED_ARTIFACT,
+    }:
+        raise ValidationError(
+            "successful execution requires returned or reused_artifact evidence"
+        )
+    if disposition is M5ExecutionEvidenceDisposition.REUSED_ARTIFACT and any(
+        getattr(call_work, name)
+        for name in M5RuntimeWork.counter_names()
+        if name not in {"bytes_hashed", "bytes_serialized"}
+    ):
+        raise ValidationError(
+            "reused execution can charge only hashing and serialization bytes"
+        )
 
 
 class M5ExternalWorkFailure(GroundLoopError):
@@ -189,10 +256,26 @@ class M5ExternalWorkFailure(GroundLoopError):
         *,
         retryable: bool,
         call_work: M5RuntimeWork,
+        attempt_timing: M5RuntimeTiming | None,
         error_hash: str,
     ) -> None:
-        if reason is M5RunFailureReason.INVARIANT_FAILURE:
-            raise ValidationError("external work cannot report invariant_failure")
+        if not isinstance(reason, M5RunFailureReason):
+            raise ValidationError("external failure reason must be M5RunFailureReason")
+        if not isinstance(retryable, bool):
+            raise ValidationError("external failure retryable must be boolean")
+        if not isinstance(call_work, M5RuntimeWork):
+            raise ValidationError("external failure call_work must be M5RuntimeWork")
+        if attempt_timing is not None and not isinstance(
+            attempt_timing, M5RuntimeTiming
+        ):
+            raise ValidationError("attempt_timing must be M5RuntimeTiming or None")
+        if reason in {
+            M5RunFailureReason.WORK_IN_PROGRESS,
+            M5RunFailureReason.INVARIANT_FAILURE,
+        }:
+            raise ValidationError(
+                "external work cannot report work_in_progress or invariant_failure"
+            )
         unavailable = reason in {
             M5RunFailureReason.RETRIEVAL_UNAVAILABLE,
             M5RunFailureReason.VERIFIER_UNAVAILABLE,
@@ -208,8 +291,27 @@ class M5ExternalWorkFailure(GroundLoopError):
         self.reason = reason
         self.retryable = retryable
         self.call_work = call_work
+        self.attempt_timing = attempt_timing
         self.error_hash = error_hash
         super().__init__(reason.value)
+
+
+@dataclass(frozen=True, slots=True)
+class M5TerminalInvocationTelemetry:
+    """One fresh caller-owned identity and completed terminal-call timing."""
+
+    invocation_id: str
+    call_timing: M5RuntimeTiming | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.invocation_id, str) or not self.invocation_id:
+            raise ValidationError("terminal invocation ID must be nonempty")
+        if self.call_timing is not None and not isinstance(
+            self.call_timing, M5RuntimeTiming
+        ):
+            raise ValidationError(
+                "terminal call timing must be M5RuntimeTiming or None"
+            )
 
 
 class M5CandidatePolicyPort(Protocol):
@@ -290,6 +392,19 @@ class M5RuntimePersistencePort(Protocol):
         expected_revision: int,
         lease: M5JobLease,
         error_hash: str,
+        attempt_work: M5RuntimeWork,
+        attempt_timing: M5RuntimeTiming | None,
+    ) -> M5AttemptCompletionReceipt: ...
+
+    def mark_m5_terminal_failure(
+        self,
+        epoch_id: int,
+        expected_revision: int,
+        lease: M5JobLease,
+        terminal_reason: M5TerminalReason,
+        error_hash: str,
+        attempt_work: M5RuntimeWork,
+        attempt_timing: M5RuntimeTiming | None,
     ) -> M5AttemptCompletionReceipt: ...
 
     def stage_m5_discovery_result_atomically(
@@ -300,7 +415,12 @@ class M5RuntimePersistencePort(Protocol):
         job: M5LogicalJobSpec,
         result: M5RequirementDiscoveryResult,
         attempt_output: M5AttemptOutput,
-    ) -> M5AttemptCompletionReceipt: ...
+        execution_disposition: M5ExecutionEvidenceDisposition,
+        attempt_work: M5RuntimeWork,
+        attempt_timing: M5RuntimeTiming | None,
+        *,
+        eligible_snapshot_exhausted: bool,
+    ) -> M5RequirementAttemptReturnReceipt: ...
 
     def close_m5_requirement_roots_atomically(
         self,
@@ -318,13 +438,17 @@ class M5RuntimePersistencePort(Protocol):
         pair_input: M5RequirementPairInput,
         verifier_artifact: M5RequirementVerifierArtifact,
         attempt_output: M5AttemptOutput,
-    ) -> M5AttemptCompletionReceipt: ...
+        execution_disposition: M5ExecutionEvidenceDisposition,
+        attempt_work: M5RuntimeWork,
+        attempt_timing: M5RuntimeTiming | None,
+    ) -> M5RequirementAttemptReturnReceipt: ...
 
     def fail_typed_epoch_atomically(
         self,
         epoch_id: int,
         expected_revision: int,
         failure_reason: M5RunFailureReason,
+        call_work: M5RuntimeWork,
     ) -> M5EventRunResult: ...
 
     def request_typed_seal_atomically(
@@ -332,7 +456,28 @@ class M5RuntimePersistencePort(Protocol):
         epoch_id: int,
         expected_revision: int,
         event: M5TypedEventPlan,
+        call_work: M5RuntimeWork,
     ) -> M5EventRunResult: ...
+
+    def append_transition_call_timing(
+        self,
+        epoch_id: int,
+        contribution_kind: M5RuntimeWorkContributionKind,
+        source_id: str,
+        contribution_key_digest: str,
+        anchor_revision: int,
+        observed_timing: M5RuntimeTiming | None,
+    ) -> M5TransitionTimingReceipt: ...
+
+    def append_terminal_invocation_telemetry(
+        self,
+        invocation_id: str,
+        event_id: str,
+        epoch_id: int,
+        terminal_logical_result_hash: str,
+        call_timing: M5RuntimeTiming | None,
+        call_timing_coverage: M5RuntimeTimingCoverage,
+    ) -> None: ...
 
 
 class M5RuntimeReadPort(Protocol):
@@ -342,7 +487,23 @@ class M5RuntimeReadPort(Protocol):
 
     def current_event_work(self, epoch_id: int) -> M5RuntimeWork: ...
 
+    def current_event_timing(
+        self, epoch_id: int
+    ) -> tuple[M5RuntimeTiming, M5RuntimeTimingCoverage]: ...
+
     def current_revision(self, epoch_id: int) -> int: ...
+
+
+class M5RuntimeMeasurementPort(Protocol):
+    """Measure only intervals that have ended at the application boundary."""
+
+    def transition_call_timing(
+        self, anchor: M5TransitionTimingAnchor
+    ) -> M5RuntimeTiming | None: ...
+
+    def terminal_invocation(
+        self, event: M5TypedEventPlan, result: M5EventRunResult
+    ) -> M5TerminalInvocationTelemetry: ...
 
 
 class M5PostSealAuditPort(Protocol):
@@ -362,6 +523,7 @@ class M5TypedApplication:
     runtime_reads: M5RuntimeReadPort
     discovery: M5RequirementDiscoveryPort
     verifier: M5RequirementVerifierPort
+    measurements: M5RuntimeMeasurementPort
     post_seal_audit: M5PostSealAuditPort | None = None
 
     def run_event(self, event: M5TypedEventPlan) -> M5EventRunResult:
@@ -370,7 +532,7 @@ class M5TypedApplication:
         )
         if terminal is not None:
             self._validate_terminal_replay(event, terminal)
-            return terminal
+            return self._finish_terminal_invocation(event, terminal)
 
         manifest = self.policies.candidate_policy(event.candidate_policy_id)
         if (
@@ -429,19 +591,39 @@ class M5TypedApplication:
             requirement_roots,
             root_set_hash,
         )
+        self._validate_open_event_receipt(opened)
         if opened.already_sealed or opened.already_failed:
             terminal = self.runtime.read_typed_event_result(
                 event.structural_event_id, event.payload_hash
             )
             if terminal is None:
                 raise ValidationError("terminal open receipt lacks durable M5 result")
-            self._validate_terminal_replay(event, terminal)
-            return terminal
+            self._validate_terminal_replay(
+                event,
+                terminal,
+                expected_epoch_id=opened.epoch_id,
+            )
+            if terminal.open_receipt != opened:
+                raise ValidationError(
+                    "terminal open receipt disagrees with durable M5 result"
+                )
+            return self._finish_terminal_invocation(event, terminal)
 
         revision = self.runtime_reads.current_revision(opened.epoch_id)
         call_work = M5RuntimeWork()
+        if not opened.replayed:
+            revision = self._append_transition_anchor(
+                M5TransitionTimingAnchor.build(
+                    epoch_id=opened.epoch_id,
+                    contribution_kind=(M5RuntimeWorkContributionKind.STRUCTURAL_OPEN),
+                    source_id=event.structural_event_id,
+                    anchor_revision=1,
+                    terminal_transition=False,
+                )
+            )
 
         direct_result = self.direct.run_pending_direct(opened.epoch_id, revision, event)
+        self._validate_direct_execution_receipt(direct_result)
         revision = direct_result.resulting_revision
         call_work = _sum_work(call_work, direct_result.call_work)
         if direct_result.terminal_failure_reason is not None:
@@ -459,24 +641,40 @@ class M5TypedApplication:
             root = declaration.job
             lease = self.runtime.acquire_m5_job(opened.epoch_id, revision, root)
             revision = lease.resulting_revision
-            if not lease.should_execute:
+            disposition = self._require_acquisition_disposition(lease, root)
+            if disposition in {
+                M5AcquisitionDisposition.DISPATCH_NEW,
+                M5AcquisitionDisposition.DISPATCH_TAKEOVER,
+            }:
+                revision = self._append_acquisition_anchor(opened.epoch_id, lease)
+            elif disposition is M5AcquisitionDisposition.LIVE_LEASE:
+                return self._blocked(
+                    event,
+                    opened,
+                    M5RunFailureReason.WORK_IN_PROGRESS,
+                    call_work,
+                )
+            elif disposition is M5AcquisitionDisposition.RESULT_RESERVED:
                 continue
+            elif disposition is M5AcquisitionDisposition.TERMINAL:
+                projected = self._handle_terminal_projection(
+                    event, opened, revision, lease, call_work
+                )
+                if projected is not None:
+                    return projected
+                continue
+            else:
+                raise ValidationError("unsupported requirement acquisition disposition")
             try:
                 discovery_execution = self.discovery.discover_requirement_scope(
                     opened.epoch_id, lease, root, manifest, event
                 )
             except M5ExternalWorkFailure as error:
+                self._validate_external_work_failure(error)
                 call_work = _sum_work(call_work, error.call_work)
-                if error.retryable:
-                    receipt = self.runtime.mark_m5_retryable_failure(
-                        opened.epoch_id,
-                        revision,
-                        lease,
-                        error.error_hash,
-                    )
-                    revision = receipt.resulting_revision
-                    return self._blocked(event, opened, error.reason, call_work)
-                return self._fail(event, opened, revision, error.reason, call_work)
+                return self._settle_external_failure(
+                    event, opened, revision, lease, error, call_work
+                )
             self._validate_discovery_execution(
                 opened.epoch_id,
                 declaration,
@@ -493,16 +691,45 @@ class M5TypedApplication:
                 root,
                 discovery_execution.result,
                 discovery_execution.attempt_output,
+                discovery_execution.execution_disposition,
+                discovery_execution.call_work,
+                discovery_execution.attempt_timing,
+                eligible_snapshot_exhausted=(
+                    discovery_execution.eligible_snapshot_exhausted
+                ),
             )
-            revision = staged.resulting_revision
+            revision, early = self._handle_requirement_return(
+                event,
+                opened,
+                root,
+                lease,
+                staged,
+                M5RuntimeWorkContributionKind.ROOT_RESULT_STAGE,
+                call_work,
+            )
+            if early is not None:
+                return early
 
         if requirement_roots:
             barrier = self.runtime.close_m5_requirement_roots_atomically(
                 opened.epoch_id, revision, root_set_hash
             )
+            if not isinstance(barrier, M5RootBarrierReceipt):
+                raise ValidationError("root barrier returned another receipt type")
+            replace(barrier)
             if barrier.requirement_root_set_hash != root_set_hash:
                 raise ValidationError("root barrier returned another declaration set")
             revision = barrier.resulting_revision
+            if not barrier.exact_replay:
+                revision = self._append_transition_anchor(
+                    M5TransitionTimingAnchor.build(
+                        epoch_id=opened.epoch_id,
+                        contribution_kind=M5RuntimeWorkContributionKind.ROOT_BARRIER,
+                        source_id=event.structural_event_id,
+                        anchor_revision=revision,
+                        terminal_transition=False,
+                    )
+                )
 
         verifier_jobs = self.runtime_reads.verifier_jobs(opened.epoch_id)
         if verifier_jobs != tuple(
@@ -514,24 +741,40 @@ class M5TypedApplication:
                 raise ValidationError("runtime exposed a non-verifier child")
             lease = self.runtime.acquire_m5_job(opened.epoch_id, revision, job)
             revision = lease.resulting_revision
-            if not lease.should_execute:
+            disposition = self._require_acquisition_disposition(lease, job)
+            if disposition in {
+                M5AcquisitionDisposition.DISPATCH_NEW,
+                M5AcquisitionDisposition.DISPATCH_TAKEOVER,
+            }:
+                revision = self._append_acquisition_anchor(opened.epoch_id, lease)
+            elif disposition is M5AcquisitionDisposition.LIVE_LEASE:
+                return self._blocked(
+                    event,
+                    opened,
+                    M5RunFailureReason.WORK_IN_PROGRESS,
+                    call_work,
+                )
+            elif disposition is M5AcquisitionDisposition.RESULT_RESERVED:
+                raise ValidationError("verifier acquisition cannot be result_reserved")
+            elif disposition is M5AcquisitionDisposition.TERMINAL:
+                projected = self._handle_terminal_projection(
+                    event, opened, revision, lease, call_work
+                )
+                if projected is not None:
+                    return projected
                 continue
+            else:
+                raise ValidationError("unsupported verifier acquisition disposition")
             try:
                 verifier_execution = self.verifier.verify_requirement_pair(
                     opened.epoch_id, lease, job, manifest, event
                 )
             except M5ExternalWorkFailure as error:
+                self._validate_external_work_failure(error)
                 call_work = _sum_work(call_work, error.call_work)
-                if error.retryable:
-                    receipt = self.runtime.mark_m5_retryable_failure(
-                        opened.epoch_id,
-                        revision,
-                        lease,
-                        error.error_hash,
-                    )
-                    revision = receipt.resulting_revision
-                    return self._blocked(event, opened, error.reason, call_work)
-                return self._fail(event, opened, revision, error.reason, call_work)
+                return self._settle_external_failure(
+                    event, opened, revision, lease, error, call_work
+                )
             self._validate_verifier_execution(
                 opened.epoch_id,
                 job,
@@ -549,19 +792,590 @@ class M5TypedApplication:
                 verifier_execution.pair_input,
                 verifier_execution.artifact,
                 verifier_execution.attempt_output,
+                verifier_execution.execution_disposition,
+                verifier_execution.call_work,
+                verifier_execution.attempt_timing,
             )
-            revision = completed.resulting_revision
+            revision, early = self._handle_requirement_return(
+                event,
+                opened,
+                job,
+                lease,
+                completed,
+                M5RuntimeWorkContributionKind.VERIFIER_COMPLETION,
+                call_work,
+            )
+            if early is not None:
+                return early
 
         sealed = self.runtime.request_typed_seal_atomically(
-            opened.epoch_id, revision, event
+            opened.epoch_id, revision, event, call_work
         )
-        sealed = replace(sealed, call_work=call_work)
-        self._validate_terminal_result(
-            event, opened.epoch_id, M5RunState.SEALED, sealed
-        )
-        if self.post_seal_audit is not None:
+        if sealed.state is M5RunState.REPLAYED:
+            sealed = self._finish_active_terminal_projection(
+                event,
+                opened,
+                call_work,
+                sealed,
+            )
+        else:
+            self._validate_terminal_result(
+                event,
+                opened.epoch_id,
+                M5RunState.SEALED,
+                sealed,
+                expected_open_receipt=opened,
+            )
+            if sealed.call_work != call_work:
+                raise ValidationError("seal result changed invocation call work")
+            sealed = self._finish_terminal_invocation(event, sealed)
+        if sealed.state is M5RunState.SEALED and self.post_seal_audit is not None:
             self.post_seal_audit.audit_after_seal(event, sealed)
         return sealed
+
+    @staticmethod
+    def _require_acquisition_disposition(
+        lease: M5JobLease,
+        job: M5LogicalJobSpec,
+    ) -> M5AcquisitionDisposition:
+        if not isinstance(lease, M5JobLease):
+            raise ValidationError("acquisition must return an M5JobLease")
+        if not isinstance(job, M5LogicalJobSpec):
+            raise ValidationError("acquisition request must be an M5LogicalJobSpec")
+        if lease.attempt is not None:
+            replace(lease.attempt)
+        if lease.terminal_projection is not None:
+            replace(lease.terminal_projection)
+        replace(lease)
+        if lease.logical_job_id != job.logical_job_id:
+            raise ValidationError("acquisition lease belongs to another job")
+        if (
+            lease.attempt is not None
+            and lease.attempt.execution_spec_hash != job.execution_spec_hash
+        ):
+            raise ValidationError("acquisition attempt binds another execution spec")
+        if not isinstance(lease.disposition, M5AcquisitionDisposition):
+            raise ValidationError("typed application requires a total D24 acquisition")
+        if lease.terminal_projection is not None:
+            lease.terminal_projection.validate_job(job.logical_job_id)
+            if lease.terminal_projection.terminal_state in {
+                M5JobState.CANCELLED,
+                M5JobState.TERMINAL_FAILED,
+            }:
+                expected_completion_digest = digests.job_completion_digest(
+                    logical_job_id_value=job.logical_job_id,
+                    payload_hash=job.payload_hash,
+                    execution_spec_hash=job.execution_spec_hash,
+                    terminal_state=lease.terminal_projection.terminal_state,
+                    result_artifact_id=None,
+                    result_artifact_hash=None,
+                    scope_closure_digest=None,
+                    child_set_hash=None,
+                    archive_reason=lease.terminal_projection.terminal_reason,
+                )
+                if (
+                    lease.terminal_projection.completion_digest
+                    != expected_completion_digest
+                ):
+                    raise ValidationError(
+                        "terminal acquisition completion digest changed its reason"
+                    )
+        return lease.disposition
+
+    def _append_acquisition_anchor(self, epoch_id: int, lease: M5JobLease) -> int:
+        if lease.dispatch_record_digest is None:
+            raise ValidationError("dispatch acquisition lacks its durable record")
+        return self._append_transition_anchor(
+            M5TransitionTimingAnchor.build(
+                epoch_id=epoch_id,
+                contribution_kind=M5RuntimeWorkContributionKind.M5_ACQUISITION,
+                source_id=lease.dispatch_record_digest,
+                anchor_revision=lease.resulting_revision,
+                terminal_transition=False,
+            )
+        )
+
+    def _append_transition_anchor(self, anchor: M5TransitionTimingAnchor) -> int:
+        if not isinstance(anchor, M5TransitionTimingAnchor):
+            raise ValidationError("transition timing requires an exact anchor")
+        replace(anchor)
+        observed = self.measurements.transition_call_timing(anchor)
+        if observed is not None:
+            if not isinstance(observed, M5RuntimeTiming):
+                raise ValidationError("transition measurement returned invalid timing")
+            replace(observed)
+        observation = M5RuntimeTimingObservation.build(observed)
+        receipt = self.runtime.append_transition_call_timing(
+            anchor.epoch_id,
+            anchor.contribution_kind,
+            anchor.source_id,
+            anchor.contribution_key_digest,
+            anchor.anchor_revision,
+            observed,
+        )
+        if not isinstance(receipt, M5TransitionTimingReceipt):
+            raise ValidationError("transition timing returned another receipt type")
+        if not isinstance(receipt.anchor, M5TransitionTimingAnchor):
+            raise ValidationError("transition timing receipt changed anchor type")
+        if not isinstance(receipt.event_timing, M5RuntimeTiming):
+            raise ValidationError("transition timing receipt changed timing type")
+        if not isinstance(receipt.event_timing_coverage, M5RuntimeTimingCoverage):
+            raise ValidationError("transition timing receipt changed coverage type")
+        replace(receipt.anchor)
+        replace(receipt.event_timing)
+        replace(receipt.event_timing_coverage)
+        replace(receipt)
+        if receipt.anchor != anchor:
+            raise ValidationError("transition timing receipt changed its anchor")
+        receipt.validate_observation(observation)
+        return receipt.resulting_revision
+
+    def _settle_external_failure(
+        self,
+        event: M5TypedEventPlan,
+        opened: OpenEventReceipt,
+        revision: int,
+        lease: M5JobLease,
+        error: M5ExternalWorkFailure,
+        call_work: M5RuntimeWork,
+    ) -> M5EventRunResult:
+        if lease.attempt is None:
+            raise ValidationError("external failure lease lacks an attempt")
+        if error.retryable:
+            receipt = self.runtime.mark_m5_retryable_failure(
+                opened.epoch_id,
+                revision,
+                lease,
+                error.error_hash,
+                error.call_work,
+                error.attempt_timing,
+            )
+        else:
+            receipt = self.runtime.mark_m5_terminal_failure(
+                opened.epoch_id,
+                revision,
+                lease,
+                self._terminal_reason_for_failure(error.reason),
+                error.error_hash,
+                error.call_work,
+                error.attempt_timing,
+            )
+        if not isinstance(receipt, M5AttemptCompletionReceipt):
+            raise ValidationError("failure settlement returned another receipt type")
+        replace(receipt)
+        if (
+            receipt.logical_job_id != lease.logical_job_id
+            or receipt.attempt_id != lease.attempt.attempt_id
+        ):
+            raise ValidationError("failure receipt binds another job/attempt")
+        revision = receipt.resulting_revision
+        if not receipt.exact_replay:
+            revision = self._append_transition_anchor(
+                M5TransitionTimingAnchor.build(
+                    epoch_id=opened.epoch_id,
+                    contribution_kind=(
+                        M5RuntimeWorkContributionKind.M5_ATTEMPT_EXECUTION
+                    ),
+                    source_id=lease.attempt.attempt_id,
+                    anchor_revision=revision,
+                    terminal_transition=False,
+                )
+            )
+        if error.retryable:
+            return self._blocked(event, opened, error.reason, call_work)
+        return self._fail(
+            event,
+            opened,
+            revision,
+            error.reason,
+            call_work,
+            project_checked_requirement_replay=True,
+        )
+
+    def _handle_requirement_return(
+        self,
+        event: M5TypedEventPlan,
+        opened: OpenEventReceipt,
+        job: M5LogicalJobSpec,
+        lease: M5JobLease,
+        receipt: M5RequirementAttemptReturnReceipt,
+        expected_anchor_kind: M5RuntimeWorkContributionKind,
+        call_work: M5RuntimeWork,
+    ) -> tuple[int, M5EventRunResult | None]:
+        if not isinstance(receipt, M5RequirementAttemptReturnReceipt):
+            raise ValidationError("successful return produced another receipt type")
+        replace(receipt)
+        if lease.attempt is None:
+            raise ValidationError("successful return lease lacks an attempt")
+        if (
+            receipt.logical_job_id != job.logical_job_id
+            or receipt.attempt_id != lease.attempt.attempt_id
+        ):
+            raise ValidationError("successful return receipt binds another job/attempt")
+        receipt.validate_anchor_context(
+            epoch_id=opened.epoch_id,
+            expected_kind=(
+                expected_anchor_kind
+                if receipt.disposition is M5RequirementReturnDisposition.APPLIED
+                else M5RuntimeWorkContributionKind.PRETERMINAL_LATE_RETURN
+            ),
+        )
+        revision = receipt.resulting_revision
+        if receipt.current_terminal_logical_result_hash is not None:
+            terminal = self._hydrate_terminal_result(
+                event,
+                opened.epoch_id,
+                receipt.current_terminal_logical_result_hash,
+            )
+            return revision, self._finish_active_terminal_projection(
+                event,
+                opened,
+                call_work,
+                terminal,
+                expected_logical_result_hash=(
+                    receipt.current_terminal_logical_result_hash
+                ),
+            )
+        if receipt.transition_anchor is not None:
+            revision = self._append_transition_anchor(receipt.transition_anchor)
+        if receipt.disposition is M5RequirementReturnDisposition.APPLIED:
+            return revision, None
+        if receipt.disposition is M5RequirementReturnDisposition.EXPIRED_PRETERMINAL:
+            return revision, self._blocked(
+                event,
+                opened,
+                M5RunFailureReason.WORK_IN_PROGRESS,
+                call_work,
+            )
+        if (
+            receipt.disposition
+            is M5RequirementReturnDisposition.TERMINAL_AUDIT_PRETERMINAL
+        ):
+            resumed = self.runtime.acquire_m5_job(opened.epoch_id, revision, job)
+            resumed_disposition = self._require_acquisition_disposition(resumed, job)
+            if resumed_disposition is not M5AcquisitionDisposition.TERMINAL:
+                raise ValidationError(
+                    "terminal-audit return did not resume to terminal scheduler state"
+                )
+            return resumed.resulting_revision, self._handle_terminal_projection(
+                event,
+                opened,
+                resumed.resulting_revision,
+                resumed,
+                call_work,
+            )
+        raise ValidationError("postterminal requirement return lacks terminal result")
+
+    def _handle_terminal_projection(
+        self,
+        event: M5TypedEventPlan,
+        opened: OpenEventReceipt,
+        revision: int,
+        lease: M5JobLease,
+        call_work: M5RuntimeWork,
+    ) -> M5EventRunResult | None:
+        projection = lease.terminal_projection
+        if not isinstance(projection, M5LeaseTerminalProjection):
+            raise ValidationError("terminal acquisition lacks its durable projection")
+        projection.validate_job(lease.logical_job_id)
+        if projection.terminal_reason is M5TerminalReason.EPOCH_FAILED:
+            if projection.terminal_state not in {
+                M5JobState.COMPLETED_INACTIVE,
+                M5JobState.CANCELLED,
+            }:
+                raise ValidationError(
+                    "epoch_failed projection has an invalid terminal job state"
+                )
+            terminal = self.runtime.read_typed_event_result(
+                event.structural_event_id, event.payload_hash
+            )
+            if terminal is None:
+                raise ValidationError(
+                    "epoch_failed projection lacks the atomic durable event result"
+                )
+            return self._finish_active_terminal_projection(
+                event,
+                opened,
+                call_work,
+                terminal,
+                expected_outcome=M5ReplayedOutcome.FAILED,
+            )
+        if projection.terminal_state is M5JobState.TERMINAL_FAILED:
+            return self._fail(
+                event,
+                opened,
+                revision,
+                self._run_reason_from_projection(projection),
+                call_work,
+                project_checked_requirement_replay=True,
+            )
+        return None
+
+    def _hydrate_terminal_result(
+        self,
+        event: M5TypedEventPlan,
+        epoch_id: int,
+        logical_result_hash: str,
+    ) -> M5EventRunResult:
+        terminal = self.runtime.read_typed_event_result(
+            event.structural_event_id, event.payload_hash
+        )
+        if (
+            terminal is None
+            or terminal.epoch_id != epoch_id
+            or terminal.logical_result_hash != logical_result_hash
+        ):
+            raise ValidationError("terminal return projection lacks its exact result")
+        self._validate_terminal_replay(event, terminal)
+        return terminal
+
+    @staticmethod
+    def _terminal_reason_for_failure(
+        reason: M5RunFailureReason,
+    ) -> M5TerminalReason:
+        mapping = {
+            M5RunFailureReason.RETRY_EXHAUSTED: M5TerminalReason.RETRY_EXHAUSTED,
+            M5RunFailureReason.RETRIEVAL_ERROR: M5TerminalReason.RETRIEVAL_ERROR,
+            M5RunFailureReason.VERIFIER_ERROR: M5TerminalReason.VERIFIER_ERROR,
+            M5RunFailureReason.INVALID_ARTIFACT: M5TerminalReason.INVALID_ARTIFACT,
+        }
+        try:
+            return mapping[reason]
+        except KeyError as error:
+            raise ValidationError(
+                "failure reason has no terminal job mapping"
+            ) from error
+
+    @staticmethod
+    def _run_reason_from_projection(
+        projection: M5LeaseTerminalProjection,
+    ) -> M5RunFailureReason:
+        assert projection.terminal_reason is not None
+        mapping = {
+            M5TerminalReason.RETRY_EXHAUSTED: M5RunFailureReason.RETRY_EXHAUSTED,
+            M5TerminalReason.RETRIEVAL_ERROR: M5RunFailureReason.RETRIEVAL_ERROR,
+            M5TerminalReason.VERIFIER_ERROR: M5RunFailureReason.VERIFIER_ERROR,
+            M5TerminalReason.INVALID_ARTIFACT: M5RunFailureReason.INVALID_ARTIFACT,
+        }
+        try:
+            return mapping[projection.terminal_reason]
+        except KeyError as error:
+            raise ValidationError(
+                "terminal-failed projection has no exact run failure mapping"
+            ) from error
+
+    def _finish_terminal_invocation(
+        self, event: M5TypedEventPlan, result: M5EventRunResult
+    ) -> M5EventRunResult:
+        self._validate_terminal_nested_contracts(result)
+        replace(result)
+        self._validate_terminal_logical_result_hash(result)
+        logical_result_hash = result.logical_result_hash
+        if not isinstance(logical_result_hash, str):
+            raise ValidationError("terminal result lacks its logical result hash")
+        telemetry = self.measurements.terminal_invocation(event, result)
+        if not isinstance(telemetry, M5TerminalInvocationTelemetry):
+            raise ValidationError(
+                "terminal measurement returned another telemetry type"
+            )
+        replace(telemetry)
+        if telemetry.call_timing is not None:
+            if not isinstance(telemetry.call_timing, M5RuntimeTiming):
+                raise ValidationError("terminal telemetry returned invalid call timing")
+            replace(telemetry.call_timing)
+        coverage = M5RuntimeTimingCoverage.single_point(
+            telemetry.call_timing,
+            terminal_client_roundtrip_included=telemetry.call_timing is not None,
+        )
+        self.runtime.append_terminal_invocation_telemetry(
+            telemetry.invocation_id,
+            event.structural_event_id,
+            result.epoch_id,
+            logical_result_hash,
+            telemetry.call_timing,
+            coverage,
+        )
+        return replace(
+            result,
+            call_timing=(telemetry.call_timing or M5RuntimeTiming()),
+            call_timing_coverage=coverage,
+        )
+
+    def _finish_active_terminal_projection(
+        self,
+        event: M5TypedEventPlan,
+        opened: OpenEventReceipt,
+        call_work: M5RuntimeWork,
+        canonical: M5EventRunResult,
+        *,
+        expected_outcome: M5ReplayedOutcome | None = None,
+        expected_failure_reason: M5RunFailureReason | None = None,
+        expected_logical_result_hash: str | None = None,
+    ) -> M5EventRunResult:
+        """Validate, project, and only then append terminal-call telemetry."""
+
+        self._validate_terminal_replay(
+            event,
+            canonical,
+            expected_epoch_id=opened.epoch_id,
+            expected_outcome=expected_outcome,
+            expected_failure_reason=expected_failure_reason,
+            expected_logical_result_hash=expected_logical_result_hash,
+        )
+        self._validate_active_open_receipt(opened, canonical.epoch_id)
+        if not isinstance(call_work, M5RuntimeWork):
+            raise ValidationError("active terminal call_work must be M5RuntimeWork")
+
+        projected = replace(
+            canonical,
+            open_receipt=opened,
+            call_work=call_work,
+        )
+        self._validate_active_terminal_projection(
+            event,
+            canonical,
+            projected,
+            opened,
+            call_work,
+        )
+        return self._finish_terminal_invocation(event, projected)
+
+    @staticmethod
+    def _validate_active_open_receipt(
+        opened: OpenEventReceipt, expected_epoch_id: int
+    ) -> None:
+        M5TypedApplication._validate_open_event_receipt(opened)
+        if (
+            opened.epoch_id != expected_epoch_id
+            or opened.already_sealed is not False
+            or opened.publication_id is not None
+            or opened.already_failed is not False
+            or opened.failure_reason is not None
+        ):
+            raise ValidationError(
+                "active terminal projection requires the held nonterminal receipt"
+            )
+
+    @staticmethod
+    def _validate_open_event_receipt(opened: OpenEventReceipt) -> None:
+        if (
+            not isinstance(opened, OpenEventReceipt)
+            or not isinstance(opened.epoch_id, int)
+            or isinstance(opened.epoch_id, bool)
+            or opened.epoch_id < 1
+            or not isinstance(opened.replayed, bool)
+            or not isinstance(opened.already_sealed, bool)
+            or not isinstance(opened.already_failed, bool)
+            or opened.already_sealed != (opened.publication_id is not None)
+            or opened.already_failed != (opened.failure_reason is not None)
+            or (opened.already_sealed and opened.already_failed)
+            or (
+                opened.publication_id is not None
+                and (
+                    not isinstance(opened.publication_id, str)
+                    or not opened.publication_id
+                )
+            )
+            or (
+                opened.failure_reason is not None
+                and (
+                    not isinstance(opened.failure_reason, str)
+                    or not opened.failure_reason
+                )
+            )
+        ):
+            raise ValidationError("structural open returned an invalid receipt")
+        replace(opened)
+
+    @classmethod
+    def _validate_active_terminal_projection(
+        cls,
+        event: M5TypedEventPlan,
+        canonical: M5EventRunResult,
+        projected: M5EventRunResult,
+        opened: OpenEventReceipt,
+        call_work: M5RuntimeWork,
+    ) -> None:
+        if (
+            not isinstance(projected, M5EventRunResult)
+            or projected.event_id != event.structural_event_id
+            or projected.payload_hash != event.payload_hash
+            or projected.state is not M5RunState.REPLAYED
+            or projected.open_receipt is not opened
+            or projected.call_work != call_work
+        ):
+            raise ValidationError("active terminal projection has an invalid envelope")
+        frozen_names = (
+            "event_id",
+            "payload_hash",
+            "epoch_id",
+            "state",
+            "replayed_outcome",
+            "publication_receipt",
+            "event_work",
+            "event_timing",
+            "call_timing",
+            "combined_deltas",
+            "changed_state_references",
+            "failure_reason",
+            "logical_result_hash",
+            "event_timing_coverage",
+            "call_timing_coverage",
+        )
+        if any(
+            getattr(projected, name) != getattr(canonical, name)
+            for name in frozen_names
+        ):
+            raise ValidationError("active terminal projection changed durable result")
+        cls._validate_active_open_receipt(opened, projected.epoch_id)
+        cls._validate_terminal_nested_contracts(projected)
+        cls._validate_terminal_logical_result_hash(projected)
+
+    @staticmethod
+    def _validate_direct_execution_receipt(
+        receipt: M5DirectExecutionReceipt,
+    ) -> None:
+        if not isinstance(receipt, M5DirectExecutionReceipt):
+            raise ValidationError("direct execution returned another receipt type")
+        if not isinstance(receipt.call_work, M5RuntimeWork):
+            raise ValidationError("direct execution returned invalid call work")
+        if receipt.blocked_reason is not None and not isinstance(
+            receipt.blocked_reason, M5RunFailureReason
+        ):
+            raise ValidationError("direct execution returned invalid blocked reason")
+        if receipt.terminal_failure_reason is not None and not isinstance(
+            receipt.terminal_failure_reason, M5RunFailureReason
+        ):
+            raise ValidationError("direct execution returned invalid terminal reason")
+        replace(receipt.call_work)
+        replace(receipt)
+
+    @staticmethod
+    def _validate_external_work_failure(error: M5ExternalWorkFailure) -> None:
+        if not isinstance(error, M5ExternalWorkFailure):
+            raise ValidationError("provider raised another external failure type")
+        if not isinstance(error.reason, M5RunFailureReason):
+            raise ValidationError("external failure returned an invalid reason")
+        if not isinstance(error.retryable, bool):
+            raise ValidationError("external failure returned invalid retryability")
+        if not isinstance(error.call_work, M5RuntimeWork):
+            raise ValidationError("external failure returned invalid call work")
+        if error.attempt_timing is not None and not isinstance(
+            error.attempt_timing, M5RuntimeTiming
+        ):
+            raise ValidationError("external failure returned invalid attempt timing")
+        if not isinstance(error.error_hash, str):
+            raise ValidationError("external failure returned an invalid error hash")
+        replace(error.call_work)
+        if error.attempt_timing is not None:
+            replace(error.attempt_timing)
+        M5ExternalWorkFailure(
+            error.reason,
+            retryable=error.retryable,
+            call_work=error.call_work,
+            attempt_timing=error.attempt_timing,
+            error_hash=error.error_hash,
+        )
 
     @staticmethod
     def _validate_discovery_execution(
@@ -572,6 +1386,40 @@ class M5TypedApplication:
         event: M5TypedEventPlan,
         execution: M5DiscoveryExecution,
     ) -> None:
+        if not isinstance(execution, M5DiscoveryExecution):
+            raise ValidationError("discovery provider returned another execution type")
+        if not isinstance(execution.result, M5RequirementDiscoveryResult):
+            raise ValidationError("discovery provider returned another result type")
+        if not isinstance(execution.attempt_output, M5AttemptOutput):
+            raise ValidationError("discovery provider returned another attempt output")
+        if not isinstance(execution.call_work, M5RuntimeWork):
+            raise ValidationError("discovery provider returned invalid call work")
+        if execution.attempt_timing is not None and not isinstance(
+            execution.attempt_timing, M5RuntimeTiming
+        ):
+            raise ValidationError("discovery provider returned invalid attempt timing")
+        for hit in execution.result.channel_hits:
+            if not isinstance(hit, M5RequirementChannelHit):
+                raise ValidationError("discovery result contains another hit type")
+            if not isinstance(hit.pair, SemanticPairKey):
+                raise ValidationError("discovery hit contains another pair type")
+            replace(hit.pair)
+            replace(hit)
+        for selection in execution.result.selections:
+            if not isinstance(selection, M5RequirementScopeSelection):
+                raise ValidationError(
+                    "discovery result contains another selection type"
+                )
+            if not isinstance(selection.pair, SemanticPairKey):
+                raise ValidationError("discovery selection contains another pair type")
+            replace(selection.pair)
+            replace(selection)
+        replace(execution.result)
+        replace(execution.attempt_output)
+        replace(execution.call_work)
+        if execution.attempt_timing is not None:
+            replace(execution.attempt_timing)
+        replace(execution)
         job = declaration.job
         if lease.attempt is None:
             raise ValidationError("executable discovery lease lacks an attempt")
@@ -623,6 +1471,33 @@ class M5TypedApplication:
         event: M5TypedEventPlan,
         execution: M5VerifierExecution,
     ) -> None:
+        if not isinstance(execution, M5VerifierExecution):
+            raise ValidationError("verifier provider returned another execution type")
+        if not isinstance(execution.pair_input, M5RequirementPairInput):
+            raise ValidationError("verifier provider returned another pair input type")
+        if not isinstance(execution.artifact, M5RequirementVerifierArtifact):
+            raise ValidationError("verifier provider returned another artifact type")
+        if not isinstance(execution.attempt_output, M5AttemptOutput):
+            raise ValidationError("verifier provider returned another attempt output")
+        if not isinstance(execution.call_work, M5RuntimeWork):
+            raise ValidationError("verifier provider returned invalid call work")
+        if execution.attempt_timing is not None and not isinstance(
+            execution.attempt_timing, M5RuntimeTiming
+        ):
+            raise ValidationError("verifier provider returned invalid attempt timing")
+        if not isinstance(execution.pair_input.pair, SemanticPairKey):
+            raise ValidationError("verifier pair input contains another pair type")
+        if not isinstance(execution.artifact.pair, SemanticPairKey):
+            raise ValidationError("verifier artifact contains another pair type")
+        replace(execution.pair_input.pair)
+        replace(execution.artifact.pair)
+        replace(execution.pair_input)
+        replace(execution.artifact)
+        replace(execution.attempt_output)
+        replace(execution.call_work)
+        if execution.attempt_timing is not None:
+            replace(execution.attempt_timing)
+        replace(execution)
         if lease.attempt is None or job.pair is None:
             raise ValidationError("executable verifier lacks attempt or pair")
         requirement = event.requirement_registry_snapshot.member(job.pair.subject_id)
@@ -762,6 +1637,39 @@ class M5TypedApplication:
         reason: M5RunFailureReason,
         call_work: M5RuntimeWork,
     ) -> M5EventRunResult:
+        self._validate_active_open_receipt(opened, opened.epoch_id)
+        if (
+            not isinstance(reason, M5RunFailureReason)
+            or reason is M5RunFailureReason.INVARIANT_FAILURE
+        ):
+            raise ValidationError("blocked result requires an exact nonterminal reason")
+        if not isinstance(call_work, M5RuntimeWork):
+            raise ValidationError("blocked result requires exact invocation work")
+        replace(call_work)
+
+        event_work = self.runtime_reads.current_event_work(opened.epoch_id)
+        if not isinstance(event_work, M5RuntimeWork):
+            raise ValidationError("blocked hydration returned invalid event work")
+        replace(event_work)
+
+        timing_result = self.runtime_reads.current_event_timing(opened.epoch_id)
+        if not isinstance(timing_result, tuple) or len(timing_result) != 2:
+            raise ValidationError("blocked hydration returned invalid timing tuple")
+        event_timing, event_timing_coverage = timing_result
+        if not isinstance(event_timing, M5RuntimeTiming) or not isinstance(
+            event_timing_coverage, M5RuntimeTimingCoverage
+        ):
+            raise ValidationError("blocked hydration returned invalid timing values")
+        replace(event_timing)
+        replace(event_timing_coverage)
+        event_timing_coverage.validate_aggregate(event_timing)
+        if event_timing_coverage.terminal_client_roundtrip_included:
+            raise ValidationError(
+                "blocked event timing cannot include terminal client roundtrip"
+            )
+        call_timing_coverage = M5RuntimeTimingCoverage.single_point(
+            None, terminal_client_roundtrip_included=False
+        )
         return M5EventRunResult.build(
             event_id=event.structural_event_id,
             payload_hash=event.payload_hash,
@@ -770,13 +1678,15 @@ class M5TypedApplication:
             replayed_outcome=None,
             open_receipt=opened,
             publication_receipt=None,
-            event_work=self.runtime_reads.current_event_work(opened.epoch_id),
+            event_work=event_work,
             call_work=call_work,
-            event_timing=M5RuntimeTiming(),
+            event_timing=event_timing,
             call_timing=M5RuntimeTiming(),
             combined_deltas=(),
             changed_state_references=(),
             failure_reason=reason,
+            event_timing_coverage=event_timing_coverage,
+            call_timing_coverage=call_timing_coverage,
         )
 
     def _fail(
@@ -786,42 +1696,267 @@ class M5TypedApplication:
         revision: int,
         reason: M5RunFailureReason,
         call_work: M5RuntimeWork,
+        *,
+        project_checked_requirement_replay: bool = False,
     ) -> M5EventRunResult:
         failed = self.runtime.fail_typed_epoch_atomically(
-            opened.epoch_id, revision, reason
+            opened.epoch_id, revision, reason, call_work
         )
-        failed = replace(failed, call_work=call_work)
-        self._validate_terminal_result(
-            event, opened.epoch_id, M5RunState.FAILED, failed
-        )
-        return failed
+        if failed.state is M5RunState.REPLAYED:
+            if project_checked_requirement_replay:
+                return self._finish_active_terminal_projection(
+                    event,
+                    opened,
+                    call_work,
+                    failed,
+                    expected_outcome=M5ReplayedOutcome.FAILED,
+                    expected_failure_reason=reason,
+                )
+            self._validate_terminal_replay(
+                event,
+                failed,
+                expected_epoch_id=opened.epoch_id,
+                expected_outcome=M5ReplayedOutcome.FAILED,
+                expected_failure_reason=reason,
+            )
+            raise ValidationError(
+                "generic failure replay lacks active-projection authority"
+            )
+        else:
+            self._validate_terminal_result(
+                event,
+                opened.epoch_id,
+                M5RunState.FAILED,
+                failed,
+                expected_open_receipt=opened,
+            )
+            if failed.failure_reason is not reason:
+                raise ValidationError("failure result changed requested reason")
+            if failed.call_work != call_work:
+                raise ValidationError("failure result changed invocation call work")
+        return self._finish_terminal_invocation(event, failed)
 
-    @staticmethod
+    @classmethod
     def _validate_terminal_replay(
-        event: M5TypedEventPlan, result: M5EventRunResult
+        cls,
+        event: M5TypedEventPlan,
+        result: M5EventRunResult,
+        *,
+        expected_epoch_id: int | None = None,
+        expected_outcome: M5ReplayedOutcome | None = None,
+        expected_failure_reason: M5RunFailureReason | None = None,
+        expected_logical_result_hash: str | None = None,
     ) -> None:
         if (
-            result.event_id != event.structural_event_id
+            not isinstance(result, M5EventRunResult)
+            or result.event_id != event.structural_event_id
             or result.payload_hash != event.payload_hash
+            or not isinstance(result.epoch_id, int)
+            or isinstance(result.epoch_id, bool)
+            or result.epoch_id < 1
+            or (expected_epoch_id is not None and result.epoch_id != expected_epoch_id)
             or result.state is not M5RunState.REPLAYED
+            or not isinstance(result.logical_result_hash, str)
+            or not isinstance(result.event_work, M5RuntimeWork)
+            or not isinstance(result.call_work, M5RuntimeWork)
             or not result.call_work.is_zero
+            or not isinstance(result.open_receipt, OpenEventReceipt)
+            or result.open_receipt.epoch_id != result.epoch_id
         ):
             raise ValidationError("durable typed replay has an invalid envelope")
 
-    @staticmethod
+        opened = result.open_receipt
+        cls._validate_open_event_receipt(opened)
+        if result.replayed_outcome is M5ReplayedOutcome.SEALED:
+            publication = result.publication_receipt
+            if (
+                not isinstance(publication, PublicationReceipt)
+                or result.failure_reason is not None
+                or opened.replayed is not True
+                or opened.already_sealed is not True
+                or opened.publication_id != publication.publication_id
+                or opened.already_failed is not False
+                or opened.failure_reason is not None
+            ):
+                raise ValidationError("durable sealed replay shape is invalid")
+            cls._validate_publication_receipt(
+                publication,
+                expected_epoch_id=result.epoch_id,
+                expected_replayed=True,
+            )
+        elif result.replayed_outcome is M5ReplayedOutcome.FAILED:
+            failure = result.failure_reason
+            if (
+                result.publication_receipt is not None
+                or not isinstance(failure, M5RunFailureReason)
+                or failure is M5RunFailureReason.WORK_IN_PROGRESS
+                or opened.replayed is not True
+                or opened.already_sealed is not False
+                or opened.publication_id is not None
+                or opened.already_failed is not True
+                or opened.failure_reason != failure.value
+            ):
+                raise ValidationError("durable failed replay shape is invalid")
+        else:
+            raise ValidationError("durable replay lacks its exact terminal outcome")
+
+        cls._validate_terminal_nested_contracts(result)
+        if (
+            expected_outcome is not None
+            and result.replayed_outcome is not expected_outcome
+        ):
+            raise ValidationError("durable replay has another terminal outcome")
+        if (
+            expected_failure_reason is not None
+            and result.failure_reason is not expected_failure_reason
+        ):
+            raise ValidationError("durable replay changed requested failure reason")
+        if (
+            expected_logical_result_hash is not None
+            and result.logical_result_hash != expected_logical_result_hash
+        ):
+            raise ValidationError("durable replay changed expected logical result hash")
+        cls._validate_terminal_logical_result_hash(result)
+
+    @classmethod
     def _validate_terminal_result(
+        cls,
         event: M5TypedEventPlan,
         epoch_id: int,
         expected_state: M5RunState,
         result: M5EventRunResult,
+        *,
+        expected_open_receipt: OpenEventReceipt,
     ) -> None:
         if (
-            result.event_id != event.structural_event_id
+            not isinstance(result, M5EventRunResult)
+            or expected_state not in {M5RunState.SEALED, M5RunState.FAILED}
+            or not isinstance(epoch_id, int)
+            or isinstance(epoch_id, bool)
+            or epoch_id < 1
+            or result.event_id != event.structural_event_id
             or result.payload_hash != event.payload_hash
             or result.epoch_id != epoch_id
             or result.state is not expected_state
+            or result.replayed_outcome is not None
+            or not isinstance(result.open_receipt, OpenEventReceipt)
+            or result.open_receipt.epoch_id != epoch_id
+            or not isinstance(result.open_receipt.replayed, bool)
+            or result.open_receipt.already_sealed is not False
+            or result.open_receipt.publication_id is not None
+            or result.open_receipt.already_failed is not False
+            or result.open_receipt.failure_reason is not None
+            or result.open_receipt != expected_open_receipt
+            or not isinstance(result.logical_result_hash, str)
+            or not isinstance(result.event_work, M5RuntimeWork)
+            or not isinstance(result.call_work, M5RuntimeWork)
         ):
             raise ValidationError("typed terminal result has another envelope")
+        cls._validate_terminal_nested_contracts(result)
+        cls._validate_open_event_receipt(result.open_receipt)
+        if expected_state is M5RunState.SEALED:
+            publication = result.publication_receipt
+            if (
+                not isinstance(publication, PublicationReceipt)
+                or result.failure_reason is not None
+            ):
+                raise ValidationError("typed sealed result has an invalid outcome")
+            cls._validate_publication_receipt(
+                publication,
+                expected_epoch_id=epoch_id,
+                expected_replayed=False,
+            )
+        elif (
+            result.publication_receipt is not None
+            or not isinstance(result.failure_reason, M5RunFailureReason)
+            or result.failure_reason is M5RunFailureReason.WORK_IN_PROGRESS
+        ):
+            raise ValidationError("typed failed result has an invalid outcome")
+        cls._validate_terminal_logical_result_hash(result)
+
+    @staticmethod
+    def _validate_publication_receipt(
+        publication: PublicationReceipt,
+        *,
+        expected_epoch_id: int,
+        expected_replayed: bool,
+    ) -> None:
+        if (
+            not isinstance(publication, PublicationReceipt)
+            or not isinstance(publication.epoch_id, int)
+            or isinstance(publication.epoch_id, bool)
+            or publication.epoch_id < 1
+            or publication.epoch_id != expected_epoch_id
+            or publication.publication_id
+            != stable_m4_digest("m4-publication-v1", str(expected_epoch_id))
+            or not isinstance(publication.replayed, bool)
+            or publication.replayed is not expected_replayed
+        ):
+            raise ValidationError("terminal publication receipt is invalid")
+        replace(publication)
+
+    @staticmethod
+    def _validate_terminal_nested_contracts(result: M5EventRunResult) -> None:
+        if (
+            not isinstance(result, M5EventRunResult)
+            or not isinstance(result.event_work, M5RuntimeWork)
+            or not isinstance(result.call_work, M5RuntimeWork)
+            or not isinstance(result.event_timing, M5RuntimeTiming)
+            or not isinstance(result.call_timing, M5RuntimeTiming)
+            or not isinstance(result.event_timing_coverage, M5RuntimeTimingCoverage)
+            or not isinstance(result.call_timing_coverage, M5RuntimeTimingCoverage)
+        ):
+            raise ValidationError("terminal result requires complete timing coverage")
+
+        _require_tuple("terminal combined deltas", result.combined_deltas)
+        _require_tuple(
+            "terminal changed-state references", result.changed_state_references
+        )
+        for delta in result.combined_deltas:
+            if not isinstance(delta, StatusDelta):
+                raise ValidationError("terminal result contains another delta type")
+            replace(delta)
+        validate_combined_deltas(result.combined_deltas, result.event_id)
+        for reference in result.changed_state_references:
+            if not isinstance(reference, M5ChangedStateReference):
+                raise ValidationError(
+                    "terminal result contains another state-reference type"
+                )
+            replace(reference)
+        validate_changed_state_references(result.changed_state_references)
+
+        event_coverage = result.event_timing_coverage
+        call_coverage = result.call_timing_coverage
+        replace(result.event_work)
+        replace(result.call_work)
+        replace(result.event_timing)
+        replace(result.call_timing)
+        replace(event_coverage)
+        replace(call_coverage)
+        event_coverage.validate_aggregate(result.event_timing)
+        call_coverage.validate_aggregate(result.call_timing)
+        if event_coverage.terminal_client_roundtrip_included is not False:
+            raise ValidationError(
+                "durable event timing cannot include terminal client roundtrip"
+            )
+        if call_coverage.required_expected_count != 1:
+            raise ValidationError(
+                "terminal call timing coverage must describe exactly one point"
+            )
+        expected_roundtrip = call_coverage.required_observed_count == 1
+        if call_coverage.terminal_client_roundtrip_included is not expected_roundtrip:
+            raise ValidationError(
+                "terminal roundtrip flag disagrees with call timing coverage"
+            )
+
+    @staticmethod
+    def _validate_terminal_logical_result_hash(result: M5EventRunResult) -> None:
+        if (
+            not isinstance(result, M5EventRunResult)
+            or not isinstance(result.logical_result_hash, str)
+            or result.logical_result_hash != result.expected_logical_result_hash
+        ):
+            raise ValidationError("terminal logical result hash is invalid")
 
 
 __all__ = [
@@ -837,6 +1972,8 @@ __all__ = [
     "M5RequirementVerifierPort",
     "M5RuntimePersistencePort",
     "M5RuntimeReadPort",
+    "M5RuntimeMeasurementPort",
+    "M5TerminalInvocationTelemetry",
     "M5TypedApplication",
     "M5TypedStructuralPort",
     "M5VerifierExecution",

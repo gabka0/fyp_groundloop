@@ -538,7 +538,7 @@ def test_terminal_failure_preserves_strict_truth_and_failed_replay_is_zero_work(
     assert harness.world.external_call_count == calls
     epoch = harness.world.epoch(failed.epoch_id)
     cancelled_job_id = next(iter(epoch.jobs))
-    assert epoch.jobs[cancelled_job_id].state.name == "CANCELLED"
+    assert epoch.jobs[cancelled_job_id].state.name == "TERMINAL_FAILED"
     successor = _group(
         group_id="group-after-failure",
         family_id="family-fail",
