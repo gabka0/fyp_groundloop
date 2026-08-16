@@ -1,5 +1,56 @@
 # GroundLoop Decision Log
 
+## 2026-08-16 — M5-D24-C6 Active-Terminal-Cutoff Work Completion Accepted
+
+Decision status: accepted narrow correction after two independent exact-byte
+reviews. Accepted reviewed-candidate SHA-256:
+`b6d69c7c6db63b6a726b2787639b0b15851441efc0c2f3d17091e1b6de34c393`.
+No source or test edit is authorized by this entry.
+
+R2b application composition exposed three reachable current-invocation work
+losses outside accepted C5. An invocation may already hold its exact
+nonterminal `OpenEventReceipt` and accumulated work when a later requirement
+acquisition returns checked `TERMINAL/EPOCH_FAILED`, when the checked failure
+mutator returns a same-reason canonical failed replay after terminal-attempt
+work, or when the fake-only seal mutator returns a canonical replay after
+current work. Returning the ordinary terminal replay unchanged loses that
+invocation's work even though frozen event totals must not change.
+
+Accepted M5-D24-C6 reuses, rather than revises, C5's existing active-cutoff
+`REPLAYED` envelope and validator. For exactly those three checked origins,
+the application validates the complete origin and canonical ordinary replay,
+constructs and validates the active envelope using the invocation's actual
+nonterminal receipt and exact accumulated `call_work` including zero, and only
+then writes the unchanged timing-only terminal telemetry. Ordinary terminal-
+known-at-entry/open replay remains terminal-projected with zero work.
+
+The acquisition origin requires exact job/execution and terminal-projection
+identity, `TERMINAL` exact replay, and reason `EPOCH_FAILED`, followed by a
+same-event/payload/epoch canonical `FAILED` result. It may not invent an
+`EPOCH_FAILED` to run-failure-reason mapping. The failure origin requires the
+checked mutator's failed replay to retain the exact requested failure reason.
+The seal origin preserves whichever exact canonical sealed/failed branch the
+checked fake returns and remains fake-only evidence, not production seal.
+
+The correction changes no DTO, validator, marker, digest, schema, migration,
+persistence transaction, event total, telemetry-work shape, public M4-v1 byte,
+or accepted C1--C5 behavior outside the three named provenance additions.
+Cursor-local direct failure, typed-direct successful-outer application,
+production seal, arbitrary terminal reads, and every unlisted origin remain
+excluded.
+
+M5.0-24's contract half is restored to `PASS`; its implementation half remains
+`PENDING`. The prior R2b five-path lane stays paused and has no current edit
+ownership. After the coordinator commits this accepted C6 freeze, the generic
+C5 validator needs no new micro-lane; the coordinator must separately commit
+a fresh exact C6-based R2b activation, recreate or reset its literal branch/
+worktree to that activation, and revalidate the same five paths. Neither
+current activation commit `5ccd615` nor historical base `f5902ff` may be
+reused as authority. Typed-direct remains separately manifested.
+
+The authoritative accepted text is
+`docs/workstreams/m5_runtime_contract/ACTIVE_TERMINAL_CUTOFF_INVOCATION_WORK_COMPLETION_CORRECTION.md`.
+
 ## 2026-08-16 — M5-D24-C5 Terminal-Race Invocation Work Accepted
 
 Decision status: accepted narrow correction after two independent exact-byte

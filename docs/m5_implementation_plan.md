@@ -1,9 +1,10 @@
 # GroundLoop M5 Implementation Plan
 
-Status: M5.0 contract accepted through M5-D24-C5 and M5.1--M5.3 complete;
-M5.4 is partially complete and R2b is paused at the post-C5 activation barrier
+Status: M5.0 contract accepted through M5-D24-C6 and M5.1--M5.3 complete;
+M5.4 is partially complete, M5.0-24 is contract-`PASS` /
+implementation-`PENDING`, and R2b is paused/inactive pending fresh activation
 
-Date: 2026-08-02; M5-D24 execution amendments through accepted C5 2026-08-16
+Date: 2026-08-02; M5-D24 execution amendments through accepted C6 2026-08-16
 
 Authority: `docs/m5_design_freeze.md` governs. M5-D24 recovery/accounting work
 also obeys
@@ -15,11 +16,12 @@ Accepted M5-D24-C3 and M5-D24-C4 are authoritative. C4 governs the
 retryable/terminal-successor expired-output and requirement late-artifact
 closure; its implementation evidence remains pending.
 
-Accepted M5-D24-C5 is authoritative and restores M5.0-24's contract half to
-`PASS`; implementation remains `PENDING`. The correction grants no
-implementation ownership. R2b remains paused until the separate contract-
-micro-lane activation, integration, and exact C5-based R2b repin described
-below; accepted C1--C4 behavior is unchanged.
+Accepted M5-D24-C5 remains authoritative. Its generic replay-shape validator
+is integrated at `69a00e4`, and accepted C1--C4 behavior is unchanged.
+Accepted M5-D24-C6 closes three additional reachable active-cutoff origins and
+restores M5.0-24 to contract-`PASS` / implementation-`PENDING`. The current
+R2b activation remains administratively paused and grants no edit ownership
+until a separate exact accepted-C6-based activation is committed.
 
 ## 1. Outcome
 
@@ -99,9 +101,9 @@ acceptance matrix is `PASS`, the later implementation column remains honestly
 `PENDING`, and no audit has an unresolved P0/P1.
 
 Historical base result: **passed on 2026-08-02** after three independent final
-audit GOs. Later accepted amendments through C5 preserve that result. C5
-restores M5.0-24's contract half to `PASS`; it does not by itself supply
-implementation evidence or change completed M5.1--M5.3 evidence.
+audit GOs. Later accepted amendments through C6 preserve that historical
+result. C6 restores M5.0-24's current contract-completeness gate to `PASS`; it
+does not change completed M5.1--M5.3 evidence or supply implementation proof.
 
 ## 4. M5.1 -- pure reference semantics and structural events
 
@@ -438,39 +440,49 @@ R1-D, R1-P, R2a, and R1-C are integrated on main at `1838316`, `56dd2d4`,
 requirement persistence, failure-terminalization, and shared-compatibility
 tranche results. They do not close R2 application composition or M5.0-24.
 
-R2b preflight exposed a separate current-invocation envelope defect. A
-successful requirement return or typed-direct outer settlement may observe an
-exact terminal cutoff only after the invocation has opened/resumed
-nonterminal and completed or reused external work. Canonical terminal replay
-has zero call work, so returning it unchanged would drop the current
-invocation's exact work. Accepted M5-D24-C5 keeps ordinary
-terminal-known-at-entry replay unchanged and requires the application to
-validate the canonical terminal result against the applicable checked
-successful-return receipt before returning an active-cutoff `REPLAYED`
-projection carrying the invocation's actual nonterminal `OpenEventReceipt`
-and exact accumulated call work. It makes no marker, persistence, telemetry-
-work, schema, migration, or digest change.
+R2b preflight first exposed the successful-return envelope defect corrected by
+accepted C5. The three-path C5 contract micro-lane then integrated at
+`69a00e4`, and the coordinator freshly activated the current five-path R2b
+lane at `5ccd615`. Those facts are historical evidence, not current ownership.
 
-M5.0-24's contract half is restored to `PASS`, while implementation remains
-`PENDING` and R2b performs no edits. After the coordinator commits this
-accepted C5 freeze, it must separately commit a new
-`docs/workstreams/m5_runtime_implementation/D24_C5_TERMINAL_RACE_CALL_WORK_ACTIVATION.md`
-with the literal branch, worktree, accepted-freeze base, paths, and gate for
-one contract micro-lane owning exactly:
+During R2b composition, three more reachable routes were found to return an
+ordinary canonical replay after the same invocation had already opened or
+resumed nonterminal and accumulated exact work: a later requirement
+acquisition with checked `TERMINAL/EPOCH_FAILED`, a checked same-reason
+failure-mutator replay after terminal-attempt work, and a checked fake-only
+seal-mutator replay after current work. Accepted M5-D24-C6 reuses
+the existing C5 active-cutoff `REPLAYED` shape for exactly those origins. The
+application must validate the origin and canonical ordinary replay, construct
+and validate the active envelope using the held nonterminal receipt and exact
+zero/nonzero accumulator, and only then append timing-only terminal telemetry.
+Ordinary entry/open replay remains terminal-projected and zero-work.
 
-1. `src/groundloop/m5/runtime/contracts.py`;
-2. `tests/m5/runtime/test_contracts.py`; and
-3. `docs/workstreams/m5_runtime_implementation/D24_C5_TERMINAL_RACE_CALL_WORK_HANDOFF.md`
-   (new).
+C6 makes no marker, DTO/validator, persistence, telemetry-work, schema,
+migration, digest, or public-M4 change. The acquisition route requires the
+exact job/execution-bound total lease, a valid terminal identity and reason
+`EPOCH_FAILED`, plus a same-event/payload/epoch canonical `FAILED` replay; it
+cannot invent a run failure reason. The failure-mutator replay must be failed
+with the exact requested reason and may not grant cursor-local direct failure
+authority. The seal route remains fake-only and preserves its exact durable
+sealed/failed branch.
 
-Only after that micro-lane is integrated may the coordinator repin and
-recreate/reactivate the unchanged R2b four-path lane from the exact integrated
-C5 contract commit. The historical `f5902ff` activation base may not be
-reused. R2b then covers requirement discovery/verifier application races on
-`application.py`, its fake ports, the new focused D24 application test, and
-its new handoff. Typed-direct outer-settlement application composition remains
-deferred to a separate future path-exclusive manifest. This planned sequence
-is not current authorization.
+Two independent exact-byte audits accepted C6 with no unresolved P0/P1.
+M5.0-24 is contract-`PASS` / implementation-`PENDING`, and R2b still owns no
+paths. After the coordinator commits this accepted freeze, no new contract
+micro-lane is needed because C5's validator already admits the shape. The
+coordinator must instead commit a fresh revision of
+`docs/workstreams/m5_runtime_implementation/D24_R2B_APPLICATION_FAILURE_ACTIVATION.md`
+pinning the literal branch/worktree, exact accepted-C6 base, same five paths,
+and expanded gate. The R2b branch/worktree must be recreated or exactly reset
+to that activation before any edit; neither `5ccd615` nor `f5902ff` may be
+reused as authority.
+
+The later five paths remain `application.py`, its fake ports, the new focused
+D24 application test, its new handoff, and `test_typed_history.py` limited to
+the already-authorized single `CANCELLED` to `TERMINAL_FAILED` assertion.
+Typed-direct outer-settlement application composition remains deferred to a
+separate future path-exclusive manifest. This accepted sequence is not current
+implementation authorization.
 
 The contracts and migration lanes may run in parallel only under the explicit
 path manifest in `docs/m5_multiagent_execution_plan.md`. Persistence/direct

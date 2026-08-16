@@ -3,7 +3,8 @@
 Status: frozen M5 ownership contract; historical Waves 0--2 complete;
 M5-D24 recovery R0-C, pure R0-C1, and R0-S accepted on main; R1-D, R1-P, R2a,
 and R1-C integrated at `1838316`, `56dd2d4`, `6f1ae89`, and `f5902ff`;
-M5-D24-C1 through M5-D24-C5 accepted; R2b paused with no active edit ownership
+M5-D24-C1 through M5-D24-C6 accepted; R2b paused and inactive with no edit
+ownership pending a separate fresh exact-C6 activation
 
 Date: 2026-08-02; M5-D24 path amendments 2026-08-06 through 2026-08-16
 
@@ -434,55 +435,66 @@ edit `application.py`, fake ports/history, typed open/resume/failure/seal
 composition, or shared integration tests. R2 must exercise reconnect at every
 nonterminal cutoff and preserve one timing anchor per outer transaction.
 
-The historical R2b activation preflight exposed a contract gap before any R2b
-source/test byte was integrated. Accepted M5-D24-C5 applies semantically to
-checked successful requirement receipts and checked selected successful typed-
-direct outer receipt branches. It restores M5.0-24's contract half to `PASS`
-but grants no path ownership and invalidates the old R2b base for future work.
-Accepted C1--C4 evidence remains unchanged.
+The historical R2b activation preflight exposed the successful-return gap
+corrected by accepted M5-D24-C5. The separately manifested C5 contract micro-
+lane integrated its generic two-shape `M5EventRunResult` validator at
+`69a00e4`. The coordinator then freshly activated a five-path R2b lane at
+`5ccd615`. Those prior grants are now suspended and provide no current edit
+authority.
 
-After the coordinator commits this accepted C5 freeze, it must separately
-commit a new exact activation note at
-`docs/workstreams/m5_runtime_implementation/D24_C5_TERMINAL_RACE_CALL_WORK_ACTIVATION.md`.
-That note must name the literal branch, worktree, accepted-freeze base, three
-paths, and focused gate. Only then may the planned contract micro-lane own
-exactly these paths:
+During application composition, R2b proved three additional reachable active-
+invocation work-loss origins outside C5: later requirement acquisition with
+checked `TERMINAL/EPOCH_FAILED`, checked same-reason failure-mutator replay
+after terminal-attempt work, and checked fake-only seal-mutator replay after
+current work. Accepted M5-D24-C6 admits exactly those origins to
+C5's existing active-cutoff `REPLAYED` shape. It preserves ordinary entry/open
+replay as terminal-projected and zero-work, requires complete origin and
+canonical ordinary-replay validation, and requires the active envelope to
+validate before timing-only terminal telemetry is appended.
 
-1. `src/groundloop/m5/runtime/contracts.py`;
-2. `tests/m5/runtime/test_contracts.py`; and
-3. `docs/workstreams/m5_runtime_implementation/D24_C5_TERMINAL_RACE_CALL_WORK_HANDOFF.md`
-   (new).
+C6 changes no validator, marker, persistence, migration, digest,
+schema, event total, telemetry-work shape, or public M4 byte. The acquisition
+route must prove the exact job/execution-bound total lease, valid terminal
+identity, reason `EPOCH_FAILED`, and canonical same-event/payload/epoch
+`FAILED` result without guessing a run failure reason. The failure route must
+retain the exact requested failure reason and may not blindly authorize the
+generic cursor-local direct failure path. The seal route remains fake-only and
+preserves its exact durable terminal branch. Accepted C1--C5 otherwise remain
+unchanged.
 
-It may change only `M5EventRunResult` replay-shape validation and focused
-contract tests. It may not edit application, fake ports, persistence,
-migrations, digests, exports, status documents, or any other path. Its gate is
-the exact C5 replay-shape falsifier matrix: unchanged terminal-projected zero-
-work ordinary replay; fresh/resumed nonterminal receipt projections with exact
-zero/nonzero current-invocation work; stable logical identity; and rejection
-of every mixed receipt/outcome branch.
+Two independent exact-byte audits accepted C6 with no unresolved P0/P1.
+M5.0-24 is contract-`PASS` / implementation-`PENDING`, and no R2b path is
+owned. Existing worktree bytes are unintegrated evidence only and must remain
+frozen. After the coordinator commits this accepted freeze, no new contract
+micro-lane is required because the C5 validator already admits the shape.
 
-Only after that micro-lane is integrated and independently revalidated may the
-coordinator commit a fresh R2b repin/reactivation from the exact integrated C5
-contract commit. The historical
-`f5902ff0d2c21865f2c633ed404163aef3f937d7` base may not be reused; the R2b
-branch/worktree must be recreated or exactly reset to the new pinned base
-before any edit. The future R2b lane retains exactly its original four paths:
+The coordinator must then separately commit a fresh revision of
+`docs/workstreams/m5_runtime_implementation/D24_R2B_APPLICATION_FAILURE_ACTIVATION.md`
+that names the literal branch, worktree, exact accepted-C6 base commit, five
+paths, and expanded gate. The branch/worktree must be recreated or exactly
+reset to that activation commit before any edit or reapplication. Neither
+`5ccd615e558424079b2b595111b38ab9f274c139` nor
+`f5902ff0d2c21865f2c633ed404163aef3f937d7` may be reused as authority.
+
+The future R2b lane retains exactly five paths:
 
 1. `src/groundloop/m5/runtime/application.py`;
 2. `tests/m5/runtime/fake_ports.py`;
-3. `tests/m5/runtime/test_d24_application_composition.py` (new); and
+3. `tests/m5/runtime/test_d24_application_composition.py` (new);
 4. `docs/workstreams/m5_runtime_implementation/D24_R2B_APPLICATION_FAILURE_HANDOFF.md`
-   (new).
+   (new); and
+5. `tests/m5/runtime/test_typed_history.py`, limited to the already-authorized
+   single `CANCELLED` to `TERMINAL_FAILED` expectation correction.
 
-R2b must then prove canonical-read-before-projection, exact successful-return
-receipt/hash checks, one-add current-invocation work for discovery and
-verifier terminal races, unchanged frozen event totals, timing-only terminal
-telemetry, zero-work active projection, ordinary reconnect zero work, and no
-provider redispatch. It does not own typed-direct application composition.
-That semantic half of C5 requires a later separate path-exclusive activation
-and equivalent outer-settlement evidence. The contract micro-lane may not
-begin without its new committed activation, and R2b may not begin before that
-lane integrates and the coordinator commits the exact C5-based repin.
+The future gate must preserve all C5 discovery/verifier receipt/hash tests and
+add the three C6 races with exact zero/nonzero one-add call work, fresh/resumed
+held receipts, canonical ordinary replay, active-envelope validation before
+telemetry, unchanged event totals/logical identity, one timing-only telemetry
+append, ordinary reconnect zero work, and no redispatch. It must reject wrong
+job/execution/disposition/reason/outcome/epoch, same-reason failure mismatch,
+malformed replay, generic direct-failure projection, and every unlisted
+origin. It does not own typed-direct outer-settlement composition or
+production seal; those require later separate manifests.
 
 No D24 wave owns the untracked persisted-matching draft. M5-D25 and migration
 017 remain blocked until migration 016 is accepted, all five 016 ledger values

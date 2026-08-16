@@ -2,12 +2,14 @@
 
 Status date: 2026-08-16
 
-Milestone status: **M5.0 contract through accepted C5 and M5.1--M5.3 are
+Milestone status: **M5.0 contract through accepted C6 and M5.1--M5.3 are
 complete; M5.4 is partially complete.**
 M5.4-01 passes. M5.4-02 through M5.4-09 and every M5.5--M5.6
 implementation/evaluation closure remain pending. M5-D24-C1 through
-M5-D24-C5 are accepted, so M5.0-24 is contract-`PASS` /
-implementation-`PENDING`. C5's accepted reviewed-candidate SHA-256 is
+M5-D24-C6 are accepted, so M5.0-24 is contract-`PASS` /
+implementation-`PENDING`. C6's accepted reviewed-candidate SHA-256 is
+`b6d69c7c6db63b6a726b2787639b0b15851441efc0c2f3d17091e1b6de34c393`.
+C5's accepted reviewed-candidate SHA-256 remains
 `b4afb8fbbdabcf970ac03865fa1510cd8219cac630dbc5ee2d5dc506889f3b67`.
 C4's accepted reviewed-candidate SHA-256 remains
 `f2e23d0bc4c245004f677f771e45123a619d4b1ad88da207e803cb89dcfec80c`.
@@ -15,8 +17,10 @@ C3's accepted reviewed-candidate SHA-256 remains
 `59fca1859e55af3ff9ffe818205c0ed61cacd17876525cddfc60d448f9eaf723`.
 The R0 contracts and migration 016 remain accepted on main. R1-D, R1-P, R2a,
 and R1-C are integrated at `1838316`, `56dd2d4`, `6f1ae89`, and `f5902ff`,
-respectively. R2b is paused at the accepted C5 post-freeze activation barrier,
-and the overall decision-row implementation evidence remains pending.
+respectively. The C5 validator lane integrated at `69a00e4`, and R2b was
+freshly activated at `5ccd615`; accepted C6 keeps that lane paused with no
+active edit ownership pending a separate fresh exact-C6 activation. Overall
+decision-row implementation evidence remains pending.
 
 The exact disjoint R1-P requirement and R1-D typed-direct persistence paths
 were governed by
@@ -84,7 +88,7 @@ m5_multiagent_execution_plan faffae5f839623efd9e387f63e951881cf1f46c5b66f37c3db6
 ```
 
 Those hashes identify the initial audited M5.0 semantic candidate. Later
-accepted amendments M5-D21 through M5-D24-C5 extend or correct that contract
+accepted amendments M5-D21 through M5-D24-C6 extend or correct that contract
 and are identified by their own decision and audit records below. Final
 implementation artifact hashes and the decision-row cross-stage mapping will
 be recorded at M5.6.
@@ -111,6 +115,9 @@ The accepted governing documents are:
   closure correction;
 - `docs/workstreams/m5_runtime_contract/TERMINAL_RACE_INVOCATION_WORK_CORRECTION.md`
   -- accepted active-invocation terminal-cutoff replay projection correction;
+- `docs/workstreams/m5_runtime_contract/ACTIVE_TERMINAL_CUTOFF_INVOCATION_WORK_COMPLETION_CORRECTION.md`
+  -- accepted provenance completion for three additional active-invocation
+  cutoff origins;
 - `docs/m5_implementation_plan.md` -- stages M5.1 through M5.6;
 - `docs/m5_multiagent_execution_plan.md` -- path-exclusive ownership and
   integration order; and
@@ -261,12 +268,12 @@ or public contract. R1-P's SQL-only fixture proves the storage barrier after
 test-local state resolution; R2 retains proof of production
 `retryable_failed` resolution and the end-to-end continuation.
 
-The bounded D24 execution sequence is current through main commit `f5902ff`:
-R1-D direct persistence integrated at `1838316`, R1-P requirement persistence
-at `56dd2d4`, R2a failure terminalization at `6f1ae89`, and R1-C shared
-compatibility at `f5902ff`. Their focused evidence remains tranche evidence;
-it does not close R2 application composition, production seal, the complete
-race/crash/reconnect matrix, or M5.0-24 implementation.
+The bounded D24 R1 execution sequence is integrated through main commit
+`f5902ff`: R1-D direct persistence integrated at `1838316`, R1-P requirement
+persistence at `56dd2d4`, R2a failure terminalization at `6f1ae89`, and R1-C
+shared compatibility at `f5902ff`. Their focused evidence remains tranche
+evidence; it does not close R2 application composition, production seal, the
+complete race/crash/reconnect matrix, or M5.0-24 implementation.
 
 R2b application preflight then exposed a returned-envelope contradiction not
 covered by C1--C4. A requirement or typed-direct invocation can open/resume
@@ -277,22 +284,38 @@ required to carry zero call work, so returning it unchanged would silently
 drop this invocation's work; adding the work to event totals would double
 count it.
 
-Accepted M5-D24-C5 adds no new marker or storage. Ordinary terminal-known-
-at-entry replay remains terminal-projected with zero call work. Only after the
-application validates a canonical terminal read against the checked return
-receipt may it return an active-cutoff `REPLAYED` projection retaining the
-invocation's actual earlier nonterminal open receipt and exact accumulated
-call work, including zero. Frozen event/result bytes, logical identity,
-timing-only terminal telemetry, migration 016, and all digest recipes remain
-unchanged. M5.0-24's contract half is restored to `PASS`; implementation
-remains `PENDING`, R2b is paused, and no source/test lane is authorized. After
-the coordinator commits this accepted C5 freeze, it must separately commit a
-new literal branch/worktree/base activation for the three-path generic
-contract micro-lane. After that lane integrates, R2b must be repinned and
-recreated/reactivated from the exact integrated C5 contract commit; its
-historical `f5902ff` base cannot be reused. R2b covers only requirement
-discovery/verifier application races. Typed-direct application composition
-remains deferred to a separate future path-exclusive manifest.
+Accepted M5-D24-C5 adds no new marker or storage. Ordinary terminal-known-at-
+entry replay remains terminal-projected with zero call work. Only after the
+application validates a canonical terminal read against the checked successful
+return receipt may it return C5's active-cutoff `REPLAYED` projection retaining
+the invocation's actual earlier nonterminal open receipt and exact accumulated
+call work, including zero. The generic C5 validator integrated at `69a00e4`,
+and the coordinator then freshly activated the five-path R2b lane at
+`5ccd615`.
+
+R2b composition subsequently proved three reachable work-loss origins outside
+C5: later requirement acquisition returning checked
+`TERMINAL/EPOCH_FAILED` after earlier work; checked failure-mutator replay
+after current terminal-attempt work; and checked fake-only seal-mutator replay
+after current work. Accepted M5-D24-C6 applies the same existing active
+envelope only after exact route validation and canonical ordinary replay
+validation. It additionally requires the active envelope to validate before
+timing-only terminal telemetry is written. The acquisition route requires a
+same-event/payload/epoch canonical `FAILED` result without inventing a run
+failure reason; the failure route requires the same requested failure reason;
+and seal remains fake-only while preserving the exact durable outcome branch.
+
+C6 makes no DTO/validator, marker, persistence, telemetry-work, schema,
+migration, digest, event-total, or public-M4 change. M5.0-24 is
+contract-`PASS` / implementation-`PENDING`, and R2b remains paused with no
+active source/test ownership. Two independent exact-byte audits returned GO.
+After the coordinator commits this accepted C6 freeze, no contract micro-lane
+is needed; it must separately commit a fresh literal branch/worktree/exact-C6-
+base revision of the R2b activation and recreate or reset the same five-path
+lane before edits. Neither
+`5ccd615` nor `f5902ff` may be reused as authority. Typed-direct outer-
+settlement application composition, cursor-local direct failure, and
+production seal remain deferred under separate manifests.
 
 ## 5. Remaining closure boundary
 
