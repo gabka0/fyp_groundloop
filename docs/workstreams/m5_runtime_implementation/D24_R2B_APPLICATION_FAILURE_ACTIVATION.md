@@ -1,13 +1,21 @@
 # M5-D24 R2b Application-Failure Activation
 
-Status: superseded/paused at accepted M5-D24-C5 post-freeze activation barrier;
-original four-path definition retained for future repinning, but no reservation
-or R2b edit ownership is currently active
+Status: active path-exclusive four-path R2b lane under the integrated
+M5-D24-C5 contract micro-lane; implementation evidence remains pending
 
-Date: 2026-08-15; superseded/paused under accepted C5 2026-08-16
+Date: 2026-08-15; freshly repinned/reactivated 2026-08-16
+
+Exact integrated C5 contract commit before this reactivation:
+`69a00e452361b116d1166e9fe10037030739a5a0`.
 
 Superseded historical activation base:
 `f5902ff0d2c21865f2c633ed404163aef3f937d7` (must not be reused)
+
+The lane must resolve and record the full commit containing this reactivation
+note as its actual branch base before editing. The exact integrated C5 commit
+above is the required parent barrier; it is not permission to branch from an
+older workstream. The literal branch/worktree in Section 2 must be created or
+exactly reset cleanly to the commit containing this note before any R2b edit.
 
 ## 1. Purpose
 
@@ -22,7 +30,7 @@ current application object can yet be constructed directly from the concrete
 PostgreSQL store or direct-M4 adapter. That production adapter is a separate
 follow-up manifest.
 
-### 1.1 Accepted C5 post-freeze barrier
+### 1.1 Accepted C5 integration and fresh reactivation
 
 R2b preflight stopped before integration after finding a current-invocation
 work contradiction in the accepted replay envelope. A successful requirement
@@ -41,35 +49,40 @@ and exact successful-return receipt/hash validation, retains the invocation's
 actual earlier nonterminal `OpenEventReceipt` and exact accumulated call work,
 including zero.
 
-M5.0-24's contract half is restored to `PASS`, while implementation remains
-`PENDING`. The four paths below are inactive, and no R2b patch may be applied.
-After the coordinator commits the accepted C5 freeze, it must separately
-commit a new exact
-`docs/workstreams/m5_runtime_implementation/D24_C5_TERMINAL_RACE_CALL_WORK_ACTIVATION.md`
-with a literal branch, worktree, accepted-freeze base, paths, and gate. Its
-separately activated three-path contract micro-lane must land and pass first.
-The coordinator must then commit
-a fresh R2b repin/reactivation from that exact integrated C5 contract commit
-and recreate or exactly reset the R2b branch/worktree before any edit. The
-historical base above may not be reused.
+The separately activated C5 contract micro-lane is integrated at
+`69a00e452361b116d1166e9fe10037030739a5a0`. Its generic DTO validator now
+admits the two exact accepted replay shapes while preserving ordinary replay's
+terminal receipt and zero-work requirement. M5.0-24's contract half remains
+`PASS`, while implementation remains `PENDING`.
+
+This note now activates the four paths below from the exact parent barrier and
+the full commit containing this reactivation. It does not revive the old
+branch base or grant access to any historical patch outside the newly reset
+lane. The superseded `f5902ff0d2c21865f2c633ed404163aef3f937d7` base remains
+forbidden.
 
 R2b covers only the requirement discovery/verifier application projection.
 Typed-direct outer-settlement application composition remains deferred to a
-separate future path-exclusive manifest and cannot inherit this historical
+separate future path-exclusive manifest and cannot inherit this R2b
 activation.
 
-## 2. Inactive four-path definition for future repinning
+## 2. Active four-path ownership
 
-A future freshly activated R2b application-failure lane would retain exactly
-four paths:
+```text
+branch:   workstream/m5-d24-r2b-application-failure
+worktree: /tmp/groundloop-m5-d24-r2b-application-failure
+```
+
+R2b owns exactly four paths:
 
 1. `src/groundloop/m5/runtime/application.py`
 2. `tests/m5/runtime/fake_ports.py`
 3. `tests/m5/runtime/test_d24_application_composition.py` (new)
 4. `docs/workstreams/m5_runtime_implementation/D24_R2B_APPLICATION_FAILURE_HANDOFF.md` (new)
 
-No other path may be edited by that future lane. This section is not current
-ownership.
+No other path may be edited, staged, or included in the R2b commit. This is
+current ownership only after the literal branch/worktree is cleanly based on
+the full commit containing this note.
 
 ## 3. Required behavior
 
@@ -93,6 +106,29 @@ ownership.
 - Terminal first return and replay keep frozen event totals and append only
   postcommit invocation telemetry bound to a fresh invocation ID and the exact
   terminal logical-result hash.
+- For a checked successful discovery or verifier return that exposes a current
+  terminal logical-result hash, the application first adds that execution's
+  exact call work once to the current-invocation accumulator, validates the
+  complete successful-return receipt, and reads the canonical terminal result.
+  It must validate the canonical terminal event/payload/epoch, ordinary replay
+  shape, durable outcome, and exact receipt/result logical-hash equality before
+  constructing any active-cutoff projection.
+- The requirement active-cutoff result remains `REPLAYED`, retains the exact
+  nonterminal `OpenEventReceipt` already held by this invocation (fresh or
+  resumed), and returns the exact accumulated current-invocation `call_work`,
+  including zero. Event work, event timing/coverage, deltas, changed-state
+  references, publication/failure identity, and logical-result hash remain
+  unchanged from the validated canonical result.
+- The unchanged terminal-invocation timing/coverage and timing-only
+  postcommit telemetry write complete before the active-cutoff result returns.
+  They do not add call work to frozen event totals or to terminal telemetry.
+- A missing or malformed canonical result, wrong event/payload/epoch/outcome,
+  or receipt/result hash mismatch is a conflict. It cannot become BLOCKED,
+  trigger provider redispatch, guess a terminal result, or fall back to an
+  ordinary zero-work reconnect.
+- If the terminal result is known at entry/open, the application returns only
+  the ordinary terminal-projected replay with canonical-zero call work. It
+  performs no repeated discovery/verifier execution.
 - Existing typed-history behavior remains a regression gate and may not be
   weakened with skips or expected failures.
 
@@ -103,30 +139,40 @@ direct-M4 source, existing PostgreSQL or nested D24 tests/fixtures, public
 contracts/digests, migrations, package exports, status/design/decision docs,
 `pyproject.toml`, presentations, or the M5-D25 draft.
 
-It does not implement a concrete production application adapter, direct-event
+It does not implement a concrete PostgreSQL/production application adapter,
+production persistence, typed-direct application composition, direct-event
 failure, seal, active verifier completion, maintained matching, migration 017,
 or application-level success publication. The accepted PostgreSQL active
-verifier barrier remains authoritative.
+verifier barrier remains authoritative. Accepted C5's typed-direct semantic
+half requires a later separate path-exclusive application manifest and cannot
+inherit this R2b ownership.
 
 ## 5. Evidence gate
 
-After the required fresh repin/reactivation, before integration the lane must
-provide:
+Before integration the freshly based lane must provide:
 
 - pure tests for every acquisition disposition and returned-attempt
   disposition;
 - exact anchor append ordering/idempotence;
 - retryable and terminal attempt failure ordering and work/timing identity;
 - durable BLOCKED timing hydration and terminal telemetry ordering;
-- reconnect behavior with no repeated external work;
+- discovery and verifier terminal-cutoff races proving checked canonical-read-
+  before-projection ordering, exact successful-return receipt/result hash
+  equality, and rejection of every missing/malformed/hash-conflicting read;
+- fresh and resumed held nonterminal receipt projection with exact zero and
+  nonzero accumulated current-invocation call work, added once;
+- unchanged event work/timing/coverage, deltas, references,
+  publication/failure identity, and logical-result hash across the canonical
+  read and active projection;
+- timing-only terminal telemetry completing before return, with unchanged
+  frozen event totals and no telemetry work field;
+- ordinary entry reconnect with terminal-projected receipt, canonical-zero
+  call work, and no repeated external work;
 - unchanged `tests/m5/runtime/test_typed_history.py` regression evidence;
 - Ruff check/format, strict mypy, cache-isolated compile, collection, pure
   runtime regression, and `git diff --check`;
-- an exact four-path handoff and independent read-only audit.
+- an exact four-path handoff and independent read-only audit of the complete
+  reactivation-base-to-head diff.
 
-Under a future fresh C5-based R2b activation, this gate additionally requires
-both discovery and verifier terminal-cutoff races proving canonical-read-
-before-projection,
-exact receipt/result hash equality, one-add current-invocation work, unchanged
-event totals, zero-work active projection, unchanged ordinary reconnect zero
-work, timing-only terminal telemetry, and no repeated external execution.
+This gate is requirement-only application evidence. It cannot satisfy the
+later typed-direct outer-settlement application gate.
