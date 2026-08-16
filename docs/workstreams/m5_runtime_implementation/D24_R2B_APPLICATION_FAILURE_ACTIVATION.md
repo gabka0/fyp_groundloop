@@ -1,31 +1,32 @@
 # M5-D24 R2b Application-Failure Activation
 
-Status: paused/inactive under accepted M5-D24-C6; no source or test path is
-currently owned pending a separate fresh exact-C6 activation
+Status: active path-exclusive five-path R2b lane under accepted M5-D24-C6;
+implementation evidence remains pending
 
-Date: 2026-08-15; reactivated and then paused 2026-08-16
+Date: 2026-08-15; freshly reactivated after accepted C6 on 2026-08-16
 
-Exact now-suspended R2b activation commit:
-`5ccd615e558424079b2b595111b38ab9f274c139`.
+Exact accepted C6 contract commit before this reactivation:
+`ab56178f54e99b5c23745ab092199164a5f98ddf`.
 
-Exact integrated C5 contract commit before this reactivation:
+Historical integrated C5 contract commit:
 `69a00e452361b116d1166e9fe10037030739a5a0`.
 
-Superseded historical activation base:
-`f5902ff0d2c21865f2c633ed404163aef3f937d7` (must not be reused)
+Superseded activation commits/bases, both forbidden for reuse:
 
-The prior activation granted ownership only from its exact committed base.
-Accepted M5-D24-C6 keeps that grant administratively suspended. The literal
-branch/worktree in Section 2 must remain frozen; neither its current bytes nor
-either commit above authorizes another edit. After the coordinator commits the
-accepted C6 freeze, a later coordinator commit must replace this pause with a
-fresh literal activation pinned to that exact accepted-C6 base before any R2b
-edit.
+- `5ccd615e558424079b2b595111b38ab9f274c139`
+- `f5902ff0d2c21865f2c633ed404163aef3f937d7`
+
+The lane must resolve and record the full commit containing this reactivation
+note as its actual branch base before editing. The exact accepted C6 commit
+above is the required parent barrier; it is not permission to branch from the
+older activation or workstream commits. The literal branch/worktree in Section
+2 must be created or exactly reset cleanly to the full commit containing this
+note before any R2b edit or reapplication.
 
 ## 1. Purpose
 
 R1-P, R1-D, R2a, and R1-C are integrated at `56dd2d4`, `1838316`, `6f1ae89`,
-and `f5902ff`, respectively. The paused bounded tranche updates the pure typed-
+and `f5902ff`, respectively. The active bounded tranche updates the pure typed-
 application coordinator from its pre-D24 fake-port shapes to the accepted D24
 total acquisition, attempt evidence, timing-anchor, blocked-read, and terminal-
 call contract.
@@ -35,7 +36,7 @@ current application object can yet be constructed directly from the concrete
 PostgreSQL store or direct-M4 adapter. That production adapter is a separate
 follow-up manifest.
 
-### 1.1 Accepted C5 integration and fresh reactivation
+### 1.1 Accepted C5 integration and superseded activation
 
 R2b preflight stopped before integration after finding a current-invocation
 work contradiction in the accepted replay envelope. A successful requirement
@@ -61,17 +62,18 @@ terminal receipt and zero-work requirement. Accepted C6 now completes the
 additional active-cutoff origins described below and keeps M5.0-24's contract
 half at `PASS`.
 
-At `5ccd615e558424079b2b595111b38ab9f274c139`, this note activated the five
-paths below from the exact parent barrier. Accepted C6 suspends that ownership
-before integration. The superseded
+At `5ccd615e558424079b2b595111b38ab9f274c139`, this note previously activated
+the five paths below from the C5 parent barrier. Accepted C6 superseded that
+activation before integration. The still-older
 `f5902ff0d2c21865f2c633ed404163aef3f937d7` base remains forbidden.
 
-R2b covers only the requirement discovery/verifier application projection.
-Typed-direct outer-settlement application composition remains deferred to a
-separate future path-exclusive manifest and cannot inherit this R2b
+R2b covers requirement discovery/verifier application composition plus the
+explicitly fake-only seal-mutator envelope race. It does not cover production
+seal. Typed-direct outer-settlement application composition remains deferred
+to a separate future path-exclusive manifest and cannot inherit this R2b
 activation.
 
-### 1.2 Accepted C6 pause and fresh-reactivation barrier
+### 1.2 Accepted C6 integration and fresh reactivation
 
 R2b then exposed three additional reachable current-invocation work-loss
 routes outside C5: a later requirement acquisition returning checked
@@ -81,26 +83,25 @@ mutator replay after current work. Accepted M5-D24-C6 reuses C5's
 existing active-cutoff `REPLAYED` shape for exactly those origins, with no
 validator, persistence, schema, migration, digest, or telemetry-work change.
 
-C6 passed two independent exact-byte reviews with no unresolved P0/P1.
-M5.0-24 is contract-`PASS` / implementation-`PENDING`; R2b still owns no paths
-because acceptance itself does not activate implementation.
+C6 passed two independent exact-byte reviews with no unresolved P0/P1 and is
+integrated at `ab56178f54e99b5c23745ab092199164a5f98ddf`. M5.0-24 is
+contract-`PASS` / implementation-`PENDING`.
 
-After the coordinator commits the accepted C6 freeze, it must separately amend
-and commit this note with a fresh literal branch, worktree, exact accepted-C6
-base, five-path manifest, and expanded gate. The branch/worktree must be
-recreated or exactly reset to that new activation commit. Existing
-unintegrated bytes may be considered only after exact reapplication and a full
-new audit; they do not carry ownership forward.
+This note now reactivates exactly the five paths below under the full-commit
+base rule at the top of this file. Existing unintegrated bytes carry no
+authority from the superseded activation; they may be reapplied only after the
+literal branch/worktree is recreated or exactly reset to the full commit
+containing this reactivation and must pass the complete expanded gate and
+independent audit again.
 
-## 2. Suspended historical five-path manifest
+## 2. Active five-path ownership
 
 ```text
 branch:   workstream/m5-d24-r2b-application-failure
 worktree: /tmp/groundloop-m5-d24-r2b-application-failure
 ```
 
-R2b currently owns no paths. A future fresh C6-based activation is expected to
-retain exactly these five paths:
+R2b owns exactly these five paths:
 
 1. `src/groundloop/m5/runtime/application.py`
 2. `tests/m5/runtime/fake_ports.py`
@@ -108,18 +109,17 @@ retain exactly these five paths:
 4. `docs/workstreams/m5_runtime_implementation/D24_R2B_APPLICATION_FAILURE_HANDOFF.md` (new)
 5. `tests/m5/runtime/test_typed_history.py`
 
-Under that future activation, the fifth path remains limited to one contract
-correction only: the terminal-failure history must expect the already settled
-requirement job to remain
+The fifth path is limited to one contract correction only: the terminal-
+failure history must expect the already settled requirement job to remain
 `TERMINAL_FAILED`, not become `CANCELLED`, when the later epoch-failure cutoff
 cancels only nonterminal jobs. No other assertion or test in that path may be
 changed.
 
-No path in this list may currently be edited, staged, or committed under this
-paused note. Any future ownership begins only after the literal branch/
-worktree is cleanly based on the full fresh C6 activation commit.
+No other path may be edited, staged, or included in the R2b commit. This
+ownership begins only after the literal branch/worktree is cleanly based on
+the full commit containing this fresh C6 reactivation.
 
-## 3. Required behavior for a future reactivation
+## 3. Required behavior
 
 - Application DTOs and persistence protocols carry explicit execution
   disposition, attempt work, attempt timing, discovery exhaustion evidence,
@@ -200,7 +200,7 @@ PostgreSQL active verifier barrier remains authoritative. Accepted C5's typed-
 direct semantic half requires a later separate path-exclusive application
 manifest and cannot inherit this R2b ownership.
 
-## 5. Future evidence gate after fresh accepted-C6 reactivation
+## 5. Evidence gate
 
 Before integration the freshly based lane must provide:
 
