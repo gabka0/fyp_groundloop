@@ -236,16 +236,15 @@ is explicit pre-dissertation/M6 debt, not a hidden extension of M4.
 ## M5 — Bounded Evidence Groups
 
 Status: active. The M5.0 contract freeze is complete through accepted
-M5-D24-C3; M5.1 pure reference semantics completed on 2026-08-03 after an
+M5-D24-C6; M5.1 pure reference semantics completed on 2026-08-03 after an
 independent high-confidence audit GO. M5.2 and M5.3 are complete. M5.4-01
 passes; public activation and partial root/direct transitions have live
-evidence but do not independently close M5.4-05. M5-D24's
-recoverable-dispatch/accounting contract through C3 is frozen, and its R0
-contracts plus migration 016 are accepted on main. C3 reconciles the
-cancellation-first expired-output race with the immutable accepted schema.
-R1-D is integrated; R1-P is resumed from its live-green cancellation
-checkpoint. R2 composition and every remaining M5.4--M5.6
-implementation/evaluation closure remain pending. See
+evidence but do not independently close M5.4-05. M5-D24's R0 contracts and
+migration 016 are accepted on main; R1-D, R1-P, R2a, and R1-C are integrated.
+The bounded R2b pure requirement-application/fake-seal orchestration tranche
+is integrated at `bfeef3f` with 87/87 focused and 237/237 pure evidence. It has
+no current ownership and does not close M5.0-24 implementation, production
+application composition, or any remaining M5.4--M5.6 gate. See
 `docs/m5_implementation_status.md`.
 
 Deliverables:
@@ -266,7 +265,7 @@ Deliverables:
 Stages:
 
 - **M5.0:** design/theory/schema/data freeze. **Complete through accepted
-  M5-D24-C3.** Contract rows pass; decision-row implementation halves remain
+  M5-D24-C6.** Contract rows pass; decision-row implementation halves remain
   pending until the M5.6 cross-stage evidence mapping.
 - **M5.1:** pure records, history, structural events, and independent Python
   oracle. **Complete.**

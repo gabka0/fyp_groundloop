@@ -1,5 +1,32 @@
 # GroundLoop Decision Log
 
+## 2026-08-16 — M5-D24 R2b Pure Application Composition Integrated
+
+Decision status: the bounded R2b pure-orchestration tranche is integrated on
+main at `bfeef3f87ea79137a8ce956eccd47ced1744e4f0`. This is an
+implementation-status record, not a contract amendment or an implementation-
+`PASS` promotion for M5.0-24.
+
+The integration has sole parent
+`62bfb03ea652cf817c2eb3aa0888b7e7502e0af9` and contains exactly the five
+activated R2b paths. Its exact source/test bytes match the audited handoff.
+The focused composition suite passed 87/87 and the full pure M5 runtime gate
+passed 237/237; Ruff, format, strict mypy, cache-isolated compile, collection,
+and diff-check also passed. No live database was used.
+
+This evidence closes only the scoped pure requirement-application and fake-
+seal orchestration gate. M5.0-24 remains contract-`PASS` /
+implementation-`PENDING`. A concrete PostgreSQL/production application
+adapter, typed-direct outer-settlement composition, cursor-local direct
+failure, production seal/publication, and the remaining live crash/reconnect
+and end-to-end evidence are still pending under separate future manifests.
+
+The R2b activation and handoff are now historical evidence. Their five-path
+grant is closed and gives no current edit ownership. Any later implementation
+lane must have a fresh committed path-exclusive activation based on the then-
+current integrated barrier; it may not inherit the R2b branch, worktree, or
+ownership grant.
+
 ## 2026-08-16 — M5-D24-C6 Active-Terminal-Cutoff Work Completion Accepted
 
 Decision status: accepted narrow correction after two independent exact-byte

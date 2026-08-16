@@ -17,10 +17,11 @@ C3's accepted reviewed-candidate SHA-256 remains
 `59fca1859e55af3ff9ffe818205c0ed61cacd17876525cddfc60d448f9eaf723`.
 The R0 contracts and migration 016 remain accepted on main. R1-D, R1-P, R2a,
 and R1-C are integrated at `1838316`, `56dd2d4`, `6f1ae89`, and `f5902ff`,
-respectively. The C5 validator lane integrated at `69a00e4`, and R2b was
-freshly activated at `5ccd615`; accepted C6 keeps that lane paused with no
-active edit ownership pending a separate fresh exact-C6 activation. Overall
-decision-row implementation evidence remains pending.
+respectively. The C5 validator lane integrated at `69a00e4`, accepted C6 at
+`ab56178`, and the freshly reactivated R2b pure-orchestration tranche at
+`bfeef3f`. Its 87/87 focused and 237/237 pure gates used no live database.
+The R2b grant is closed with no current edit ownership, and overall decision-
+row implementation evidence remains pending.
 
 The exact disjoint R1-P requirement and R1-D typed-direct persistence paths
 were governed by
@@ -29,6 +30,8 @@ integrated at `1838316`; R1-P is integrated at `56dd2d4`. R2a failure
 terminalization and R1-C shared compatibility then integrated at `6f1ae89` and
 `f5902ff`. Those completed lane manifests are historical ownership evidence,
 not current edit grants or whole-stage implementation evidence.
+The R2b activation and handoff are likewise historical after integration at
+`bfeef3f`; none of their five paths remains owned.
 
 ## 1. Honest current verdict
 
@@ -226,9 +229,10 @@ migration-015 regressions and 292/292 broader live PostgreSQL runtime tests;
 Ruff, strict mypy, compileall and diff-check also passed. That checkpoint
 accepted only the R0 schema/installer boundary. Checked R1 persistence,
 R2a failure terminalization, and shared compatibility later integrated at the
-commits recorded above; R2 application composition and the remaining D24
-race/crash/reconnect gates remain implementation-PENDING. The proposed M5-D25
-persisted-matching draft remains
+commits recorded above; bounded R2b pure application composition later
+integrated at `bfeef3f`. Production application composition and the remaining
+D24 race/crash/reconnect gates remain implementation-PENDING. The proposed
+M5-D25 persisted-matching draft remains
 non-authoritative and has unresolved adversarial blockers; migration-016
 acceptance alone does not authorize it.
 
@@ -272,8 +276,10 @@ The bounded D24 R1 execution sequence is integrated through main commit
 `f5902ff`: R1-D direct persistence integrated at `1838316`, R1-P requirement
 persistence at `56dd2d4`, R2a failure terminalization at `6f1ae89`, and R1-C
 shared compatibility at `f5902ff`. Their focused evidence remains tranche
-evidence; it does not close R2 application composition, production seal, the
-complete race/crash/reconnect matrix, or M5.0-24 implementation.
+evidence. The later R2b pure tranche adds requirement-application and fake-
+seal orchestration evidence but still does not close production composition,
+production seal, the complete race/crash/reconnect matrix, or M5.0-24
+implementation.
 
 R2b application preflight then exposed a returned-envelope contradiction not
 covered by C1--C4. A requirement or typed-direct invocation can open/resume
@@ -290,8 +296,8 @@ application validates a canonical terminal read against the checked successful
 return receipt may it return C5's active-cutoff `REPLAYED` projection retaining
 the invocation's actual earlier nonterminal open receipt and exact accumulated
 call work, including zero. The generic C5 validator integrated at `69a00e4`,
-and the coordinator then freshly activated the five-path R2b lane at
-`5ccd615`.
+accepted C6 integrated at `ab56178`, and the coordinator freshly reactivated
+the five-path R2b lane at `62bfb03`.
 
 R2b composition subsequently proved three reachable work-loss origins outside
 C5: later requirement acquisition returning checked
@@ -306,24 +312,27 @@ failure reason; the failure route requires the same requested failure reason;
 and seal remains fake-only while preserving the exact durable outcome branch.
 
 C6 makes no DTO/validator, marker, persistence, telemetry-work, schema,
-migration, digest, event-total, or public-M4 change. M5.0-24 is
-contract-`PASS` / implementation-`PENDING`, and R2b remains paused with no
-active source/test ownership. Two independent exact-byte audits returned GO.
-After the coordinator commits this accepted C6 freeze, no contract micro-lane
-is needed; it must separately commit a fresh literal branch/worktree/exact-C6-
-base revision of the R2b activation and recreate or reset the same five-path
-lane before edits. Neither
-`5ccd615` nor `f5902ff` may be reused as authority. Typed-direct outer-
-settlement application composition, cursor-local direct failure, and
-production seal remain deferred under separate manifests.
+migration, digest, event-total, or public-M4 change. Two independent exact-byte
+audits returned GO. The subsequent exact five-path R2b tranche integrated at
+`bfeef3f`; its 87/87 focused composition suite, 237/237 full pure M5 runtime
+gate, and static gates passed without a live database.
+
+That result is scoped pure requirement-application/fake-seal orchestration
+evidence, not M5-D24 implementation `PASS`. M5.0-24 remains contract-`PASS` /
+implementation-`PENDING`. The R2b activation is historical and owns no path.
+Typed-direct outer-settlement application composition, cursor-local direct
+failure, the concrete production application adapter, production seal/
+publication, and remaining live crash/reconnect and end-to-end evidence remain
+deferred under separate fresh manifests.
 
 ## 5. Remaining closure boundary
 
-M5 completes only after M5.1--M5.6 pass. Closure still requires M5.4 dynamic
-jobs, typed direct composition, sparse publication, recoverable at-least-once
-dispatch with idempotent semantic effects, and reconnect gates; a real
-maintained-runtime M5.5 controlled WiCE execution; and M5.6 reproduction,
-artifact, documentation, and final acceptance audits.
+M5 completes only after M5.1--M5.6 pass. Closure still requires production M5.4
+dynamic jobs and application composition, typed-direct outer settlement,
+sparse publication and production seal, recoverable at-least-once dispatch
+with idempotent semantic effects, and live reconnect gates; a real maintained-
+runtime M5.5 controlled WiCE execution; and M5.6 reproduction, artifact,
+documentation, and final acceptance audits.
 
 M5 is not complete. Even after technical closure, without a fresh blinded,
 independently adjudicated cohort the strongest permitted semantic conclusion

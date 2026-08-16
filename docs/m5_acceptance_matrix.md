@@ -1,7 +1,8 @@
 # GroundLoop M5 Acceptance Matrix
 
 Status: frozen M5 falsification contract through accepted M5-D24-C6; staged
-evidence is current through partial M5.4
+evidence is current through the integrated R2b pure-orchestration tranche and
+partial M5.4
 
 Date: 2026-08-16
 
@@ -56,10 +57,12 @@ The decision-row implementation halves remain `PENDING` until the
 final cross-stage evidence mapping at M5.6; the stage tables below record the
 current executable evidence without silently remapping M5-D1 through M5-D24.
 R1-D, R1-P, R2a, and R1-C are integrated at `1838316`, `56dd2d4`, `6f1ae89`,
-and `f5902ff`, respectively. Those accepted tranche results remove checked R1
-settlement from the remaining blocker list but do not close R2 application/
-terminal composition, C5/C6 application implementation, or M5.0-24
-implementation.
+and `f5902ff`, respectively. The bounded R2b pure requirement-application and
+fake-seal orchestration tranche is integrated at `bfeef3f`; its 87/87 focused
+and 237/237 pure gates close only that scoped evidence. M5.0-24 remains
+implementation-`PENDING`: the row still requires its separately manifested
+typed-direct, production adapter/seal/publication, live crash/reconnect, and
+end-to-end evidence before the final M5.6 cross-stage mapping.
 
 ### 1.1 Mandatory adversarial cases
 
@@ -194,9 +197,13 @@ Migration 016's R0 schema/installer subgate is accepted on main commit
 `61875894172c8e0b36866d6b215ecab7a57b76ec`: its exact committed bytes passed
 200/200 migration-016 tests, 26/26 migration-015 regressions and 292/292
 broader live PostgreSQL runtime tests. M5.0-24's implementation half and
-M5.4-05 through M5.4-07 remain `PENDING` because R2 composition and the named
-race/crash/reconnect histories have not yet passed. Accepted C6 restores
-M5.0-24's contract half to `PASS` but does not supply implementation evidence.
+M5.4-05 through M5.4-07 remain `PENDING`. The R2b tranche integrated at
+`bfeef3f` supplies bounded pure requirement-application and fake-seal
+orchestration evidence, but no production adapter, typed-direct outer
+settlement, production seal/publication, or live race/crash/reconnect history.
+Accepted C6 restores M5.0-24's contract half to `PASS`; the integrated R2b
+subset does not close the decision-row implementation half or a M5.4 stage
+row.
 
 ## 6. M5.5 controlled evaluation gates
 

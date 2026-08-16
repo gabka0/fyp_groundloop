@@ -2,7 +2,8 @@
 
 Status: M5.0 contract accepted through M5-D24-C6 and M5.1--M5.3 complete;
 M5.4 is partially complete, M5.0-24 is contract-`PASS` /
-implementation-`PENDING`, and R2b is paused/inactive pending fresh activation
+implementation-`PENDING`, and the integrated R2b pure-orchestration tranche is
+historical with no current edit ownership
 
 Date: 2026-08-02; M5-D24 execution amendments through accepted C6 2026-08-16
 
@@ -19,9 +20,10 @@ closure; its implementation evidence remains pending.
 Accepted M5-D24-C5 remains authoritative. Its generic replay-shape validator
 is integrated at `69a00e4`, and accepted C1--C4 behavior is unchanged.
 Accepted M5-D24-C6 closes three additional reachable active-cutoff origins and
-restores M5.0-24 to contract-`PASS` / implementation-`PENDING`. The current
-R2b activation remains administratively paused and grants no edit ownership
-until a separate exact accepted-C6-based activation is committed.
+restores M5.0-24 to contract-`PASS` / implementation-`PENDING`. The bounded
+R2b pure requirement-application/fake-seal orchestration tranche is integrated
+at `bfeef3f`; its five-path activation is closed and grants no current edit
+ownership.
 
 ## 1. Outcome
 
@@ -438,12 +440,14 @@ missing explicit evidence.
 R1-D, R1-P, R2a, and R1-C are integrated on main at `1838316`, `56dd2d4`,
 `6f1ae89`, and `f5902ff`, respectively. These are bounded direct persistence,
 requirement persistence, failure-terminalization, and shared-compatibility
-tranche results. They do not close R2 application composition or M5.0-24.
+tranche results. They preceded, but did not themselves close, R2 application
+composition or M5.0-24.
 
 R2b preflight first exposed the successful-return envelope defect corrected by
-accepted C5. The three-path C5 contract micro-lane then integrated at
-`69a00e4`, and the coordinator freshly activated the current five-path R2b
-lane at `5ccd615`. Those facts are historical evidence, not current ownership.
+accepted C5. The three-path C5 contract micro-lane integrated at `69a00e4`.
+After accepted C6 integrated at `ab56178`, the coordinator freshly reactivated
+the five-path R2b lane at `62bfb03`. Those facts are historical evidence, not
+current ownership.
 
 During R2b composition, three more reachable routes were found to return an
 ordinary canonical replay after the same invocation had already opened or
@@ -466,23 +470,19 @@ with the exact requested reason and may not grant cursor-local direct failure
 authority. The seal route remains fake-only and preserves its exact durable
 sealed/failed branch.
 
-Two independent exact-byte audits accepted C6 with no unresolved P0/P1.
-M5.0-24 is contract-`PASS` / implementation-`PENDING`, and R2b still owns no
-paths. After the coordinator commits this accepted freeze, no new contract
-micro-lane is needed because C5's validator already admits the shape. The
-coordinator must instead commit a fresh revision of
-`docs/workstreams/m5_runtime_implementation/D24_R2B_APPLICATION_FAILURE_ACTIVATION.md`
-pinning the literal branch/worktree, exact accepted-C6 base, same five paths,
-and expanded gate. The R2b branch/worktree must be recreated or exactly reset
-to that activation before any edit; neither `5ccd615` nor `f5902ff` may be
-reused as authority.
+Two independent exact-byte audits accepted C6 with no unresolved P0/P1. The
+subsequent exact five-path R2b tranche integrated at `bfeef3f`. Its 87/87
+focused composition suite and 237/237 full pure M5 runtime gate provide scoped
+requirement-application and fake-seal orchestration evidence; no live database
+was used. M5.0-24 therefore remains contract-`PASS` /
+implementation-`PENDING`.
 
-The later five paths remain `application.py`, its fake ports, the new focused
-D24 application test, its new handoff, and `test_typed_history.py` limited to
-the already-authorized single `CANCELLED` to `TERMINAL_FAILED` assertion.
-Typed-direct outer-settlement application composition remains deferred to a
-separate future path-exclusive manifest. This accepted sequence is not current
-implementation authorization.
+The R2b activation, branch/worktree, five paths, and handoff are historical
+evidence and own nothing after integration. Typed-direct outer-settlement
+application composition, cursor-local direct failure, the concrete production
+application adapter, production seal/publication, and remaining live crash/
+reconnect and end-to-end gates require later separate path-exclusive
+manifests. No future lane may inherit the closed R2b grant.
 
 The contracts and migration lanes may run in parallel only under the explicit
 path manifest in `docs/m5_multiagent_execution_plan.md`. Persistence/direct

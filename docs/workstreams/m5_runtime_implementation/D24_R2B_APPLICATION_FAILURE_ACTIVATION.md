@@ -1,12 +1,19 @@
 # M5-D24 R2b Application-Failure Activation
 
-Status: active path-exclusive five-path R2b lane under accepted M5-D24-C6;
-implementation evidence remains pending
+Status: historical five-path R2b activation; scoped pure-orchestration evidence
+integrated at `bfeef3f87ea79137a8ce956eccd47ced1744e4f0`, lane closed with no
+current edit ownership, and M5.0-24 implementation remains `PENDING`
 
 Date: 2026-08-15; freshly reactivated after accepted C6 on 2026-08-16
 
 Exact accepted C6 contract commit before this reactivation:
 `ab56178f54e99b5c23745ab092199164a5f98ddf`.
+
+Exact full activation commit/base used by the lane:
+`62bfb03ea652cf817c2eb3aa0888b7e7502e0af9`.
+
+Exact integration commit:
+`bfeef3f87ea79137a8ce956eccd47ced1744e4f0`.
 
 Historical integrated C5 contract commit:
 `69a00e452361b116d1166e9fe10037030739a5a0`.
@@ -16,17 +23,16 @@ Superseded activation commits/bases, both forbidden for reuse:
 - `5ccd615e558424079b2b595111b38ab9f274c139`
 - `f5902ff0d2c21865f2c633ed404163aef3f937d7`
 
-The lane must resolve and record the full commit containing this reactivation
-note as its actual branch base before editing. The exact accepted C6 commit
-above is the required parent barrier; it is not permission to branch from the
-older activation or workstream commits. The literal branch/worktree in Section
-2 must be created or exactly reset cleanly to the full commit containing this
-note before any R2b edit or reapplication.
+The lane resolved the full commit containing this reactivation note as
+`62bfb03ea652cf817c2eb3aa0888b7e7502e0af9`, used it as the actual branch
+base, and integrated at the commit above. The grant is now closed. Neither the
+accepted C6 parent nor this historical branch/worktree authorizes any later
+edit or reapplication.
 
 ## 1. Purpose
 
 R1-P, R1-D, R2a, and R1-C are integrated at `56dd2d4`, `1838316`, `6f1ae89`,
-and `f5902ff`, respectively. The active bounded tranche updates the pure typed-
+and `f5902ff`, respectively. The bounded tranche updated the pure typed-
 application coordinator from its pre-D24 fake-port shapes to the accepted D24
 total acquisition, attempt evidence, timing-anchor, blocked-read, and terminal-
 call contract.
@@ -87,21 +93,19 @@ C6 passed two independent exact-byte reviews with no unresolved P0/P1 and is
 integrated at `ab56178f54e99b5c23745ab092199164a5f98ddf`. M5.0-24 is
 contract-`PASS` / implementation-`PENDING`.
 
-This note now reactivates exactly the five paths below under the full-commit
-base rule at the top of this file. Existing unintegrated bytes carry no
-authority from the superseded activation; they may be reapplied only after the
-literal branch/worktree is recreated or exactly reset to the full commit
-containing this reactivation and must pass the complete expanded gate and
-independent audit again.
+This note reactivated exactly the five paths below under the full-commit base
+rule at the top of this file. Those bytes passed the complete expanded gate,
+were independently auditable, and integrated at `bfeef3f`. The activation is
+now historical and conveys no continuing ownership.
 
-## 2. Active five-path ownership
+## 2. Historical five-path ownership — closed
 
 ```text
 branch:   workstream/m5-d24-r2b-application-failure
 worktree: /tmp/groundloop-m5-d24-r2b-application-failure
 ```
 
-R2b owns exactly these five paths:
+R2b owned exactly these five paths for the integrated tranche:
 
 1. `src/groundloop/m5/runtime/application.py`
 2. `tests/m5/runtime/fake_ports.py`
@@ -115,9 +119,8 @@ failure history must expect the already settled requirement job to remain
 cancels only nonterminal jobs. No other assertion or test in that path may be
 changed.
 
-No other path may be edited, staged, or included in the R2b commit. This
-ownership begins only after the literal branch/worktree is cleanly based on
-the full commit containing this fresh C6 reactivation.
+No other path was edited, staged, or included in the R2b commit. This
+historical ownership ended at integration and cannot authorize later work.
 
 ## 3. Required behavior
 
@@ -242,3 +245,17 @@ Before integration the freshly based lane must provide:
 This gate is requirement application plus fake-seal orchestration evidence.
 It cannot satisfy the later typed-direct outer-settlement application gate or
 any production seal/application-adapter gate.
+
+## 6. Integration closure
+
+The exact five-path tranche integrated on main at
+`bfeef3f87ea79137a8ce956eccd47ced1744e4f0`. Its focused composition suite
+passed 87/87 and its full pure M5 runtime gate passed 237/237; the recorded
+static gates also passed, and no live database was used.
+
+That is scoped pure-orchestration `PASS` evidence, not M5-D24 implementation
+`PASS`. M5.0-24 remains contract-`PASS` / implementation-`PENDING` while the
+production application adapter, typed-direct outer settlement, direct-event
+failure, production seal/publication, and remaining live crash/reconnect and
+end-to-end gates remain open. The R2b lane owns nothing after integration;
+each later tranche requires a new committed path-exclusive manifest.

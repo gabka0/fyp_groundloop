@@ -1,11 +1,15 @@
 # M5-D24 R2b Application-Failure Composition Handoff
 
-Status: final five-path R2b pure-orchestration candidate; independently
-auditable and not yet integrated
+Status: integrated five-path R2b pure-orchestration evidence at
+`bfeef3f87ea79137a8ce956eccd47ced1744e4f0`; scoped pure gate `PASS`,
+M5.0-24 implementation `PENDING`, and no current edit ownership
 
 Date: 2026-08-16
 
 Branch: `workstream/m5-d24-r2b-application-failure`
+
+Integration commit:
+`bfeef3f87ea79137a8ce956eccd47ced1744e4f0`
 
 Activation commit/base:
 `62bfb03ea652cf817c2eb3aa0888b7e7502e0af9`
@@ -41,7 +45,13 @@ Frozen implementation/test SHA-256 pins:
 - `test_typed_history.py`:
   `9e702068bbe2136fe1377de09416e0f204f6c7321a2d4a4446e79b8a5a7d5dcd`
 
-The handoff hash is intentionally recorded only after its final audit freeze.
+The candidate handoff bytes at
+`bfeef3f:docs/workstreams/m5_runtime_implementation/D24_R2B_APPLICATION_FAILURE_HANDOFF.md`
+had pre-conversion SHA-256
+`50e6af7a9e0ee141f85b3b6f6bbc1d41b362d1e551d9ab1a865228eaec78b24a`.
+This later status conversion intentionally changes this document; the
+integration commit plus that pre-conversion hash pins the candidate without
+pretending that a file can self-pin its own final hash.
 
 The typed-history diff is exactly one authorized line: the job that was
 already settled as `TERMINAL_FAILED` remains terminal-failed when the later
@@ -174,3 +184,7 @@ source, direct-M4 source, public contracts/digests, migrations 016/017, active
 verifier persisted matching, or the M5-D25 draft. It does not close M5.4--M5.6
 or support deployment, performance, security, novelty, representative utility,
 or human-approval claims.
+
+Integration closed the R2b five-path grant. This handoff is historical
+evidence only and authorizes no further edit; every later lane requires a new
+committed path-exclusive activation.

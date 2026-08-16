@@ -3,8 +3,8 @@
 Status: frozen M5 ownership contract; historical Waves 0--2 complete;
 M5-D24 recovery R0-C, pure R0-C1, and R0-S accepted on main; R1-D, R1-P, R2a,
 and R1-C integrated at `1838316`, `56dd2d4`, `6f1ae89`, and `f5902ff`;
-M5-D24-C1 through M5-D24-C6 accepted; R2b paused and inactive with no edit
-ownership pending a separate fresh exact-C6 activation
+M5-D24-C1 through M5-D24-C6 accepted; R2b pure orchestration integrated at
+`bfeef3f` and closed with no current edit ownership
 
 Date: 2026-08-02; M5-D24 path amendments 2026-08-06 through 2026-08-16
 
@@ -438,9 +438,9 @@ nonterminal cutoff and preserve one timing anchor per outer transaction.
 The historical R2b activation preflight exposed the successful-return gap
 corrected by accepted M5-D24-C5. The separately manifested C5 contract micro-
 lane integrated its generic two-shape `M5EventRunResult` validator at
-`69a00e4`. The coordinator then freshly activated a five-path R2b lane at
-`5ccd615`. Those prior grants are now suspended and provide no current edit
-authority.
+`69a00e4`. After accepted C6 integrated at `ab56178`, the coordinator freshly
+reactivated the five-path R2b lane at `62bfb03`. Those grants are now closed
+and provide no current edit authority.
 
 During application composition, R2b proved three additional reachable active-
 invocation work-loss origins outside C5: later requirement acquisition with
@@ -462,21 +462,13 @@ generic cursor-local direct failure path. The seal route remains fake-only and
 preserves its exact durable terminal branch. Accepted C1--C5 otherwise remain
 unchanged.
 
-Two independent exact-byte audits accepted C6 with no unresolved P0/P1.
-M5.0-24 is contract-`PASS` / implementation-`PENDING`, and no R2b path is
-owned. Existing worktree bytes are unintegrated evidence only and must remain
-frozen. After the coordinator commits this accepted freeze, no new contract
-micro-lane is required because the C5 validator already admits the shape.
+Two independent exact-byte audits accepted C6 with no unresolved P0/P1. The
+subsequent R2b tranche integrated on main at `bfeef3f`; its 87/87 focused and
+237/237 pure gates are bounded requirement-application/fake-seal orchestration
+evidence, with no live database. M5.0-24 remains contract-`PASS` /
+implementation-`PENDING`.
 
-The coordinator must then separately commit a fresh revision of
-`docs/workstreams/m5_runtime_implementation/D24_R2B_APPLICATION_FAILURE_ACTIVATION.md`
-that names the literal branch, worktree, exact accepted-C6 base commit, five
-paths, and expanded gate. The branch/worktree must be recreated or exactly
-reset to that activation commit before any edit or reapplication. Neither
-`5ccd615e558424079b2b595111b38ab9f274c139` nor
-`f5902ff0d2c21865f2c633ed404163aef3f937d7` may be reused as authority.
-
-The future R2b lane retains exactly five paths:
+The historical R2b lane contained exactly five paths:
 
 1. `src/groundloop/m5/runtime/application.py`;
 2. `tests/m5/runtime/fake_ports.py`;
@@ -486,15 +478,21 @@ The future R2b lane retains exactly five paths:
 5. `tests/m5/runtime/test_typed_history.py`, limited to the already-authorized
    single `CANCELLED` to `TERMINAL_FAILED` expectation correction.
 
-The future gate must preserve all C5 discovery/verifier receipt/hash tests and
-add the three C6 races with exact zero/nonzero one-add call work, fresh/resumed
-held receipts, canonical ordinary replay, active-envelope validation before
-telemetry, unchanged event totals/logical identity, one timing-only telemetry
-append, ordinary reconnect zero work, and no redispatch. It must reject wrong
-job/execution/disposition/reason/outcome/epoch, same-reason failure mismatch,
-malformed replay, generic direct-failure projection, and every unlisted
-origin. It does not own typed-direct outer-settlement composition or
-production seal; those require later separate manifests.
+The integrated gate preserves all C5 discovery/verifier receipt/hash tests and
+covers the three C6 races with exact zero/nonzero one-add call work, fresh/
+resumed held receipts, canonical ordinary replay, active-envelope validation
+before telemetry, unchanged event totals/logical identity, one timing-only
+telemetry append, ordinary reconnect zero work, and no redispatch. It rejects
+wrong job/execution/disposition/reason/outcome/epoch, same-reason failure
+mismatch, malformed replay, generic direct-failure projection, and every
+unlisted origin.
+
+Integration closed the branch/worktree and all five path grants. No D24
+implementation lane is currently active. Typed-direct outer-settlement
+composition, cursor-local direct failure, the concrete production application
+adapter, production seal/publication, and remaining live crash/reconnect and
+end-to-end evidence each require a fresh committed path-exclusive manifest
+from the then-current integration barrier; none may inherit R2b ownership.
 
 No D24 wave owns the untracked persisted-matching draft. M5-D25 and migration
 017 remain blocked until migration 016 is accepted, all five 016 ledger values
