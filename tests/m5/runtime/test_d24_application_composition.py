@@ -7,6 +7,7 @@ the application boundary only; they are not PostgreSQL or provider evidence.
 from __future__ import annotations
 
 import inspect
+from collections.abc import Iterator
 from copy import copy, deepcopy
 from dataclasses import dataclass, replace
 from typing import cast
@@ -16,6 +17,8 @@ from m5.runtime.fake_ports import (
     FAKE_LEASE_BASE,
     FAKE_OBSERVED_TIMING,
     FakeDirect,
+    FakeDirectInterruption,
+    FakeDirectSelectedOutcome,
     FakeDiscovery,
     FakeDiscoveryOutcome,
     FakeHarness,
@@ -34,6 +37,7 @@ from groundloop.domain import SubjectKind
 from groundloop.errors import EventConflictError, ValidationError
 from groundloop.events import ChunkInput, InsertDocumentEvent, apply_event
 from groundloop.m4.application import (
+    ObservationCompletionReceipt,
     OpenEventReceipt,
     PublicationReceipt,
     StructuralWithdrawal,
@@ -52,6 +56,7 @@ from groundloop.m5.domain import (
     EvidenceRequirementVersion,
 )
 from groundloop.m5.events import RegisterGroupEvent
+from groundloop.m5.runtime import digests
 from groundloop.m5.runtime.application import (
     M5DirectExecutionReceipt,
     M5DiscoveryExecution,
@@ -65,6 +70,8 @@ from groundloop.m5.runtime.contracts import (
     M5AttemptOutput,
     M5CandidatePolicyManifest,
     M5ChangedStateReference,
+    M5DirectAttemptReturnReceipt,
+    M5DirectCursorContributionReceipt,
     M5DiscoveryDirection,
     M5EventRunResult,
     M5ExecutionEvidenceDisposition,
@@ -86,11 +93,13 @@ from groundloop.m5.runtime.contracts import (
     M5RunFailureReason,
     M5RunState,
     M5RuntimeTiming,
+    M5RuntimeTimingCoverage,
     M5RuntimeWork,
     M5RuntimeWorkContributionKind,
     M5TerminalReason,
     M5TransitionTimingAnchor,
     M5TransitionTimingReceipt,
+    M5TypedDirectReturnKind,
     M5TypedEventPlan,
     SemanticPairKey,
 )
@@ -541,6 +550,15 @@ class _CorruptStructuralOpen(FakeStructural):
         )
         if self.mode == "epoch_bool":
             return _unsafe_set(opened, epoch_id=True)  # type: ignore[return-value]
+        if self.mode == "receipt_subclass":
+            return _EqualitySpoofingOpenReceipt(
+                epoch_id=opened.epoch_id,
+                replayed=opened.replayed,
+                already_sealed=opened.already_sealed,
+                publication_id=opened.publication_id,
+                already_failed=opened.already_failed,
+                failure_reason=opened.failure_reason,
+            )
         return _unsafe_set(opened, replayed=1)  # type: ignore[return-value]
 
 
@@ -600,6 +618,33 @@ class _CorruptTerminalMeasurements(FakeMeasurements):
         return _unsafe_set(  # type: ignore[return-value]
             measurement, invocation_id=""
         )
+
+
+@dataclass(slots=True)
+class _MutatingTerminalMeasurements(FakeMeasurements):
+    mode: str = "open_receipt"
+
+    def terminal_invocation(
+        self, event: M5TypedEventPlan, result: M5EventRunResult
+    ) -> M5TerminalInvocationTelemetry:
+        telemetry = FakeMeasurements.terminal_invocation(self, event, result)
+        if self.mode == "open_receipt":
+            object.__setattr__(
+                result.open_receipt,
+                "replayed",
+                not result.open_receipt.replayed,
+            )
+        elif self.mode == "call_work":
+            object.__setattr__(
+                result,
+                "call_work",
+                M5RuntimeWork(bytes_hashed=result.call_work.bytes_hashed + 1),
+            )
+        elif self.mode == "event_id":
+            object.__setattr__(event, "structural_event_id", "changed-event-id")
+        else:
+            raise AssertionError(f"unknown measurement mutation mode: {self.mode}")
+        return telemetry
 
 
 def _unsafe_replayed_outcome_none(result: M5EventRunResult) -> M5EventRunResult:
@@ -1126,7 +1171,7 @@ class _CorruptFirstTerminalReceiptRuntime(FakeRuntime):
         return result
 
 
-@pytest.mark.parametrize("mode", ["epoch_bool", "flag_non_bool"])
+@pytest.mark.parametrize("mode", ["epoch_bool", "flag_non_bool", "receipt_subclass"])
 def test_malformed_structural_open_rejects_before_anchor_or_external_action(
     mode: str,
 ) -> None:
@@ -2206,3 +2251,1323 @@ def test_fake_terminal_read_preserves_publication_identity_on_replay() -> None:
     )
     assert replay.failure_reason is None
     assert deepcopy(replay.event_work) == sealed.event_work
+
+
+def _direct_selected_work(
+    return_kind: M5TypedDirectReturnKind, *, nonzero: bool
+) -> M5RuntimeWork:
+    if not nonzero:
+        return M5RuntimeWork()
+    if return_kind is M5TypedDirectReturnKind.DISCOVERY:
+        return M5RuntimeWork(
+            direct_discovery_call_count=1,
+            embedding_model_call_count=1,
+        )
+    return M5RuntimeWork(
+        direct_verifier_call_count=1,
+        verifier_model_call_count=1,
+    )
+
+
+def _direct_selected_case(
+    name: str,
+    *,
+    return_kind: M5TypedDirectReturnKind,
+    branch: str,
+    outcome: M5ReplayedOutcome,
+    nonzero: bool,
+    resumed: bool,
+) -> tuple[FakeHarness, M5TypedEventPlan, M5RuntimeWork]:
+    event = InsertDocumentEvent(
+        event_id=f"event:direct-selected:{name}",
+        document_id=f"document:direct-selected:{name}",
+        document_version_id=f"version:direct-selected:{name}",
+        content_hash=sha(f"content:direct-selected:{name}"),
+        chunks=(
+            ChunkInput(
+                f"chunk:direct-selected:{name}",
+                0,
+                f"direct selected evidence {name}",
+            ),
+        ),
+    )
+    harness = make_harness(make_repository())
+    plan = make_typed_plan(harness.world, event)
+    call_work = _direct_selected_work(return_kind, nonzero=nonzero)
+    harness.world.direct_selected_outcomes_by_event[event.event_id] = (
+        FakeDirectSelectedOutcome(return_kind, branch, outcome, call_work)
+    )
+    if resumed:
+        harness.world.direct_interruptions_by_event[event.event_id] = 1
+        with pytest.raises(FakeDirectInterruption):
+            harness.application.run_event(plan)
+        epoch = next(iter(harness.world.epochs_by_event.values()))
+        assert epoch.terminal_result is None
+        assert not epoch.direct_done
+    return harness, plan, call_work
+
+
+@pytest.mark.parametrize(
+    "return_kind",
+    tuple(M5TypedDirectReturnKind),
+    ids=lambda value: value.value,
+)
+@pytest.mark.parametrize("branch", ["normal", "late"])
+@pytest.mark.parametrize("resumed", [False, True], ids=["fresh", "resumed"])
+@pytest.mark.parametrize("nonzero", [False, True], ids=["zero", "nonzero"])
+@pytest.mark.parametrize(
+    "outcome",
+    tuple(M5ReplayedOutcome),
+    ids=lambda value: value.value,
+)
+def test_r2d_selected_direct_outer_cutoff_cartesian_matrix_and_reconnect(
+    return_kind: M5TypedDirectReturnKind,
+    branch: str,
+    resumed: bool,
+    nonzero: bool,
+    outcome: M5ReplayedOutcome,
+) -> None:
+    name = f"{return_kind.value}:{branch}:{resumed}:{nonzero}:{outcome.value}"
+    harness, plan, expected_work = _direct_selected_case(
+        name,
+        return_kind=return_kind,
+        branch=branch,
+        outcome=outcome,
+        nonzero=nonzero,
+        resumed=resumed,
+    )
+    calls_before = harness.world.external_call_count
+
+    result = harness.application.run_event(plan)
+
+    assert result.state is M5RunState.REPLAYED
+    assert result.replayed_outcome is outcome
+    assert result.open_receipt.replayed is resumed
+    assert result.call_work == expected_work
+    assert len(harness.measurements.terminal_invocation_results) == 1
+    measured = harness.measurements.terminal_invocation_results[0]
+    expected_active_open = OpenEventReceipt(result.epoch_id, resumed, False)
+    assert measured.open_receipt == expected_active_open
+    assert measured.open_receipt is result.open_receipt
+    assert measured.call_work == expected_work
+    assert measured.call_work is result.call_work
+    assert measured.state is M5RunState.REPLAYED
+    assert measured.replayed_outcome is outcome
+    assert measured.logical_result_hash == result.logical_result_hash
+    assert measured == replace(
+        result,
+        call_timing=measured.call_timing,
+        call_timing_coverage=measured.call_timing_coverage,
+    )
+    assert measured.call_timing == M5RuntimeTiming()
+    assert measured.call_timing_coverage == M5RuntimeTimingCoverage.single_point(
+        None,
+        terminal_client_roundtrip_included=False,
+    )
+    assert result.call_timing == FAKE_OBSERVED_TIMING
+    assert result.call_timing_coverage == M5RuntimeTimingCoverage.single_point(
+        FAKE_OBSERVED_TIMING,
+        terminal_client_roundtrip_included=True,
+    )
+    expected_event_work = expected_work if branch == "normal" else M5RuntimeWork()
+    assert result.event_work.direct_discovery_call_count == (
+        expected_event_work.direct_discovery_call_count
+    )
+    assert result.event_work.direct_verifier_call_count == (
+        expected_event_work.direct_verifier_call_count
+    )
+    assert result.event_work.embedding_model_call_count == (
+        expected_event_work.embedding_model_call_count
+    )
+    assert result.event_work.verifier_model_call_count == (
+        expected_event_work.verifier_model_call_count
+    )
+    assert harness.world.external_call_count - calls_before == int(nonzero)
+    selected = harness.world.direct_selected_receipts_by_event[plan.structural_event_id]
+    selected_branch = selected.normal if selected.normal is not None else selected.late
+    assert selected.return_kind is return_kind
+    assert selected_branch is not None
+    assert selected_branch.epoch_id == result.epoch_id
+    assert selected_branch.current_terminal_logical_result_hash == (
+        result.logical_result_hash
+    )
+    epoch = harness.world.epoch(result.epoch_id)
+    assert len(epoch.direct_roots) == 1
+    if return_kind is M5TypedDirectReturnKind.DISCOVERY:
+        assert selected_branch.job_id == epoch.direct_roots[0].job_id
+    else:
+        assert selected_branch.job_id != epoch.direct_roots[0].job_id
+        if selected.normal is not None:
+            assert isinstance(
+                selected.normal.observation_completion,
+                ObservationCompletionReceipt,
+            )
+
+    origin = f"direct-selected-outer:{return_kind.value}:{branch}"
+    log = harness.world.operation_log
+    origin_index = log.index(origin)
+    canonical_index = log.index("read:terminal-result", origin_index + 1)
+    measure_index = next(
+        index
+        for index in range(canonical_index + 1, len(log))
+        if log[index].startswith("measure-terminal:")
+    )
+    telemetry_index = next(
+        index
+        for index in range(measure_index + 1, len(log))
+        if log[index].startswith("terminal-telemetry:")
+    )
+    assert origin_index < canonical_index < measure_index < telemetry_index
+    active_suffix = log[origin_index + 1 : telemetry_index + 1]
+    assert not any(marker.startswith("external:") for marker in active_suffix)
+    assert not any(marker.startswith("timing:") for marker in active_suffix)
+    assert not any(marker.startswith("tx:") for marker in active_suffix)
+    assert "typed-seal" not in active_suffix
+    assert "typed-failed" not in active_suffix
+    assert not any(marker == "timing:direct_transition" for marker in log)
+    assert not any(marker.startswith("external:requirement") for marker in log)
+    assert harness.audit.calls == 0
+
+    external_before_reconnect = harness.world.external_call_count
+    durable_fields = {
+        field_name: getattr(result, field_name) for field_name in _FROZEN_RESULT_FIELDS
+    }
+    reconnect = harness.application.run_event(plan)
+    assert reconnect.state is M5RunState.REPLAYED
+    assert reconnect.replayed_outcome is outcome
+    assert reconnect.open_receipt.replayed
+    assert reconnect.open_receipt.already_sealed is (
+        outcome is M5ReplayedOutcome.SEALED
+    )
+    assert reconnect.open_receipt.already_failed is (
+        outcome is M5ReplayedOutcome.FAILED
+    )
+    assert reconnect.call_work.is_zero
+    assert harness.world.external_call_count == external_before_reconnect
+    assert log.count(origin) == 1
+    for field_name, field_value in durable_fields.items():
+        assert getattr(reconnect, field_name) == field_value
+    assert len(harness.world.terminal_telemetry) == 2
+    assert len(harness.measurements.terminal_invocation_results) == 2
+
+
+class _DirectOuterReceiptSubclass(M5DirectAttemptReturnReceipt):
+    """A structurally identical but unauthorized outer-receipt subtype."""
+
+
+class _EqualitySpoofingStr(str):
+    """A string subtype whose comparisons conceal a different stored value."""
+
+    __hash__ = str.__hash__
+
+    def __eq__(self, other: object) -> bool:
+        return True
+
+    def __ne__(self, other: object) -> bool:
+        return False
+
+
+class _EqualitySpoofingInt(int):
+    """An integer subtype whose comparisons conceal a different stored value."""
+
+    __hash__ = int.__hash__
+
+    def __eq__(self, other: object) -> bool:
+        return True
+
+    def __ne__(self, other: object) -> bool:
+        return False
+
+
+class _ArithmeticSpoofingInt(int):
+    """An accepted int subtype that changes addition at the call-work boundary."""
+
+    def __radd__(self, other: object) -> int:
+        assert isinstance(other, int)
+        return int(other) + int(self) + 777
+
+
+class _EqualitySpoofingOpenReceipt(OpenEventReceipt):
+    """An open-receipt subtype whose equality conceals field mutation."""
+
+    __slots__ = ()
+
+    def __eq__(self, other: object) -> bool:
+        return True
+
+    def __ne__(self, other: object) -> bool:
+        return False
+
+
+class _RuntimeWorkSubclass(M5RuntimeWork):
+    """A zero-work subtype forbidden at a canonical-result boundary."""
+
+
+class _HashBypassingEventRunResult(M5EventRunResult):
+    """A result subtype that hides changed durable fields from hash checks."""
+
+    __slots__ = ()
+
+    @property
+    def expected_logical_result_hash(self) -> str:
+        assert self.logical_result_hash is not None
+        return self.logical_result_hash
+
+
+class _IterationSpoofingTuple(tuple[object, ...]):
+    """A tuple subtype whose iterator conceals its stored elements."""
+
+    def __iter__(self) -> Iterator[object]:
+        return iter(())
+
+
+class _AlternatingRuntimeWork(M5RuntimeWork):
+    """An unsafe subtype that changes its counters between successive reads."""
+
+    _counter_read_count: int
+    __slots__ = ("_counter_read_count",)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_counter_read_count", 0)
+        super().__post_init__()
+
+    def counter_values(self) -> tuple[int, ...]:
+        read_count = self._counter_read_count + 1
+        object.__setattr__(self, "_counter_read_count", read_count)
+        values = list(super().counter_values())
+        if read_count % 2 == 0:
+            index = self.counter_names().index("bytes_hashed")
+            values[index] += 1
+        return tuple(values)
+
+
+_SPOOFED_SELECTED_JOB_ID = "different-selected-direct-job"
+_SPOOFED_TERMINAL_HASH = sha("different-selected-terminal-hash")
+_SPOOFED_CANONICAL_EVENT_ID = "different-canonical-event"
+_SPOOFED_CANONICAL_PAYLOAD_HASH = sha("different-canonical-payload")
+
+
+@dataclass(frozen=True, slots=True)
+class _DuckDirectOuterReceipt:
+    return_kind: object
+    normal: object
+    late: object
+
+
+@dataclass(slots=True)
+class _CorruptSelectedDirect(FakeDirect):
+    mode: str = "receipt_only"
+    injected_call_work: M5RuntimeWork | None = None
+
+    def run_pending_direct(
+        self, epoch_id: int, expected_revision: int, event: M5TypedEventPlan
+    ) -> M5DirectExecutionReceipt:
+        result = FakeDirect.run_pending_direct(self, epoch_id, expected_revision, event)
+        selected = result.selected_successful_outer_receipt
+        assert selected is not None
+        selected_branch = (
+            selected.normal if selected.normal is not None else selected.late
+        )
+        assert selected_branch is not None
+
+        if self.mode == "receipt_only":
+            return cast(
+                M5DirectExecutionReceipt,
+                _unsafe_set(
+                    result,
+                    selected_successful_outer_return_kind=None,
+                    selected_successful_outer_job_id=None,
+                ),
+            )
+        if self.mode == "context_only":
+            return cast(
+                M5DirectExecutionReceipt,
+                _unsafe_set(result, selected_successful_outer_receipt=None),
+            )
+        if self.mode == "missing_job_context":
+            return cast(
+                M5DirectExecutionReceipt,
+                _unsafe_set(result, selected_successful_outer_job_id=None),
+            )
+        if self.mode == "missing_kind_context":
+            return cast(
+                M5DirectExecutionReceipt,
+                _unsafe_set(result, selected_successful_outer_return_kind=None),
+            )
+        if self.mode == "selected_with_blocked":
+            return cast(
+                M5DirectExecutionReceipt,
+                _unsafe_set(
+                    result,
+                    blocked_reason=M5RunFailureReason.RETRIEVAL_UNAVAILABLE,
+                ),
+            )
+        if self.mode == "selected_with_failure":
+            return cast(
+                M5DirectExecutionReceipt,
+                _unsafe_set(
+                    result,
+                    terminal_failure_reason=M5RunFailureReason.RETRIEVAL_ERROR,
+                ),
+            )
+        if self.mode == "selected_wrong_type":
+            return cast(
+                M5DirectExecutionReceipt,
+                _unsafe_set(result, selected_successful_outer_receipt=object()),
+            )
+        if self.mode == "selected_subclass":
+            subclass = _DirectOuterReceiptSubclass(
+                selected.return_kind,
+                selected.normal,
+                selected.late,
+            )
+            return cast(
+                M5DirectExecutionReceipt,
+                _unsafe_set(result, selected_successful_outer_receipt=subclass),
+            )
+        if self.mode == "selected_duck_type":
+            duck = _DuckDirectOuterReceipt(
+                selected.return_kind,
+                selected.normal,
+                selected.late,
+            )
+            return cast(
+                M5DirectExecutionReceipt,
+                _unsafe_set(result, selected_successful_outer_receipt=duck),
+            )
+        if self.mode == "direct_revision_float":
+            return cast(
+                M5DirectExecutionReceipt,
+                _unsafe_set(
+                    result, resulting_revision=float(result.resulting_revision)
+                ),
+            )
+        if self.mode == "call_work_subclass":
+            self.injected_call_work = _AlternatingRuntimeWork()
+            return cast(
+                M5DirectExecutionReceipt,
+                _unsafe_set(result, call_work=self.injected_call_work),
+            )
+        if self.mode == "call_work_counter_subclass":
+            self.injected_call_work = M5RuntimeWork(
+                bytes_hashed=_ArithmeticSpoofingInt(0)
+            )
+            return cast(
+                M5DirectExecutionReceipt,
+                _unsafe_set(result, call_work=self.injected_call_work),
+            )
+        if self.mode == "cursor_local_receipt":
+            cursor = M5DirectCursorContributionReceipt(
+                epoch_id=selected_branch.epoch_id,
+                job_id=selected_branch.job_id,
+                attempt_id=selected_branch.attempt_id,
+                execution_evidence_digest=sha("r2d-cursor-execution"),
+                attempt_execution_contribution_key_digest=(
+                    digests.runtime_work_contribution_key_digest(
+                        epoch_id=selected_branch.epoch_id,
+                        contribution_kind=(
+                            M5RuntimeWorkContributionKind.DIRECT_ATTEMPT_EXECUTION
+                        ),
+                        source_id=selected_branch.attempt_id,
+                    )
+                ),
+                direct_transition_source_id=None,
+                direct_transition_source_identity_hash=None,
+                direct_transition_contribution_key_digest=None,
+                observation_completion=None,
+            )
+            return cast(
+                M5DirectExecutionReceipt,
+                _unsafe_set(result, selected_successful_outer_receipt=cursor),
+            )
+        if self.mode == "wrapper_both":
+            alternate = FakeDirect._selected_outer_receipt(  # noqa: SLF001
+                epoch_id=selected_branch.epoch_id,
+                resulting_revision=selected_branch.resulting_revision,
+                job_id=selected_branch.job_id,
+                return_kind=selected.return_kind,
+                branch=("late" if selected.normal is not None else "normal"),
+                terminal_logical_result_hash=(
+                    selected_branch.current_terminal_logical_result_hash or ""
+                ),
+            )
+            malformed = cast(
+                M5DirectAttemptReturnReceipt,
+                _unsafe_set(
+                    selected,
+                    normal=selected.normal or alternate.normal,
+                    late=selected.late or alternate.late,
+                ),
+            )
+            return cast(
+                M5DirectExecutionReceipt,
+                _unsafe_set(result, selected_successful_outer_receipt=malformed),
+            )
+        if self.mode == "wrapper_neither":
+            malformed = cast(
+                M5DirectAttemptReturnReceipt,
+                _unsafe_set(selected, normal=None, late=None),
+            )
+            return cast(
+                M5DirectExecutionReceipt,
+                _unsafe_set(result, selected_successful_outer_receipt=malformed),
+            )
+        if self.mode == "wrong_invoked_kind":
+            other_kind = (
+                M5TypedDirectReturnKind.VERIFIER
+                if selected.return_kind is M5TypedDirectReturnKind.DISCOVERY
+                else M5TypedDirectReturnKind.DISCOVERY
+            )
+            return cast(
+                M5DirectExecutionReceipt,
+                _unsafe_set(result, selected_successful_outer_return_kind=other_kind),
+            )
+        if self.mode == "wrong_invoked_job":
+            return cast(
+                M5DirectExecutionReceipt,
+                _unsafe_set(
+                    result,
+                    selected_successful_outer_job_id="another-direct-job",
+                ),
+            )
+        if self.mode == "context_job_str_subclass":
+            return cast(
+                M5DirectExecutionReceipt,
+                _unsafe_set(
+                    result,
+                    selected_successful_outer_job_id=_EqualitySpoofingStr(
+                        _SPOOFED_SELECTED_JOB_ID
+                    ),
+                ),
+            )
+        if self.mode in {
+            "attempt_id_str_subclass",
+            "terminal_hash_str_subclass",
+            "transition_source_str_subclass",
+        }:
+            string_changes: dict[str, object] = {}
+            if self.mode == "attempt_id_str_subclass":
+                string_changes["attempt_id"] = _EqualitySpoofingStr(
+                    selected_branch.attempt_id
+                )
+            elif self.mode == "terminal_hash_str_subclass":
+                string_changes["current_terminal_logical_result_hash"] = (
+                    _EqualitySpoofingStr(_SPOOFED_TERMINAL_HASH)
+                )
+            else:
+                assert selected.normal is not None
+                string_changes["direct_transition_source_id"] = _EqualitySpoofingStr(
+                    selected.normal.direct_transition_source_id
+                )
+            malformed_branch = _unsafe_set(selected_branch, **string_changes)
+            malformed_selected = _unsafe_set(
+                selected,
+                normal=(malformed_branch if selected.normal is not None else None),
+                late=(malformed_branch if selected.late is not None else None),
+            )
+            return cast(
+                M5DirectExecutionReceipt,
+                _unsafe_set(
+                    result, selected_successful_outer_receipt=malformed_selected
+                ),
+            )
+        if self.mode in {"empty_job", "non_string_job"}:
+            wrong_job: object = "" if self.mode == "empty_job" else 7
+            malformed_branch = _unsafe_set(selected_branch, job_id=wrong_job)
+            malformed_selected = _unsafe_set(
+                selected,
+                normal=(malformed_branch if selected.normal is not None else None),
+                late=(malformed_branch if selected.late is not None else None),
+            )
+            return cast(
+                M5DirectExecutionReceipt,
+                _unsafe_set(
+                    result,
+                    selected_successful_outer_receipt=malformed_selected,
+                    selected_successful_outer_job_id=wrong_job,
+                ),
+            )
+        if self.mode in {
+            "wrong_epoch",
+            "wrong_revision",
+            "branch_revision_float",
+            "missing_hash",
+        }:
+            changes: dict[str, object] = {}
+            if self.mode == "wrong_epoch":
+                changes["epoch_id"] = selected_branch.epoch_id + 1
+            elif self.mode == "wrong_revision":
+                changes["resulting_revision"] = selected_branch.resulting_revision + 1
+            elif self.mode == "branch_revision_float":
+                changes["resulting_revision"] = float(
+                    selected_branch.resulting_revision
+                )
+            else:
+                changes["current_terminal_logical_result_hash"] = None
+            malformed_branch = _unsafe_set(selected_branch, **changes)
+            malformed_selected = _unsafe_set(
+                selected,
+                normal=(malformed_branch if selected.normal is not None else None),
+                late=(malformed_branch if selected.late is not None else None),
+            )
+            return cast(
+                M5DirectExecutionReceipt,
+                _unsafe_set(
+                    result, selected_successful_outer_receipt=malformed_selected
+                ),
+            )
+        if self.mode == "terminal_hash_mismatch":
+            malformed_branch = _unsafe_set(
+                selected_branch,
+                current_terminal_logical_result_hash=sha("wrong-terminal-hash"),
+            )
+            malformed_selected = _unsafe_set(
+                selected,
+                normal=(malformed_branch if selected.normal is not None else None),
+                late=(malformed_branch if selected.late is not None else None),
+            )
+            return cast(
+                M5DirectExecutionReceipt,
+                _unsafe_set(
+                    result, selected_successful_outer_receipt=malformed_selected
+                ),
+            )
+        if self.mode == "discovery_observation":
+            assert selected.normal is not None
+            malformed_normal = _unsafe_set(
+                selected.normal,
+                observation_completion=ObservationCompletionReceipt(True, True),
+            )
+            malformed_selected = _unsafe_set(selected, normal=malformed_normal)
+            return cast(
+                M5DirectExecutionReceipt,
+                _unsafe_set(
+                    result, selected_successful_outer_receipt=malformed_selected
+                ),
+            )
+        if self.mode == "verifier_missing_observation":
+            assert selected.normal is not None
+            malformed_normal = _unsafe_set(selected.normal, observation_completion=None)
+            malformed_selected = _unsafe_set(selected, normal=malformed_normal)
+            return cast(
+                M5DirectExecutionReceipt,
+                _unsafe_set(
+                    result, selected_successful_outer_receipt=malformed_selected
+                ),
+            )
+        if self.mode == "verifier_observation_non_bool":
+            assert selected.normal is not None
+            observation = cast(
+                ObservationCompletionReceipt,
+                _unsafe_set(
+                    selected.normal.observation_completion,
+                    artifact_stored=1,
+                ),
+            )
+            malformed_normal = _unsafe_set(
+                selected.normal, observation_completion=observation
+            )
+            malformed_selected = _unsafe_set(selected, normal=malformed_normal)
+            return cast(
+                M5DirectExecutionReceipt,
+                _unsafe_set(
+                    result, selected_successful_outer_receipt=malformed_selected
+                ),
+            )
+        if self.mode == "changed_held_replayed":
+            opened = self.world.epoch(epoch_id).current_open_receipt
+            assert opened is not None
+            object.__setattr__(opened, "replayed", not opened.replayed)
+            return result
+        if self.mode == "changed_held_epoch":
+            opened = self.world.epoch(epoch_id).current_open_receipt
+            assert opened is not None
+            object.__setattr__(opened, "epoch_id", opened.epoch_id + 1)
+            return result
+        raise AssertionError(f"unknown selected corruption mode: {self.mode}")
+
+
+def _assert_no_r2d_action_after_rejection(harness: FakeHarness) -> None:
+    assert harness.world.terminal_telemetry == {}
+    assert harness.audit.calls == 0
+    selected_indexes = [
+        index
+        for index, marker in enumerate(harness.world.operation_log)
+        if marker.startswith("direct-selected-outer:")
+    ]
+    assert len(selected_indexes) == 1
+    suffix = harness.world.operation_log[selected_indexes[0] + 1 :]
+    assert not any(marker.startswith("measure-terminal:") for marker in suffix)
+    assert not any(marker.startswith("terminal-telemetry:") for marker in suffix)
+    assert not any(marker.startswith("external:") for marker in suffix)
+    assert not any(marker.startswith("timing:") for marker in suffix)
+    assert not any(marker.startswith("tx:") for marker in suffix)
+    assert not any(marker.startswith("acquire:") for marker in suffix)
+    assert not {
+        "typed-seal",
+        "typed-failed",
+        "direct-complete",
+        "race:direct-winning-complete",
+        "discovery-staged",
+        "root-barrier",
+        "verifier-complete",
+        "late-attempt-audit-only",
+        "audit:python-reference",
+    }.intersection(suffix)
+
+
+def _assert_no_r2d_hydration_or_later_action(harness: FakeHarness) -> None:
+    _assert_no_r2d_action_after_rejection(harness)
+    selected_index = next(
+        index
+        for index, marker in enumerate(harness.world.operation_log)
+        if marker.startswith("direct-selected-outer:")
+    )
+    assert (
+        "read:terminal-result" not in harness.world.operation_log[selected_index + 1 :]
+    )
+
+
+@pytest.mark.parametrize(
+    ("mode", "return_kind", "branch"),
+    [
+        ("receipt_only", M5TypedDirectReturnKind.DISCOVERY, "normal"),
+        ("context_only", M5TypedDirectReturnKind.DISCOVERY, "normal"),
+        ("missing_job_context", M5TypedDirectReturnKind.DISCOVERY, "normal"),
+        ("missing_kind_context", M5TypedDirectReturnKind.DISCOVERY, "normal"),
+        ("selected_with_blocked", M5TypedDirectReturnKind.DISCOVERY, "normal"),
+        ("selected_with_failure", M5TypedDirectReturnKind.DISCOVERY, "normal"),
+        ("selected_wrong_type", M5TypedDirectReturnKind.DISCOVERY, "normal"),
+        ("selected_subclass", M5TypedDirectReturnKind.DISCOVERY, "normal"),
+        ("selected_duck_type", M5TypedDirectReturnKind.VERIFIER, "late"),
+        ("direct_revision_float", M5TypedDirectReturnKind.DISCOVERY, "normal"),
+        ("cursor_local_receipt", M5TypedDirectReturnKind.DISCOVERY, "normal"),
+        ("wrapper_both", M5TypedDirectReturnKind.DISCOVERY, "normal"),
+        ("wrapper_neither", M5TypedDirectReturnKind.DISCOVERY, "normal"),
+        ("wrong_invoked_kind", M5TypedDirectReturnKind.DISCOVERY, "late"),
+        ("wrong_invoked_job", M5TypedDirectReturnKind.VERIFIER, "late"),
+        ("empty_job", M5TypedDirectReturnKind.DISCOVERY, "late"),
+        ("non_string_job", M5TypedDirectReturnKind.VERIFIER, "late"),
+        ("wrong_epoch", M5TypedDirectReturnKind.DISCOVERY, "late"),
+        ("wrong_revision", M5TypedDirectReturnKind.VERIFIER, "late"),
+        ("branch_revision_float", M5TypedDirectReturnKind.DISCOVERY, "late"),
+        ("missing_hash", M5TypedDirectReturnKind.DISCOVERY, "normal"),
+        ("terminal_hash_mismatch", M5TypedDirectReturnKind.VERIFIER, "late"),
+        ("discovery_observation", M5TypedDirectReturnKind.DISCOVERY, "normal"),
+        (
+            "verifier_missing_observation",
+            M5TypedDirectReturnKind.VERIFIER,
+            "normal",
+        ),
+        (
+            "verifier_observation_non_bool",
+            M5TypedDirectReturnKind.VERIFIER,
+            "normal",
+        ),
+        ("changed_held_replayed", M5TypedDirectReturnKind.DISCOVERY, "normal"),
+        ("changed_held_epoch", M5TypedDirectReturnKind.VERIFIER, "late"),
+    ],
+)
+def test_r2d_selected_context_wrapper_branch_and_held_receipt_rejections(
+    mode: str,
+    return_kind: M5TypedDirectReturnKind,
+    branch: str,
+) -> None:
+    harness, plan, _ = _direct_selected_case(
+        f"reject:{mode}",
+        return_kind=return_kind,
+        branch=branch,
+        outcome=M5ReplayedOutcome.FAILED,
+        nonzero=True,
+        resumed=False,
+    )
+    direct = _CorruptSelectedDirect(harness.world, mode=mode)
+    harness.direct = direct
+    harness.application.direct = direct
+
+    with pytest.raises(ValidationError):
+        harness.application.run_event(plan)
+
+    _assert_no_r2d_action_after_rejection(harness)
+    suffix_start = next(
+        index
+        for index, marker in enumerate(harness.world.operation_log)
+        if marker.startswith("direct-selected-outer:")
+    )
+    reads_after_selected = harness.world.operation_log[suffix_start + 1 :].count(
+        "read:terminal-result"
+    )
+    assert reads_after_selected == int(mode == "terminal_hash_mismatch")
+
+
+@pytest.mark.parametrize(
+    ("mode", "return_kind", "branch"),
+    [
+        ("context_job_str_subclass", M5TypedDirectReturnKind.DISCOVERY, "late"),
+        ("attempt_id_str_subclass", M5TypedDirectReturnKind.VERIFIER, "late"),
+        ("terminal_hash_str_subclass", M5TypedDirectReturnKind.DISCOVERY, "normal"),
+        (
+            "transition_source_str_subclass",
+            M5TypedDirectReturnKind.VERIFIER,
+            "normal",
+        ),
+    ],
+)
+def test_r2d_selected_direct_rejects_nonexact_string_subclasses_before_hydration(
+    mode: str,
+    return_kind: M5TypedDirectReturnKind,
+    branch: str,
+) -> None:
+    harness, plan, _ = _direct_selected_case(
+        f"nonexact-string:{mode}",
+        return_kind=return_kind,
+        branch=branch,
+        outcome=M5ReplayedOutcome.FAILED,
+        nonzero=False,
+        resumed=False,
+    )
+    direct = _CorruptSelectedDirect(harness.world, mode=mode)
+    harness.direct = direct
+    harness.application.direct = direct
+
+    with pytest.raises(ValidationError):
+        harness.application.run_event(plan)
+
+    _assert_no_r2d_hydration_or_later_action(harness)
+    selected = harness.world.direct_selected_receipts_by_event[plan.structural_event_id]
+    selected_branch = selected.normal if selected.normal is not None else selected.late
+    assert selected_branch is not None
+    if mode == "context_job_str_subclass":
+        spoof = _EqualitySpoofingStr(_SPOOFED_SELECTED_JOB_ID)
+        assert str(spoof) != selected_branch.job_id
+        assert spoof == selected_branch.job_id
+    elif mode == "terminal_hash_str_subclass":
+        terminal = harness.world.epoch(selected_branch.epoch_id).terminal_result
+        assert terminal is not None
+        assert terminal.logical_result_hash is not None
+        spoof = _EqualitySpoofingStr(_SPOOFED_TERMINAL_HASH)
+        assert str(spoof) != terminal.logical_result_hash
+        assert spoof == terminal.logical_result_hash
+
+
+@pytest.mark.parametrize("mode", ["call_work_subclass", "call_work_counter_subclass"])
+def test_r2d_selected_direct_rejects_unsafe_call_work_before_hydration(
+    mode: str,
+) -> None:
+    harness, plan, _ = _direct_selected_case(
+        "unsafe-call-work-subclass",
+        return_kind=M5TypedDirectReturnKind.DISCOVERY,
+        branch="normal",
+        outcome=M5ReplayedOutcome.SEALED,
+        nonzero=False,
+        resumed=False,
+    )
+    direct = _CorruptSelectedDirect(harness.world, mode=mode)
+    harness.direct = direct
+    harness.application.direct = direct
+
+    with pytest.raises(ValidationError, match="invalid call work|nonexact counter"):
+        harness.application.run_event(plan)
+
+    _assert_no_r2d_hydration_or_later_action(harness)
+    assert direct.injected_call_work is not None
+    if mode == "call_work_subclass":
+        assert type(direct.injected_call_work) is _AlternatingRuntimeWork
+        first = direct.injected_call_work.counter_values()
+        second = direct.injected_call_work.counter_values()
+        assert first != second
+    else:
+        counter = direct.injected_call_work.bytes_hashed
+        assert type(counter) is _ArithmeticSpoofingInt
+        assert 0 + counter == 777
+
+
+@dataclass(slots=True)
+class _CorruptDirectCanonicalRuntime(FakeRuntime):
+    mode: str = "missing"
+
+    def read_typed_event_result(
+        self, event_id: str, payload_hash: str
+    ) -> M5EventRunResult | None:
+        canonical = FakeRuntime.read_typed_event_result(self, event_id, payload_hash)
+        selected_returned = any(
+            marker.startswith("direct-selected-outer:")
+            for marker in self.world.operation_log
+        )
+        if canonical is None or not selected_returned:
+            return canonical
+        if self.mode == "missing":
+            return None
+        if self.mode == "wrong_event":
+            return cast(
+                M5EventRunResult,
+                _unsafe_set(canonical, event_id="another-event"),
+            )
+        if self.mode == "event_id_str_subclass":
+            return cast(
+                M5EventRunResult,
+                _unsafe_set(
+                    canonical,
+                    event_id=_EqualitySpoofingStr(_SPOOFED_CANONICAL_EVENT_ID),
+                ),
+            )
+        if self.mode == "wrong_payload":
+            return cast(
+                M5EventRunResult,
+                _unsafe_set(canonical, payload_hash=sha("another-payload")),
+            )
+        if self.mode == "payload_hash_str_subclass":
+            return cast(
+                M5EventRunResult,
+                _unsafe_set(
+                    canonical,
+                    payload_hash=_EqualitySpoofingStr(_SPOOFED_CANONICAL_PAYLOAD_HASH),
+                ),
+            )
+        if self.mode == "wrong_epoch":
+            return cast(
+                M5EventRunResult,
+                _unsafe_set(canonical, epoch_id=canonical.epoch_id + 1),
+            )
+        if self.mode == "epoch_int_subclass":
+            return cast(
+                M5EventRunResult,
+                _unsafe_set(
+                    canonical,
+                    epoch_id=_EqualitySpoofingInt(canonical.epoch_id + 1),
+                ),
+            )
+        if self.mode == "epoch_bool":
+            return cast(
+                M5EventRunResult,
+                _unsafe_set(canonical, epoch_id=True),
+            )
+        if self.mode == "wrong_logical_hash":
+            return cast(
+                M5EventRunResult,
+                _unsafe_set(
+                    canonical,
+                    logical_result_hash=sha("another-logical-result"),
+                ),
+            )
+        if self.mode == "logical_hash_str_subclass":
+            return cast(
+                M5EventRunResult,
+                _unsafe_set(
+                    canonical,
+                    logical_result_hash=_EqualitySpoofingStr(_SPOOFED_TERMINAL_HASH),
+                ),
+            )
+        if self.mode == "result_subclass_hash_bypass":
+            changed_event_work = M5RuntimeWork(
+                **{
+                    name: (
+                        getattr(canonical.event_work, name)
+                        + int(name == "bytes_hashed")
+                    )
+                    for name in M5RuntimeWork.counter_names()
+                }
+            )
+            return _HashBypassingEventRunResult(
+                event_id=canonical.event_id,
+                payload_hash=canonical.payload_hash,
+                epoch_id=canonical.epoch_id,
+                state=canonical.state,
+                replayed_outcome=canonical.replayed_outcome,
+                open_receipt=canonical.open_receipt,
+                publication_receipt=canonical.publication_receipt,
+                event_work=changed_event_work,
+                call_work=canonical.call_work,
+                event_timing=canonical.event_timing,
+                call_timing=canonical.call_timing,
+                combined_deltas=canonical.combined_deltas,
+                changed_state_references=canonical.changed_state_references,
+                failure_reason=canonical.failure_reason,
+                logical_result_hash=canonical.logical_result_hash,
+                event_timing_coverage=canonical.event_timing_coverage,
+                call_timing_coverage=canonical.call_timing_coverage,
+            )
+        if self.mode == "open_failure_reason_str_subclass":
+            assert canonical.failure_reason is not None
+            malformed_open = cast(
+                OpenEventReceipt,
+                _unsafe_set(
+                    canonical.open_receipt,
+                    failure_reason=_EqualitySpoofingStr("another-failure"),
+                ),
+            )
+            return cast(
+                M5EventRunResult,
+                _unsafe_set(canonical, open_receipt=malformed_open),
+            )
+        if self.mode == "call_work_subclass":
+            return cast(
+                M5EventRunResult,
+                _unsafe_set(canonical, call_work=_RuntimeWorkSubclass()),
+            )
+        if self.mode == "combined_deltas_tuple_subclass":
+            return cast(
+                M5EventRunResult,
+                _unsafe_set(
+                    canonical,
+                    combined_deltas=_IterationSpoofingTuple(canonical.combined_deltas),
+                ),
+            )
+        if self.mode == "changed_refs_tuple_subclass":
+            return cast(
+                M5EventRunResult,
+                _unsafe_set(
+                    canonical,
+                    changed_state_references=_IterationSpoofingTuple(
+                        canonical.changed_state_references
+                    ),
+                ),
+            )
+        if self.mode == "wrong_state":
+            return cast(
+                M5EventRunResult,
+                _unsafe_set(canonical, state=M5RunState.FAILED),
+            )
+        if self.mode == "wrong_outcome":
+            other = (
+                M5ReplayedOutcome.FAILED
+                if canonical.replayed_outcome is M5ReplayedOutcome.SEALED
+                else M5ReplayedOutcome.SEALED
+            )
+            return cast(
+                M5EventRunResult,
+                _unsafe_set(canonical, replayed_outcome=other),
+            )
+        if self.mode == "active_open_receipt":
+            return cast(
+                M5EventRunResult,
+                _unsafe_set(
+                    canonical,
+                    open_receipt=OpenEventReceipt(canonical.epoch_id, False, False),
+                ),
+            )
+        if self.mode == "wrong_terminal_open_receipt":
+            wrong_open = _unsafe_set(
+                canonical.open_receipt,
+                epoch_id=canonical.epoch_id + 1,
+            )
+            return cast(
+                M5EventRunResult,
+                _unsafe_set(canonical, open_receipt=wrong_open),
+            )
+        if self.mode == "nonzero_call_work":
+            return cast(
+                M5EventRunResult,
+                _unsafe_set(
+                    canonical,
+                    call_work=M5RuntimeWork(direct_discovery_call_count=1),
+                ),
+            )
+        if self.mode == "changed_event_work":
+            changed_work = M5RuntimeWork(
+                **{
+                    name: (
+                        getattr(canonical.event_work, name)
+                        + int(name == "bytes_hashed")
+                    )
+                    for name in M5RuntimeWork.counter_names()
+                }
+            )
+            return cast(
+                M5EventRunResult,
+                _unsafe_set(canonical, event_work=changed_work),
+            )
+        if self.mode == "changed_event_timing":
+            changed_timing = _unsafe_set(
+                canonical.event_timing,
+                coordinator_non_db_non_neural_ns=-1,
+            )
+            return cast(
+                M5EventRunResult,
+                _unsafe_set(canonical, event_timing=changed_timing),
+            )
+        if self.mode == "missing_coverage":
+            return cast(
+                M5EventRunResult,
+                _unsafe_set(canonical, event_timing_coverage=None),
+            )
+        if self.mode == "wrong_publication":
+            assert canonical.publication_receipt is not None
+            publication = _unsafe_set(
+                canonical.publication_receipt,
+                publication_id=sha("another-publication"),
+            )
+            return cast(
+                M5EventRunResult,
+                _unsafe_set(canonical, publication_receipt=publication),
+            )
+        if self.mode == "wrong_failure":
+            assert canonical.failure_reason is M5RunFailureReason.RETRIEVAL_ERROR
+            return cast(
+                M5EventRunResult,
+                _unsafe_set(
+                    canonical,
+                    failure_reason=M5RunFailureReason.VERIFIER_ERROR,
+                ),
+            )
+        if self.mode == "mutate_held_during_read":
+            epoch = self.world.epoch(canonical.epoch_id)
+            assert epoch.current_open_receipt is not None
+            object.__setattr__(
+                epoch.current_open_receipt,
+                "replayed",
+                not epoch.current_open_receipt.replayed,
+            )
+            return canonical
+        raise AssertionError(f"unknown canonical corruption mode: {self.mode}")
+
+
+@pytest.mark.parametrize(
+    ("mode", "outcome"),
+    [
+        ("missing", M5ReplayedOutcome.FAILED),
+        ("wrong_event", M5ReplayedOutcome.FAILED),
+        ("wrong_payload", M5ReplayedOutcome.FAILED),
+        ("wrong_epoch", M5ReplayedOutcome.FAILED),
+        ("wrong_logical_hash", M5ReplayedOutcome.FAILED),
+        ("wrong_state", M5ReplayedOutcome.FAILED),
+        ("wrong_outcome", M5ReplayedOutcome.FAILED),
+        ("wrong_outcome", M5ReplayedOutcome.SEALED),
+        ("active_open_receipt", M5ReplayedOutcome.FAILED),
+        ("wrong_terminal_open_receipt", M5ReplayedOutcome.SEALED),
+        ("nonzero_call_work", M5ReplayedOutcome.FAILED),
+        ("changed_event_work", M5ReplayedOutcome.SEALED),
+        ("changed_event_timing", M5ReplayedOutcome.FAILED),
+        ("missing_coverage", M5ReplayedOutcome.SEALED),
+        ("wrong_publication", M5ReplayedOutcome.SEALED),
+        ("wrong_failure", M5ReplayedOutcome.FAILED),
+        ("mutate_held_during_read", M5ReplayedOutcome.FAILED),
+    ],
+)
+def test_r2d_selected_direct_rejects_noncanonical_hydration_before_telemetry(
+    mode: str,
+    outcome: M5ReplayedOutcome,
+) -> None:
+    harness, plan, _ = _direct_selected_case(
+        f"canonical:{mode}:{outcome.value}",
+        return_kind=M5TypedDirectReturnKind.VERIFIER,
+        branch="late",
+        outcome=outcome,
+        nonzero=True,
+        resumed=False,
+    )
+    runtime = _CorruptDirectCanonicalRuntime(harness.world, mode=mode)
+    _install_runtime(harness, runtime)
+
+    with pytest.raises(ValidationError):
+        harness.application.run_event(plan)
+
+    _assert_no_r2d_action_after_rejection(harness)
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "logical_hash_str_subclass",
+        "event_id_str_subclass",
+        "payload_hash_str_subclass",
+        "epoch_int_subclass",
+        "epoch_bool",
+        "result_subclass_hash_bypass",
+        "open_failure_reason_str_subclass",
+        "call_work_subclass",
+        "combined_deltas_tuple_subclass",
+        "changed_refs_tuple_subclass",
+    ],
+)
+def test_r2d_rejects_unsafe_canonical_identity_subclasses_before_measurement(
+    mode: str,
+) -> None:
+    harness, plan, _ = _direct_selected_case(
+        f"unsafe-canonical-identity:{mode}",
+        return_kind=M5TypedDirectReturnKind.VERIFIER,
+        branch="late",
+        outcome=M5ReplayedOutcome.FAILED,
+        nonzero=False,
+        resumed=False,
+    )
+    runtime = _CorruptDirectCanonicalRuntime(harness.world, mode=mode)
+    _install_runtime(harness, runtime)
+
+    with pytest.raises(ValidationError):
+        harness.application.run_event(plan)
+
+    _assert_no_r2d_action_after_rejection(harness)
+    selected_index = next(
+        index
+        for index, marker in enumerate(harness.world.operation_log)
+        if marker.startswith("direct-selected-outer:")
+    )
+    suffix = harness.world.operation_log[selected_index + 1 :]
+    assert suffix.count("read:terminal-result") == 1
+    assert not any(marker.startswith("measure-terminal:") for marker in suffix)
+    if mode == "logical_hash_str_subclass":
+        selected = harness.world.direct_selected_receipts_by_event[
+            plan.structural_event_id
+        ]
+        selected_branch = (
+            selected.normal if selected.normal is not None else selected.late
+        )
+        assert selected_branch is not None
+        assert selected_branch.current_terminal_logical_result_hash is not None
+        spoof = _EqualitySpoofingStr(_SPOOFED_TERMINAL_HASH)
+        assert str(spoof) != selected_branch.current_terminal_logical_result_hash
+        assert spoof == selected_branch.current_terminal_logical_result_hash
+
+
+@pytest.mark.parametrize("mode", ["open_receipt", "call_work", "event_id"])
+def test_r2d_rejects_measurement_mutation_before_terminal_telemetry(
+    mode: str,
+) -> None:
+    harness, plan, _ = _direct_selected_case(
+        f"measurement-mutation:{mode}",
+        return_kind=M5TypedDirectReturnKind.VERIFIER,
+        branch="late",
+        outcome=M5ReplayedOutcome.FAILED,
+        nonzero=True,
+        resumed=True,
+    )
+    measurements = _MutatingTerminalMeasurements(harness.world, mode=mode)
+    harness.measurements = measurements
+    harness.application.measurements = measurements
+
+    with pytest.raises(ValidationError):
+        harness.application.run_event(plan)
+
+    assert len(measurements.terminal_invocation_results) == 1
+    assert (
+        sum(
+            marker.startswith("measure-terminal:")
+            for marker in harness.world.operation_log
+        )
+        == 1
+    )
+    assert harness.world.terminal_telemetry == {}
+    assert harness.audit.calls == 0
+    measurement_index = next(
+        index
+        for index, marker in enumerate(harness.world.operation_log)
+        if marker.startswith("measure-terminal:")
+    )
+    assert not any(
+        marker.startswith(("terminal-telemetry:", "tx:", "acquire:"))
+        for marker in harness.world.operation_log[measurement_index + 1 :]
+    )
+
+
+def test_r2d_selected_direct_rejects_changed_resumed_receipt_before_hydration() -> None:
+    harness, plan, _ = _direct_selected_case(
+        "changed-resumed-held-receipt",
+        return_kind=M5TypedDirectReturnKind.VERIFIER,
+        branch="normal",
+        outcome=M5ReplayedOutcome.SEALED,
+        nonzero=False,
+        resumed=True,
+    )
+    direct = _CorruptSelectedDirect(harness.world, mode="changed_held_replayed")
+    harness.direct = direct
+    harness.application.direct = direct
+
+    with pytest.raises(ValidationError):
+        harness.application.run_event(plan)
+
+    _assert_no_r2d_action_after_rejection(harness)
+
+
+@dataclass(slots=True)
+class _UnselectedTerminalDirect(FakeDirect):
+    def run_pending_direct(
+        self, epoch_id: int, expected_revision: int, event: M5TypedEventPlan
+    ) -> M5DirectExecutionReceipt:
+        selected = FakeDirect.run_pending_direct(
+            self, epoch_id, expected_revision, event
+        )
+        assert selected.selected_successful_outer_receipt is not None
+        return M5DirectExecutionReceipt(
+            resulting_revision=selected.resulting_revision,
+            call_work=selected.call_work,
+        )
+
+
+@dataclass(slots=True)
+class _StopAfterUnselectedDirectRuntime(FakeRuntime):
+    def acquire_m5_job(
+        self, epoch_id: int, expected_revision: int, job: M5LogicalJobSpec
+    ) -> M5JobLease:
+        self.world.operation_log.append("probe:unselected-direct-next-action")
+        raise SyntheticCrash("unselected direct continued without terminal inference")
+
+
+@pytest.mark.parametrize("nonzero", [False, True], ids=["zero", "nonzero"])
+@pytest.mark.parametrize(
+    "outcome",
+    tuple(M5ReplayedOutcome),
+    ids=lambda value: value.value,
+)
+def test_r2d_absent_selected_context_never_infers_terminal_from_work_or_state(
+    nonzero: bool,
+    outcome: M5ReplayedOutcome,
+) -> None:
+    harness, plan, expected_work = _direct_selected_case(
+        f"unselected:{nonzero}:{outcome.value}",
+        return_kind=M5TypedDirectReturnKind.DISCOVERY,
+        branch="normal",
+        outcome=outcome,
+        nonzero=nonzero,
+        resumed=False,
+    )
+    direct = _UnselectedTerminalDirect(harness.world)
+    harness.direct = direct
+    harness.application.direct = direct
+    runtime = _StopAfterUnselectedDirectRuntime(harness.world)
+    _install_runtime(harness, runtime)
+
+    with pytest.raises(SyntheticCrash, match="without terminal inference"):
+        harness.application.run_event(plan)
+
+    assert harness.world.operation_log.count("read:terminal-result") == 1
+    assert harness.world.operation_log[-1] == "probe:unselected-direct-next-action"
+    assert harness.world.terminal_telemetry == {}
+    assert expected_work.is_zero is (not nonzero)
+
+
+def test_r2d_selected_direct_context_defaults_are_absent_and_joint() -> None:
+    parameters = inspect.signature(M5DirectExecutionReceipt).parameters
+    for name in (
+        "selected_successful_outer_receipt",
+        "selected_successful_outer_return_kind",
+        "selected_successful_outer_job_id",
+    ):
+        assert parameters[name].default is None
+
+    harness, plan, _ = _direct_selected_case(
+        "context-constructor",
+        return_kind=M5TypedDirectReturnKind.DISCOVERY,
+        branch="late",
+        outcome=M5ReplayedOutcome.FAILED,
+        nonzero=False,
+        resumed=False,
+    )
+    result = harness.application.run_event(plan)
+    selected = harness.world.direct_selected_receipts_by_event[plan.structural_event_id]
+    branch = selected.normal if selected.normal is not None else selected.late
+    assert branch is not None
+
+    with pytest.raises(ValidationError, match="jointly present"):
+        M5DirectExecutionReceipt(
+            result.epoch_id,
+            selected_successful_outer_receipt=selected,
+        )
+    with pytest.raises(ValidationError, match="successful execution"):
+        M5DirectExecutionReceipt(
+            result.epoch_id,
+            blocked_reason=M5RunFailureReason.RETRIEVAL_UNAVAILABLE,
+            selected_successful_outer_receipt=selected,
+            selected_successful_outer_return_kind=selected.return_kind,
+            selected_successful_outer_job_id=branch.job_id,
+        )

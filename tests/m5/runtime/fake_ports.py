@@ -38,6 +38,7 @@ from groundloop.events import (
 )
 from groundloop.m4.application import (
     DynamicEventPlan,
+    ObservationCompletionReceipt,
     OpenEventReceipt,
     PublicationReceipt,
     StructuralWithdrawal,
@@ -99,6 +100,10 @@ from groundloop.m5.runtime.contracts import (
     M5AttemptOutput,
     M5CandidatePolicyManifest,
     M5ChangedStateReference,
+    M5DirectAttemptReturnReceipt,
+    M5DirectLateReturnDisposition,
+    M5DirectLateReturnReceipt,
+    M5DirectNormalReturnReceipt,
     M5DiscoveryDirection,
     M5EventRunResult,
     M5ExecutionEvidenceDisposition,
@@ -132,6 +137,7 @@ from groundloop.m5.runtime.contracts import (
     M5TerminalReason,
     M5TransitionTimingAnchor,
     M5TransitionTimingReceipt,
+    M5TypedDirectReturnKind,
     M5TypedEventPlan,
     RequirementRegistrySnapshot,
     RequirementRegistrySnapshotEntry,
@@ -438,6 +444,31 @@ class FakeVerifierOutcome:
     attempt_timing: M5RuntimeTiming | None = FAKE_OBSERVED_TIMING
 
 
+class FakeDirectInterruption(RuntimeError):
+    """A deterministic fake-only interruption before direct execution."""
+
+
+@dataclass(frozen=True, slots=True)
+class FakeDirectSelectedOutcome:
+    """One fake-only successful outer settlement that loses terminal cutoff."""
+
+    return_kind: M5TypedDirectReturnKind
+    branch: str
+    outcome: M5ReplayedOutcome
+    call_work: M5RuntimeWork = M5RuntimeWork()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.return_kind, M5TypedDirectReturnKind):
+            raise ValidationError("fake direct selected outcome has another kind")
+        if self.branch not in {"normal", "late"}:
+            raise ValidationError("fake direct selected branch must be normal or late")
+        if not isinstance(self.outcome, M5ReplayedOutcome):
+            raise ValidationError("fake direct selected outcome must be terminal")
+        if not isinstance(self.call_work, M5RuntimeWork):
+            raise ValidationError("fake direct selected outcome has invalid call work")
+        replace(self.call_work)
+
+
 @dataclass(slots=True)
 class _FakeJob:
     spec: M5LogicalJobSpec
@@ -514,6 +545,13 @@ class FakeTypedWorld:
     )
     direct_blocked_by_event: dict[str, M5RunFailureReason] = field(default_factory=dict)
     direct_failed_by_event: dict[str, M5RunFailureReason] = field(default_factory=dict)
+    direct_interruptions_by_event: dict[str, int] = field(default_factory=dict)
+    direct_selected_outcomes_by_event: dict[str, FakeDirectSelectedOutcome] = field(
+        default_factory=dict
+    )
+    direct_selected_receipts_by_event: dict[str, M5DirectAttemptReturnReceipt] = field(
+        default_factory=dict
+    )
     late_attempt_artifacts: list[tuple[int, str]] = field(default_factory=list)
     takeover_jobs_once: set[str] = field(default_factory=set)
     return_dispositions_by_job: dict[str, list[M5RequirementReturnDisposition]] = field(
@@ -1035,12 +1073,222 @@ class FakeDirect:
             expandable=True,
         )
 
+    def _selected_job_id(
+        self,
+        epoch: _FakeEpoch,
+        event: M5TypedEventPlan,
+        return_kind: M5TypedDirectReturnKind,
+    ) -> str:
+        if len(epoch.direct_roots) != 1:
+            raise ValidationError(
+                "fake selected direct outcome requires one unambiguous root"
+            )
+        root = epoch.direct_roots[0]
+        if return_kind is M5TypedDirectReturnKind.DISCOVERY:
+            return root.job_id
+        if return_kind is not M5TypedDirectReturnKind.VERIFIER:
+            raise ValidationError("fake selected direct outcome has another kind")
+        claim_ids = tuple(sorted(self.world.published.base.all_claim_ids()))
+        chunk_id = root.target_chunk_version_id
+        if not claim_ids or chunk_id is None:
+            raise ValidationError(
+                "fake selected verifier outcome requires a discovered pair"
+            )
+        claim_id = claim_ids[0]
+        execution_hash = sha("fake-direct:verify_pair")
+        job_id = M4LogicalJobSpec.derive_job_id(
+            event_id=event.structural_event_id,
+            kind=JobKind.VERIFY_PAIR,
+            candidate_policy_id=event.candidate_policy_id,
+            execution_spec_hash=execution_hash,
+            parent_job_id=root.job_id,
+            claim_id=claim_id,
+            chunk_version_id=chunk_id,
+        )
+        child = M4LogicalJobSpec(
+            job_id=job_id,
+            event_id=event.structural_event_id,
+            kind=JobKind.VERIFY_PAIR,
+            candidate_policy_id=event.candidate_policy_id,
+            payload_hash=stable_m4_digest(
+                "m4-application-job-payload-v1",
+                event.payload_hash,
+                JobKind.VERIFY_PAIR.value,
+                root.job_id,
+                claim_id,
+                chunk_id,
+            ),
+            execution_spec_hash=execution_hash,
+            parent_job_id=root.job_id,
+            pair=PairKey(claim_id, chunk_id),
+            expandable=False,
+        )
+        return child.job_id
+
+    @staticmethod
+    def _selected_outer_receipt(
+        *,
+        epoch_id: int,
+        resulting_revision: int,
+        job_id: str,
+        return_kind: M5TypedDirectReturnKind,
+        branch: str,
+        terminal_logical_result_hash: str,
+    ) -> M5DirectAttemptReturnReceipt:
+        attempt_id = sha(f"fake-direct-attempt:{epoch_id}:{job_id}:{return_kind.value}")
+        if branch == "normal":
+            source_id = sha(
+                f"fake-direct-transition:{epoch_id}:{job_id}:{return_kind.value}"
+            )
+            normal = M5DirectNormalReturnReceipt(
+                epoch_id=epoch_id,
+                job_id=job_id,
+                attempt_id=attempt_id,
+                resulting_revision=resulting_revision,
+                exact_replay=True,
+                execution_evidence_digest=sha(
+                    f"fake-direct-execution:{epoch_id}:{job_id}"
+                ),
+                return_artifact_digest=sha(f"fake-direct-artifact:{epoch_id}:{job_id}"),
+                direct_transition_source_id=source_id,
+                direct_transition_source_identity_hash=sha(
+                    f"fake-direct-transition-identity:{source_id}"
+                ),
+                direct_transition_contribution_key_digest=(
+                    digests.runtime_work_contribution_key_digest(
+                        epoch_id=epoch_id,
+                        contribution_kind=(
+                            M5RuntimeWorkContributionKind.DIRECT_TRANSITION
+                        ),
+                        source_id=source_id,
+                    )
+                ),
+                observation_completion=(
+                    ObservationCompletionReceipt(True, True)
+                    if return_kind is M5TypedDirectReturnKind.VERIFIER
+                    else None
+                ),
+                current_terminal_logical_result_hash=(terminal_logical_result_hash),
+                transition_anchor=None,
+            )
+            return M5DirectAttemptReturnReceipt(return_kind, normal, None)
+        late = M5DirectLateReturnReceipt(
+            disposition=(M5DirectLateReturnDisposition.TERMINAL_AUDIT_POSTTERMINAL),
+            epoch_id=epoch_id,
+            job_id=job_id,
+            attempt_id=attempt_id,
+            resulting_revision=resulting_revision,
+            exact_replay=False,
+            envelope_digest=sha(f"fake-direct-envelope:{epoch_id}:{job_id}"),
+            execution_evidence_digest=sha(f"fake-direct-execution:{epoch_id}:{job_id}"),
+            expired_return_digest=None,
+            current_terminal_logical_result_hash=terminal_logical_result_hash,
+            transition_anchor=None,
+        )
+        return M5DirectAttemptReturnReceipt(return_kind, None, late)
+
+    def _run_selected_terminal_outcome(
+        self,
+        epoch: _FakeEpoch,
+        event: M5TypedEventPlan,
+        selected: FakeDirectSelectedOutcome,
+    ) -> M5DirectExecutionReceipt:
+        job_id = self._selected_job_id(epoch, event, selected.return_kind)
+        if not selected.call_work.is_zero:
+            self.world.assert_external_boundary(f"direct-{selected.return_kind.value}")
+        if selected.branch == "normal":
+            epoch.event_work = _add_work(epoch.event_work, selected.call_work)
+            transaction_name = "direct-runtime"
+            completion_marker = "direct-complete"
+        else:
+            transaction_name = "direct-winning-runtime"
+            completion_marker = "race:direct-winning-complete"
+        with self.world.transaction(transaction_name):
+            epoch.direct_done = True
+            epoch.revision += 1
+            self.world.operation_log.append(completion_marker)
+        runtime = FakeRuntime(self.world)
+        self.world.operation_log.append(
+            "race:direct-selected-terminal:"
+            f"{selected.outcome.value}:{selected.return_kind.value}:{selected.branch}"
+        )
+        if selected.outcome is M5ReplayedOutcome.SEALED:
+            cancelled = 0
+            for runtime_job in epoch.jobs.values():
+                if runtime_job.state.terminal:
+                    continue
+                runtime_job.state = M5JobState.CANCELLED
+                runtime_job.completion = M5JobCompletion.build(
+                    job=runtime_job.spec,
+                    terminal_state=M5JobState.CANCELLED,
+                    archive_reason=M5TerminalReason.SCOPE_RETIRED,
+                )
+                cancelled += 1
+            for root_id, scope_state in tuple(epoch.scope_states.items()):
+                if scope_state in {M5ScopeState.OPEN, M5ScopeState.RESULT_STAGED}:
+                    epoch.scope_states[root_id] = M5ScopeState.CANCELLED
+            epoch.event_work = _add_work(
+                epoch.event_work,
+                M5RuntimeWork(requirement_cancelled_job_count=cancelled),
+            )
+            self.world.operation_log.append("race:direct-selected-seal-ready")
+            terminal = runtime.request_typed_seal_atomically(
+                epoch.epoch_id,
+                epoch.revision,
+                event,
+                M5RuntimeWork(),
+            )
+        else:
+            terminal = runtime.fail_typed_epoch_atomically(
+                epoch.epoch_id,
+                epoch.revision,
+                M5RunFailureReason.RETRIEVAL_ERROR,
+                M5RuntimeWork(),
+            )
+        logical_result_hash = terminal.logical_result_hash
+        assert logical_result_hash is not None
+        receipt = self._selected_outer_receipt(
+            epoch_id=epoch.epoch_id,
+            resulting_revision=epoch.revision,
+            job_id=job_id,
+            return_kind=selected.return_kind,
+            branch=selected.branch,
+            terminal_logical_result_hash=logical_result_hash,
+        )
+        self.world.direct_selected_receipts_by_event[event.structural_event_id] = (
+            receipt
+        )
+        self.world.operation_log.append(
+            f"direct-selected-outer:{selected.return_kind.value}:{selected.branch}"
+        )
+        return M5DirectExecutionReceipt(
+            resulting_revision=epoch.revision,
+            call_work=selected.call_work,
+            selected_successful_outer_receipt=receipt,
+            selected_successful_outer_return_kind=selected.return_kind,
+            selected_successful_outer_job_id=job_id,
+        )
+
     def run_pending_direct(
         self, epoch_id: int, expected_revision: int, event: M5TypedEventPlan
     ) -> M5DirectExecutionReceipt:
         epoch = self.world.epoch(epoch_id)
         if expected_revision != epoch.revision:
             raise EventConflictError("stale fake direct revision")
+        interruptions = self.world.direct_interruptions_by_event.get(
+            event.structural_event_id, 0
+        )
+        if interruptions:
+            self.world.direct_interruptions_by_event[event.structural_event_id] = (
+                interruptions - 1
+            )
+            self.world.operation_log.append("interrupt:direct-before-execution")
+            raise FakeDirectInterruption("fake direct execution interrupted")
+        selected = self.world.direct_selected_outcomes_by_event.get(
+            event.structural_event_id
+        )
+        if selected is not None:
+            return self._run_selected_terminal_outcome(epoch, event, selected)
         call_work = M5RuntimeWork()
         if not epoch.direct_done:
             call_work = M5RuntimeWork(
@@ -2439,6 +2687,7 @@ def _certificates(
 @dataclass(slots=True)
 class FakeMeasurements:
     world: FakeTypedWorld
+    terminal_invocation_results: list[M5EventRunResult] = field(default_factory=list)
 
     def transition_call_timing(
         self, anchor: M5TransitionTimingAnchor
@@ -2451,6 +2700,7 @@ class FakeMeasurements:
     def terminal_invocation(
         self, event: M5TypedEventPlan, result: M5EventRunResult
     ) -> M5TerminalInvocationTelemetry:
+        self.terminal_invocation_results.append(result)
         ordinal = self.world.next_invocation_ordinal
         self.world.next_invocation_ordinal += 1
         invocation_id = sha(
@@ -2527,6 +2777,8 @@ def make_harness(repository: M5Repository | None = None) -> FakeHarness:
 
 
 __all__ = [
+    "FakeDirectInterruption",
+    "FakeDirectSelectedOutcome",
     "FakeDiscoveryOutcome",
     "FakeHarness",
     "FakeTypedWorld",

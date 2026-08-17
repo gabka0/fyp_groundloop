@@ -14,12 +14,14 @@ an M4 or M5 persistence relation directly.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from copy import deepcopy
+from dataclasses import dataclass, fields, replace
 from typing import Protocol
 
 from groundloop.domain import StatusDelta
 from groundloop.errors import GroundLoopError, ValidationError
 from groundloop.m4.application import (
+    ObservationCompletionReceipt,
     OpenEventReceipt,
     PublicationReceipt,
     StructuralWithdrawal,
@@ -43,6 +45,9 @@ from groundloop.m5.runtime.contracts import (
     M5AttemptOutput,
     M5CandidatePolicyManifest,
     M5ChangedStateReference,
+    M5DirectAttemptReturnReceipt,
+    M5DirectLateReturnReceipt,
+    M5DirectNormalReturnReceipt,
     M5DiscoveryDirection,
     M5DiscoveryScopeContract,
     M5EventRunResult,
@@ -70,9 +75,11 @@ from groundloop.m5.runtime.contracts import (
     M5RuntimeTimingObservation,
     M5RuntimeWork,
     M5RuntimeWorkContributionKind,
+    M5StateReferenceKind,
     M5TerminalReason,
     M5TransitionTimingAnchor,
     M5TransitionTimingReceipt,
+    M5TypedDirectReturnKind,
     M5TypedEventPlan,
     SemanticPairKey,
     validate_changed_state_references,
@@ -82,13 +89,25 @@ from groundloop.m5.runtime.frontier import coalesce_forward_root_keys
 
 
 def _require_tuple(name: str, value: object) -> None:
-    if not isinstance(value, tuple):
+    if type(value) is not tuple:
         raise ValidationError(f"{name} must be an immutable tuple")
+
+
+def _validate_exact_runtime_work(work: M5RuntimeWork) -> None:
+    if type(work) is not M5RuntimeWork:
+        raise ValidationError("runtime work must be exact M5RuntimeWork")
+    if any(type(value) is not int for value in work.counter_values()):
+        raise ValidationError("runtime work contains a nonexact counter")
+    if type(work.work_digest) is not str:
+        raise ValidationError("runtime work contains a nonexact digest")
+    replace(work)
 
 
 def _sum_work(*items: M5RuntimeWork) -> M5RuntimeWork:
     """Add exact counters without carrying any source digest forward."""
 
+    for item in items:
+        _validate_exact_runtime_work(item)
     values = {
         name: sum(getattr(item, name) for item in items)
         for name in M5RuntimeWork.counter_names()
@@ -133,16 +152,28 @@ class M5DirectOpenPlan:
 
 @dataclass(frozen=True, slots=True)
 class M5DirectExecutionReceipt:
-    """Result of running only missing direct-M4 work for one typed epoch."""
+    """Result of running only missing direct-M4 work for one typed epoch.
+
+    The three ``selected_successful_outer_*`` fields are jointly present only
+    when this application invocation must project a checked successful outer
+    settlement that lost the terminal cutoff.  The copied invoked kind and job
+    identity bind the selected receipt without changing a frozen direct DTO.
+    """
 
     resulting_revision: int
     call_work: M5RuntimeWork = M5RuntimeWork()
     blocked_reason: M5RunFailureReason | None = None
     terminal_failure_reason: M5RunFailureReason | None = None
+    selected_successful_outer_receipt: M5DirectAttemptReturnReceipt | None = None
+    selected_successful_outer_return_kind: M5TypedDirectReturnKind | None = None
+    selected_successful_outer_job_id: str | None = None
 
     def __post_init__(self) -> None:
-        if isinstance(self.resulting_revision, bool) or self.resulting_revision < 1:
+        if type(self.resulting_revision) is not int or self.resulting_revision < 1:
             raise ValidationError("direct execution revision must be positive")
+        if type(self.call_work) is not M5RuntimeWork:
+            raise ValidationError("direct execution call work must be exact")
+        _validate_exact_runtime_work(self.call_work)
         if self.blocked_reason is not None and self.terminal_failure_reason is not None:
             raise ValidationError("direct execution cannot be blocked and terminal")
         if self.blocked_reason is not None and self.blocked_reason not in {
@@ -155,6 +186,72 @@ class M5DirectExecutionReceipt:
             M5RunFailureReason.VERIFIER_UNAVAILABLE,
         }:
             raise ValidationError("terminal direct failure cannot remain retryable")
+        selected_values = (
+            self.selected_successful_outer_receipt,
+            self.selected_successful_outer_return_kind,
+            self.selected_successful_outer_job_id,
+        )
+        if any(value is not None for value in selected_values) != all(
+            value is not None for value in selected_values
+        ):
+            raise ValidationError(
+                "selected direct outer receipt binding must be jointly present"
+            )
+        if self.selected_successful_outer_receipt is not None:
+            selected = self.selected_successful_outer_receipt
+            return_kind = self.selected_successful_outer_return_kind
+            job_id = self.selected_successful_outer_job_id
+            if type(selected) is not M5DirectAttemptReturnReceipt:
+                raise ValidationError(
+                    "selected direct outer receipt has another receipt type"
+                )
+            if type(return_kind) is not M5TypedDirectReturnKind:
+                raise ValidationError(
+                    "selected direct outer receipt binding has another return kind"
+                )
+            if type(job_id) is not str or not job_id:
+                raise ValidationError(
+                    "selected direct outer receipt binding lacks its job ID"
+                )
+            if (
+                self.blocked_reason is not None
+                or self.terminal_failure_reason is not None
+            ):
+                raise ValidationError(
+                    "selected direct outer receipt requires successful execution"
+                )
+            if selected.return_kind is not return_kind:
+                raise ValidationError(
+                    "selected direct outer receipt changed its invoked return kind"
+                )
+            branch = selected.normal if selected.normal is not None else selected.late
+            if branch is None:
+                raise ValidationError(
+                    "selected direct outer receipt lacks its selected branch"
+                )
+            if (
+                type(branch.job_id) is not str
+                or type(branch.attempt_id) is not str
+                or not branch.job_id
+                or not branch.attempt_id
+            ):
+                raise ValidationError(
+                    "selected direct outer receipt has an invalid job binding"
+                )
+            replace(branch)
+            replace(selected)
+            if branch.job_id != job_id:
+                raise ValidationError(
+                    "selected direct outer receipt changed its invoked job"
+                )
+            if branch.resulting_revision != self.resulting_revision:
+                raise ValidationError(
+                    "selected direct outer receipt returned another revision"
+                )
+            if type(branch.current_terminal_logical_result_hash) is not str:
+                raise ValidationError(
+                    "selected direct outer receipt lacks a terminal result hash"
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -609,6 +706,7 @@ class M5TypedApplication:
                 )
             return self._finish_terminal_invocation(event, terminal)
 
+        held_opened_snapshot = replace(opened)
         revision = self.runtime_reads.current_revision(opened.epoch_id)
         call_work = M5RuntimeWork()
         if not opened.replayed:
@@ -626,6 +724,14 @@ class M5TypedApplication:
         self._validate_direct_execution_receipt(direct_result)
         revision = direct_result.resulting_revision
         call_work = _sum_work(call_work, direct_result.call_work)
+        if direct_result.selected_successful_outer_receipt is not None:
+            return self._finish_selected_direct_terminal_projection(
+                event,
+                opened,
+                held_opened_snapshot,
+                direct_result,
+                call_work,
+            )
         if direct_result.terminal_failure_reason is not None:
             return self._fail(
                 event,
@@ -1122,6 +1228,11 @@ class M5TypedApplication:
         )
         if (
             terminal is None
+            or type(terminal) is not M5EventRunResult
+            or type(terminal.event_id) is not str
+            or type(terminal.payload_hash) is not str
+            or type(terminal.epoch_id) is not int
+            or type(terminal.logical_result_hash) is not str
             or terminal.epoch_id != epoch_id
             or terminal.logical_result_hash != logical_result_hash
         ):
@@ -1168,29 +1279,47 @@ class M5TypedApplication:
         self, event: M5TypedEventPlan, result: M5EventRunResult
     ) -> M5EventRunResult:
         self._validate_terminal_nested_contracts(result)
-        replace(result)
         self._validate_terminal_logical_result_hash(result)
         logical_result_hash = result.logical_result_hash
-        if not isinstance(logical_result_hash, str):
+        if type(logical_result_hash) is not str:
             raise ValidationError("terminal result lacks its logical result hash")
+        event_id = event.structural_event_id
+        payload_hash = event.payload_hash
+        if type(event_id) is not str or type(payload_hash) is not str:
+            raise ValidationError("terminal event binding has a nonexact identity")
+        epoch_id = result.epoch_id
+        frozen_result = deepcopy(result)
         telemetry = self.measurements.terminal_invocation(event, result)
-        if not isinstance(telemetry, M5TerminalInvocationTelemetry):
+        self._validate_terminal_nested_contracts(result)
+        self._validate_terminal_logical_result_hash(result)
+        if result != frozen_result:
+            raise ValidationError("terminal measurement changed its result envelope")
+        if (
+            type(event.structural_event_id) is not str
+            or type(event.payload_hash) is not str
+            or event.structural_event_id != event_id
+            or event.payload_hash != payload_hash
+        ):
+            raise ValidationError("terminal measurement changed its event binding")
+        if type(telemetry) is not M5TerminalInvocationTelemetry:
             raise ValidationError(
                 "terminal measurement returned another telemetry type"
             )
+        if type(telemetry.invocation_id) is not str or not telemetry.invocation_id:
+            raise ValidationError("terminal measurement returned an invalid ID")
         replace(telemetry)
         if telemetry.call_timing is not None:
-            if not isinstance(telemetry.call_timing, M5RuntimeTiming):
+            if type(telemetry.call_timing) is not M5RuntimeTiming:
                 raise ValidationError("terminal telemetry returned invalid call timing")
-            replace(telemetry.call_timing)
+            self._validate_exact_runtime_timing(telemetry.call_timing)
         coverage = M5RuntimeTimingCoverage.single_point(
             telemetry.call_timing,
             terminal_client_roundtrip_included=telemetry.call_timing is not None,
         )
         self.runtime.append_terminal_invocation_telemetry(
             telemetry.invocation_id,
-            event.structural_event_id,
-            result.epoch_id,
+            event_id,
+            epoch_id,
             logical_result_hash,
             telemetry.call_timing,
             coverage,
@@ -1240,6 +1369,60 @@ class M5TypedApplication:
         )
         return self._finish_terminal_invocation(event, projected)
 
+    def _finish_selected_direct_terminal_projection(
+        self,
+        event: M5TypedEventPlan,
+        opened: OpenEventReceipt,
+        held_opened_snapshot: OpenEventReceipt,
+        direct_result: M5DirectExecutionReceipt,
+        call_work: M5RuntimeWork,
+    ) -> M5EventRunResult:
+        """Hydrate one checked successful direct cutoff and project active work."""
+
+        selected = direct_result.selected_successful_outer_receipt
+        if selected is None:
+            raise ValidationError("direct terminal projection lacks its outer receipt")
+        if event.direct_plan is None:
+            raise ValidationError(
+                "selected direct outer receipt requires a typed direct event"
+            )
+        if opened != held_opened_snapshot:
+            raise ValidationError(
+                "selected direct terminal projection changed its held open receipt"
+            )
+        self._validate_active_open_receipt(opened, held_opened_snapshot.epoch_id)
+        branch = self._validate_selected_direct_outer_receipt(selected)
+        if branch.epoch_id != opened.epoch_id:
+            raise ValidationError(
+                "selected direct outer receipt belongs to another epoch"
+            )
+        if branch.resulting_revision != direct_result.resulting_revision:
+            raise ValidationError(
+                "selected direct outer receipt returned another revision"
+            )
+        logical_result_hash = branch.current_terminal_logical_result_hash
+        if logical_result_hash is None:
+            raise ValidationError(
+                "selected direct outer receipt lacks a terminal result hash"
+            )
+
+        canonical = self._hydrate_terminal_result(
+            event,
+            opened.epoch_id,
+            logical_result_hash,
+        )
+        if opened != held_opened_snapshot:
+            raise ValidationError(
+                "canonical direct hydration changed its held open receipt"
+            )
+        return self._finish_active_terminal_projection(
+            event,
+            opened,
+            call_work,
+            canonical,
+            expected_logical_result_hash=logical_result_hash,
+        )
+
     @staticmethod
     def _validate_active_open_receipt(
         opened: OpenEventReceipt, expected_epoch_id: int
@@ -1259,28 +1442,25 @@ class M5TypedApplication:
     @staticmethod
     def _validate_open_event_receipt(opened: OpenEventReceipt) -> None:
         if (
-            not isinstance(opened, OpenEventReceipt)
-            or not isinstance(opened.epoch_id, int)
-            or isinstance(opened.epoch_id, bool)
+            type(opened) is not OpenEventReceipt
+            or type(opened.epoch_id) is not int
             or opened.epoch_id < 1
-            or not isinstance(opened.replayed, bool)
-            or not isinstance(opened.already_sealed, bool)
-            or not isinstance(opened.already_failed, bool)
+            or type(opened.replayed) is not bool
+            or type(opened.already_sealed) is not bool
+            or type(opened.already_failed) is not bool
             or opened.already_sealed != (opened.publication_id is not None)
             or opened.already_failed != (opened.failure_reason is not None)
             or (opened.already_sealed and opened.already_failed)
             or (
                 opened.publication_id is not None
                 and (
-                    not isinstance(opened.publication_id, str)
-                    or not opened.publication_id
+                    type(opened.publication_id) is not str or not opened.publication_id
                 )
             )
             or (
                 opened.failure_reason is not None
                 and (
-                    not isinstance(opened.failure_reason, str)
-                    or not opened.failure_reason
+                    type(opened.failure_reason) is not str or not opened.failure_reason
                 )
             )
         ):
@@ -1297,12 +1477,13 @@ class M5TypedApplication:
         call_work: M5RuntimeWork,
     ) -> None:
         if (
-            not isinstance(projected, M5EventRunResult)
+            type(canonical) is not M5EventRunResult
+            or type(projected) is not M5EventRunResult
             or projected.event_id != event.structural_event_id
             or projected.payload_hash != event.payload_hash
             or projected.state is not M5RunState.REPLAYED
             or projected.open_receipt is not opened
-            or projected.call_work != call_work
+            or projected.call_work is not call_work
         ):
             raise ValidationError("active terminal projection has an invalid envelope")
         frozen_names = (
@@ -1331,13 +1512,16 @@ class M5TypedApplication:
         cls._validate_terminal_nested_contracts(projected)
         cls._validate_terminal_logical_result_hash(projected)
 
-    @staticmethod
+    @classmethod
     def _validate_direct_execution_receipt(
+        cls,
         receipt: M5DirectExecutionReceipt,
     ) -> None:
-        if not isinstance(receipt, M5DirectExecutionReceipt):
+        if type(receipt) is not M5DirectExecutionReceipt:
             raise ValidationError("direct execution returned another receipt type")
-        if not isinstance(receipt.call_work, M5RuntimeWork):
+        if type(receipt.resulting_revision) is not int:
+            raise ValidationError("direct execution returned an invalid revision")
+        if type(receipt.call_work) is not M5RuntimeWork:
             raise ValidationError("direct execution returned invalid call work")
         if receipt.blocked_reason is not None and not isinstance(
             receipt.blocked_reason, M5RunFailureReason
@@ -1347,8 +1531,137 @@ class M5TypedApplication:
             receipt.terminal_failure_reason, M5RunFailureReason
         ):
             raise ValidationError("direct execution returned invalid terminal reason")
-        replace(receipt.call_work)
+        _validate_exact_runtime_work(receipt.call_work)
+        selected = receipt.selected_successful_outer_receipt
+        selected_values = (
+            selected,
+            receipt.selected_successful_outer_return_kind,
+            receipt.selected_successful_outer_job_id,
+        )
+        if any(value is not None for value in selected_values) != all(
+            value is not None for value in selected_values
+        ):
+            raise ValidationError(
+                "selected direct outer receipt binding must be jointly present"
+            )
+        if selected is not None:
+            if (
+                receipt.blocked_reason is not None
+                or receipt.terminal_failure_reason is not None
+            ):
+                raise ValidationError(
+                    "selected direct outer receipt requires successful execution"
+                )
+            return_kind = receipt.selected_successful_outer_return_kind
+            job_id = receipt.selected_successful_outer_job_id
+            if type(return_kind) is not M5TypedDirectReturnKind:
+                raise ValidationError(
+                    "selected direct outer receipt binding has another return kind"
+                )
+            if type(job_id) is not str or not job_id:
+                raise ValidationError(
+                    "selected direct outer receipt binding lacks its job ID"
+                )
+            branch = cls._validate_selected_direct_outer_receipt(selected)
+            if selected.return_kind is not return_kind:
+                raise ValidationError(
+                    "selected direct outer receipt changed its invoked return kind"
+                )
+            if branch.job_id != job_id:
+                raise ValidationError(
+                    "selected direct outer receipt changed its invoked job"
+                )
         replace(receipt)
+
+    @staticmethod
+    def _validate_selected_direct_outer_receipt(
+        receipt: M5DirectAttemptReturnReceipt,
+    ) -> M5DirectNormalReturnReceipt | M5DirectLateReturnReceipt:
+        if type(receipt) is not M5DirectAttemptReturnReceipt:
+            raise ValidationError("selected direct return is not an outer receipt")
+        if type(receipt.return_kind) is not M5TypedDirectReturnKind:
+            raise ValidationError("selected direct return has another return kind")
+        if (receipt.normal is None) == (receipt.late is None):
+            raise ValidationError(
+                "selected direct return requires exactly one outer branch"
+            )
+
+        branch: M5DirectNormalReturnReceipt | M5DirectLateReturnReceipt
+        if receipt.normal is not None:
+            branch = receipt.normal
+            if type(branch) is not M5DirectNormalReturnReceipt:
+                raise ValidationError("selected normal direct return has another type")
+            observation = branch.observation_completion
+            if receipt.return_kind is M5TypedDirectReturnKind.DISCOVERY:
+                if observation is not None:
+                    raise ValidationError(
+                        "selected discovery return carries verifier observation"
+                    )
+            elif receipt.return_kind is M5TypedDirectReturnKind.VERIFIER:
+                if type(observation) is not ObservationCompletionReceipt:
+                    raise ValidationError(
+                        "selected verifier return lacks its M4 observation receipt"
+                    )
+                if (
+                    type(observation.artifact_stored) is not bool
+                    or type(observation.made_effective) is not bool
+                ):
+                    raise ValidationError(
+                        "selected verifier observation receipt is malformed"
+                    )
+                replace(observation)
+            else:
+                raise ValidationError("selected direct return kind is unsupported")
+        else:
+            late = receipt.late
+            if type(late) is not M5DirectLateReturnReceipt:
+                raise ValidationError("selected late direct return has another type")
+            branch = late
+
+        if type(branch.epoch_id) is not int:
+            raise ValidationError("selected direct return has an invalid epoch")
+        if type(branch.job_id) is not str or not branch.job_id:
+            raise ValidationError("selected direct return has an invalid job ID")
+        if type(branch.attempt_id) is not str or not branch.attempt_id:
+            raise ValidationError("selected direct return has an invalid attempt ID")
+        if type(branch.resulting_revision) is not int:
+            raise ValidationError("selected direct return has an invalid revision")
+        if type(branch.exact_replay) is not bool:
+            raise ValidationError("selected direct return has an invalid replay flag")
+        if type(branch.current_terminal_logical_result_hash) is not str:
+            raise ValidationError("selected direct return lacks an exact terminal hash")
+
+        string_fields = (
+            (
+                branch.execution_evidence_digest,
+                branch.return_artifact_digest,
+                branch.direct_transition_source_id,
+                branch.direct_transition_source_identity_hash,
+                branch.direct_transition_contribution_key_digest,
+            )
+            if isinstance(branch, M5DirectNormalReturnReceipt)
+            else (
+                branch.envelope_digest,
+                branch.execution_evidence_digest,
+            )
+        )
+        if any(type(value) is not str for value in string_fields):
+            raise ValidationError("selected direct return has a nonexact string field")
+        if (
+            isinstance(branch, M5DirectLateReturnReceipt)
+            and branch.expired_return_digest is not None
+            and type(branch.expired_return_digest) is not str
+        ):
+            raise ValidationError("selected direct return has an invalid expired hash")
+
+        anchor = branch.transition_anchor
+        if anchor is not None:
+            if type(anchor) is not M5TransitionTimingAnchor:
+                raise ValidationError("selected direct return has another anchor type")
+            replace(anchor)
+        replace(branch)
+        replace(receipt)
+        return branch
 
     @staticmethod
     def _validate_external_work_failure(error: M5ExternalWorkFailure) -> None:
@@ -1748,19 +2061,20 @@ class M5TypedApplication:
         expected_logical_result_hash: str | None = None,
     ) -> None:
         if (
-            not isinstance(result, M5EventRunResult)
+            type(result) is not M5EventRunResult
+            or type(result.event_id) is not str
             or result.event_id != event.structural_event_id
+            or type(result.payload_hash) is not str
             or result.payload_hash != event.payload_hash
-            or not isinstance(result.epoch_id, int)
-            or isinstance(result.epoch_id, bool)
+            or type(result.epoch_id) is not int
             or result.epoch_id < 1
             or (expected_epoch_id is not None and result.epoch_id != expected_epoch_id)
             or result.state is not M5RunState.REPLAYED
-            or not isinstance(result.logical_result_hash, str)
-            or not isinstance(result.event_work, M5RuntimeWork)
-            or not isinstance(result.call_work, M5RuntimeWork)
+            or type(result.logical_result_hash) is not str
+            or type(result.event_work) is not M5RuntimeWork
+            or type(result.call_work) is not M5RuntimeWork
             or not result.call_work.is_zero
-            or not isinstance(result.open_receipt, OpenEventReceipt)
+            or type(result.open_receipt) is not OpenEventReceipt
             or result.open_receipt.epoch_id != result.epoch_id
         ):
             raise ValidationError("durable typed replay has an invalid envelope")
@@ -1770,7 +2084,7 @@ class M5TypedApplication:
         if result.replayed_outcome is M5ReplayedOutcome.SEALED:
             publication = result.publication_receipt
             if (
-                not isinstance(publication, PublicationReceipt)
+                type(publication) is not PublicationReceipt
                 or result.failure_reason is not None
                 or opened.replayed is not True
                 or opened.already_sealed is not True
@@ -1788,7 +2102,7 @@ class M5TypedApplication:
             failure = result.failure_reason
             if (
                 result.publication_receipt is not None
-                or not isinstance(failure, M5RunFailureReason)
+                or type(failure) is not M5RunFailureReason
                 or failure is M5RunFailureReason.WORK_IN_PROGRESS
                 or opened.replayed is not True
                 or opened.already_sealed is not False
@@ -1829,27 +2143,28 @@ class M5TypedApplication:
         expected_open_receipt: OpenEventReceipt,
     ) -> None:
         if (
-            not isinstance(result, M5EventRunResult)
+            type(result) is not M5EventRunResult
             or expected_state not in {M5RunState.SEALED, M5RunState.FAILED}
-            or not isinstance(epoch_id, int)
-            or isinstance(epoch_id, bool)
+            or type(epoch_id) is not int
             or epoch_id < 1
+            or type(result.event_id) is not str
             or result.event_id != event.structural_event_id
+            or type(result.payload_hash) is not str
             or result.payload_hash != event.payload_hash
             or result.epoch_id != epoch_id
             or result.state is not expected_state
             or result.replayed_outcome is not None
-            or not isinstance(result.open_receipt, OpenEventReceipt)
+            or type(result.open_receipt) is not OpenEventReceipt
             or result.open_receipt.epoch_id != epoch_id
-            or not isinstance(result.open_receipt.replayed, bool)
+            or type(result.open_receipt.replayed) is not bool
             or result.open_receipt.already_sealed is not False
             or result.open_receipt.publication_id is not None
             or result.open_receipt.already_failed is not False
             or result.open_receipt.failure_reason is not None
             or result.open_receipt != expected_open_receipt
-            or not isinstance(result.logical_result_hash, str)
-            or not isinstance(result.event_work, M5RuntimeWork)
-            or not isinstance(result.call_work, M5RuntimeWork)
+            or type(result.logical_result_hash) is not str
+            or type(result.event_work) is not M5RuntimeWork
+            or type(result.call_work) is not M5RuntimeWork
         ):
             raise ValidationError("typed terminal result has another envelope")
         cls._validate_terminal_nested_contracts(result)
@@ -1857,7 +2172,7 @@ class M5TypedApplication:
         if expected_state is M5RunState.SEALED:
             publication = result.publication_receipt
             if (
-                not isinstance(publication, PublicationReceipt)
+                type(publication) is not PublicationReceipt
                 or result.failure_reason is not None
             ):
                 raise ValidationError("typed sealed result has an invalid outcome")
@@ -1868,7 +2183,7 @@ class M5TypedApplication:
             )
         elif (
             result.publication_receipt is not None
-            or not isinstance(result.failure_reason, M5RunFailureReason)
+            or type(result.failure_reason) is not M5RunFailureReason
             or result.failure_reason is M5RunFailureReason.WORK_IN_PROGRESS
         ):
             raise ValidationError("typed failed result has an invalid outcome")
@@ -1882,43 +2197,112 @@ class M5TypedApplication:
         expected_replayed: bool,
     ) -> None:
         if (
-            not isinstance(publication, PublicationReceipt)
-            or not isinstance(publication.epoch_id, int)
-            or isinstance(publication.epoch_id, bool)
+            type(publication) is not PublicationReceipt
+            or type(publication.epoch_id) is not int
             or publication.epoch_id < 1
             or publication.epoch_id != expected_epoch_id
+            or type(publication.publication_id) is not str
             or publication.publication_id
             != stable_m4_digest("m4-publication-v1", str(expected_epoch_id))
-            or not isinstance(publication.replayed, bool)
+            or type(publication.replayed) is not bool
             or publication.replayed is not expected_replayed
         ):
             raise ValidationError("terminal publication receipt is invalid")
         replace(publication)
 
     @staticmethod
-    def _validate_terminal_nested_contracts(result: M5EventRunResult) -> None:
+    def _validate_exact_runtime_timing(timing: M5RuntimeTiming) -> None:
+        if type(timing) is not M5RuntimeTiming:
+            raise ValidationError("terminal timing must be exact M5RuntimeTiming")
+        for descriptor in fields(M5RuntimeTiming):
+            value = getattr(timing, descriptor.name)
+            if value is not None and type(value) is not int:
+                raise ValidationError("terminal timing contains a nonexact counter")
+        replace(timing)
+
+    @staticmethod
+    def _validate_exact_timing_coverage(
+        coverage: M5RuntimeTimingCoverage,
+    ) -> None:
+        if type(coverage) is not M5RuntimeTimingCoverage:
+            raise ValidationError(
+                "terminal timing coverage must be exact M5RuntimeTimingCoverage"
+            )
+        for descriptor in fields(M5RuntimeTimingCoverage):
+            value = getattr(coverage, descriptor.name)
+            expected_type = (
+                bool if descriptor.name == "terminal_client_roundtrip_included" else int
+            )
+            if type(value) is not expected_type:
+                raise ValidationError(
+                    "terminal timing coverage contains a nonexact value"
+                )
+        replace(coverage)
+
+    @classmethod
+    def _validate_terminal_nested_contracts(cls, result: M5EventRunResult) -> None:
         if (
-            not isinstance(result, M5EventRunResult)
-            or not isinstance(result.event_work, M5RuntimeWork)
-            or not isinstance(result.call_work, M5RuntimeWork)
-            or not isinstance(result.event_timing, M5RuntimeTiming)
-            or not isinstance(result.call_timing, M5RuntimeTiming)
-            or not isinstance(result.event_timing_coverage, M5RuntimeTimingCoverage)
-            or not isinstance(result.call_timing_coverage, M5RuntimeTimingCoverage)
+            type(result) is not M5EventRunResult
+            or type(result.event_id) is not str
+            or type(result.payload_hash) is not str
+            or type(result.epoch_id) is not int
+            or (
+                result.logical_result_hash is not None
+                and type(result.logical_result_hash) is not str
+            )
+            or type(result.open_receipt) is not OpenEventReceipt
+            or type(result.event_work) is not M5RuntimeWork
+            or type(result.call_work) is not M5RuntimeWork
+            or type(result.event_timing) is not M5RuntimeTiming
+            or type(result.call_timing) is not M5RuntimeTiming
+            or type(result.event_timing_coverage) is not M5RuntimeTimingCoverage
+            or type(result.call_timing_coverage) is not M5RuntimeTimingCoverage
         ):
             raise ValidationError("terminal result requires complete timing coverage")
+
+        cls._validate_open_event_receipt(result.open_receipt)
+        publication = result.publication_receipt
+        if publication is not None:
+            if (
+                type(publication) is not PublicationReceipt
+                or type(publication.epoch_id) is not int
+                or type(publication.publication_id) is not str
+                or type(publication.replayed) is not bool
+            ):
+                raise ValidationError(
+                    "terminal result contains another publication receipt"
+                )
+            replace(publication)
 
         _require_tuple("terminal combined deltas", result.combined_deltas)
         _require_tuple(
             "terminal changed-state references", result.changed_state_references
         )
         for delta in result.combined_deltas:
-            if not isinstance(delta, StatusDelta):
+            if type(delta) is not StatusDelta or any(
+                type(getattr(delta, name)) is not str
+                for name in (
+                    "event_id",
+                    "object_type",
+                    "object_id",
+                    "old_status",
+                    "new_status",
+                    "reason",
+                )
+            ):
                 raise ValidationError("terminal result contains another delta type")
             replace(delta)
         validate_combined_deltas(result.combined_deltas, result.event_id)
         for reference in result.changed_state_references:
-            if not isinstance(reference, M5ChangedStateReference):
+            if (
+                type(reference) is not M5ChangedStateReference
+                or type(reference.kind) is not M5StateReferenceKind
+                or type(reference.object_id) is not str
+                or type(reference.epoch_id) is not int
+                or type(reference.revision) is not int
+                or type(reference.state_artifact_hash) is not str
+                or type(reference.reference_digest) is not str
+            ):
                 raise ValidationError(
                     "terminal result contains another state-reference type"
                 )
@@ -1927,12 +2311,14 @@ class M5TypedApplication:
 
         event_coverage = result.event_timing_coverage
         call_coverage = result.call_timing_coverage
-        replace(result.event_work)
-        replace(result.call_work)
-        replace(result.event_timing)
-        replace(result.call_timing)
-        replace(event_coverage)
-        replace(call_coverage)
+        assert event_coverage is not None
+        assert call_coverage is not None
+        _validate_exact_runtime_work(result.event_work)
+        _validate_exact_runtime_work(result.call_work)
+        cls._validate_exact_runtime_timing(result.event_timing)
+        cls._validate_exact_runtime_timing(result.call_timing)
+        cls._validate_exact_timing_coverage(event_coverage)
+        cls._validate_exact_timing_coverage(call_coverage)
         event_coverage.validate_aggregate(result.event_timing)
         call_coverage.validate_aggregate(result.call_timing)
         if event_coverage.terminal_client_roundtrip_included is not False:
@@ -1948,12 +2334,13 @@ class M5TypedApplication:
             raise ValidationError(
                 "terminal roundtrip flag disagrees with call timing coverage"
             )
+        replace(result)
 
     @staticmethod
     def _validate_terminal_logical_result_hash(result: M5EventRunResult) -> None:
         if (
-            not isinstance(result, M5EventRunResult)
-            or not isinstance(result.logical_result_hash, str)
+            type(result) is not M5EventRunResult
+            or type(result.logical_result_hash) is not str
             or result.logical_result_hash != result.expected_logical_result_hash
         ):
             raise ValidationError("terminal logical result hash is invalid")
