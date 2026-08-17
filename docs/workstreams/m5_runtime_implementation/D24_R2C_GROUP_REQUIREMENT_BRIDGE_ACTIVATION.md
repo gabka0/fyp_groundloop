@@ -1,19 +1,27 @@
 # M5-D24 R2c Group/Requirement PostgreSQL Bridge Activation
 
-Status: coordinator activation only; the lane becomes active only after the
-full commit containing this note is the exact clean branch/worktree base
+Status: historical five-path R2c activation; scoped group/requirement
+PostgreSQL pre-seal bridge integrated at
+`0e0ff4385b4f5e5145788f59cc55411b39d659c1`, scoped gate `PASS`, M5.0-24
+implementation `PENDING`, and no current edit ownership
 
-Date: 2026-08-16
+Date: activated 2026-08-16; integrated 2026-08-17
 
 Exact reconciled main parent before this activation note:
 `c20a8339a40e196932634bab85836c56b58e329e`.
 
-The parent above records R2b integration at
-`bfeef3f87ea79137a8ce956eccd47ced1744e4f0`. It is a history barrier, not an
-implementation base. The R2c branch and worktree MUST be created or exactly
-reset to the full commit containing this activation note. No R2c path is owned
-and no edit may begin while the branch is based directly on `c20a833`,
-`bfeef3f`, an R2b workstream commit, or any earlier revision.
+Exact full activation commit/base used by the lane:
+`abe22e6d1cf844ca7bc63697f089cc77fcb4397f`.
+
+Exact integration commit:
+`0e0ff4385b4f5e5145788f59cc55411b39d659c1`.
+
+The reconciled parent records R2b integration at
+`bfeef3f87ea79137a8ce956eccd47ced1744e4f0`. The R2c branch resolved the full
+commit containing this activation note as `abe22e6`, used it as its unchanged
+implementation base, and integrated at the commit above. Neither the
+reconciled parent, activation base, historical branch, nor retained worktree
+authorizes any later edit or reapplication.
 
 ## 1. Purpose and accepted boundary
 
@@ -23,13 +31,13 @@ and R2b pure application orchestration are integrated. R2b passed 87 focused
 composition tests and 237 pure M5 runtime tests without a live database. Its
 five-path grant is closed and supplies no continuing ownership.
 
-The next bounded tranche connects the accepted pure coordinator to the
+The bounded tranche connected the accepted pure coordinator to the
 existing concrete PostgreSQL requirement store for group-lifecycle events. It
-adds a group/requirement-only, pre-seal facade and live falsifiers. It is not a
+added a group/requirement-only, pre-seal facade and live falsifiers. It is not a
 complete production application, direct-event implementation, provider
 adapter, seal, publication path, or M5-D24 closure claim.
 
-The tranche may prove only these concrete outcomes:
+The tranche proved only these concrete outcomes:
 
 - a group event can use the exact application policy, structural, direct-noop,
   runtime, and read protocols without changing an accepted protocol;
@@ -45,29 +53,34 @@ The tranche may prove only these concrete outcomes:
   publication mutation.
 
 M5.0-24 remains contract-`PASS` / implementation-`PENDING`. M5.4 remains
-partial. This activation changes no frozen decision, DTO, digest, schema,
+partial. This activation changed no frozen decision, DTO, digest, schema,
 migration, M4-v1 byte, or accepted C5/C6 meaning.
 
-## 2. Literal branch, worktree, and base rule
+## 2. Historical branch, worktree, and base record — closed
 
 ```text
-branch:   workstream/m5-d24-r2c-group-requirement-bridge
-worktree: /tmp/groundloop-m5-d24-r2c-group-requirement-bridge
+branch:                       workstream/m5-d24-r2c-group-requirement-bridge
+original activated worktree: /tmp/groundloop-m5-d24-r2c-group-requirement-bridge
+final persistent worktree:   /home/kassym/Desktop/groundloop-worktrees/m5-d24-r2c-group-requirement-bridge
 ```
 
-The coordinator MUST first commit this note on `main`. The branch/worktree
-MUST then resolve to that complete activation commit before any lane edit.
-The lane handoff MUST record the complete activation commit as its base and
-prove that the initial worktree was clean.
+The coordinator committed this note on `main`, and the branch resolved to the
+complete activation commit before any lane edit. The handoff records that exact
+base and the initially clean worktree.
 
-If `main` advances after activation, that does not silently move the lane's
-authority. If an integration prerequisite changes an owned or consumed byte,
-the lane stops for a coordinator rebase/reset decision and a refreshed base
-pin rather than merging or rebasing itself informally.
+The original `/tmp` worktree disappeared during an environment restart before
+candidate commit. At the user's explicit direction, the coordinator recreated
+the same branch at the unchanged activation base in the persistent worktree
+above. The in-flight files were recovered from the session journal and their
+exact checkpoint hashes reproduced before all final gates ran. There was no
+merge, rebase, base change, contract change, or ownership expansion.
 
-## 3. Exact five-new-path ownership
+Integration closed the lane. The persistent worktree may remain for audit, but
+it grants no current or future edit authority.
 
-R2c owns exactly five new paths:
+## 3. Historical exact five-new-path ownership — closed
+
+R2c owned exactly five new paths for the integrated tranche:
 
 1. `src/groundloop/m5/runtime/postgres_application.py`
 2. `tests/m5/postgres_runtime/d24_application/conftest.py`
@@ -75,13 +88,13 @@ R2c owns exactly five new paths:
 4. `tests/m5/postgres_runtime/d24_application/test_group_requirement_races.py`
 5. `docs/workstreams/m5_runtime_implementation/D24_R2C_GROUP_REQUIREMENT_BRIDGE_HANDOFF.md`
 
-Every candidate path MUST have status `A` relative to the activation base.
-No existing file may be modified, reformatted, staged, or included in the
-candidate. This activation note is coordinator-owned base history and is not
-one of the lane's five paths.
+Every candidate path had status `A` relative to the activation base. No
+existing file was modified, reformatted, staged, or included in the candidate.
+This activation note was coordinator-owned base history and was not one of the
+lane's five paths.
 
-The nested fixture may consume the unchanged ancestor
-`tests/m5/postgres_runtime/conftest.py`. It may not edit that fixture or import
+The nested fixture consumed the unchanged ancestor
+`tests/m5/postgres_runtime/conftest.py`. It did not edit that fixture or import
 private helpers from another D24 lane's nested fixture.
 
 ## 4. Required facade behavior
@@ -376,10 +389,10 @@ before that call and proves the rejection itself causes:
 The handoff must call this pre-seal evidence only. It cannot claim successful
 production application completion.
 
-## 6. Exit gates
+## 6. Executed exit gates
 
-The candidate is eligible for audit only when all applicable gates pass on
-the frozen five-path bytes:
+The candidate became eligible for audit only after all applicable gates passed
+on the frozen five-path bytes:
 
 1. exact activation-base-to-candidate name-status contains only the five new
    `A` paths in Section 3;
@@ -407,23 +420,26 @@ Existing counts are historical baselines, not promises about the future
 collection. A skipped, unavailable, no-match, environment-failed, or partial
 run is non-PASS and must be reported exactly.
 
-Two independent read-only audits are required before candidate commit:
+Two independent read-only audits were required before candidate commit:
 
-- a source/contract audit checks every protocol delegate, validation-before-
+- a source/contract audit checked every protocol delegate, validation-before-
   write ordering, fail-closed seal, path boundary, C5/C6 authority, and frozen
   input/output hash; and
-- a test/evidence audit checks race realism, zero-write snapshots, reconnect
+- a test/evidence audit checked race realism, zero-write snapshots, reconnect
   freshness, collection, commands, test-only controls, and handoff claims.
 
-Both audits must inspect the same frozen bytes and return GO with no unresolved
-P0/P1. After audit, only the exact five paths may be committed. The coordinator
-then audits the immutable candidate commit, integrates it onto current main,
-and reruns the focused/live/static gates from the integrated revision before
-updating any top-level status document.
+Both audits inspected the same frozen bytes and returned `GO` with no unresolved
+P0/P1. Only the exact five paths were committed. The immutable integration
+audit then returned `GO` on `0e0ff43`: the commit has sole parent `abe22e6`,
+contains exactly the five added paths, and matches every frozen source/test
+hash. On the exact integrated main bytes, the 81-case live PostgreSQL suite and
+Ruff, format, strict-mypy, cache-isolated compile, diff, and exact-hash gates
+passed.
 
-## 7. Mandatory stop conditions
+## 7. Historical mandatory stop conditions
 
-R2c stops and reports a coordinator blocker before crossing its manifest if:
+The activated R2c lane was required to stop and report a coordinator blocker
+before crossing its manifest if:
 
 - the branch/worktree is not exactly based on the full activation commit;
 - any owned path already exists or any candidate requires modifying an
@@ -442,14 +458,14 @@ R2c stops and reports a coordinator blocker before crossing its manifest if:
 - a required live gate cannot run or a shared regression fails; or
 - another active lane owns or changes any consumed path.
 
-The response to a stop condition is a new coordinator decision, corrected
-activation, or separately frozen contract amendment. It is never a private
-helper import, cross-path edit, weakened assertion, skipped gate, SQL fixture
-that impersonates product behavior, or expanded claim.
+The required response to a stop condition was a new coordinator decision,
+corrected activation, or separately frozen contract amendment. It was never a
+private helper import, cross-path edit, weakened assertion, skipped gate, SQL
+fixture that impersonates product behavior, or expanded claim.
 
-## 8. Explicit exclusions and deferred work
+## 8. Historical exclusions and deferred work
 
-R2c may not edit or claim ownership of:
+R2c did not edit or claim ownership of:
 
 - `src/groundloop/m5/runtime/application.py`;
 - `src/groundloop/m5/runtime/persistence.py`;
@@ -484,3 +500,15 @@ deployment readiness, complete M5.4 behavior, performance or call-savings
 evidence, model quality, representative utility, human approval, security,
 novelty, publishing potential, or completion of M5.0-24, M5.4, M5.5, M5.6,
 or M5 as a whole.
+
+## 9. Integration closure
+
+The exact five-path tranche integrated on main at
+`0e0ff4385b4f5e5145788f59cc55411b39d659c1`. Its scoped group/requirement
+PostgreSQL pre-seal bridge gate is `PASS`. M5.0-24 remains contract-`PASS` /
+implementation-`PENDING`; every M5.4 row is unchanged and M5.4 remains partial.
+
+Integration closed all five path grants. This activation is historical
+evidence only and authorizes no further edit. A retained branch or persistent
+worktree is not implementation authority; each later tranche requires a new
+committed path-exclusive activation from the then-current integrated barrier.

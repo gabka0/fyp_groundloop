@@ -4,9 +4,11 @@ Status: frozen M5 ownership contract; historical Waves 0--2 complete;
 M5-D24 recovery R0-C, pure R0-C1, and R0-S accepted on main; R1-D, R1-P, R2a,
 and R1-C integrated at `1838316`, `56dd2d4`, `6f1ae89`, and `f5902ff`;
 M5-D24-C1 through M5-D24-C6 accepted; R2b pure orchestration integrated at
-`bfeef3f` and closed with no current edit ownership
+`bfeef3f`, and R2c group/requirement PostgreSQL pre-seal composition integrated
+at `0e0ff43`; both grants are closed with no current edit ownership
 
-Date: 2026-08-02; M5-D24 path amendments 2026-08-06 through 2026-08-16
+Date: 2026-08-02; M5-D24 path amendments and integration records 2026-08-06
+through 2026-08-17
 
 Authority: `docs/m5_design_freeze.md` defines semantics and
 `docs/m5_implementation_plan.md` defines gates. This document defines only
@@ -478,7 +480,7 @@ The historical R2b lane contained exactly five paths:
 5. `tests/m5/runtime/test_typed_history.py`, limited to the already-authorized
    single `CANCELLED` to `TERMINAL_FAILED` expectation correction.
 
-The integrated gate preserves all C5 discovery/verifier receipt/hash tests and
+The integrated R2b gate preserves all C5 discovery/verifier receipt/hash tests and
 covers the three C6 races with exact zero/nonzero one-add call work, fresh/
 resumed held receipts, canonical ordinary replay, active-envelope validation
 before telemetry, unchanged event totals/logical identity, one timing-only
@@ -487,12 +489,40 @@ wrong job/execution/disposition/reason/outcome/epoch, same-reason failure
 mismatch, malformed replay, generic direct-failure projection, and every
 unlisted origin.
 
-Integration closed the branch/worktree and all five path grants. No D24
-implementation lane is currently active. Typed-direct outer-settlement
-composition, cursor-local direct failure, the concrete production application
-adapter, production seal/publication, and remaining live crash/reconnect and
-end-to-end evidence each require a fresh committed path-exclusive manifest
-from the then-current integration barrier; none may inherit R2b ownership.
+The coordinator then activated the exact five-new-path R2c tranche at
+`abe22e6d1cf844ca7bc63697f089cc77fcb4397f` and integrated it on main at
+`0e0ff4385b4f5e5145788f59cc55411b39d659c1`. Its historical manifest is:
+
+1. `src/groundloop/m5/runtime/postgres_application.py`;
+2. `tests/m5/postgres_runtime/d24_application/conftest.py`;
+3. `tests/m5/postgres_runtime/d24_application/test_group_requirement_composition.py`;
+4. `tests/m5/postgres_runtime/d24_application/test_group_requirement_races.py`;
+   and
+5. `docs/workstreams/m5_runtime_implementation/D24_R2C_GROUP_REQUIREMENT_BRIDGE_HANDOFF.md`.
+
+The original activated `/tmp` worktree disappeared during an environment
+restart. At the user's explicit direction, the same branch at the unchanged
+activation base was recreated at the persistent
+`/home/kassym/Desktop/groundloop-worktrees/m5-d24-r2c-group-requirement-bridge`
+path before recovery and final validation. This relocation changed no Git
+base, owned path, contract, or evidence authority.
+
+The exact integrated R2c bytes passed the 81/81 live PostgreSQL gate and all
+recorded static/type/compile/hash checks; the immutable integration audit
+returned `GO`. This is scoped `PASS` evidence for the group register/replace/
+retire requirement path through the concrete store up to its explicit
+fail-closed pre-seal boundary. It is not typed-direct outer settlement,
+cursor-local direct failure, production seal/publication, production provider,
+M5-D25, or whole-M5.4 evidence. M5.0-24 remains contract-`PASS` /
+implementation-`PENDING`, and every M5.4 row is unchanged.
+
+Integration closed the R2b and R2c path grants. No D24 implementation lane is
+currently active. A retained historical worktree grants no edit authority.
+Typed-direct outer-settlement composition, cursor-local direct failure, the
+concrete production application adapter, production seal/publication,
+production discovery/verifier/measurement adapters, and remaining end-to-end
+evidence each require a fresh committed path-exclusive manifest from the then-
+current integration barrier; none may inherit R2b or R2c ownership.
 
 No D24 wave owns the untracked persisted-matching draft. M5-D25 and migration
 017 remain blocked until migration 016 is accepted, all five 016 ledger values

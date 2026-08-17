@@ -1,11 +1,15 @@
 # M5-D24 R2c Group/Requirement PostgreSQL Bridge Handoff
 
-Status: five-path candidate evidence complete; source and test audits `GO`;
-candidate commit, main integration, and post-integration rerun pending
+Status: integrated five-path R2c group/requirement PostgreSQL pre-seal evidence
+at `0e0ff4385b4f5e5145788f59cc55411b39d659c1`; scoped gate `PASS`, M5.0-24
+implementation `PENDING`, and no current edit ownership
 
 Date: 2026-08-17
 
 Branch: `workstream/m5-d24-r2c-group-requirement-bridge`
+
+Integration commit:
+`0e0ff4385b4f5e5145788f59cc55411b39d659c1`
 
 Activation commit/base:
 `abe22e6d1cf844ca7bc63697f089cc77fcb4397f`
@@ -20,9 +24,10 @@ was recreated without rebase or merge at the persistent path:
 `/home/kassym/Desktop/groundloop-worktrees/m5-d24-r2c-group-requirement-bridge`
 
 The four in-flight source/test files were recovered from the session journal,
-their exact checkpoint hashes were reproduced, and all final gates below ran
-from the persistent worktree. This operational relocation changes no Git
-base, owned byte, contract, or implementation authority.
+their exact checkpoint hashes were reproduced, and the candidate gates below
+ran from the persistent worktree. The exact integrated-main rerun is identified
+separately. This operational relocation changed no Git base, owned byte,
+contract, or implementation authority.
 
 ## Exact five-path candidate
 
@@ -45,9 +50,13 @@ Frozen source/test SHA-256 pins:
 - `test_group_requirement_races.py`:
   `5fea25b5fca180d10db212ece06aaaec35a8607103f199c6cf7070aa8e1a4c95`
 
-This document does not invent a self-hash. Its final candidate hash is pinned
-by the independent exact-byte audit and, after commit, by the immutable Git
-tree.
+The candidate handoff bytes at
+`0e0ff43:docs/workstreams/m5_runtime_implementation/D24_R2C_GROUP_REQUIREMENT_BRIDGE_HANDOFF.md`
+had pre-conversion SHA-256
+`302921a289203670d1619c74eff2ea33f52ddb52de743d7bda5cd2184253998a`.
+This later status conversion intentionally changes this document; the
+integration commit plus that pre-conversion hash pins the candidate without
+pretending that a file can self-pin its own final hash.
 
 No existing source, test, fixture, migration, package export, contract,
 digest, status document, accepted C5/C6 document, or protected user path is
@@ -119,6 +128,9 @@ PYTHONPATH=src:. \
   -p no:cacheprovider -q -rs --tb=short \
   tests/m5/postgres_runtime/d24_application
 ```
+
+The same 81-case command passed again from the exact integrated main revision
+`0e0ff4385b4f5e5145788f59cc55411b39d659c1`.
 
 The suite proves exact register, replace, and retire planning/open behavior;
 the full zero-write rejection matrix; retryable discovery/verifier `BLOCKED`;
@@ -243,8 +255,12 @@ That gap was corrected only in the two new test files. The independent
 re-audit returned `GO` with no remaining P0/P1 at the frozen test hashes and
 confirmed the collection remains 81.
 
-Final five-path exact-byte and immutable-commit audits remain coordinator
-gates after this document is frozen.
+The final five-path exact-byte and immutable-commit audit returned `GO` with no
+unresolved P0/P1. It verified sole parent `abe22e6`, immutable tree
+`021ba1d5c58434c9b8129dce257af302a810e0e9`, exactly five added paths, all
+frozen source/test hashes, clean candidate worktree state, and unchanged
+protected user bytes. On the integrated revision the Ruff, format, strict-mypy,
+cache-isolated compile, diff, and exact-hash gates also passed.
 
 ## Explicit remaining boundary
 
@@ -263,3 +279,16 @@ not provide or claim:
 
 M5.0-24 therefore remains contract-`PASS` / implementation-`PENDING`, and
 M5.4 remains partial.
+
+## Integration closure
+
+The scoped R2c group/requirement PostgreSQL pre-seal bridge is integrated at
+`0e0ff43` and its scoped tranche gate is `PASS`. It is not a M5.0-24
+implementation promotion or a M5.4 row promotion.
+
+Integration closed the five-path grant. This handoff and its activation are
+historical evidence only and authorize no further edit. The persistent
+worktree may remain for audit but grants no implementation authority. Every
+later typed-direct, production-seal/publication, production-provider, or D25
+tranche requires a fresh committed path-exclusive activation from the then-
+current integrated barrier.

@@ -1,5 +1,53 @@
 # GroundLoop Decision Log
 
+## 2026-08-17 — M5-D24 R2c Group/Requirement PostgreSQL Pre-Seal Bridge Integrated
+
+Decision status: the bounded R2c group/requirement PostgreSQL pre-seal bridge
+is integrated on main at
+`0e0ff4385b4f5e5145788f59cc55411b39d659c1`. Its scoped tranche gate is
+`PASS`. This is an implementation-status record, not a contract amendment, a
+M5.4 row promotion, or an implementation-`PASS` promotion for M5.0-24.
+
+The integration has sole parent and exact activation base
+`abe22e6d1cf844ca7bc63697f089cc77fcb4397f`. It adds exactly the five activated
+R2c paths and has immutable Git tree
+`021ba1d5c58434c9b8129dce257af302a810e0e9`. The source and three test/fixture
+SHA-256 values exactly match the frozen handoff pins. The immutable integration
+audit returned `GO` with no unresolved P0/P1.
+
+On the exact integrated main bytes, the new live PostgreSQL suite passed
+81/81. Ruff check, Ruff format check, strict mypy, cache-isolated compile,
+diff-check, and exact-hash checks also passed. The candidate handoff separately
+records the 237/237 pure-runtime, 163/163 requirement-runtime, 589/589 complete
+PostgreSQL-runtime, 48/48 public-M4 route/direct, and 14/14 DTO/legacy/M4
+contract regression gates.
+
+The original activated `/tmp` worktree disappeared during an environment
+restart before candidate commit. At the user's explicit direction, the same
+branch at the unchanged activation base was recreated at
+`/home/kassym/Desktop/groundloop-worktrees/m5-d24-r2c-group-requirement-bridge`.
+The exact in-flight bytes were recovered and revalidated there. This
+operational relocation changed no Git base, contract, owned byte, or evidence
+claim.
+
+This evidence closes only the scoped group-lifecycle requirement path through
+the concrete PostgreSQL store up to an explicit fail-closed pre-seal boundary.
+M5.0-24 remains contract-`PASS` / implementation-`PENDING`; every M5.4 row is
+unchanged and M5.4 remains partial. Typed-direct outer settlement,
+cursor-local direct failure, production seal and combined publication,
+production discovery/verifier/measurement adapters, M5-D25/migration 017, and
+the remaining end-to-end closure evidence remain pending under separate fresh
+manifests.
+It does not establish deployment readiness, exactly-once external provider
+execution, performance or call savings, model quality, representative utility,
+human approval, security, novelty, or publishing potential.
+
+The R2c activation and handoff are historical evidence. Their five-path grant
+is closed and gives no current edit ownership. The persistent worktree, if
+retained for audit, is not implementation authority. Any later lane requires a
+fresh committed path-exclusive activation from the then-current integrated
+barrier and may not inherit R2b or R2c ownership.
+
 ## 2026-08-16 — M5-D24 R2b Pure Application Composition Integrated
 
 Decision status: the bounded R2b pure-orchestration tranche is integrated on

@@ -243,8 +243,14 @@ evidence but do not independently close M5.4-05. M5-D24's R0 contracts and
 migration 016 are accepted on main; R1-D, R1-P, R2a, and R1-C are integrated.
 The bounded R2b pure requirement-application/fake-seal orchestration tranche
 is integrated at `bfeef3f` with 87/87 focused and 237/237 pure evidence. It has
-no current ownership and does not close M5.0-24 implementation, production
-application composition, or any remaining M5.4--M5.6 gate. See
+no current ownership. The subsequent R2c group/requirement PostgreSQL pre-seal
+bridge is integrated at `0e0ff43`; its scoped tranche gate is `PASS` after an
+81/81 post-integration live run, static gates, and immutable-audit `GO`. Its
+five-path grant is also closed with no current ownership. R2c stops explicitly
+before production seal/publication and does not cover typed-direct outer
+settlement or production provider adapters. M5.0-24 therefore remains
+contract-`PASS` / implementation-`PENDING`, M5.4 remains partial, and every
+remaining M5.4--M5.6 row is unchanged. See
 `docs/m5_implementation_status.md`.
 
 Deliverables:

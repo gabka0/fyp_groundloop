@@ -2,10 +2,11 @@
 
 Status: M5.0 contract accepted through M5-D24-C6 and M5.1--M5.3 complete;
 M5.4 is partially complete, M5.0-24 is contract-`PASS` /
-implementation-`PENDING`, and the integrated R2b pure-orchestration tranche is
-historical with no current edit ownership
+implementation-`PENDING`, and the integrated R2c group/requirement PostgreSQL
+pre-seal bridge is historical with no current edit ownership
 
-Date: 2026-08-02; M5-D24 execution amendments through accepted C6 2026-08-16
+Date: 2026-08-02; M5-D24 execution and R2c integration current through
+2026-08-17
 
 Authority: `docs/m5_design_freeze.md` governs. M5-D24 recovery/accounting work
 also obeys
@@ -23,6 +24,12 @@ Accepted M5-D24-C6 closes three additional reachable active-cutoff origins and
 restores M5.0-24 to contract-`PASS` / implementation-`PENDING`. The bounded
 R2b pure requirement-application/fake-seal orchestration tranche is integrated
 at `bfeef3f`; its five-path activation is closed and grants no current edit
+ownership.
+
+The bounded R2c group/requirement PostgreSQL pre-seal bridge is integrated at
+`0e0ff4385b4f5e5145788f59cc55411b39d659c1`. Its scoped tranche gate is
+`PASS`; M5.0-24 remains contract-`PASS` / implementation-`PENDING`, every M5.4
+row is unchanged, and its five-path grant is closed with no current edit
 ownership.
 
 ## 1. Outcome
@@ -477,12 +484,20 @@ requirement-application and fake-seal orchestration evidence; no live database
 was used. M5.0-24 therefore remains contract-`PASS` /
 implementation-`PENDING`.
 
-The R2b activation, branch/worktree, five paths, and handoff are historical
-evidence and own nothing after integration. Typed-direct outer-settlement
-application composition, cursor-local direct failure, the concrete production
-application adapter, production seal/publication, and remaining live crash/
-reconnect and end-to-end gates require later separate path-exclusive
-manifests. No future lane may inherit the closed R2b grant.
+The subsequent exact five-new-path R2c tranche integrated at `0e0ff43` from
+activation base `abe22e6`. On the exact integrated bytes, its 81-case live
+PostgreSQL suite and static/type/compile/hash gates passed, and the immutable
+integration audit returned `GO`. The tranche proves only the group lifecycle
+path through concrete requirement persistence: exact register/replace/retire,
+durable `BLOCKED` and `FAILED`, applicable C5/C6 cutoffs, reconnect/takeover,
+work/timing coverage, and a zero-write fail-closed pre-seal boundary.
+
+The R2b and R2c activations, branches/worktrees, paths, and handoffs are
+historical evidence and own nothing after integration. Typed-direct outer-
+settlement application composition, cursor-local direct failure, production
+seal and combined publication, production discovery/verifier/measurement
+adapters, and remaining end-to-end gates require later separate path-exclusive
+manifests. No future lane may inherit either closed grant.
 
 The contracts and migration lanes may run in parallel only under the explicit
 path manifest in `docs/m5_multiagent_execution_plan.md`. Persistence/direct

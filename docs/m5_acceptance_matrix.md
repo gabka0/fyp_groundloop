@@ -1,10 +1,10 @@
 # GroundLoop M5 Acceptance Matrix
 
 Status: frozen M5 falsification contract through accepted M5-D24-C6; staged
-evidence is current through the integrated R2b pure-orchestration tranche and
-partial M5.4
+evidence is current through the integrated R2c group/requirement PostgreSQL
+pre-seal bridge and partial M5.4
 
-Date: 2026-08-16
+Date: 2026-08-17
 
 Authority: each row is a necessary condition, not a menu. In Section 1, the
 first status is the M5.0 contract audit and the second is implementation
@@ -59,10 +59,14 @@ current executable evidence without silently remapping M5-D1 through M5-D24.
 R1-D, R1-P, R2a, and R1-C are integrated at `1838316`, `56dd2d4`, `6f1ae89`,
 and `f5902ff`, respectively. The bounded R2b pure requirement-application and
 fake-seal orchestration tranche is integrated at `bfeef3f`; its 87/87 focused
-and 237/237 pure gates close only that scoped evidence. M5.0-24 remains
-implementation-`PENDING`: the row still requires its separately manifested
-typed-direct, production adapter/seal/publication, live crash/reconnect, and
-end-to-end evidence before the final M5.6 cross-stage mapping.
+and 237/237 pure gates close only that scoped evidence. The bounded R2c
+group/requirement PostgreSQL pre-seal bridge is integrated at `0e0ff43`; its
+post-integration live suite passed 81/81 and its immutable audit returned `GO`.
+That scoped tranche gate is `PASS`, but it is not a decision-row or stage-row
+promotion. M5.0-24 remains implementation-`PENDING`: the row still requires
+its separately manifested typed-direct outer settlement, production seal and
+combined publication, production provider adapters, remaining end-to-end
+crash/reconnect evidence, and final M5.6 cross-stage mapping.
 
 ### 1.1 Mandatory adversarial cases
 
@@ -199,11 +203,16 @@ Migration 016's R0 schema/installer subgate is accepted on main commit
 broader live PostgreSQL runtime tests. M5.0-24's implementation half and
 M5.4-05 through M5.4-07 remain `PENDING`. The R2b tranche integrated at
 `bfeef3f` supplies bounded pure requirement-application and fake-seal
-orchestration evidence, but no production adapter, typed-direct outer
-settlement, production seal/publication, or live race/crash/reconnect history.
-Accepted C6 restores M5.0-24's contract half to `PASS`; the integrated R2b
-subset does not close the decision-row implementation half or a M5.4 stage
-row.
+orchestration evidence. The R2c tranche integrated at `0e0ff43` adds concrete
+PostgreSQL evidence for group register/replace/retire planning and open,
+retryable `BLOCKED`, nonretryable production `FAILED`, applicable C5/C6
+cutoffs, database-clock takeover, reconnect identity, exact work/timing, and
+an explicit zero-write fail-closed pre-seal boundary. It does not provide
+typed-direct outer settlement, cursor-local direct failure, production seal/
+publication, production discovery/verifier/measurement adapters, or complete
+end-to-end history. Accepted C6 keeps M5.0-24's contract half at `PASS`; the
+integrated R2c subset does not close the decision-row implementation half or
+any M5.4 stage row.
 
 ## 6. M5.5 controlled evaluation gates
 
