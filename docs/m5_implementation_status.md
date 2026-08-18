@@ -2,12 +2,14 @@
 
 Status date: 2026-08-18
 
-Milestone status: **M5.0 contract through accepted C6 and M5.1--M5.3 are
+Milestone status: **M5.0 contract through accepted C7 and M5.1--M5.3 are
 complete; M5.4 is partially complete.**
 M5.4-01 passes. M5.4-02 through M5.4-09 and every M5.5--M5.6
 implementation/evaluation closure remain pending. M5-D24-C1 through
-M5-D24-C6 are accepted, so M5.0-24 is contract-`PASS` /
-implementation-`PENDING`. C6's accepted reviewed-candidate SHA-256 is
+M5-D24-C7 are accepted. M5.0-24 is contract-`PASS` / implementation-`PENDING`.
+C7's accepted reviewed-candidate SHA-256 is
+`633f4fa8cb789b7a0245cb87e7f602d3946457a7448692dc1bc6ae88c1ff4441`.
+C6's accepted reviewed-candidate SHA-256 remains
 `b6d69c7c6db63b6a726b2787639b0b15851441efc0c2f3d17091e1b6de34c393`.
 C5's accepted reviewed-candidate SHA-256 remains
 `b4afb8fbbdabcf970ac03865fa1510cd8219cac630dbc5ee2d5dc506889f3b67`.
@@ -30,6 +32,11 @@ reruns passed 101/101 focused, 339/339 pure runtime, 14/14 non-database M4/
 legacy, and the applicable static/hash gates. The R2b, R2c, and exact four-path
 R2d grants are closed with no current edit ownership, and overall decision-
 row implementation evidence remains pending.
+
+C7 is an accepted six-document authoritative correction on exact candidate
+base `254e9c27b0dfc74df1e02ba2d8cd04c7fa9a2c6a`; it is not implemented. No
+D24 lane is active. A later R2e bridge could begin only after a zero-row read-
+only forbidden-history guard and a separate committed exact 21-path activation.
 
 The exact disjoint R1-P requirement and R1-D typed-direct persistence paths
 were governed by
@@ -73,6 +80,26 @@ maintained-runtime model quality, production latency, call savings, utility,
 novelty, or publishing potential. Those claims remain
 blocked by the executable gates in `docs/m5_acceptance_matrix.md`.
 
+Production typed-direct preflight found that the pre-C7 accepted contract did
+not make the bridge total: the cursor acquisition requires a caller token
+before the locked attempt decision; direct failing-terminal acquisition and
+direct terminal-failure replay lack checked active-cutoff provenance; generic
+failure lacks the exact held fresh/resumed open receipt; epoch failure can
+leave direct jobs nonterminal; a serialized terminal-cutoff loser lacks
+provenance for actual call work; and the pure bridge cannot yet return the
+required WIP outcomes. Accepted C7 freezes exact operational receipts, a tokenless
+transaction owner, an inclusive
+`TERMINAL_FAILED OR terminal_reason=epoch_failed` canonical-failed origin, and
+one target-optional private-M4/outer-M5 `N -> N+1` failure closure. It also
+requires exact-held-receipt internal production failure/direct-runner methods,
+mutually exclusive terminal-acquisition/checked-combined application
+provenance, and a same-lock zero-write `CANCELLED/epoch_failed` loser branch.
+It requires cooperative read-only M4/M5 job/detail plans before write-only
+apply, exactly one M4 failure transition and one fused timing-accumulator CAS,
+and a preactivation guard rejecting every pre-C7 direct `terminal_failed` job/
+projection, every direct `epoch_failed` projection, and failed epochs with open
+direct jobs. Those are accepted contract requirements, not implemented facts.
+
 ## 2. M5.0 evidence
 
 The pre-M5 implementation baseline was revalidated before the freeze:
@@ -110,7 +137,7 @@ m5_multiagent_execution_plan faffae5f839623efd9e387f63e951881cf1f46c5b66f37c3db6
 ```
 
 Those hashes identify the initial audited M5.0 semantic candidate. Later
-accepted amendments M5-D21 through M5-D24-C6 extend or correct that contract
+accepted amendments M5-D21 through M5-D24-C7 extend or correct that contract
 and are identified by their own decision and audit records below. Final
 implementation artifact hashes and the decision-row cross-stage mapping will
 be recorded at M5.6.
@@ -140,10 +167,18 @@ The accepted governing documents are:
 - `docs/workstreams/m5_runtime_contract/ACTIVE_TERMINAL_CUTOFF_INVOCATION_WORK_COMPLETION_CORRECTION.md`
   -- accepted provenance completion for three additional active-invocation
   cutoff origins;
+- `docs/workstreams/m5_runtime_contract/DIRECT_ACQUISITION_TERMINAL_CUTOFF_CORRECTION.md`
+  -- accepted M5-D24-C7 tokenless direct acquisition, failing-terminal/
+  combined-failure cutoff provenance, exact held-open production failure,
+  target-optional private activated-M5 M4 failure closure, serialized loser
+  provenance, and exact WIP stops;
 - `docs/m5_implementation_plan.md` -- stages M5.1 through M5.6;
 - `docs/m5_multiagent_execution_plan.md` -- path-exclusive ownership and
   integration order; and
 - `docs/m5_acceptance_matrix.md` -- falsifiers and executable evidence gates.
+
+Accepted C7 restores M5.0-24 to contract-`PASS` / implementation-`PENDING`.
+It grants no implementation ownership and promotes no M5.4 row.
 
 The strongest proposed exact statement is conditional: after immutable group,
 requirement, chunk, observation-currency and policy inputs are fixed, the M5
@@ -341,8 +376,9 @@ audits returned GO. The subsequent exact five-path R2b tranche integrated at
 gate, and static gates passed without a live database.
 
 That result is scoped pure requirement-application/fake-seal orchestration
-evidence, not M5-D24 implementation `PASS`. M5.0-24 remains contract-`PASS` /
-implementation-`PENDING`. The R2b activation is historical and owns no path.
+evidence, not M5-D24 implementation `PASS`. At that pre-C7 integration point,
+M5.0-24 remained contract-`PASS` / implementation-`PENDING`. The R2b
+activation is historical and owns no path.
 
 The subsequent R2c integration at `0e0ff43` adds an internal
 `PostgresM5GroupRequirementPreSealPorts` facade over the unchanged concrete
@@ -361,8 +397,9 @@ zero-write fail-closed seal boundary. It does not provide typed-direct outer
 settlement, cursor-local direct failure, successful production seal or
 combined publication, production discovery/verifier/measurement adapters, or
 successful terminal application completion. M5.0-24 therefore remains
-contract-`PASS` / implementation-`PENDING`; all M5.4 rows are unchanged and
-M5.4 remains partial. The R2c activation is historical and owns no path.
+historically contract-`PASS` / implementation-`PENDING` at the pre-C7 point;
+all M5.4 rows are unchanged and M5.4 remains partial. The R2c activation is
+historical and owns no path.
 
 The subsequent exact four-path R2d integration at `c892cc8` adds the pure
 checked application outcome for one explicitly selected successful typed-
@@ -386,8 +423,9 @@ identity, and ordinary reconnect without redispatch. It does not provide the
 production PostgreSQL typed-direct application/outer-settlement bridge,
 cursor-local direct failure, seal/publication, provider adapters, or combined
 end-to-end recovery. M5.0-24 remains contract-`PASS` /
-implementation-`PENDING`; all M5.4 rows are unchanged and M5.4 remains partial.
-The R2d activation is historical and owns no path.
+implementation-`PENDING`; accepted C7 changes no implementation evidence. All
+M5.4 rows are unchanged and M5.4 remains partial. The R2d activation is
+historical and owns no path.
 
 ## 5. Remaining closure boundary
 

@@ -1,5 +1,96 @@
 # GroundLoop Decision Log
 
+## 2026-08-18 — M5-D24-C7 Direct Acquisition/Cutoff Correction Accepted
+
+Decision status: **accepted authoritative contract correction**. Two
+independent exact-byte audits returned `GO` with no unresolved P0/P1 against
+reviewed-candidate core SHA-256
+`633f4fa8cb789b7a0245cb87e7f602d3946457a7448692dc1bc6ae88c1ff4441`.
+M5-D24-C1 through M5-D24-C7 are accepted. No source/test edit is authorized and
+no implementation lane is active. M5.0-24 is contract-`PASS` /
+implementation-`PENDING`.
+
+Production typed-direct preflight on exact integrated base
+`254e9c27b0dfc74df1e02ba2d8cd04c7fa9a2c6a` exposed remaining acquisition,
+failure-closure, and active-invocation provenance gaps. The existing cursor
+acquisition requires a caller-selected
+lease token before its transaction locks the job, samples database time, and
+discovers the dense attempt. Its lease-only return also omits the epoch, exact
+requested M4 job, and exact M4 attempt. Separately, direct
+`TERMINAL` acquisition whose projection is `TERMINAL_FAILED` or has reason
+`epoch_failed`, and cursor-local direct terminal failure, are not checked C5/C6
+active-cutoff origins.
+
+The accepted correction freezes a transaction-owning tokenless production acquisition
+returning an immutable operational receipt with exact `epoch_id`, unchanged M4
+`LogicalJobSpec`, unchanged `M5TypedDirectJobLease`, and exact unchanged M4
+`JobAttempt | None`. The old token-bearing cursor API remains a checked
+compatibility surface, not the total production entrypoint. No caller may
+pre-read or infer an ordinal/token, parse an exception as protocol, or retry
+with a guessed token.
+
+For a qualifying direct failing-terminal acquisition, the exact canonical
+same-event/payload/epoch `FAILED` result is the M5 authority; the application
+never maps the arbitrary M4 terminal state or reason string into
+`M5RunFailureReason`. For terminal attempt failure, the accepted correction adds one
+checked transaction and receipt that binds direct settlement to typed epoch
+failure, carries the exact requested `M5RunFailureReason` separately and
+losslessly through existing M4 failure metadata and the event-result failure
+wire, and returns either the first `FAILED` result or its canonical same-reason
+`REPLAYED` result.
+
+The application passes its exact held fresh/resumed nonterminal
+`OpenEventReceipt` through the internal direct runner and a new required-held-
+receipt production generic-failure method; the old no-receipt concrete-store
+method becomes non-qualifying legacy/test compatibility. Two mutually
+exclusive `M5DirectExecutionReceipt` fields carry either checked terminal-
+acquisition or checked-combined-failure provenance, never the generic terminal
+reason.
+
+The target-optional private M4 helper makes every activated typed-M5 failure
+total. A combined first write terminalizes its target and cancels every other
+open direct job; a generic typed failure cancels all open direct jobs. M5
+installs the bijective `CANCELLED/epoch_failed` projections. Both advance the
+whole outer transaction once from `N` to `N+1`, apply exactly one existing
+`m4-evaluation-failure-v1` `FAIL` transition and no target terminal-failure
+DELTA, and use only the existing `EPOCH_FAILURE` anchor. Standalone committed
+direct terminal failure and test-only terminal shortcuts are forbidden.
+
+If another typed failure wins after provider failure and cancels the selected
+target, the same locked combined call returns an exact zero-write
+`CANCELLED/epoch_failed` terminal-acquisition receipt only when that input
+attempt remains the exact latest leased token/dispatch, has no execution
+evidence, and the canonical failed result validates.
+Exact matching `TERMINAL_FAILED` evidence is checked replay; mismatched or
+ambiguous evidence conflicts. The loser keeps actual invocation work only in
+the active projection and never uses exception/reacquisition protocol.
+
+The accepted correction also records already-frozen implementation obligations:
+typed-direct `LIVE_LEASE` and `expired_preterminal` stop as
+`BLOCKED/WORK_IN_PROGRESS`. It changes no public M4-v1 byte, existing lease or
+event-result field, digest, schema, migration-016 byte/ledger value, event
+total, or timing-only telemetry shape. Production seal/publication, provider
+adapters, M5-D25, migration 017, and any stage-row promotion remain excluded.
+
+The accepted correction text is
+`docs/workstreams/m5_runtime_contract/DIRECT_ACQUISITION_TERMINAL_CUTOFF_CORRECTION.md`.
+Acceptance grants no implementation ownership. After the accepted correction
+is committed, a separate activation may pin the exact expanded 21-path
+implementation manifest only with the mandatory zero-row read-only forbidden-
+history guard rejecting any pre-C7 direct `terminal_failed` job/projection, any
+direct `epoch_failed` projection, and any failed epoch with an open direct job.
+Its two private M4 paths implement
+the activated-typed-M5 composite helper without changing public or standalone
+v1 behavior; `contracts.py` and `test_contracts.py` pin both new receipt
+topologies, and `postgres_application.py` preserves the group-only facade's
+exact held-receipt protocol compatibility. `postgres_roots.py` splits its
+bundled M5 failure lock/mutation helper into read-only plan and write-only apply
+phases so the global lock order is executable without duplicated SQL;
+`postgres_recovery.py` extends the shared terminal timing finalizer with the
+optional attempt observation so one fused accumulator CAS remains possible.
+The accepted correction and this governance record grant no current ownership,
+implementation promotion, or M5.4 promotion.
+
 ## 2026-08-17 — M5-D24 R2d Typed-Direct Application Outcome Integrated
 
 Decision status: the bounded R2d pure typed-direct application-outcome tranche

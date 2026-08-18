@@ -1,8 +1,8 @@
 # GroundLoop M5 Implementation Plan
 
-Status: M5.0 contract accepted through M5-D24-C6 and M5.1--M5.3 complete;
-M5.4 is partially complete, M5.0-24 is contract-`PASS` /
-implementation-`PENDING`, and the integrated R2d pure typed-direct application-
+Status: M5.0 contract accepted through M5-D24-C7 and M5.1--M5.3 complete;
+M5.0-24 is contract-`PASS` / implementation-`PENDING`; M5.4 is
+partially complete and the integrated R2d pure typed-direct application-
 outcome tranche is historical with no current edit ownership
 
 Date: 2026-08-02; M5-D24 execution and R2d integration current through
@@ -13,6 +13,12 @@ also obeys
 `docs/workstreams/m5_runtime_contract/RECOVERY_WORK_AMENDMENT.md`.
 Implementation stops on any conflict with those contracts rather than silently
 choosing new semantics.
+
+`docs/workstreams/m5_runtime_contract/DIRECT_ACQUISITION_TERMINAL_CUTOFF_CORRECTION.md`
+is the accepted authoritative C7 correction on exact candidate base
+`254e9c27b0dfc74df1e02ba2d8cd04c7fa9a2c6a`. It grants no implementation
+authority. This plan records M5.0-24 as contract-`PASS` / implementation-
+`PENDING` and keeps every D24 lane stopped.
 
 Accepted M5-D24-C3 and M5-D24-C4 are authoritative. C4 governs the
 retryable/terminal-successor expired-output and requirement late-artifact
@@ -34,9 +40,9 @@ ownership.
 
 The bounded R2d pure typed-direct application-outcome tranche is integrated at
 `c892cc8a547a9c0248ad735e11270daa0e1acf4e`. Its scoped tranche gate is
-`PASS`; M5.0-24 remains contract-`PASS` / implementation-`PENDING`, every M5.4
-row is unchanged, and its exact four-path grant is closed with no current
-edit ownership.
+`PASS`; that historical evidence is unchanged, every M5.4 row is unchanged,
+and its exact four-path grant is closed with no current edit ownership. The
+accepted C7 correction leaves R2d's recorded scoped result unchanged.
 
 ## 1. Outcome
 
@@ -116,9 +122,10 @@ acceptance matrix is `PASS`, the later implementation column remains honestly
 `PENDING`, and no audit has an unresolved P0/P1.
 
 Historical base result: **passed on 2026-08-02** after three independent final
-audit GOs. Later accepted amendments through C6 preserve that historical
-result. C6 restores M5.0-24's current contract-completeness gate to `PASS`; it
-does not change completed M5.1--M5.3 evidence or supply implementation proof.
+audit GOs. Later accepted amendments through C7 preserve that historical
+result and leave the current M5.0-24 gate contract-`PASS` / implementation-
+`PENDING` without changing completed M5.1--M5.3 evidence or supplying
+implementation proof.
 
 ## 4. M5.1 -- pure reference semantics and structural events
 
@@ -509,6 +516,63 @@ that lose the active terminal cutoff, plus ordinary reconnect preservation.
 On the exact integrated main bytes, the 101/101 focused, 339/339 pure-runtime,
 14/14 non-database M4/legacy, and applicable static/hash gates passed again;
 189/189 and the four live compatibility counts remain candidate evidence.
+
+Subsequent production typed-direct preflight produced the accepted C7
+correction. It requires a transaction-owning tokenless acquisition receipt
+containing the exact epoch, unchanged M4 job, unchanged M5 direct lease, and
+exact M4 attempt or `None`; the token-bearing cursor method remains checked
+compatibility only. It also supplies checked active-cutoff provenance for an
+exact direct `TERMINAL` projection that is either `TERMINAL_FAILED` or reason
+`epoch_failed`, using only the canonical same-event/payload/epoch `FAILED`
+result and never mapping M4 state/text to an M5 run reason.
+
+The accepted correction further requires one atomic direct terminal-attempt/typed-epoch
+failure operation carrying the exact requested `M5RunFailureReason`
+separately, forbids standalone committed direct terminal failure, and requires
+every production typed failure on a direct-capable epoch to cancel every
+applicable nonterminal direct job and install its exact
+`CANCELLED/epoch_failed` projection. Its private M4 helper is target-optional:
+combined direct failure terminalizes its exact target and cancels the rest;
+generic typed failure cancels them all. `LIVE_LEASE` and direct
+`expired_preterminal` retain their already-frozen
+`BLOCKED/WORK_IN_PROGRESS` stops. The accepted correction changes no public M4 byte,
+schema, migration, digest, event total, or telemetry-work shape.
+
+C7 is accepted and has no implementation evidence. The correction freezes
+one `N -> N+1` outer transition per typed failure, exactly one existing
+`m4-evaluation-failure-v1` `FAIL` transition, no target terminal-failure DELTA,
+and the sole `EPOCH_FAILURE` anchor. Its private M4 composite helper locks the
+complete direct/M5 job sets before writing and lets M5 finalize aligned
+projections, contributions, accumulators, and result at `N+1`.
+`postgres_roots.py` must split its currently bundled M5 failure locks/mutation
+into cursor-local read-only job/detail plans and a write-only apply phase so
+the frozen M4-jobs, M5-jobs, attempts/evidence, validate, mutate order is
+executable without copied SQL or a nested transaction. The shared
+`postgres_recovery.py` failure timing finalizer must accept the optional direct-
+attempt observation and combine it with pending-anchor and terminal missing
+points in one accumulator update; a separate direct timing CAS is forbidden.
+
+The application must pass the exact held fresh/resumed nonterminal
+`OpenEventReceipt` through `run_pending_direct` and the new production generic-
+failure method. The old no-receipt concrete-store method is legacy/test-only.
+`M5DirectExecutionReceipt` has exact mutually exclusive terminal-acquisition
+and checked-combined-failure provenance selections. If another failure first
+cancels a provider's selected target, the same-lock combined call returns the
+zero-write `CANCELLED/epoch_failed` acquisition branch only when the input
+attempt remains the exact latest leased token/dispatch, its execution evidence
+is absent, and a canonical failed result validates; exact matching
+`TERMINAL_FAILED` evidence replays the checked receipt and ambiguous evidence
+conflicts.
+
+M5.0-24 is therefore contract-`PASS` / implementation-`PENDING`, all M5.4 rows
+remain unchanged, and no implementation path is active. A later lane may begin
+only after a zero-row read-only forbidden-history guard rejecting any pre-C7 direct `terminal_failed`
+job/projection, any direct `epoch_failed` projection, and failed epochs with
+open direct jobs, and a separate committed activation naming the
+exact 21 paths, including both private M4 paths, `contracts.py`,
+`test_contracts.py`, `postgres_application.py`, `postgres_roots.py`,
+`postgres_recovery.py`, and the existing standalone-terminal direct-M4
+composition regression.
 
 The R2b, R2c, and R2d activations, branches/worktrees, paths, and handoffs are
 historical evidence and own nothing after integration. The production

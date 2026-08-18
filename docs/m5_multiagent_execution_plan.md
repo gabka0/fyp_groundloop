@@ -3,10 +3,11 @@
 Status: frozen M5 ownership contract; historical Waves 0--2 complete;
 M5-D24 recovery R0-C, pure R0-C1, and R0-S accepted on main; R1-D, R1-P, R2a,
 and R1-C integrated at `1838316`, `56dd2d4`, `6f1ae89`, and `f5902ff`;
-M5-D24-C1 through M5-D24-C6 accepted; R2b pure orchestration integrated at
+M5-D24-C1 through M5-D24-C7 accepted; R2b pure orchestration integrated at
 `bfeef3f`, and R2c group/requirement PostgreSQL pre-seal composition integrated
 at `0e0ff43`; R2d pure typed-direct application outcome integrated at
-`c892cc8`; all three grants are closed with no current edit ownership
+`c892cc8`; M5.0-24 is contract-`PASS` / implementation-`PENDING`, all prior
+grants are closed, and no D24 implementation lane has current edit ownership
 
 Date: 2026-08-02; M5-D24 path amendments and integration records 2026-08-06
 through 2026-08-18
@@ -14,6 +15,11 @@ through 2026-08-18
 Authority: `docs/m5_design_freeze.md` defines semantics and
 `docs/m5_implementation_plan.md` defines gates. This document defines only
 ownership, integration order, and evidence required from parallel lanes.
+
+The accepted C7 correction at
+`docs/workstreams/m5_runtime_contract/DIRECT_ACQUISITION_TERMINAL_CUTOFF_CORRECTION.md`
+grants no path ownership. Its exact 21-path set below is a mandatory future
+activation boundary; acceptance alone does not activate it.
 
 ## 1. Non-negotiable execution rule
 
@@ -553,6 +559,107 @@ settlement bridge, cursor-local direct failure, production seal/publication,
 production discovery/verifier/measurement adapters, and remaining end-to-end
 evidence each require a fresh committed path-exclusive manifest from the then-
 current integration barrier; none may inherit R2b, R2c, or R2d ownership.
+
+### Wave R2e accepted-contract barrier -- no activation
+
+Production typed-direct preflight subsequently produced the accepted
+M5-D24-C7 correction. Its frozen contract requires a transaction-owning
+tokenless acquisition receipt containing the exact epoch, unchanged M4 job,
+unchanged M5 direct lease, and exact M4 attempt or `None`; deterministic M4
+attempt/token recomputation before provider use; checked active-cutoff
+provenance for the inclusive direct terminal predicate
+`TERMINAL_FAILED OR terminal_reason=epoch_failed`; one checked combined direct
+terminal-attempt/typed-epoch failure operation with the exact caller-held
+nonterminal open receipt and separately supplied exact M4 text/M5 enum
+reasons; an exact-held-open `run_pending_direct` signature and new production
+generic-failure method; mutually exclusive terminal-acquisition/checked-
+combined execution-receipt provenance; and the already-required
+`LIVE_LEASE`/`expired_preterminal` `BLOCKED/WORK_IN_PROGRESS` stops. The old no-
+receipt concrete-store failure method is non-qualifying legacy/test
+compatibility, not a production protocol fallback.
+
+Every frozen production typed failure locks the complete direct-job set then
+the complete M5-job set before attempts/evidence, uses a target-optional private
+M4 composite helper, advances once `N -> N+1`, applies exactly one existing
+`m4-evaluation-failure-v1` `FAIL` transition and no target terminal-failure
+DELTA, and has only the `EPOCH_FAILURE` anchor. Combined failure terminalizes
+the exact target and cancels every other open direct job; generic failure
+cancels every open direct job. M5 installs the exact applicable target and
+bijective `CANCELLED/epoch_failed` projections, contributions, aligned
+accumulators, and failed result at `N+1`. This narrowly changes only the
+private activated-typed-M5 M4 helper path; public, never-activated, and
+standalone-v1 behavior remain unchanged.
+
+The lock protocol is cooperative and nonduplicating: private M4 job locks,
+private `postgres_roots.py` M5 job locks, then each read-only detail plan in
+the frozen tier-10+ suborder; only after every tier is held do write-only M4/M5
+apply phases run. The shared `postgres_recovery.py` terminal timing finalizer
+accepts the optional direct-attempt observation and fuses it with prior-anchor
+and terminal missing points in one accumulator CAS.
+
+If another failure wins after provider failure and cancels the selected
+attempt, the same locked combined call returns a zero-write terminal-
+acquisition loser only for exact `CANCELLED/epoch_failed`, the still-latest
+leased input attempt/token/dispatch, absent execution evidence for that
+attempt, and a canonical failed result. Exact matching `TERMINAL_FAILED`
+evidence replays the checked receipt; every mismatch or ambiguous evidence
+image conflicts. No exception/reacquisition protocol or reason mapping is
+allowed.
+
+Before any activation, a read-only consistent-snapshot history guard must
+return zero rows for all three forbidden pre-C7 shapes: any direct
+`terminal_failed` job or projection regardless of runtime state; any direct
+projection with exact reason `epoch_failed`; and a failed typed epoch with a
+nonterminal direct job. This also rejects standalone terminal failure followed
+later by legacy epoch failure rather than misclassifying its earlier evidence
+as a combined replay. A hit stops work for a separately audited grandfathering/
+backfill contract; C7 authorizes no repair.
+
+After the accepted C7 correction is committed and that history guard passes,
+the coordinator may author a separate activation for exactly these 21 paths:
+
+1. `src/groundloop/m4/persistence.py`;
+2. `src/groundloop/m4/pipeline.py`;
+3. `src/groundloop/m5/runtime/contracts.py`;
+4. `src/groundloop/m5/runtime/application.py`;
+5. `src/groundloop/m5/runtime/direct_m4.py`;
+6. `src/groundloop/m5/runtime/persistence.py`;
+7. `src/groundloop/m5/runtime/postgres_direct_recovery.py`;
+8. `src/groundloop/m5/runtime/postgres_recovery.py`;
+9. `src/groundloop/m5/runtime/postgres_direct_application.py` (new);
+10. `src/groundloop/m5/runtime/postgres_application.py`;
+11. `src/groundloop/m5/runtime/postgres_roots.py`;
+12. `tests/m5/runtime/fake_ports.py`;
+13. `tests/m5/runtime/test_contracts.py`;
+14. `tests/m5/runtime/test_d24_application_composition.py`;
+15. `tests/m5/postgres_runtime/d24_application/test_group_requirement_composition.py`;
+16. `tests/m5/postgres_runtime/d24_application/test_group_requirement_races.py`;
+17. `tests/m5/postgres_runtime/d24_direct_application/conftest.py` (new);
+18. `tests/m5/postgres_runtime/d24_direct_application/test_typed_direct_composition.py`
+    (new);
+19. `tests/m5/postgres_runtime/d24_direct_application/test_typed_direct_races.py`
+    (new);
+20. `tests/m5/postgres_runtime/test_direct_m4_composition.py`; and
+21. `docs/workstreams/m5_runtime_implementation/D24_R2E_POSTGRES_TYPED_DIRECT_BRIDGE_HANDOFF.md`
+    (new).
+
+The list is not a current grant, names no branch/worktree/owner, and does not
+permit preemptive source/test edits. The two M4 paths, `contracts.py`,
+`test_contracts.py`, `postgres_application.py`, `postgres_roots.py`, and
+`postgres_recovery.py` are mandatory and may not be dropped.
+`postgres_roots.py` must expose read-only
+job/detail failure plans and a write-only apply phase. The existing group-
+requirement composition test must pass the exact held-open fourth direct-
+runner argument; both failure-interception subclasses in the group-requirement
+race test must override the new exact-held production method without legacy
+fallback; and the existing direct-M4 composition test must replace its
+standalone-terminal/direct-anchor expectation with rejection/rollback or
+combined semantics. `postgres_recovery.py` must fuse the optional direct-
+attempt observation into its shared one-CAS terminal timing finalizer. A needed
+twenty-second path is a stop condition requiring a
+newly reviewed manifest, not implicit lane expansion. Accepted C7 keeps
+M5.0-24 contract-`PASS` / implementation-`PENDING`; it changes no M5.4 row and
+supplies no implementation evidence.
 
 No D24 wave owns the untracked persisted-matching draft. M5-D25 and migration
 017 remain blocked until migration 016 is accepted, all five 016 ledger values
