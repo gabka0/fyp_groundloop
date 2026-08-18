@@ -1,5 +1,52 @@
 # GroundLoop Decision Log
 
+## 2026-08-17 — M5-D24 R2d Typed-Direct Application Outcome Integrated
+
+Decision status: the bounded R2d pure typed-direct application-outcome tranche
+is integrated on main at
+`c892cc8a547a9c0248ad735e11270daa0e1acf4e`. Its scoped tranche gate is
+`PASS`. This is an implementation-status record, not a contract amendment, an
+M5.4 row promotion, or an implementation-`PASS` promotion for M5.0-24.
+
+The integration has sole parent and exact activation base
+`b5c4c06ee81f79638771831d80b8ca21df58e0bd`. It changes exactly the four
+activated R2d paths and has immutable Git tree
+`30d8cfdec0cf49e6e5aa42685f555cdc0692a8d5`. The frozen source/test SHA-256
+pins are:
+
+- `application.py`:
+  `6911e237a1727897f2d8241eee939a48e43e42e8c1258dacc9b4ded6739b5bd2`;
+- `fake_ports.py`:
+  `dd7c70975ee807f340551da6a0ff104405b9e2aae4cc38d95003c14c9fa373af`;
+  and
+- `test_d24_application_composition.py`:
+  `90ea5f805cdfd2db60b6c8811ecfebbff2191320e6767f9a997d783ae7a7e0d4`.
+
+The integrated pre-conversion handoff has SHA-256
+`ba3c235cecf6b305a30a6e15fad71a9fbdfc3ea06b0795d56b98fc0f183f8c1f`.
+The immutable integration audit returned `GO` with no unresolved P0/P1.
+
+On the exact integrated main bytes, the focused R2d selection passed 101/101,
+the complete pure M5 runtime gate passed 339/339, and the non-database DTO/
+legacy/M4 selection passed 14/14. Ruff, format, strict-mypy, cache-isolated
+compile, diff, and exact-hash gates also passed. The frozen candidate handoff
+separately records the 189/189 complete owned composition file and the 81/81,
+163/163, 589/589, and 48/48 live compatibility regressions.
+
+This evidence closes only the pure checked C1/C5 application sequence for a
+selected successful typed-direct discovery/verifier outer receipt that loses
+the active terminal cutoff, plus ordinary reconnect preservation. It does not
+provide a PostgreSQL typed-direct application bridge, cursor-local direct
+failure, production seal/publication, production provider adapters, or
+combined end-to-end recovery. M5.0-24 remains contract-`PASS` /
+implementation-`PENDING`; every M5.4 row is unchanged and M5.4 remains partial.
+
+The R2d activation and handoff are historical evidence. Their exact four-path
+grant is closed and gives no current edit ownership. The persistent
+worktree, if retained for audit, is not implementation authority. Any later
+lane requires a fresh committed path-exclusive activation from the then-current
+integrated barrier and may not inherit R2b, R2c, or R2d ownership.
+
 ## 2026-08-17 — M5-D24 R2c Group/Requirement PostgreSQL Pre-Seal Bridge Integrated
 
 Decision status: the bounded R2c group/requirement PostgreSQL pre-seal bridge

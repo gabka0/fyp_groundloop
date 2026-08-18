@@ -5,10 +5,11 @@ M5-D24 recovery R0-C, pure R0-C1, and R0-S accepted on main; R1-D, R1-P, R2a,
 and R1-C integrated at `1838316`, `56dd2d4`, `6f1ae89`, and `f5902ff`;
 M5-D24-C1 through M5-D24-C6 accepted; R2b pure orchestration integrated at
 `bfeef3f`, and R2c group/requirement PostgreSQL pre-seal composition integrated
-at `0e0ff43`; both grants are closed with no current edit ownership
+at `0e0ff43`; R2d pure typed-direct application outcome integrated at
+`c892cc8`; all three grants are closed with no current edit ownership
 
 Date: 2026-08-02; M5-D24 path amendments and integration records 2026-08-06
-through 2026-08-17
+through 2026-08-18
 
 Authority: `docs/m5_design_freeze.md` defines semantics and
 `docs/m5_implementation_plan.md` defines gates. This document defines only
@@ -516,13 +517,42 @@ cursor-local direct failure, production seal/publication, production provider,
 M5-D25, or whole-M5.4 evidence. M5.0-24 remains contract-`PASS` /
 implementation-`PENDING`, and every M5.4 row is unchanged.
 
-Integration closed the R2b and R2c path grants. No D24 implementation lane is
-currently active. A retained historical worktree grants no edit authority.
-Typed-direct outer-settlement composition, cursor-local direct failure, the
-concrete production application adapter, production seal/publication,
+The coordinator then activated the exact four-path R2d tranche at
+`b5c4c06ee81f79638771831d80b8ca21df58e0bd` and integrated it on main at
+`c892cc8a547a9c0248ad735e11270daa0e1acf4e`. Its historical manifest is:
+
+1. `src/groundloop/m5/runtime/application.py`;
+2. `tests/m5/runtime/fake_ports.py`;
+3. `tests/m5/runtime/test_d24_application_composition.py`; and
+4. `docs/workstreams/m5_runtime_implementation/D24_R2D_TYPED_DIRECT_APPLICATION_OUTCOME_HANDOFF.md`.
+
+The frozen R2d candidate evidence records the 101/101 focused selection,
+189/189 complete composition file, 339/339 complete pure M5 runtime gate,
+unchanged 81/81 R2c application, 163/163 D24 requirement, 589/589 complete
+PostgreSQL runtime, 48/48 public-M4 route/direct, and 14/14 DTO/legacy/M4
+selections. The recorded static/type/compile/hash gates passed and the immutable
+integration audit returned `GO`.
+
+On exact integrated main, the 101/101 focused, 339/339 pure-runtime, 14/14 non-
+database M4/legacy, and applicable static/hash gates passed again. The 189/189
+composition-file and four live compatibility counts remain frozen-candidate
+evidence.
+
+This is scoped `PASS` evidence for the pure checked application outcome of a
+selected successful typed-direct discovery/verifier outer receipt that loses
+the active terminal cutoff, plus ordinary reconnect preservation. It is not a
+production PostgreSQL typed-direct application/outer-settlement bridge,
+cursor-local direct failure, seal/publication, provider, M5-D25, or whole-M5.4
+result. M5.0-24 remains contract-`PASS` / implementation-`PENDING`, and every
+M5.4 row is unchanged.
+
+Integration closed the R2b, R2c, and exact four-path R2d grants. No D24
+implementation lane is currently active. A retained historical worktree grants
+no edit authority. The production PostgreSQL typed-direct application/outer-
+settlement bridge, cursor-local direct failure, production seal/publication,
 production discovery/verifier/measurement adapters, and remaining end-to-end
 evidence each require a fresh committed path-exclusive manifest from the then-
-current integration barrier; none may inherit R2b or R2c ownership.
+current integration barrier; none may inherit R2b, R2c, or R2d ownership.
 
 No D24 wave owns the untracked persisted-matching draft. M5-D25 and migration
 017 remain blocked until migration 016 is accepted, all five 016 ledger values

@@ -1,6 +1,6 @@
 # GroundLoop M5 Implementation Status
 
-Status date: 2026-08-17
+Status date: 2026-08-18
 
 Milestone status: **M5.0 contract through accepted C6 and M5.1--M5.3 are
 complete; M5.4 is partially complete.**
@@ -22,9 +22,14 @@ respectively. The C5 validator lane integrated at `69a00e4`, accepted C6 at
 `bfeef3f`. Its 87/87 focused and 237/237 pure gates used no live database.
 The subsequent R2c group/requirement PostgreSQL pre-seal bridge is integrated
 at `0e0ff43`. Its scoped tranche gate is `PASS` after an 81/81 post-integration
-live run, static gates, and immutable-audit `GO`. The R2b and R2c grants are
-closed with no current edit ownership, and overall decision-row implementation
-evidence remains pending.
+live run, static gates, and immutable-audit `GO`. The subsequent R2d pure typed-
+direct application-outcome tranche is integrated at `c892cc8`; its scoped gate
+is `PASS` after 101/101 focused, 189/189 complete-composition, and 339/339 pure-
+runtime candidate gates plus immutable-audit `GO`; the exact integrated main
+reruns passed 101/101 focused, 339/339 pure runtime, 14/14 non-database M4/
+legacy, and the applicable static/hash gates. The R2b, R2c, and exact four-path
+R2d grants are closed with no current edit ownership, and overall decision-
+row implementation evidence remains pending.
 
 The exact disjoint R1-P requirement and R1-D typed-direct persistence paths
 were governed by
@@ -37,6 +42,9 @@ The R2b activation and handoff are likewise historical after integration at
 `bfeef3f`; none of their five paths remains owned.
 The R2c activation and handoff are historical after integration at `0e0ff43`;
 none of their five paths remains owned. Its persistent worktree may be retained
+for audit but grants no implementation authority.
+The R2d activation and handoff are historical after integration at `c892cc8`;
+none of their four paths remains owned. Its persistent worktree may be retained
 for audit but grants no implementation authority.
 
 ## 1. Honest current verdict
@@ -56,9 +64,11 @@ transitions, a cursor-local typed-direct slice, and the exact migration-016
 recovery schema/installer boundary. It also covers the scoped R2c
 group/requirement pre-seal path through the concrete PostgreSQL store,
 including durable `BLOCKED`/`FAILED`, applicable live cutoff/reconnect races,
-and exact work/timing evidence. There is still no accepted
-M5 evidence for complete dynamic requirement execution, combined sparse seal,
-typed-direct outer settlement, successful production seal/publication,
+and exact work/timing evidence, plus the scoped pure R2d selected typed-direct
+application-outcome cutoff and ordinary reconnect. There is still no accepted
+M5 evidence for complete dynamic requirement execution, the production
+PostgreSQL typed-direct application/outer-settlement bridge, cursor-local direct
+failure, combined sparse seal, successful production seal/publication,
 maintained-runtime model quality, production latency, call savings, utility,
 novelty, or publishing potential. Those claims remain
 blocked by the executable gates in `docs/m5_acceptance_matrix.md`.
@@ -240,10 +250,12 @@ accepted only the R0 schema/installer boundary. Checked R1 persistence,
 R2a failure terminalization, and shared compatibility later integrated at the
 commits recorded above; bounded R2b pure application composition later
 integrated at `bfeef3f`, followed by the scoped R2c group/requirement
-PostgreSQL pre-seal bridge at `0e0ff43`. Typed-direct application composition,
-production seal/publication, production provider adapters, and the remaining
-end-to-end D24 gates remain implementation-PENDING. The proposed M5-D25
-persisted-matching draft remains
+PostgreSQL pre-seal bridge at `0e0ff43` and the scoped pure R2d typed-direct
+application outcome at `c892cc8`. The production PostgreSQL typed-direct
+application/outer-settlement bridge, cursor-local direct failure, production
+seal/publication, production provider adapters, and the remaining end-to-end
+D24 gates remain implementation-PENDING. The proposed M5-D25 persisted-
+matching draft remains
 non-authoritative and has unresolved adversarial blockers; migration-016
 acceptance alone does not authorize it.
 
@@ -352,14 +364,39 @@ successful terminal application completion. M5.0-24 therefore remains
 contract-`PASS` / implementation-`PENDING`; all M5.4 rows are unchanged and
 M5.4 remains partial. The R2c activation is historical and owns no path.
 
+The subsequent exact four-path R2d integration at `c892cc8` adds the pure
+checked application outcome for one explicitly selected successful typed-
+direct discovery/verifier outer receipt that loses the active terminal cutoff.
+Its frozen candidate evidence records 101/101 focused, 189/189 complete-
+composition, and 339/339 complete pure M5 runtime gates. The unchanged live R2c
+application, D24 requirement, complete PostgreSQL runtime, public-M4 route/
+direct, and non-database DTO/legacy/M4 selections passed 81/81, 163/163,
+589/589, 48/48, and 14/14. Static/type/compile/diff/hash gates passed and the
+independent immutable audit returned `GO` on the frozen bytes.
+
+On exact integrated main, the 101/101 focused, 339/339 pure-runtime, 14/14 non-
+database M4/legacy, Ruff, format, strict-mypy, cache-isolated compile, diff, and
+four-hash gates passed again. The 189/189 composition-file and four live counts
+remain frozen-candidate evidence rather than separate post-integration reruns.
+
+That scoped pure typed-direct application-outcome gate is `PASS`. It proves
+selected-origin validation, exact one-add call work, canonical hydration before
+active projection, validation before timing-only telemetry, stable durable
+identity, and ordinary reconnect without redispatch. It does not provide the
+production PostgreSQL typed-direct application/outer-settlement bridge,
+cursor-local direct failure, seal/publication, provider adapters, or combined
+end-to-end recovery. M5.0-24 remains contract-`PASS` /
+implementation-`PENDING`; all M5.4 rows are unchanged and M5.4 remains partial.
+The R2d activation is historical and owns no path.
+
 ## 5. Remaining closure boundary
 
 M5 completes only after M5.1--M5.6 pass. Closure still requires the remaining
-production M5.4 dynamic paths, typed-direct outer settlement, production
-provider adapters, sparse publication and production seal, and the complete
-end-to-end crash/reconnect matrix; a real maintained-runtime M5.5 controlled
-WiCE execution; and M5.6 reproduction, artifact, documentation, and final
-acceptance audits.
+production M5.4 dynamic paths, the PostgreSQL typed-direct application/outer-
+settlement bridge, cursor-local direct failure, production provider adapters,
+sparse publication and production seal, and the complete end-to-end crash/
+reconnect matrix; a real maintained-runtime M5.5 controlled WiCE execution;
+and M5.6 reproduction, artifact, documentation, and final acceptance audits.
 
 M5 is not complete. Even after technical closure, without a fresh blinded,
 independently adjudicated cohort the strongest permitted semantic conclusion

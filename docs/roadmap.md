@@ -246,9 +246,17 @@ is integrated at `bfeef3f` with 87/87 focused and 237/237 pure evidence. It has
 no current ownership. The subsequent R2c group/requirement PostgreSQL pre-seal
 bridge is integrated at `0e0ff43`; its scoped tranche gate is `PASS` after an
 81/81 post-integration live run, static gates, and immutable-audit `GO`. Its
-five-path grant is also closed with no current ownership. R2c stops explicitly
-before production seal/publication and does not cover typed-direct outer
-settlement or production provider adapters. M5.0-24 therefore remains
+five-path grant is also closed with no current ownership. The subsequent R2d
+pure typed-direct application-outcome tranche is integrated at `c892cc8`; its
+scoped gate is `PASS` after 101/101 focused, 189/189 complete-composition, and
+339/339 pure-runtime candidate evidence, with the unchanged 81/81, 163/163,
+589/589, 48/48, and 14/14 compatibility selections green. Exact integrated-
+main reruns passed 101/101, 339/339, 14/14, and the static/hash gates; 189/189
+and the four live counts remain candidate evidence. Its exact four-path grant
+is closed with no current
+ownership. R2d stops before the production PostgreSQL typed-direct application/
+outer-settlement bridge, cursor-local direct failure, production seal/
+publication, and provider adapters. M5.0-24 therefore remains
 contract-`PASS` / implementation-`PENDING`, M5.4 remains partial, and every
 remaining M5.4--M5.6 row is unchanged. See
 `docs/m5_implementation_status.md`.

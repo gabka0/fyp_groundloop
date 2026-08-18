@@ -1,10 +1,10 @@
 # GroundLoop M5 Acceptance Matrix
 
 Status: frozen M5 falsification contract through accepted M5-D24-C6; staged
-evidence is current through the integrated R2c group/requirement PostgreSQL
-pre-seal bridge and partial M5.4
+evidence is current through the integrated R2d pure typed-direct application-
+outcome tranche and partial M5.4
 
-Date: 2026-08-17
+Date: 2026-08-18
 
 Authority: each row is a necessary condition, not a menu. In Section 1, the
 first status is the M5.0 contract audit and the second is implementation
@@ -62,11 +62,17 @@ fake-seal orchestration tranche is integrated at `bfeef3f`; its 87/87 focused
 and 237/237 pure gates close only that scoped evidence. The bounded R2c
 group/requirement PostgreSQL pre-seal bridge is integrated at `0e0ff43`; its
 post-integration live suite passed 81/81 and its immutable audit returned `GO`.
-That scoped tranche gate is `PASS`, but it is not a decision-row or stage-row
-promotion. M5.0-24 remains implementation-`PENDING`: the row still requires
-its separately manifested typed-direct outer settlement, production seal and
-combined publication, production provider adapters, remaining end-to-end
-crash/reconnect evidence, and final M5.6 cross-stage mapping.
+The bounded R2d pure typed-direct application-outcome tranche is integrated at
+`c892cc8`; its 101/101 focused, 189/189 complete-composition, and 339/339 pure
+runtime candidate gates close only that scoped evidence; exact integrated-main
+reruns passed 101/101 focused, 339/339 pure runtime, and 14/14 non-database M4/
+legacy cases plus the applicable static/hash gates. Both scoped tranche gates
+are `PASS`, but neither is a decision-row or stage-row promotion. M5.0-24
+remains implementation-`PENDING`: the row still requires a production
+PostgreSQL typed-direct application bridge, cursor-local direct failure,
+production seal and combined publication, production provider adapters,
+remaining end-to-end crash/reconnect evidence, and final M5.6 cross-stage
+mapping.
 
 ### 1.1 Mandatory adversarial cases
 
@@ -210,9 +216,15 @@ cutoffs, database-clock takeover, reconnect identity, exact work/timing, and
 an explicit zero-write fail-closed pre-seal boundary. It does not provide
 typed-direct outer settlement, cursor-local direct failure, production seal/
 publication, production discovery/verifier/measurement adapters, or complete
-end-to-end history. Accepted C6 keeps M5.0-24's contract half at `PASS`; the
-integrated R2c subset does not close the decision-row implementation half or
-any M5.4 stage row.
+end-to-end history. The R2d tranche integrated at `c892cc8` adds bounded pure
+evidence for the checked selected successful typed-direct discovery/verifier
+outer-settlement cutoff and ordinary reconnect, with exact origin validation,
+one-add work, canonical-read-before-projection ordering, and validation before
+timing-only telemetry. It does not add the production PostgreSQL direct bridge,
+cursor-local direct failure, seal/publication, provider adapters, or end-to-end
+history. Accepted C6 keeps M5.0-24's contract half at `PASS`; the integrated
+R2c/R2d subsets do not close the decision-row implementation half or any M5.4
+stage row.
 
 ## 6. M5.5 controlled evaluation gates
 

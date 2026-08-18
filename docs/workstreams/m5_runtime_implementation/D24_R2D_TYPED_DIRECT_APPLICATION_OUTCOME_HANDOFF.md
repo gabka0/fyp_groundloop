@@ -1,12 +1,15 @@
 # M5-D24 R2d Typed-Direct Application Outcome Handoff
 
-Status: pre-integration four-path R2d pure application-composition candidate;
-scoped candidate gates `PASS`, immutable commit/integration still pending,
-M5.0-24 implementation `PENDING`, and M5.4 partial
+Status: integrated four-path R2d pure typed-direct application-outcome evidence
+at `c892cc8a547a9c0248ad735e11270daa0e1acf4e`; scoped gate `PASS`, M5.0-24
+implementation `PENDING`, M5.4 partial, and no current edit ownership
 
 Date: 2026-08-17
 
 Branch: `workstream/m5-d24-r2d-typed-direct-application-outcome`
+
+Integration commit:
+`c892cc8a547a9c0248ad735e11270daa0e1acf4e`
 
 Persistent worktree:
 `/home/kassym/Desktop/groundloop-worktrees/m5-d24-r2d-typed-direct-application-outcome`
@@ -39,10 +42,13 @@ Frozen implementation/test SHA-256 pins:
 - `test_d24_application_composition.py`:
   `90ea5f805cdfd2db60b6c8811ecfebbff2191320e6767f9a997d783ae7a7e0d4`
 
-This document deliberately does not claim its own final hash. Its exact bytes
-must be pinned externally when the four-path candidate is frozen, and any
-later integration-status conversion must retain that externally recorded
-pre-conversion hash.
+The candidate handoff bytes at
+`c892cc8:docs/workstreams/m5_runtime_implementation/D24_R2D_TYPED_DIRECT_APPLICATION_OUTCOME_HANDOFF.md`
+had pre-conversion SHA-256
+`ba3c235cecf6b305a30a6e15fad71a9fbdfc3ea06b0795d56b98fc0f183f8c1f`.
+This later status conversion intentionally changes this document; the
+integration commit plus that pre-conversion hash pins the candidate without
+pretending that a file can self-pin its own final hash.
 
 The exact activation-base-to-candidate name-status is:
 
@@ -387,7 +393,7 @@ preserved at their activation hashes:
 - the three untracked presentation artifacts:
   `45c20ca46e9ad5bcd86b22c0d8882d1d611497f57ca8c45d3dea149260c110cd`,
   `59a13cd8d4bbb017e712c0f39e70f2eba136557e945f64f1b1fc3891742a79f0`,
-  and `c12929c349a5c0be9793159143b09da40ea2a0b27df37b92d61d9ed6483d8c2`;
+  and `c12929c349a5c0be9793159143b09da40ea2a0b27df37b92d61d9ed6483d8c2a`;
   and
 - the untracked M5-D25 persisted-matching draft:
   `167d1e7df5a720041fe0ff51879d08357f0dfbe3a7781ffaa08c0d958a47aa94`.
@@ -437,9 +443,20 @@ and composition-test hashes. The final semantic re-audit also verified the
 strengthened complete no-later-action marker set and every exact-type
 falsifier added during the closing pass.
 
-Final frozen four-path ownership and immutable-commit audits remain required
-after this handoff is frozen. No candidate commit or integration claim is
-made by this document.
+The final frozen four-path ownership and immutable-commit audit returned `GO`
+with no unresolved P0/P1. It verified sole parent
+`b5c4c06ee81f79638771831d80b8ca21df58e0bd`, immutable tree
+`30d8cfdec0cf49e6e5aa42685f555cdc0692a8d5`, exactly three modified Python
+paths plus this added handoff, all frozen source/test hashes, the pre-conversion
+handoff hash, and unchanged protected user bytes.
+
+On exact integrated main, the focused R2d selection passed 101/101 (with 88
+deselected), the complete pure M5 runtime gate passed 339/339, and the non-
+database M4/legacy selection passed 14/14. Ruff check, Ruff format check,
+strict mypy, cache-isolated compile, diff-check, and the four exact hash checks
+also passed. The 189/189 complete composition-file gate and the 81/81, 163/163,
+589/589, and 48/48 live compatibility gates remain frozen-candidate evidence,
+not separate post-integration reruns.
 
 ## Explicit remaining boundary
 
@@ -469,16 +486,18 @@ M5.4 row remains unchanged and M5.4 remains partial. A future production
 typed-direct, seal/publication, provider, or D25 tranche requires a new
 committed path-exclusive activation from the then-current integrated barrier.
 
-## Integration gate
+## Integration closure
 
-The four-path candidate may be committed only after the document is frozen,
-the exact four hashes and diff are rechecked, and the final independent
-semantic plus evidence/ownership audits both return `GO` on those same bytes.
-The candidate commit must have sole parent
-`b5c4c06ee81f79638771831d80b8ca21df58e0bd`.
+The exact four-path candidate integrated on main at
+`c892cc8a547a9c0248ad735e11270daa0e1acf4e`. Its sole parent is
+`b5c4c06ee81f79638771831d80b8ca21df58e0bd`; its scoped pure typed-direct
+application-outcome gate is `PASS`. This is not a M5.0-24 implementation
+promotion or an M5.4 row promotion.
 
-Integration, if accepted, closes only this four-path R2d grant. The
-coordinator must then perform an immutable integrated-tree audit, rerun the
-focused and complete pure gates plus applicable static/hash checks from the
-exact integrated revision, and reconcile status in a separate exact
-document-only commit before another tranche starts.
+Integration closed only this exact four-path R2d grant. This handoff and its
+activation are historical evidence and authorize no further edit. The
+persistent worktree may remain for audit but grants no implementation authority.
+Every later production PostgreSQL typed-direct application/outer-settlement,
+cursor-local direct-failure, seal/publication, provider, or D25 tranche requires
+a fresh committed path-exclusive activation from the then-current integrated
+barrier.

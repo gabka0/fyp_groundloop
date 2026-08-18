@@ -1,36 +1,39 @@
 # M5-D24 R2d Typed-Direct Application Outcome Activation
 
-Status: coordinator-owned activation record; implementation remains blocked
-until the lane starts from the exact full commit containing this note
+Status: historical four-path R2d activation; scoped pure typed-direct
+application-outcome evidence integrated at
+`c892cc8a547a9c0248ad735e11270daa0e1acf4e`, scoped gate `PASS`, M5.0-24
+implementation `PENDING`, and no current edit ownership
 
-Date: 2026-08-17
+Date: activated 2026-08-17; integrated 2026-08-17
 
 Exact committed R2c reconciliation parent before this activation note:
 `fdf0de90195ae93a53efe0623480c2ef57de2b07`.
 
-The value above is the required coordinator parent barrier. It is **not** the
-implementation base by itself. Before any lane-owned edit, the coordinator
-must commit this activation on `main`; the lane must then resolve the full
-commit containing this note, create its branch and persistent worktree at
-that exact commit, and record that full activation commit in its handoff. A
-branch created directly from `fdf0de9`, from an uncommitted copy of this file,
-or from any later unreviewed main revision has no implementation authority.
+Exact full activation commit/base used by the lane:
+`b5c4c06ee81f79638771831d80b8ca21df58e0bd`.
 
-This activation note is coordinator-owned base history. It is not one of the
-lane-owned paths and the implementation lane must not edit it.
+Exact integration commit:
+`c892cc8a547a9c0248ad735e11270daa0e1acf4e`.
+
+The coordinator committed this activation note on `main` with sole parent
+`fdf0de90195ae93a53efe0623480c2ef57de2b07`. The lane resolved the full
+activation commit `b5c4c06`, used it as its unchanged branch/worktree base, and
+integrated at the commit above. Neither the reconciled parent, activation base,
+historical branch, nor retained worktree authorizes any later edit or
+reapplication. This activation note was coordinator-owned base history and was
+not one of the lane's four paths.
 
 ## 1. Purpose and accepted boundary
 
 R2b integrated the pure requirement-application and fake-only seal
 orchestration tranche. R2c integrated the group/requirement PostgreSQL
 pre-seal bridge and its scoped live evidence. Both grants are closed.
-M5.0-24 remains contract-`PASS` / implementation-`PENDING`, every M5.4 row is
-unchanged, and M5.4 remains partial.
 
-R2d is one deliberately narrow **pure application-composition** tranche. It
-implements only the accepted C1/C5 application outcome for a checked
+R2d was one deliberately narrow **pure application-composition** tranche. It
+implemented only the accepted C1/C5 application outcome for a checked
 successful typed-direct outer settlement that loses the active terminal
-cutoff. It covers both frozen outer return kinds, `discovery` and `verifier`.
+cutoff. It covered both frozen outer return kinds, `discovery` and `verifier`.
 After validating the exact selected outer receipt branch, the application
 hydrates the canonical terminal replay named by that branch and invokes the
 already integrated C5 active-terminal projection. The returned state remains
@@ -38,7 +41,7 @@ already integrated C5 active-terminal projection. The returned state remains
 `OpenEventReceipt`, and its exact accumulated current-invocation `call_work`
 is returned, including zero.
 
-The tranche covers the Cartesian outcome axes required by accepted C5:
+The tranche covered the Cartesian outcome axes required by accepted C5:
 
 - fresh versus resumed nonterminal open receipt;
 - canonical-zero versus nonzero current-invocation direct call work;
@@ -49,41 +52,44 @@ It also preserves the ordinary reconnect branch: a terminal result known at
 entry remains the canonical terminal-projected replay with canonical-zero
 call work and no direct redispatch.
 
-R2d does not implement typed-direct persistence, a PostgreSQL direct
+R2d did not implement typed-direct persistence, a PostgreSQL direct
 application bridge, provider execution, direct failure, seal, publication,
 or a complete direct subgraph. It adds no accepted contract, storage, digest,
 or public-M4 behavior. Its fake-port evidence proves the checked application
 sequence only; it cannot stand in for a future production adapter or live
 direct-settlement gate.
 
-## 2. Literal lane identity and full-commit start rule
+M5.0-24 remains contract-`PASS` / implementation-`PENDING`; every M5.4 row is
+unchanged and M5.4 remains partial.
+
+## 2. Historical lane identity and full-commit base record — closed
 
 ```text
 branch:   workstream/m5-d24-r2d-typed-direct-application-outcome
 worktree: /home/kassym/Desktop/groundloop-worktrees/m5-d24-r2d-typed-direct-application-outcome
 ```
 
-The worktree is intentionally persistent. This lane must never be created,
-moved, or recovered under `/tmp`.
+The worktree was intentionally persistent. The lane was never created, moved,
+or recovered under `/tmp`.
 
-The coordinator performs this sequence before handing over ownership:
+The coordinator completed this sequence before handing over ownership:
 
-1. commit this activation note on `main` with sole parent
-   `fdf0de90195ae93a53efe0623480c2ef57de2b07`;
-2. resolve the resulting full activation commit;
-3. create the literal branch and worktree above at that exact commit;
-4. verify that branch `HEAD`, the worktree `HEAD`, and the recorded activation
-   base are byte-identical;
-5. verify a clean lane worktree before the first owned-path edit; and
-6. record the full activation commit and initial clean-state evidence in the
-   new R2d handoff.
+1. committed this activation note on `main` with sole parent
+   `fdf0de90195ae93a53efe0623480c2ef57de2b07` as full commit `b5c4c06`;
+2. created the literal branch and persistent worktree above at that exact
+   commit;
+3. verified that branch `HEAD`, worktree `HEAD`, and recorded activation base
+   were byte-identical;
+4. verified a clean lane worktree before the first owned-path edit; and
+5. recorded the full activation commit and initial clean-state evidence in the
+   R2d handoff.
 
-The lane must not merge, rebase, cherry-pick, reset onto another revision, or
-silently absorb later main changes. If its base changes, implementation stops
-under Section 8.
+The lane did not merge, rebase, cherry-pick, reset onto another revision, or
+silently absorb later main changes. Integration closed the lane. The retained
+persistent worktree grants no current or future edit authority.
 
-The existing protected user dirt on coordinator `main` remains outside this
-activation and must be preserved byte-for-byte:
+The existing protected user dirt on coordinator `main` remained outside this
+activation and was preserved byte-for-byte:
 
 - `pyproject.toml` SHA-256
   `2af4b19962dc8a7d22e377be17f342530a06ee6395bbbf2a092eab36599c8fc2`;
@@ -98,13 +104,12 @@ activation and must be preserved byte-for-byte:
   SHA-256
   `167d1e7df5a720041fe0ff51879d08357f0dfbe3a7781ffaa08c0d958a47aa94`.
 
-Those paths are not lane inputs, are not to be copied into the worktree, and
-must not be staged, reformatted, deleted, or included in either the candidate
-or integration commit.
+Those paths were not lane inputs and were not copied into the worktree, staged,
+reformatted, deleted, or included in the candidate or integration commit.
 
-## 3. Exact four-path ownership
+## 3. Historical exact four-path ownership — closed
 
-R2d owns exactly these four paths:
+R2d owned exactly these four paths for the integrated tranche:
 
 1. `src/groundloop/m5/runtime/application.py`
 2. `tests/m5/runtime/fake_ports.py`
@@ -112,15 +117,14 @@ R2d owns exactly these four paths:
 4. `docs/workstreams/m5_runtime_implementation/D24_R2D_TYPED_DIRECT_APPLICATION_OUTCOME_HANDOFF.md`
    (new)
 
-No other path may be edited, generated, staged, or included in the lane
-commit. In particular, this activation note remains coordinator-owned and
-read-only to the lane. The grant does not reopen the closed R2b or R2c
-handoffs, `tests/m5/runtime/test_typed_history.py`, or any status/decision
-document.
+No other path was edited, generated, staged, or included in the lane commit.
+In particular, this activation note remained coordinator-owned and read-only
+to the lane. The grant did not reopen the closed R2b or R2c handoffs,
+`tests/m5/runtime/test_typed_history.py`, or any status/decision document.
 
-The first three paths are existing integrated paths. The lane must preserve
-all existing requirement, C5/C6, failure-ordering, fake-seal, and typed-history
-behavior in them. The fourth path is the only new lane-owned file.
+The first three paths were existing integrated paths. The lane preserved all
+existing requirement, C5/C6, failure-ordering, fake-seal, and typed-history
+behavior in them. The fourth path was the only new lane-owned file.
 
 ## 4. Required pure application behavior
 
@@ -196,9 +200,10 @@ following sequence exactly:
 
 The terminal-bearing route returns immediately. It does not enter requirement
 acquisition, root closure, verifier work, failure, seal, post-seal audit, or
-another direct/provider action. A terminal-bearing receipt has no transition
-timing append: accepted C1 requires exact terminal hydration and terminal
-invocation telemetry only on that branch.
+another direct/provider action. It appends no selected outer-receipt or direct-
+transition timing; the pre-existing fresh structural-open timing remains.
+Accepted C1 requires exact terminal hydration and terminal-invocation telemetry
+on that branch.
 
 The canonical result must remain `state=REPLAYED` with a terminal-projected
 open receipt and canonical-zero call work. The projected result must remain
@@ -229,10 +234,10 @@ No generic `_fail` call, cursor-local direct failure receipt, arbitrary later
 terminal read, or fake seal result may be routed through the new selected
 successful-outer origin.
 
-## 5. Mandatory focused falsifiers
+## 5. Executed focused falsifiers
 
-The owned pure test and fake-port paths must add deterministic evidence for
-the application sequence above without claiming production direct execution.
+The owned pure test and fake-port paths added deterministic evidence for the
+application sequence above without claiming production direct execution.
 
 ### 5.1 Positive active-cutoff matrix
 
@@ -313,9 +318,9 @@ the existing requirement/failure/fake-seal assertions.
 No skip, expected failure, sleep-based race, environment-dependent branch, or
 mock SQL assertion may stand in for an executable falsifier.
 
-## 6. Explicit exclusions
+## 6. Historical explicit exclusions
 
-R2d may not edit or change:
+R2d did not edit or change:
 
 - `src/groundloop/m5/runtime/contracts.py` or any other contract/DTO module;
 - any digest recipe or digest test;
@@ -347,64 +352,41 @@ The production interfaces known to be missing and deferred are:
 - a direct-M4 execution adapter carrying D24 disposition, work, timing, byte
   totals, and a checked late-return envelope.
 
-R2d must not create a fake implementation of any item in that list and call
-it production evidence.
+R2d did not create a fake implementation of any item in that list or call one
+production evidence.
 
-## 7. Historical regression baselines to recollect
+## 7. Executed regression evidence
 
-The following counts are historical R2c integration evidence, not hard-coded
-expectations for R2d:
+The frozen R2d candidate recollected and passed every applicable gate:
 
-- pure M5 runtime: **237**;
-- live R2c application: **81**;
-- complete D24 requirement PostgreSQL suite: **163**;
-- complete PostgreSQL runtime with import isolation: **589**;
-- public-M4 route/direct live selection: **48**; and
-- public-M4 DTO/signature plus legacy/M4 selection: **14**.
+- focused R2d selection: **101/101**;
+- complete owned application-composition file: **189/189**;
+- complete pure M5 runtime: **339/339**;
+- live R2c application compatibility: **81/81**;
+- complete D24 requirement PostgreSQL regression: **163/163**;
+- complete PostgreSQL runtime with import isolation: **589/589**;
+- public-M4 route/direct live compatibility: **48/48**; and
+- public-M4 DTO/signature plus legacy/M4 compatibility: **14/14**.
 
-R2d must rerun every applicable gate from its frozen candidate and record the
-actual collected, passed, skipped, and xfailed counts. It may not copy the
-historical numbers into its handoff as if they were newly executed. A count
-change is not automatically a failure, but it must be explained and the full
-selected suite must pass with no unexpected skip/xfail.
+Passing selections had zero skipped and zero xfailed cases. The handoff records
+the exact commands and distinguishes the 101-case focused R2d evidence from the
+unchanged compatibility regressions; the latter are not production R2d direct-
+settlement evidence.
 
-At minimum, the candidate gate includes:
+Ruff check, Ruff format check, strict mypy with explicit package bases,
+cache-isolated compile, collection-only checks, added-marker/generated-byte
+scans, exact hashes, whitespace checks, and `git diff --check` passed on the
+frozen candidate. The exact base-to-candidate name-status contained only the
+three owned modified Python paths and the one new R2d handoff.
 
-1. the focused R2d selection and the complete owned application-composition
-   file;
-2. the complete pure `tests/m5/runtime` suite;
-3. the live `tests/m5/postgres_runtime/d24_application` suite;
-4. the complete live `tests/m5/postgres_runtime/d24_requirement` suite;
-5. the complete `tests/m5/postgres_runtime` directory using
-   `--import-mode=importlib` because of its pre-existing duplicate test
-   basenames;
-6. the live public-M4 route/direct selection:
-   `tests/m5/postgres_runtime/test_m4_typed_barrier.py`,
-   `tests/m5/postgres_runtime/test_direct_m4_composition.py`, and
-   `tests/m5/postgres_runtime/d24_direct`;
-7. the non-database public-M4 DTO/API snapshot, legacy regression, and M4
-   contracts selection used by R2c;
-8. Ruff check and Ruff format-check on all owned Python paths;
-9. strict mypy over the owned source/test paths with the repository's explicit
-   package-base configuration and no new suppression;
-10. cache-isolated compile over all owned Python paths;
-11. collection-only evidence for the focused and full pure selections;
-12. scans for added `TODO`, `FIXME`, skip, xfail, generated output,
-    credential, DSN, or cache bytes; and
-13. exact hashes, whitespace checks, `git diff --check`, and activation-base-
-    to-candidate `git diff --name-status`.
+The database-backed compatibility regressions used the already configured
+local test environment and guarded fresh schemas. They added no lane-owned
+database mutation helper, fixture, schema byte, or recorded credential.
 
-Database-backed regression gates use the already configured local test
-environment and guarded fresh schemas. They do not authorize a lane-owned
-database mutation helper, fixture edit, schema edit, or recorded credential.
+## 8. Historical exact stop conditions
 
-The base-to-candidate name-status must contain only the three owned modified
-Python paths and the one new R2d handoff. Any other path is a failed ownership
-gate.
-
-## 8. Exact stop conditions
-
-Stop and request a fresh contract amendment or path-exclusive manifest if:
+The activated R2d lane was required to stop and request a fresh contract
+amendment or path-exclusive manifest if:
 
 1. correctness requires changing a public M4 DTO/API, `contracts.py`, digests,
    schema, migration, persisted terminal shape, `persistence.py`, or
@@ -419,14 +401,14 @@ Stop and request a fresh contract amendment or path-exclusive manifest if:
 6. the branch base, ownership manifest, or protected-dirt hashes change; or
 7. any required gate fails.
 
-The lane may investigate and report a stop condition from read-only evidence.
-It may not work around one by broadening the optional receipt, adding a
-compatibility contract, editing an excluded path, weakening a test, or
-relabeling fake behavior as production.
+The permitted response was read-only investigation plus a coordinator report.
+The lane did not work around a stop condition by broadening the optional
+receipt, adding a compatibility contract, editing an excluded path, weakening
+a test, or relabeling fake behavior as production.
 
-## 9. Handoff, audits, freeze, and integration gate
+## 9. Historical handoff, audits, freeze, and integration record
 
-The new R2d handoff must record:
+The R2d handoff records:
 
 - the full commit containing this activation note and proof that it was the
   clean lane base before the first edit;
@@ -442,30 +424,51 @@ The new R2d handoff must record:
 - the bounded claim that this is pure typed-direct successful-outer
   application outcome evidence only.
 
-The candidate bytes must receive two independent read-only audits before
+The candidate bytes received two independent read-only audits before
 integration:
 
-1. a semantic/contract audit of the complete four-path diff, proving exact
+1. a semantic/contract audit of the complete four-path diff proved exact
    C1/C5 origin validation, canonical-read-before-projection ordering,
    one-add work, ordinary reconnect, no direct-failure leakage, no contract or
-   production expansion, and no unresolved P0/P1; and
-2. a test/evidence/ownership audit of the same frozen hashes, proving the full
+   production expansion, and returned `GO` with no unresolved P0/P1; and
+2. a test/evidence/ownership audit of the same frozen hashes proved the full
    requested Cartesian and corruption matrices, actual gate counts, exact
-   four-path ownership, protected-dirt preservation, and no unresolved P0/P1.
+   four-path ownership, protected-dirt preservation, and returned `GO` with no
+   unresolved P0/P1.
 
-After both audits return `GO`, the lane freezes the four path hashes, reruns
-`git diff --check` and the exact activation-base-to-candidate name-status,
-and creates one intentional candidate commit whose sole parent is the full
-activation commit. The coordinator must independently verify that immutable
-commit before integrating it.
+After both audits returned `GO`, the lane froze the four path hashes, reran
+`git diff --check` and the exact activation-base-to-candidate name-status, and
+created the intentional commit
+`c892cc8a547a9c0248ad735e11270daa0e1acf4e` with sole parent
+`b5c4c06ee81f79638771831d80b8ca21df58e0bd`. Its immutable tree is
+`30d8cfdec0cf49e6e5aa42685f555cdc0692a8d5` and its exact diff contains only
+the four paths in Section 3.
 
-After integration, an independent immutable integration audit must resolve
-the final commit and tree, verify sole-parent ancestry and the exact frozen
-path hashes, confirm that no protected or excluded byte changed, and inspect
-the full activation-base-to-integration diff. The focused pure R2d selection,
-the complete pure runtime suite, and all relevant static/hash checks must be
-rerun from the exact integrated revision. Any material divergence or failed
-audit returns the lane to `PENDING`; it cannot be documented away.
+The immutable integration audit returned `GO` with no unresolved P0/P1. It
+verified the final commit and tree, sole-parent ancestry, exact frozen path
+hashes, four-path activation-base-to-integration diff, and unchanged protected
+and excluded bytes. The integrated source/test pins are:
+
+- `application.py`:
+  `6911e237a1727897f2d8241eee939a48e43e42e8c1258dacc9b4ded6739b5bd2`;
+- `fake_ports.py`:
+  `dd7c70975ee807f340551da6a0ff104405b9e2aae4cc38d95003c14c9fa373af`;
+  and
+- `test_d24_application_composition.py`:
+  `90ea5f805cdfd2db60b6c8811ecfebbff2191320e6767f9a997d783ae7a7e0d4`.
+
+The integrated pre-conversion handoff bytes have SHA-256
+`ba3c235cecf6b305a30a6e15fad71a9fbdfc3ea06b0795d56b98fc0f183f8c1f`.
+This historical conversion intentionally changes the activation and handoff
+documents without changing those frozen implementation/test bytes.
+
+On exact integrated main, the focused R2d selection passed 101/101, the
+complete pure M5 runtime gate passed 339/339, and the non-database M4/legacy
+selection passed 14/14. Ruff check, Ruff format check, strict mypy, cache-
+isolated compile, diff-check, and the four exact hash checks also passed. The
+189/189 complete composition-file gate and the 81/81, 163/163, 589/589, and
+48/48 live compatibility gates remain frozen-candidate evidence, not separate
+post-integration reruns.
 
 ## 10. Claim boundary and sequencing
 
@@ -478,7 +481,13 @@ production seal/publication, provider availability, combined end-to-end
 recovery, M5-D25, maintained matching, M5.4 completion, performance, neural
 quality, utility, security, novelty, publication readiness, or human approval.
 
-R2d integration, if accepted, closes only this four-path grant. The
-coordinator must then reconcile status in a separate exact document-only
-commit before activating another disjoint tranche. No later lane inherits
-R2d ownership, and this activation cannot authorize edits after integration.
+The exact four-path R2d tranche integrated on main at
+`c892cc8a547a9c0248ad735e11270daa0e1acf4e`. Its scoped pure typed-direct
+application-outcome gate is `PASS`. This is not a M5.0-24 implementation
+promotion or an M5.4 row promotion: M5.0-24 remains contract-`PASS` /
+implementation-`PENDING`, every M5.4 row is unchanged, and M5.4 remains partial.
+
+Integration closed the four-path grant. This activation is historical evidence
+only and authorizes no further edit. A retained branch or persistent worktree
+is not implementation authority; each later tranche requires a new committed
+path-exclusive activation from the then-current integrated barrier.

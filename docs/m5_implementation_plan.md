@@ -2,11 +2,11 @@
 
 Status: M5.0 contract accepted through M5-D24-C6 and M5.1--M5.3 complete;
 M5.4 is partially complete, M5.0-24 is contract-`PASS` /
-implementation-`PENDING`, and the integrated R2c group/requirement PostgreSQL
-pre-seal bridge is historical with no current edit ownership
+implementation-`PENDING`, and the integrated R2d pure typed-direct application-
+outcome tranche is historical with no current edit ownership
 
-Date: 2026-08-02; M5-D24 execution and R2c integration current through
-2026-08-17
+Date: 2026-08-02; M5-D24 execution and R2d integration current through
+2026-08-18
 
 Authority: `docs/m5_design_freeze.md` governs. M5-D24 recovery/accounting work
 also obeys
@@ -31,6 +31,12 @@ The bounded R2c group/requirement PostgreSQL pre-seal bridge is integrated at
 `PASS`; M5.0-24 remains contract-`PASS` / implementation-`PENDING`, every M5.4
 row is unchanged, and its five-path grant is closed with no current edit
 ownership.
+
+The bounded R2d pure typed-direct application-outcome tranche is integrated at
+`c892cc8a547a9c0248ad735e11270daa0e1acf4e`. Its scoped tranche gate is
+`PASS`; M5.0-24 remains contract-`PASS` / implementation-`PENDING`, every M5.4
+row is unchanged, and its exact four-path grant is closed with no current
+edit ownership.
 
 ## 1. Outcome
 
@@ -492,12 +498,24 @@ path through concrete requirement persistence: exact register/replace/retire,
 durable `BLOCKED` and `FAILED`, applicable C5/C6 cutoffs, reconnect/takeover,
 work/timing coverage, and a zero-write fail-closed pre-seal boundary.
 
-The R2b and R2c activations, branches/worktrees, paths, and handoffs are
-historical evidence and own nothing after integration. Typed-direct outer-
-settlement application composition, cursor-local direct failure, production
-seal and combined publication, production discovery/verifier/measurement
-adapters, and remaining end-to-end gates require later separate path-exclusive
-manifests. No future lane may inherit either closed grant.
+The subsequent exact four-path R2d tranche integrated at `c892cc8` from
+activation base `b5c4c06`. Its frozen candidate evidence records a 101/101
+focused selection, 189/189 complete composition file, 339/339 complete pure M5
+runtime gate, and unchanged 81/81, 163/163, 589/589, 48/48, and 14/14
+compatibility regressions. The tranche proves only the pure checked application
+outcome for selected successful typed-direct discovery/verifier outer receipts
+that lose the active terminal cutoff, plus ordinary reconnect preservation.
+
+On the exact integrated main bytes, the 101/101 focused, 339/339 pure-runtime,
+14/14 non-database M4/legacy, and applicable static/hash gates passed again;
+189/189 and the four live compatibility counts remain candidate evidence.
+
+The R2b, R2c, and R2d activations, branches/worktrees, paths, and handoffs are
+historical evidence and own nothing after integration. The production
+PostgreSQL typed-direct application/outer-settlement bridge, cursor-local
+direct failure, production seal and combined publication, production discovery/
+verifier/measurement adapters, and remaining end-to-end gates require later
+separate path-exclusive manifests. No future lane may inherit any closed grant.
 
 The contracts and migration lanes may run in parallel only under the explicit
 path manifest in `docs/m5_multiagent_execution_plan.md`. Persistence/direct
