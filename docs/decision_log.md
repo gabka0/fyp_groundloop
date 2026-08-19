@@ -1,5 +1,54 @@
 # GroundLoop Decision Log
 
+## 2026-08-19 — M5-D24 R2e PostgreSQL Typed-Direct Pre-Seal Bridge Integrated
+
+Decision status: the bounded R2e PostgreSQL typed-direct pre-seal bridge is
+integrated on main at
+`2c2aed91b5c91f2f6a107fc856d646794a1654c9`. Its scoped tranche gate is
+`PASS`. This is an implementation-status record, not a contract amendment, an
+M5.4 row promotion, or an implementation-`PASS` promotion for M5.0-24.
+
+The integration has sole parent and exact activation base
+`3630f444ed4ff5b3ffe312926aa7aaa77c801d02`. It changes exactly the 21
+activated R2e paths and has immutable Git tree
+`30d256769eec84738acaf710d543f0083153af40`. The frozen handoff has SHA-256
+`9d518d1caeaceabdf5c4ef2e0a52950005f2dd6f7a860053cce9c7b77fde0e4d`,
+623 lines and 29,283 bytes. The manifest-ordered paths 1--20 SHA ledger has
+SHA-256 `42c50e79c54e72c521abafb60a30a838206afb29d78c43eb9aacc1d45e4f7cf9`.
+Two independent immutable commit/post-integration audits returned `GO` with
+no unresolved P0/P1.
+
+The candidate handoff records the complete serial PostgreSQL, pure-runtime,
+migration, public-M4 compatibility and static gates on its exact bytes. It also
+discloses the intermediate full-PostgreSQL result of 684 passed / 105 failed
+from one shared import-order compatibility defect in manifested path 20, the
+bounded path-20 correction, and the subsequent 218/218 ordered compatibility
+and 789/789 full-PostgreSQL passing reruns. On the exact integrated main tree,
+the focused live PostgreSQL selection passed 105/105 in 160.93 seconds.
+
+The post-integration accepted-C7 history guard again ran read-only and returned
+exact row count `0`, canonical JSON `[]`, and result SHA-256
+`4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945`.
+Its transaction was explicitly rolled back, so it changed no persistent runtime
+state.
+
+This evidence closes only the scoped C7 transaction-owned tokenless
+acquisition, exact-held direct execution/failure routing, checked terminal
+acquisition and combined failure, all-direct epoch-failure closure, exact WIP
+stops, cooperative lock ordering, fused timing, rollback and reconnect paths
+through the concrete PostgreSQL stores. Runtime mode remains `v1_only` outside
+isolated tests. The tranche does not provide production seal/publication or
+lifecycle-head advancement, deployed discovery/verifier/measurement providers,
+runtime enablement, M5-D25/migration 017, or complete end-to-end M5.4 evidence.
+M5.0-24 remains contract-`PASS` / implementation-`PENDING`; every M5.4 row is
+unchanged and M5.4 remains partial.
+
+The R2e activation and handoff are now historical evidence. Their exact
+21-path grant is closed and gives no current edit ownership. The persistent
+worktree, if retained for audit, is not implementation authority. Any later
+lane requires a fresh committed path-exclusive activation from the then-current
+integrated barrier and may not inherit R2b, R2c, R2d, or R2e ownership.
+
 ## 2026-08-18 — M5-D24-C7 Direct Acquisition/Cutoff Correction Accepted
 
 Decision status: **accepted authoritative contract correction**. Two

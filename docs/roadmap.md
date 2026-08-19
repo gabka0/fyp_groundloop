@@ -236,7 +236,7 @@ is explicit pre-dissertation/M6 debt, not a hidden extension of M4.
 ## M5 — Bounded Evidence Groups
 
 Status: active. The M5.0 contract freeze is complete through accepted
-M5-D24-C6; M5.1 pure reference semantics completed on 2026-08-03 after an
+M5-D24-C7; M5.1 pure reference semantics completed on 2026-08-03 after an
 independent high-confidence audit GO. M5.2 and M5.3 are complete. M5.4-01
 passes; public activation and partial root/direct transitions have live
 evidence but do not independently close M5.4-05. M5-D24's R0 contracts and
@@ -253,10 +253,16 @@ scoped gate is `PASS` after 101/101 focused, 189/189 complete-composition, and
 589/589, 48/48, and 14/14 compatibility selections green. Exact integrated-
 main reruns passed 101/101, 339/339, 14/14, and the static/hash gates; 189/189
 and the four live counts remain candidate evidence. Its exact four-path grant
-is closed with no current
-ownership. R2d stops before the production PostgreSQL typed-direct application/
-outer-settlement bridge, cursor-local direct failure, production seal/
-publication, and provider adapters. M5.0-24 therefore remains
+is closed with no current ownership. The subsequent R2e PostgreSQL typed-direct
+pre-seal bridge is integrated at `2c2aed9`; its scoped tranche gate is `PASS`,
+its exact integrated-main focused live rerun passed 105/105 in 160.93 seconds,
+and the immutable commit/post-integration audits returned `GO`. Its exact
+21-path grant is closed with no current ownership. R2e supplies scoped C7
+implementation evidence for transaction-owned acquisition, direct execution/
+failure routing and all-direct failure closure through the concrete stores. It
+stops before production seal/publication and lifecycle-head advancement,
+deployed provider adapters, runtime enablement, M5-D25, and the remaining end-
+to-end M5.4 evidence. M5.0-24 therefore remains
 contract-`PASS` / implementation-`PENDING`, M5.4 remains partial, and every
 remaining M5.4--M5.6 row is unchanged. See
 `docs/m5_implementation_status.md`.
@@ -279,7 +285,7 @@ Deliverables:
 Stages:
 
 - **M5.0:** design/theory/schema/data freeze. **Complete through accepted
-  M5-D24-C6.** Contract rows pass; decision-row implementation halves remain
+  M5-D24-C7.** Contract rows pass; decision-row implementation halves remain
   pending until the M5.6 cross-stage evidence mapping.
 - **M5.1:** pure records, history, structural events, and independent Python
   oracle. **Complete.**
@@ -292,7 +298,8 @@ Stages:
   evidence for M5.3-07.
 - **M5.4:** dynamic requirement retrieval/verification/publication/replay,
   recoverable at-least-once dispatch with durable work/timing, persisted Hall
-  state, and bounded frozen-model diagnostic. **Active; partial only.**
+  state, and bounded frozen-model diagnostic. **Active; partial only.** The
+  scoped R2e typed-direct pre-seal bridge passes, but no stage row is promoted.
 - **M5.5:** controlled dataset adapter, seven qualified baselines, and
   reproducible systems/semantic reports.
 - **M5.6:** full validation, evidence bundle, documentation and honest verdict.

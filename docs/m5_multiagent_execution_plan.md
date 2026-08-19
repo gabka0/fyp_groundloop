@@ -6,11 +6,12 @@ and R1-C integrated at `1838316`, `56dd2d4`, `6f1ae89`, and `f5902ff`;
 M5-D24-C1 through M5-D24-C7 accepted; R2b pure orchestration integrated at
 `bfeef3f`, and R2c group/requirement PostgreSQL pre-seal composition integrated
 at `0e0ff43`; R2d pure typed-direct application outcome integrated at
-`c892cc8`; M5.0-24 is contract-`PASS` / implementation-`PENDING`, all prior
+`c892cc8`; R2e PostgreSQL typed-direct pre-seal composition integrated at
+`2c2aed9`; M5.0-24 is contract-`PASS` / implementation-`PENDING`, all prior
 grants are closed, and no D24 implementation lane has current edit ownership
 
 Date: 2026-08-02; M5-D24 path amendments and integration records 2026-08-06
-through 2026-08-18
+through 2026-08-19
 
 Authority: `docs/m5_design_freeze.md` defines semantics and
 `docs/m5_implementation_plan.md` defines gates. This document defines only
@@ -18,8 +19,9 @@ ownership, integration order, and evidence required from parallel lanes.
 
 The accepted C7 correction at
 `docs/workstreams/m5_runtime_contract/DIRECT_ACQUISITION_TERMINAL_CUTOFF_CORRECTION.md`
-grants no path ownership. Its exact 21-path set below is a mandatory future
-activation boundary; acceptance alone does not activate it.
+granted no path ownership by itself. Its exact 21-path set below was later
+activated, implemented, integrated and closed under the separate committed R2e
+activation; the accepted correction alone did not activate it.
 
 ## 1. Non-negotiable execution rule
 
@@ -552,15 +554,12 @@ cursor-local direct failure, seal/publication, provider, M5-D25, or whole-M5.4
 result. M5.0-24 remains contract-`PASS` / implementation-`PENDING`, and every
 M5.4 row is unchanged.
 
-Integration closed the R2b, R2c, and exact four-path R2d grants. No D24
-implementation lane is currently active. A retained historical worktree grants
-no edit authority. The production PostgreSQL typed-direct application/outer-
-settlement bridge, cursor-local direct failure, production seal/publication,
-production discovery/verifier/measurement adapters, and remaining end-to-end
-evidence each require a fresh committed path-exclusive manifest from the then-
-current integration barrier; none may inherit R2b, R2c, or R2d ownership.
+At the R2d integration checkpoint, the R2b, R2c, and exact four-path R2d grants
+were closed. A retained historical worktree granted no edit authority. The
+then-missing PostgreSQL typed-direct pre-seal bridge required the separate R2e
+activation below; no R2e path inherited R2b, R2c, or R2d ownership.
 
-### Wave R2e accepted-contract barrier -- no activation
+### Wave R2e -- integrated PostgreSQL typed-direct pre-seal bridge
 
 Production typed-direct preflight subsequently produced the accepted
 M5-D24-C7 correction. Its frozen contract requires a transaction-owning
@@ -606,17 +605,18 @@ evidence replays the checked receipt; every mismatch or ambiguous evidence
 image conflicts. No exception/reacquisition protocol or reason mapping is
 allowed.
 
-Before any activation, a read-only consistent-snapshot history guard must
-return zero rows for all three forbidden pre-C7 shapes: any direct
+Before R2e activation, a read-only consistent-snapshot history guard was
+required to return zero rows for all three forbidden pre-C7 shapes: any direct
 `terminal_failed` job or projection regardless of runtime state; any direct
 projection with exact reason `epoch_failed`; and a failed typed epoch with a
 nonterminal direct job. This also rejects standalone terminal failure followed
 later by legacy epoch failure rather than misclassifying its earlier evidence
 as a combined replay. A hit stops work for a separately audited grandfathering/
-backfill contract; C7 authorizes no repair.
+backfill contract; C7 authorizes no repair. The guard passed with exact zero
+rows before activation and again after integration, both times read-only.
 
-After the accepted C7 correction is committed and that history guard passes,
-the coordinator may author a separate activation for exactly these 21 paths:
+After the accepted C7 correction was committed and that history guard passed,
+the coordinator committed activation `3630f44` for exactly these 21 paths:
 
 1. `src/groundloop/m4/persistence.py`;
 2. `src/groundloop/m4/pipeline.py`;
@@ -643,23 +643,32 @@ the coordinator may author a separate activation for exactly these 21 paths:
 21. `docs/workstreams/m5_runtime_implementation/D24_R2E_POSTGRES_TYPED_DIRECT_BRIDGE_HANDOFF.md`
     (new).
 
-The list is not a current grant, names no branch/worktree/owner, and does not
-permit preemptive source/test edits. The two M4 paths, `contracts.py`,
+This list is the historical exact grant and is not current ownership. The
+activated implementation retained both M4 paths, `contracts.py`,
 `test_contracts.py`, `postgres_application.py`, `postgres_roots.py`, and
-`postgres_recovery.py` are mandatory and may not be dropped.
-`postgres_roots.py` must expose read-only
-job/detail failure plans and a write-only apply phase. The existing group-
-requirement composition test must pass the exact held-open fourth direct-
-runner argument; both failure-interception subclasses in the group-requirement
-race test must override the new exact-held production method without legacy
-fallback; and the existing direct-M4 composition test must replace its
-standalone-terminal/direct-anchor expectation with rejection/rollback or
-combined semantics. `postgres_recovery.py` must fuse the optional direct-
-attempt observation into its shared one-CAS terminal timing finalizer. A needed
-twenty-second path is a stop condition requiring a
-newly reviewed manifest, not implicit lane expansion. Accepted C7 keeps
-M5.0-24 contract-`PASS` / implementation-`PENDING`; it changes no M5.4 row and
-supplies no implementation evidence.
+`postgres_recovery.py`; it did not require a twenty-second path. The completed
+tranche exposes read-only job/detail failure plans and write-only apply,
+propagates the exact held-open fourth direct-runner argument, uses the new
+exact-held production failure method without legacy fallback, replaces the
+standalone-terminal expectation with checked combined semantics, and fuses the
+optional direct-attempt observation into the shared one-CAS terminal timing
+finalizer.
+
+The exact 21-path implementation integrated as commit
+`2c2aed91b5c91f2f6a107fc856d646794a1654c9`, whose sole parent is activation
+`3630f444ed4ff5b3ffe312926aa7aaa77c801d02` and whose tree is
+`30d256769eec84738acaf710d543f0083153af40`. The frozen handoff SHA-256 is
+`9d518d1caeaceabdf5c4ef2e0a52950005f2dd6f7a860053cce9c7b77fde0e4d`.
+Its candidate gates are recorded there. The exact integrated-main focused live
+rerun passed 105/105 in 160.93 seconds, and the immutable commit/post-
+integration audits returned `GO` with no unresolved P0/P1.
+
+This is scoped `PASS` evidence for the C7 typed-direct pre-seal PostgreSQL
+bridge, not production seal/publication or lifecycle-head advancement, deployed
+providers or runtime enablement, M5-D25/migration 017, or whole-M5.4 evidence.
+M5.0-24 remains contract-`PASS` / implementation-`PENDING`; every M5.4 row is
+unchanged. Integration closed the exact R2e grant, and no D24 implementation
+lane has current edit ownership. A retained R2e worktree is audit evidence only.
 
 No D24 wave owns the untracked persisted-matching draft. M5-D25 and migration
 017 remain blocked until migration 016 is accepted, all five 016 ledger values

@@ -2,11 +2,11 @@
 
 Status: M5.0 contract accepted through M5-D24-C7 and M5.1--M5.3 complete;
 M5.0-24 is contract-`PASS` / implementation-`PENDING`; M5.4 is
-partially complete and the integrated R2d pure typed-direct application-
-outcome tranche is historical with no current edit ownership
+partially complete and the integrated R2e PostgreSQL typed-direct pre-seal
+bridge is historical with no current edit ownership
 
-Date: 2026-08-02; M5-D24 execution and R2d integration current through
-2026-08-18
+Date: 2026-08-02; M5-D24 execution and R2e integration current through
+2026-08-19
 
 Authority: `docs/m5_design_freeze.md` governs. M5-D24 recovery/accounting work
 also obeys
@@ -16,9 +16,10 @@ choosing new semantics.
 
 `docs/workstreams/m5_runtime_contract/DIRECT_ACQUISITION_TERMINAL_CUTOFF_CORRECTION.md`
 is the accepted authoritative C7 correction on exact candidate base
-`254e9c27b0dfc74df1e02ba2d8cd04c7fa9a2c6a`. It grants no implementation
-authority. This plan records M5.0-24 as contract-`PASS` / implementation-
-`PENDING` and keeps every D24 lane stopped.
+`254e9c27b0dfc74df1e02ba2d8cd04c7fa9a2c6a`. Acceptance alone granted no
+implementation authority. The separately activated R2e tranche is now
+integrated and closed; this plan still records M5.0-24 as contract-`PASS` /
+implementation-`PENDING` and keeps every M5.4 row unchanged.
 
 Accepted M5-D24-C3 and M5-D24-C4 are authoritative. C4 governs the
 retryable/terminal-successor expired-output and requirement late-artifact
@@ -43,6 +44,13 @@ The bounded R2d pure typed-direct application-outcome tranche is integrated at
 `PASS`; that historical evidence is unchanged, every M5.4 row is unchanged,
 and its exact four-path grant is closed with no current edit ownership. The
 accepted C7 correction leaves R2d's recorded scoped result unchanged.
+
+The bounded R2e PostgreSQL typed-direct pre-seal bridge is integrated at
+`2c2aed91b5c91f2f6a107fc856d646794a1654c9`. Its scoped tranche gate is
+`PASS`; the exact integrated-main focused live rerun passed 105/105 in 160.93
+seconds, and the immutable commit/post-integration audits returned `GO`. Its
+exact 21-path grant is closed with no current edit ownership. M5.0-24 remains
+contract-`PASS` / implementation-`PENDING`, and every M5.4 row is unchanged.
 
 ## 1. Outcome
 
@@ -538,21 +546,21 @@ generic typed failure cancels them all. `LIVE_LEASE` and direct
 `BLOCKED/WORK_IN_PROGRESS` stops. The accepted correction changes no public M4 byte,
 schema, migration, digest, event total, or telemetry-work shape.
 
-C7 is accepted and has no implementation evidence. The correction freezes
+The integrated R2e tranche supplies scoped C7 implementation evidence for
 one `N -> N+1` outer transition per typed failure, exactly one existing
 `m4-evaluation-failure-v1` `FAIL` transition, no target terminal-failure DELTA,
 and the sole `EPOCH_FAILURE` anchor. Its private M4 composite helper locks the
 complete direct/M5 job sets before writing and lets M5 finalize aligned
 projections, contributions, accumulators, and result at `N+1`.
-`postgres_roots.py` must split its currently bundled M5 failure locks/mutation
-into cursor-local read-only job/detail plans and a write-only apply phase so
+R2e splits the M5 failure locks/mutation in `postgres_roots.py` into cursor-
+local read-only job/detail plans and a write-only apply phase so
 the frozen M4-jobs, M5-jobs, attempts/evidence, validate, mutate order is
 executable without copied SQL or a nested transaction. The shared
-`postgres_recovery.py` failure timing finalizer must accept the optional direct-
-attempt observation and combine it with pending-anchor and terminal missing
+`postgres_recovery.py` failure timing finalizer accepts the optional direct-
+attempt observation and combines it with pending-anchor and terminal missing
 points in one accumulator update; a separate direct timing CAS is forbidden.
 
-The application must pass the exact held fresh/resumed nonterminal
+The application passes the exact held fresh/resumed nonterminal
 `OpenEventReceipt` through `run_pending_direct` and the new production generic-
 failure method. The old no-receipt concrete-store method is legacy/test-only.
 `M5DirectExecutionReceipt` has exact mutually exclusive terminal-acquisition
@@ -564,22 +572,22 @@ is absent, and a canonical failed result validates; exact matching
 `TERMINAL_FAILED` evidence replays the checked receipt and ambiguous evidence
 conflicts.
 
-M5.0-24 is therefore contract-`PASS` / implementation-`PENDING`, all M5.4 rows
-remain unchanged, and no implementation path is active. A later lane may begin
-only after a zero-row read-only forbidden-history guard rejecting any pre-C7 direct `terminal_failed`
-job/projection, any direct `epoch_failed` projection, and failed epochs with
-open direct jobs, and a separate committed activation naming the
-exact 21 paths, including both private M4 paths, `contracts.py`,
-`test_contracts.py`, `postgres_application.py`, `postgres_roots.py`,
-`postgres_recovery.py`, and the existing standalone-terminal direct-M4
-composition regression.
+The mandatory read-only forbidden-history guard returned zero rows before
+activation. The coordinator then committed the exact 21-path activation at
+`3630f44` and integrated the same manifested paths at `2c2aed9`. The candidate
+handoff records the complete serial PostgreSQL, pure-runtime, migration,
+public-M4 compatibility and static gates; the exact integrated-main focused
+live rerun passed 105/105 in 160.93 seconds, and the immutable commit/post-
+integration audits returned `GO` with no unresolved P0/P1.
 
-The R2b, R2c, and R2d activations, branches/worktrees, paths, and handoffs are
-historical evidence and own nothing after integration. The production
-PostgreSQL typed-direct application/outer-settlement bridge, cursor-local
-direct failure, production seal and combined publication, production discovery/
-verifier/measurement adapters, and remaining end-to-end gates require later
-separate path-exclusive manifests. No future lane may inherit any closed grant.
+M5.0-24 therefore remains contract-`PASS` / implementation-`PENDING`, all M5.4
+rows remain unchanged, and no implementation path is active. The R2b, R2c,
+R2d, and R2e activations, branches/worktrees, paths, and handoffs are historical
+evidence and own nothing after integration. Production seal and combined
+publication, lifecycle-head advancement, deployed discovery/verifier/
+measurement adapters, runtime enablement, M5-D25/migration 017, and the
+remaining end-to-end gates require later separate path-exclusive manifests. No
+future lane may inherit any closed grant.
 
 The contracts and migration lanes may run in parallel only under the explicit
 path manifest in `docs/m5_multiagent_execution_plan.md`. Persistence/direct

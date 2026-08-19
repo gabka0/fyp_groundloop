@@ -1,6 +1,6 @@
 # GroundLoop M5 Implementation Status
 
-Status date: 2026-08-18
+Status date: 2026-08-19
 
 Milestone status: **M5.0 contract through accepted C7 and M5.1--M5.3 are
 complete; M5.4 is partially complete.**
@@ -29,14 +29,19 @@ direct application-outcome tranche is integrated at `c892cc8`; its scoped gate
 is `PASS` after 101/101 focused, 189/189 complete-composition, and 339/339 pure-
 runtime candidate gates plus immutable-audit `GO`; the exact integrated main
 reruns passed 101/101 focused, 339/339 pure runtime, 14/14 non-database M4/
-legacy, and the applicable static/hash gates. The R2b, R2c, and exact four-path
-R2d grants are closed with no current edit ownership, and overall decision-
-row implementation evidence remains pending.
+legacy, and the applicable static/hash gates. The subsequent R2e PostgreSQL
+typed-direct pre-seal bridge is integrated at `2c2aed9`; its scoped gate is
+`PASS`, its exact integrated-main focused live rerun passed 105/105 in 160.93
+seconds, and its immutable commit/post-integration audits returned `GO`. The
+R2b, R2c, exact four-path R2d, and exact 21-path R2e grants are closed with no
+current edit ownership, and overall decision-row implementation evidence
+remains pending.
 
 C7 is an accepted six-document authoritative correction on exact candidate
-base `254e9c27b0dfc74df1e02ba2d8cd04c7fa9a2c6a`; it is not implemented. No
-D24 lane is active. A later R2e bridge could begin only after a zero-row read-
-only forbidden-history guard and a separate committed exact 21-path activation.
+base `254e9c27b0dfc74df1e02ba2d8cd04c7fa9a2c6a`. Its separately activated R2e
+bridge is now integrated and supplies scoped implementation evidence without
+promoting M5.0-24 or an M5.4 row. No D24 lane is active after the R2e grant
+closed.
 
 The exact disjoint R1-P requirement and R1-D typed-direct persistence paths
 were governed by
@@ -52,6 +57,9 @@ none of their five paths remains owned. Its persistent worktree may be retained
 for audit but grants no implementation authority.
 The R2d activation and handoff are historical after integration at `c892cc8`;
 none of their four paths remains owned. Its persistent worktree may be retained
+for audit but grants no implementation authority.
+The R2e activation and handoff are historical after integration at `2c2aed9`;
+none of their 21 paths remains owned. Its persistent worktree may be retained
 for audit but grants no implementation authority.
 
 ## 1. Honest current verdict
@@ -72,12 +80,15 @@ recovery schema/installer boundary. It also covers the scoped R2c
 group/requirement pre-seal path through the concrete PostgreSQL store,
 including durable `BLOCKED`/`FAILED`, applicable live cutoff/reconnect races,
 and exact work/timing evidence, plus the scoped pure R2d selected typed-direct
-application-outcome cutoff and ordinary reconnect. There is still no accepted
-M5 evidence for complete dynamic requirement execution, the production
-PostgreSQL typed-direct application/outer-settlement bridge, cursor-local direct
-failure, combined sparse seal, successful production seal/publication,
-maintained-runtime model quality, production latency, call savings, utility,
-novelty, or publishing potential. Those claims remain
+application-outcome cutoff and ordinary reconnect. The scoped R2e tranche adds
+the live PostgreSQL typed-direct pre-seal bridge, including transaction-owned
+acquisition, exact-held direct execution/failure routing, checked combined
+failure, all-direct failure closure, WIP stops, cooperative locks, fused timing,
+rollback and reconnect. There is still no accepted M5 evidence for complete
+dynamic requirement execution, combined sparse seal, successful production
+seal/publication and lifecycle-head advancement, deployed production providers
+or runtime enablement, maintained-runtime model quality, production latency,
+call savings, utility, novelty, or publishing potential. Those claims remain
 blocked by the executable gates in `docs/m5_acceptance_matrix.md`.
 
 Production typed-direct preflight found that the pre-C7 accepted contract did
@@ -98,7 +109,9 @@ It requires cooperative read-only M4/M5 job/detail plans before write-only
 apply, exactly one M4 failure transition and one fused timing-accumulator CAS,
 and a preactivation guard rejecting every pre-C7 direct `terminal_failed` job/
 projection, every direct `epoch_failed` projection, and failed epochs with open
-direct jobs. Those are accepted contract requirements, not implemented facts.
+direct jobs. R2e now supplies scoped implementation evidence for those C7
+requirements through the concrete stores. It does not close the complete
+M5.0-24 implementation row or any M5.4 stage row.
 
 ## 2. M5.0 evidence
 
@@ -286,11 +299,11 @@ R2a failure terminalization, and shared compatibility later integrated at the
 commits recorded above; bounded R2b pure application composition later
 integrated at `bfeef3f`, followed by the scoped R2c group/requirement
 PostgreSQL pre-seal bridge at `0e0ff43` and the scoped pure R2d typed-direct
-application outcome at `c892cc8`. The production PostgreSQL typed-direct
-application/outer-settlement bridge, cursor-local direct failure, production
-seal/publication, production provider adapters, and the remaining end-to-end
-D24 gates remain implementation-PENDING. The proposed M5-D25 persisted-
-matching draft remains
+application outcome at `c892cc8`. The scoped R2e PostgreSQL typed-direct pre-
+seal bridge then integrated at `2c2aed9`. Production seal/publication and
+lifecycle-head advancement, deployed production provider adapters/runtime
+enablement, and the remaining end-to-end D24 gates remain implementation-
+PENDING. The proposed M5-D25 persisted-matching draft remains
 non-authoritative and has unresolved adversarial blockers; migration-016
 acceptance alone does not authorize it.
 
@@ -423,18 +436,48 @@ identity, and ordinary reconnect without redispatch. It does not provide the
 production PostgreSQL typed-direct application/outer-settlement bridge,
 cursor-local direct failure, seal/publication, provider adapters, or combined
 end-to-end recovery. M5.0-24 remains contract-`PASS` /
-implementation-`PENDING`; accepted C7 changes no implementation evidence. All
-M5.4 rows are unchanged and M5.4 remains partial. The R2d activation is
-historical and owns no path.
+implementation-`PENDING`; at that checkpoint accepted C7 by itself changed no
+implementation evidence. All M5.4 rows are unchanged and M5.4 remains partial.
+The R2d activation is historical and owns no path.
+
+The subsequent exact 21-path R2e integration at
+`2c2aed91b5c91f2f6a107fc856d646794a1654c9` implements the bounded C7
+PostgreSQL typed-direct pre-seal bridge. Its sole parent is activation
+`3630f444ed4ff5b3ffe312926aa7aaa77c801d02`, its immutable tree is
+`30d256769eec84738acaf710d543f0083153af40`, and its frozen handoff SHA-256 is
+`9d518d1caeaceabdf5c4ef2e0a52950005f2dd6f7a860053cce9c7b77fde0e4d`.
+
+The handoff records 105/105 final focused candidate tests, 390/390 pure-runtime,
+172/172 complete typed-direct application, 104/104 group application, 163/163
+requirement, and 789/789 full PostgreSQL runtime tests, plus the migration,
+public-M4 compatibility and static gates on the exact candidate bytes. On exact
+integrated main, the focused live selection passed 105/105 in 160.93 seconds.
+The accepted-C7 history guard again returned exact zero rows in a read-only
+transaction, and two independent immutable commit/post-integration audits
+returned `GO` with no unresolved P0/P1.
+
+That scoped PostgreSQL typed-direct pre-seal bridge gate is `PASS`. It proves
+transaction-owned tokenless acquisition, exact-held direct execution/failure
+routing, checked terminal acquisition and combined failure, all-direct epoch-
+failure closure, exact WIP stops, cooperative lock ordering, fused timing,
+rollback and reconnect through the concrete stores. Runtime mode remains
+`v1_only` outside isolated test fixtures. It does not provide production seal/
+publication or lifecycle-head advancement, deployed discovery/verifier/
+measurement providers, runtime enablement, M5-D25/migration 017, or complete
+end-to-end M5.4 evidence. M5.0-24 remains contract-`PASS` / implementation-
+`PENDING`; every M5.4 row is unchanged and M5.4 remains partial. The R2e
+activation is historical, its exact grant is closed, and none of its paths has
+current edit ownership.
 
 ## 5. Remaining closure boundary
 
 M5 completes only after M5.1--M5.6 pass. Closure still requires the remaining
-production M5.4 dynamic paths, the PostgreSQL typed-direct application/outer-
-settlement bridge, cursor-local direct failure, production provider adapters,
-sparse publication and production seal, and the complete end-to-end crash/
-reconnect matrix; a real maintained-runtime M5.5 controlled WiCE execution;
-and M5.6 reproduction, artifact, documentation, and final acceptance audits.
+production M5.4 dynamic paths, deployed production provider adapters/runtime
+enablement, sparse publication, lifecycle-head advancement and production
+seal, and the complete end-to-end crash/reconnect matrix; the separately
+blocked M5-D25/migration-017 persisted-matching boundary; a real maintained-
+runtime M5.5 controlled WiCE execution; and M5.6 reproduction, artifact,
+documentation, and final acceptance audits.
 
 M5 is not complete. Even after technical closure, without a fresh blinded,
 independently adjudicated cohort the strongest permitted semantic conclusion

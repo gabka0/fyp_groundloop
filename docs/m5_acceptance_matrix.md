@@ -1,10 +1,10 @@
 # GroundLoop M5 Acceptance Matrix
 
 Status: accepted M5 falsification contract through M5-D24-C7; staged evidence
-is current through the integrated R2d pure typed-direct application-outcome
-tranche and partial M5.4; M5.0-24 is `PASS / PENDING`
+is current through the integrated R2e PostgreSQL typed-direct pre-seal bridge
+and partial M5.4; M5.0-24 is `PASS / PENDING`
 
-Date: 2026-08-18
+Date: 2026-08-19
 
 Authority: each row is a necessary condition, not a menu. In Section 1, the
 first status is the M5.0 contract audit and the second is implementation
@@ -53,7 +53,8 @@ outside C5, and accepted M5-D24-C7 closes the typed-direct acquisition/failure-
 closure provenance boundary. The current accepted contract set is M5-D21
 through M5-D24-C7 plus runtime-addendum revision 5, the M5-D24 recovery
 amendment and its accepted corrections, and rows M5.0-21 through M5.0-24.
-M5.0-24 is contract-`PASS` / implementation-`PENDING`; no C7 implementation
+M5.0-24 is contract-`PASS` / implementation-`PENDING`; the exact R2e C7
+implementation lane integrated at `2c2aed9` and its grant is closed. No D24
 lane is active and no M5.4 row is promoted.
 The decision-row implementation halves remain `PENDING` until the
 final cross-stage evidence mapping at M5.6; the stage tables below record the
@@ -69,12 +70,16 @@ The bounded R2d pure typed-direct application-outcome tranche is integrated at
 runtime candidate gates close only that scoped evidence; exact integrated-main
 reruns passed 101/101 focused, 339/339 pure runtime, and 14/14 non-database M4/
 legacy cases plus the applicable static/hash gates. Both scoped tranche gates
-are `PASS`, but neither is a decision-row or stage-row promotion. M5.0-24
-remains implementation-`PENDING`: the row still requires a production
-PostgreSQL typed-direct application bridge, cursor-local direct failure,
-production seal and combined publication, production provider adapters,
-remaining end-to-end crash/reconnect evidence, and final M5.6 cross-stage
-mapping.
+are `PASS`, but neither is a decision-row or stage-row promotion. The bounded
+R2e PostgreSQL typed-direct pre-seal bridge is integrated at `2c2aed9`; its
+candidate gates are pinned in the frozen handoff, its exact integrated-main
+focused live rerun passed 105/105 in 160.93 seconds, and the immutable commit/
+post-integration audits returned `GO`. The R2e scoped tranche gate is `PASS`,
+but it is not a decision-row or stage-row promotion. M5.0-24 remains
+implementation-`PENDING`: the row still requires production seal and combined
+publication, lifecycle-head advancement, deployed provider adapters and runtime
+enablement, remaining end-to-end crash/reconnect evidence, and final M5.6
+cross-stage mapping.
 
 ### 1.1 Mandatory adversarial cases
 
@@ -224,9 +229,17 @@ outer-settlement cutoff and ordinary reconnect, with exact origin validation,
 one-add work, canonical-read-before-projection ordering, and validation before
 timing-only telemetry. It does not add the production PostgreSQL direct bridge,
 cursor-local direct failure, seal/publication, provider adapters, or end-to-end
-history. Accepted C7 restores the current M5.0-24 row to `PASS / PENDING`.
-The integrated R2c/R2d subsets do not close the decision-row implementation
-half or any M5.4 stage row.
+history at that checkpoint. The R2e tranche integrated at `2c2aed9` adds bounded
+live PostgreSQL evidence for transaction-owned tokenless acquisition,
+exact-held direct execution/failure routing, checked terminal acquisition/
+combined failure, all-direct epoch-failure closure, exact WIP stops,
+cooperative locks, fused timing, rollback and reconnect. Its integrated-main
+focused selection passed 105/105 in 160.93 seconds and its immutable audits
+returned `GO`. It does not add production seal/publication or lifecycle heads,
+deployed provider adapters/runtime enablement, M5-D25, or complete end-to-end
+history. Accepted C7 and integrated R2e leave the current M5.0-24 row at
+`PASS / PENDING`. The integrated R2c/R2d/R2e subsets do not close the decision-
+row implementation half or any M5.4 stage row.
 
 ## 6. M5.5 controlled evaluation gates
 
