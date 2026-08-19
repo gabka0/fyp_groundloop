@@ -46,6 +46,12 @@ from groundloop.m4.contracts import (
     DiscoveryScope as M4DiscoveryScope,
 )
 from groundloop.m4.contracts import (
+    JobAttempt as M4JobAttempt,
+)
+from groundloop.m4.contracts import (
+    JobState as M4JobState,
+)
+from groundloop.m4.contracts import (
     LogicalJobSpec as M4LogicalJobSpec,
 )
 from groundloop.m4.contracts import stable_m4_digest
@@ -59,9 +65,11 @@ from groundloop.m5.events import RegisterGroupEvent
 from groundloop.m5.runtime import digests
 from groundloop.m5.runtime.application import (
     M5DirectExecutionReceipt,
+    M5DirectSubgraphPort,
     M5DiscoveryExecution,
     M5ExternalWorkFailure,
     M5RequirementRootDeclaration,
+    M5RuntimePersistencePort,
     M5TerminalInvocationTelemetry,
     M5VerifierExecution,
 )
@@ -70,6 +78,7 @@ from groundloop.m5.runtime.contracts import (
     M5AttemptOutput,
     M5CandidatePolicyManifest,
     M5ChangedStateReference,
+    M5CheckedDirectTerminalFailureReceipt,
     M5DirectAttemptReturnReceipt,
     M5DirectCursorContributionReceipt,
     M5DiscoveryDirection,
@@ -99,7 +108,10 @@ from groundloop.m5.runtime.contracts import (
     M5TerminalReason,
     M5TransitionTimingAnchor,
     M5TransitionTimingReceipt,
+    M5TypedDirectAcquisitionReceipt,
+    M5TypedDirectJobLease,
     M5TypedDirectReturnKind,
+    M5TypedDirectTerminalProjection,
     M5TypedEventPlan,
     SemanticPairKey,
 )
@@ -396,19 +408,25 @@ class _CrashBarrierOnceRuntime(FakeRuntime):
 class _CrashEpochFailureOnceRuntime(FakeRuntime):
     crash_once: bool = True
 
-    def fail_typed_epoch_atomically(
+    def fail_typed_epoch_with_open_receipt_atomically(
         self,
         epoch_id: int,
         expected_revision: int,
         failure_reason: M5RunFailureReason,
+        open_receipt: OpenEventReceipt,
         call_work: M5RuntimeWork,
     ) -> M5EventRunResult:
         if self.crash_once:
             self.crash_once = False
             self.world.operation_log.append("crash:before-epoch-failure")
             raise SyntheticCrash("lost after terminal attempt settlement")
-        return FakeRuntime.fail_typed_epoch_atomically(
-            self, epoch_id, expected_revision, failure_reason, call_work
+        return FakeRuntime.fail_typed_epoch_with_open_receipt_atomically(
+            self,
+            epoch_id,
+            expected_revision,
+            failure_reason,
+            open_receipt,
+            call_work,
         )
 
 
@@ -513,8 +531,13 @@ class _CorruptNestedVerifier(FakeVerifier):
 @dataclass(slots=True)
 class _ZeroWorkDirectFailure(FakeDirect):
     def run_pending_direct(
-        self, epoch_id: int, expected_revision: int, event: M5TypedEventPlan
+        self,
+        epoch_id: int,
+        expected_revision: int,
+        event: M5TypedEventPlan,
+        open_receipt: OpenEventReceipt,
     ) -> M5DirectExecutionReceipt:
+        assert open_receipt.epoch_id == epoch_id
         return M5DirectExecutionReceipt(
             expected_revision,
             M5RuntimeWork(),
@@ -597,6 +620,16 @@ class _CorruptTransitionTimingRuntime(FakeRuntime):
             observed_timing,
         )
         return _unsafe_set(receipt, exact_replay=1)  # type: ignore[return-value]
+
+
+@dataclass(slots=True)
+class _MutatingTransitionMeasurements(FakeMeasurements):
+    def transition_call_timing(
+        self, anchor: M5TransitionTimingAnchor
+    ) -> M5RuntimeTiming | None:
+        observed = FakeMeasurements.transition_call_timing(self, anchor)
+        object.__setattr__(anchor, "source_id", "mutated-transition-source")
+        return observed
 
 
 @dataclass(slots=True)
@@ -1102,15 +1135,21 @@ class _CorruptC6AcquisitionRuntime(FakeRuntime):
 class _MalformedCheckedReplayRuntime(FakeRuntime):
     target: str = "failure"
 
-    def fail_typed_epoch_atomically(
+    def fail_typed_epoch_with_open_receipt_atomically(
         self,
         epoch_id: int,
         expected_revision: int,
         failure_reason: M5RunFailureReason,
+        open_receipt: OpenEventReceipt,
         call_work: M5RuntimeWork,
     ) -> M5EventRunResult:
-        result = FakeRuntime.fail_typed_epoch_atomically(
-            self, epoch_id, expected_revision, failure_reason, call_work
+        result = FakeRuntime.fail_typed_epoch_with_open_receipt_atomically(
+            self,
+            epoch_id,
+            expected_revision,
+            failure_reason,
+            open_receipt,
+            call_work,
         )
         if self.target == "failure" and result.state is M5RunState.REPLAYED:
             return _unsafe_replayed_outcome_none(result)
@@ -1142,15 +1181,21 @@ class _CorruptFirstTerminalReceiptRuntime(FakeRuntime):
             open_receipt=OpenEventReceipt(result.epoch_id, True, False),
         )
 
-    def fail_typed_epoch_atomically(
+    def fail_typed_epoch_with_open_receipt_atomically(
         self,
         epoch_id: int,
         expected_revision: int,
         failure_reason: M5RunFailureReason,
+        open_receipt: OpenEventReceipt,
         call_work: M5RuntimeWork,
     ) -> M5EventRunResult:
-        result = FakeRuntime.fail_typed_epoch_atomically(
-            self, epoch_id, expected_revision, failure_reason, call_work
+        result = FakeRuntime.fail_typed_epoch_with_open_receipt_atomically(
+            self,
+            epoch_id,
+            expected_revision,
+            failure_reason,
+            open_receipt,
+            call_work,
         )
         if self.target == "failure" and result.state is M5RunState.FAILED:
             return self._wrong_receipt(result)
@@ -1215,6 +1260,21 @@ def test_malformed_transition_timing_receipt_rejects_before_next_action() -> Non
     assert not any(
         marker.startswith("acquire:") for marker in harness.world.operation_log
     )
+    assert harness.world.external_call_count == 0
+    assert harness.world.terminal_telemetry == {}
+
+
+def test_transition_measurement_cannot_mutate_anchor_before_append() -> None:
+    harness, plan, _ = _register_case("mutated-transition-anchor", with_pair=False)
+    measurements = _MutatingTransitionMeasurements(harness.world)
+    harness.measurements = measurements
+    harness.application.measurements = measurements
+
+    with pytest.raises(ValidationError):
+        harness.application.run_event(plan)
+
+    assert "measure-transition:structural_open" in harness.world.operation_log
+    assert "timing:structural_open" not in harness.world.operation_log
     assert harness.world.external_call_count == 0
     assert harness.world.terminal_telemetry == {}
 
@@ -2211,6 +2271,33 @@ def test_successful_execution_dtos_require_explicit_disposition_and_timing() -> 
     assert failure_parameters["attempt_timing"].default is inspect.Parameter.empty
 
 
+def test_c7_application_protocols_require_exact_held_open_receipt() -> None:
+    direct_parameters = tuple(
+        inspect.signature(M5DirectSubgraphPort.run_pending_direct).parameters
+    )
+    assert direct_parameters == (
+        "self",
+        "epoch_id",
+        "expected_revision",
+        "event",
+        "open_receipt",
+    )
+    failure_parameters = tuple(
+        inspect.signature(
+            M5RuntimePersistencePort.fail_typed_epoch_with_open_receipt_atomically
+        ).parameters
+    )
+    assert failure_parameters == (
+        "self",
+        "epoch_id",
+        "expected_revision",
+        "failure_reason",
+        "open_receipt",
+        "call_work",
+    )
+    assert "fail_typed_epoch_atomically" not in M5RuntimePersistencePort.__dict__
+
+
 @pytest.mark.parametrize(
     ("reason", "retryable", "message"),
     [
@@ -2560,9 +2647,19 @@ class _CorruptSelectedDirect(FakeDirect):
     injected_call_work: M5RuntimeWork | None = None
 
     def run_pending_direct(
-        self, epoch_id: int, expected_revision: int, event: M5TypedEventPlan
+        self,
+        epoch_id: int,
+        expected_revision: int,
+        event: M5TypedEventPlan,
+        open_receipt: OpenEventReceipt,
     ) -> M5DirectExecutionReceipt:
-        result = FakeDirect.run_pending_direct(self, epoch_id, expected_revision, event)
+        result = FakeDirect.run_pending_direct(
+            self,
+            epoch_id,
+            expected_revision,
+            event,
+            open_receipt,
+        )
         selected = result.selected_successful_outer_receipt
         assert selected is not None
         selected_branch = (
@@ -3479,13 +3576,680 @@ def test_r2d_selected_direct_rejects_changed_resumed_receipt_before_hydration() 
     _assert_no_r2d_action_after_rejection(harness)
 
 
+def _c7_direct_case(
+    name: str, *, resumed: bool
+) -> tuple[FakeHarness, M5TypedEventPlan]:
+    event = InsertDocumentEvent(
+        event_id=f"event:c7-direct:{name}",
+        document_id=f"document:c7-direct:{name}",
+        document_version_id=f"version:c7-direct:{name}",
+        content_hash=sha(f"content:c7-direct:{name}"),
+        chunks=(ChunkInput(f"chunk:c7-direct:{name}", 0, f"evidence {name}"),),
+    )
+    harness = make_harness(make_repository())
+    plan = make_typed_plan(harness.world, event)
+    if resumed:
+        harness.world.direct_interruptions_by_event[event.event_id] = 1
+        with pytest.raises(FakeDirectInterruption):
+            harness.application.run_event(plan)
+    return harness, plan
+
+
+def _c7_m4_attempt(job: M4LogicalJobSpec) -> M4JobAttempt:
+    return M4JobAttempt(
+        attempt_id=stable_m4_digest("m4-job-attempt-v1", job.job_id, "1"),
+        job_id=job.job_id,
+        execution_spec_hash=job.execution_spec_hash,
+        attempt_ordinal=1,
+        lease_token_hash=stable_m4_digest("m4-lease-token-v1", job.job_id, "1"),
+    )
+
+
+def test_c7_fake_direct_and_failure_ports_reject_nonheld_receipts_before_writes() -> (
+    None
+):
+    harness, plan = _c7_direct_case("wrong-held-receipts", resumed=True)
+    harness.world.direct_interruptions_by_event[plan.structural_event_id] = 1
+    with pytest.raises(FakeDirectInterruption):
+        harness.application.run_event(plan)
+    epoch = next(iter(harness.world.epochs_by_event.values()))
+    held = epoch.current_open_receipt
+    assert held is not None and held.replayed
+    wrong_receipts = (
+        OpenEventReceipt(epoch.epoch_id, held.replayed, False),
+        _EqualitySpoofingOpenReceipt(epoch.epoch_id, held.replayed, False),
+        OpenEventReceipt(
+            epoch.epoch_id,
+            True,
+            False,
+            already_failed=True,
+            failure_reason=M5RunFailureReason.RETRIEVAL_ERROR.value,
+        ),
+        cast(OpenEventReceipt, None),
+    )
+    for wrong in wrong_receipts:
+        revision = epoch.revision
+        log = tuple(harness.world.operation_log)
+        with pytest.raises(ValidationError, match="exact held receipt"):
+            FakeDirect(harness.world).run_pending_direct(
+                epoch.epoch_id,
+                revision,
+                plan,
+                wrong,
+            )
+        assert epoch.revision == revision
+        assert tuple(harness.world.operation_log) == log
+
+        with pytest.raises(ValidationError, match="inputs are not exact"):
+            FakeRuntime(harness.world).fail_typed_epoch_with_open_receipt_atomically(
+                epoch.epoch_id,
+                revision,
+                M5RunFailureReason.RETRIEVAL_ERROR,
+                wrong,
+                M5RuntimeWork(),
+            )
+        assert epoch.revision == revision
+        assert epoch.terminal_result is None
+        assert tuple(harness.world.operation_log) == log
+
+
+def _c7_direct_failure_cursor(
+    epoch_id: int, job: M4LogicalJobSpec, attempt: M4JobAttempt
+) -> M5DirectCursorContributionReceipt:
+    return M5DirectCursorContributionReceipt(
+        epoch_id=epoch_id,
+        job_id=job.job_id,
+        attempt_id=attempt.attempt_id,
+        execution_evidence_digest=sha(
+            f"c7-direct-evidence:{epoch_id}:{attempt.attempt_id}"
+        ),
+        attempt_execution_contribution_key_digest=(
+            digests.runtime_work_contribution_key_digest(
+                epoch_id=epoch_id,
+                contribution_kind=(
+                    M5RuntimeWorkContributionKind.DIRECT_ATTEMPT_EXECUTION
+                ),
+                source_id=attempt.attempt_id,
+            )
+        ),
+        direct_transition_source_id=None,
+        direct_transition_source_identity_hash=None,
+        direct_transition_contribution_key_digest=None,
+        observation_completion=None,
+    )
+
+
+@dataclass(slots=True)
+class _C7TerminalAcquisitionDirect(FakeDirect):
+    terminal_state: M4JobState = M4JobState.TERMINAL_FAILED
+    terminal_reason: str = "provider_terminal"
+    call_work: M5RuntimeWork = M5RuntimeWork()
+    mutate_open_after: bool = False
+    corrupt_job_payload_recipe: bool = False
+    selected_receipt: M5TypedDirectAcquisitionReceipt | None = None
+
+    def run_pending_direct(
+        self,
+        epoch_id: int,
+        expected_revision: int,
+        event: M5TypedEventPlan,
+        open_receipt: OpenEventReceipt,
+    ) -> M5DirectExecutionReceipt:
+        epoch = self.world.epoch(epoch_id)
+        assert open_receipt is epoch.current_open_receipt
+        assert expected_revision == epoch.revision
+        assert len(epoch.direct_roots) == 1
+        FakeRuntime(self.world).fail_typed_epoch_with_open_receipt_atomically(
+            epoch_id,
+            expected_revision,
+            M5RunFailureReason.VERIFIER_ERROR,
+            open_receipt,
+            M5RuntimeWork(),
+        )
+        job = epoch.direct_roots[0]
+        if self.corrupt_job_payload_recipe:
+            job = replace(job, payload_hash=sha("c7-wrong-direct-job-payload"))
+        attempt = _c7_m4_attempt(job)
+        projection = M5TypedDirectTerminalProjection.build(
+            job_id=job.job_id,
+            terminal_state=self.terminal_state,
+            terminal_reason=self.terminal_reason,
+            m4_completion_digest=None,
+            completed_revision=epoch.revision,
+        )
+        lease = M5TypedDirectJobLease(
+            job_id=job.job_id,
+            attempt_id=attempt.attempt_id,
+            lease_token_hash=attempt.lease_token_hash,
+            lease_expires_at=FAKE_LEASE_BASE,
+            dispatch_record_digest=sha(f"c7-dispatch:{job.job_id}"),
+            resulting_revision=epoch.revision,
+            disposition=M5AcquisitionDisposition.TERMINAL,
+            should_execute=False,
+            exact_replay=True,
+            already_completed=False,
+            terminal_projection=projection,
+        )
+        selected = M5TypedDirectAcquisitionReceipt(epoch_id, job, lease, attempt)
+        self.selected_receipt = selected
+        self.world.operation_log.append("c7:terminal-acquisition")
+        if self.mutate_open_after:
+            object.__setattr__(open_receipt, "replayed", not open_receipt.replayed)
+        return M5DirectExecutionReceipt(
+            resulting_revision=epoch.revision,
+            call_work=self.call_work,
+            selected_terminal_acquisition_receipt=selected,
+        )
+
+
+@pytest.mark.parametrize(
+    ("terminal_state", "terminal_reason"),
+    [
+        (M4JobState.TERMINAL_FAILED, "arbitrary-provider-reason"),
+        (M4JobState.CANCELLED, "epoch_failed"),
+        (M4JobState.TERMINAL_FAILED, "epoch_failed"),
+    ],
+    ids=["terminal-failed", "epoch-failed", "overlap"],
+)
+@pytest.mark.parametrize("resumed", [False, True], ids=["fresh", "resumed"])
+@pytest.mark.parametrize("nonzero", [False, True], ids=["zero", "nonzero"])
+def test_c7_direct_terminal_acquisition_uses_canonical_failed_authority(
+    terminal_state: M4JobState,
+    terminal_reason: str,
+    resumed: bool,
+    nonzero: bool,
+) -> None:
+    harness, plan = _c7_direct_case(
+        f"terminal:{terminal_state.value}:{terminal_reason}:{resumed}:{nonzero}",
+        resumed=resumed,
+    )
+    call_work = (
+        M5RuntimeWork(direct_discovery_call_count=1) if nonzero else M5RuntimeWork()
+    )
+    direct = _C7TerminalAcquisitionDirect(
+        harness.world,
+        terminal_state=terminal_state,
+        terminal_reason=terminal_reason,
+        call_work=call_work,
+    )
+    harness.direct = direct
+    harness.application.direct = direct
+
+    result = harness.application.run_event(plan)
+
+    assert result.state is M5RunState.REPLAYED
+    assert result.replayed_outcome is M5ReplayedOutcome.FAILED
+    assert result.failure_reason is M5RunFailureReason.VERIFIER_ERROR
+    assert direct.selected_receipt is not None
+    origin_index = harness.world.operation_log.index("c7:terminal-acquisition")
+    canonical_read_indices = tuple(
+        index
+        for index, marker in enumerate(harness.world.operation_log)
+        if index > origin_index and marker == "read:terminal-result"
+    )
+    measurement_indices = tuple(
+        index
+        for index, marker in enumerate(harness.world.operation_log)
+        if marker.startswith("measure-terminal:")
+    )
+    telemetry_indices = tuple(
+        index
+        for index, marker in enumerate(harness.world.operation_log)
+        if marker.startswith("terminal-telemetry:")
+    )
+    assert len(canonical_read_indices) == len(measurement_indices) == 1
+    assert len(telemetry_indices) == 1
+    assert (
+        origin_index
+        < canonical_read_indices[0]
+        < measurement_indices[0]
+        < telemetry_indices[0]
+    )
+    _assert_active_projection_and_reconnect(
+        harness,
+        plan,
+        result,
+        resumed=resumed,
+        expected_work=call_work,
+        origin_marker="c7:terminal-acquisition",
+    )
+
+
+def test_c7_terminal_acquisition_rejects_held_receipt_toctou_before_hydration() -> None:
+    harness, plan = _c7_direct_case("held-toctou", resumed=False)
+    direct = _C7TerminalAcquisitionDirect(harness.world, mutate_open_after=True)
+    harness.direct = direct
+    harness.application.direct = direct
+
+    with pytest.raises(ValidationError, match="changed its held open receipt"):
+        harness.application.run_event(plan)
+
+    assert harness.world.operation_log.count("read:terminal-result") == 1
+    assert not any(
+        marker.startswith(("measure-terminal:", "terminal-telemetry:"))
+        for marker in harness.world.operation_log
+    )
+
+
+def test_c7_terminal_acquisition_rejects_wrong_m4_payload_recipe_before_read() -> None:
+    harness, plan = _c7_direct_case("wrong-job-payload-recipe", resumed=False)
+    direct = _C7TerminalAcquisitionDirect(
+        harness.world,
+        corrupt_job_payload_recipe=True,
+    )
+    harness.direct = direct
+    harness.application.direct = direct
+
+    with pytest.raises(ValidationError, match="another typed event"):
+        harness.application.run_event(plan)
+
+    origin_index = harness.world.operation_log.index("c7:terminal-acquisition")
+    assert "read:terminal-result" not in harness.world.operation_log[origin_index + 1 :]
+    assert not any(
+        marker.startswith(("measure-terminal:", "terminal-telemetry:"))
+        for marker in harness.world.operation_log[origin_index + 1 :]
+    )
+
+
+@dataclass(slots=True)
+class _C7WorkInProgressDirect(FakeDirect):
+    prior_call_work: M5RuntimeWork = M5RuntimeWork()
+    seen_open_receipt: OpenEventReceipt | None = None
+
+    def run_pending_direct(
+        self,
+        epoch_id: int,
+        expected_revision: int,
+        event: M5TypedEventPlan,
+        open_receipt: OpenEventReceipt,
+    ) -> M5DirectExecutionReceipt:
+        epoch = self.world.epoch(epoch_id)
+        assert expected_revision == epoch.revision
+        assert open_receipt is epoch.current_open_receipt
+        self.seen_open_receipt = open_receipt
+        self.world.operation_log.append("c7:direct-live-lease")
+        return M5DirectExecutionReceipt(
+            resulting_revision=expected_revision,
+            call_work=self.prior_call_work,
+            blocked_reason=M5RunFailureReason.WORK_IN_PROGRESS,
+        )
+
+
+@pytest.mark.parametrize("resumed", [False, True], ids=["fresh", "resumed"])
+@pytest.mark.parametrize("nonzero", [False, True], ids=["zero", "nonzero"])
+def test_c7_direct_work_in_progress_preserves_prior_work_without_continuation(
+    resumed: bool,
+    nonzero: bool,
+) -> None:
+    harness, plan = _c7_direct_case(
+        f"work-in-progress:{resumed}:{nonzero}", resumed=resumed
+    )
+    prior_work = (
+        M5RuntimeWork(direct_discovery_call_count=1) if nonzero else M5RuntimeWork()
+    )
+    direct = _C7WorkInProgressDirect(harness.world, prior_call_work=prior_work)
+    harness.direct = direct
+    harness.application.direct = direct
+    external_calls = harness.world.external_call_count
+
+    result = harness.application.run_event(plan)
+
+    assert result.state is M5RunState.BLOCKED
+    assert result.failure_reason is M5RunFailureReason.WORK_IN_PROGRESS
+    assert result.call_work == prior_work
+    assert direct.seen_open_receipt is result.open_receipt
+    assert result.open_receipt.replayed is resumed
+    assert harness.world.external_call_count == external_calls
+    marker_index = harness.world.operation_log.index("c7:direct-live-lease")
+    assert not any(
+        marker.startswith(
+            (
+                "acquire:",
+                "measure-terminal:",
+                "terminal-telemetry:",
+                "typed-seal",
+                "typed-failed",
+            )
+        )
+        for marker in harness.world.operation_log[marker_index + 1 :]
+    )
+
+
+@dataclass(slots=True)
+class _C7NonidenticalFailureReceiptRuntime(FakeRuntime):
+    receipt_mode: str = "reconstructed"
+    returned_open_receipt: OpenEventReceipt | None = None
+
+    def fail_typed_epoch_with_open_receipt_atomically(
+        self,
+        epoch_id: int,
+        expected_revision: int,
+        failure_reason: M5RunFailureReason,
+        open_receipt: OpenEventReceipt,
+        call_work: M5RuntimeWork,
+    ) -> M5EventRunResult:
+        result = FakeRuntime.fail_typed_epoch_with_open_receipt_atomically(
+            self,
+            epoch_id,
+            expected_revision,
+            failure_reason,
+            open_receipt,
+            call_work,
+        )
+        if result.state is not M5RunState.FAILED:
+            return result
+        receipt_type = (
+            _EqualitySpoofingOpenReceipt
+            if self.receipt_mode == "equality_spoof"
+            else OpenEventReceipt
+        )
+        reconstructed = receipt_type(
+            result.open_receipt.epoch_id,
+            result.open_receipt.replayed,
+            result.open_receipt.already_sealed,
+            result.open_receipt.publication_id,
+            result.open_receipt.already_failed,
+            result.open_receipt.failure_reason,
+        )
+        assert reconstructed == open_receipt
+        assert reconstructed is not open_receipt
+        self.returned_open_receipt = reconstructed
+        return replace(result, open_receipt=reconstructed)
+
+
+@pytest.mark.parametrize("receipt_mode", ["reconstructed", "equality_spoof"], ids=str)
+@pytest.mark.parametrize("resumed", [False, True], ids=["fresh", "resumed"])
+def test_c7_generic_first_failure_requires_identical_held_receipt(
+    receipt_mode: str,
+    resumed: bool,
+) -> None:
+    harness, plan, _ = _register_case(
+        f"c7-generic-held:{receipt_mode}:{resumed}", with_pair=False
+    )
+    if resumed:
+        _prepare_held_receipt(harness, plan, resumed=True)
+    first = _requirement_declarations(harness, plan)[0]
+    requirement_id = first.scope.requirement_version_id
+    assert requirement_id is not None
+    harness.world.discovery_outcomes[
+        (plan.structural_event_id, _forward_direction(), requirement_id)
+    ] = [
+        FakeDiscoveryOutcome(
+            failure_reason=M5RunFailureReason.RETRIEVAL_ERROR,
+            retryable=False,
+        )
+    ]
+    runtime = _C7NonidenticalFailureReceiptRuntime(
+        harness.world,
+        receipt_mode=receipt_mode,
+    )
+    _install_runtime(harness, runtime)
+
+    with pytest.raises(ValidationError, match="exact held open receipt"):
+        harness.application.run_event(plan)
+
+    assert runtime.returned_open_receipt is not None
+    assert harness.world.terminal_telemetry == {}
+    assert not any(
+        marker.startswith("measure-terminal:") for marker in harness.world.operation_log
+    )
+
+
+@dataclass(slots=True)
+class _C7CheckedCombinedFailureDirect(FakeDirect):
+    replay_combined: bool = False
+    call_work: M5RuntimeWork = M5RuntimeWork()
+    returned_open_mode: str = "exact"
+    selected_receipt: M5CheckedDirectTerminalFailureReceipt | None = None
+
+    def run_pending_direct(
+        self,
+        epoch_id: int,
+        expected_revision: int,
+        event: M5TypedEventPlan,
+        open_receipt: OpenEventReceipt,
+    ) -> M5DirectExecutionReceipt:
+        epoch = self.world.epoch(epoch_id)
+        assert open_receipt is epoch.current_open_receipt
+        assert expected_revision == epoch.revision
+        assert len(epoch.direct_roots) == 1
+        job = epoch.direct_roots[0]
+        attempt = _c7_m4_attempt(job)
+        runtime = FakeRuntime(self.world)
+        terminal = runtime.fail_typed_epoch_with_open_receipt_atomically(
+            epoch_id,
+            expected_revision,
+            M5RunFailureReason.RETRIEVAL_ERROR,
+            open_receipt,
+            self.call_work,
+        )
+        if self.replay_combined:
+            terminal = runtime.fail_typed_epoch_with_open_receipt_atomically(
+                epoch_id,
+                epoch.revision,
+                M5RunFailureReason.RETRIEVAL_ERROR,
+                open_receipt,
+                self.call_work,
+            )
+        selected = M5CheckedDirectTerminalFailureReceipt(
+            direct_failure=_c7_direct_failure_cursor(epoch_id, job, attempt),
+            requested_failure_reason=M5RunFailureReason.RETRIEVAL_ERROR,
+            resulting_revision=epoch.revision,
+            terminal_result=terminal,
+        )
+        self.selected_receipt = selected
+        self.world.operation_log.append("c7:checked-combined-failure")
+        wrapper = M5DirectExecutionReceipt(
+            resulting_revision=epoch.revision,
+            call_work=self.call_work,
+            selected_checked_combined_failure_receipt=selected,
+        )
+        if self.returned_open_mode == "exact":
+            return wrapper
+        receipt_type = (
+            _EqualitySpoofingOpenReceipt
+            if self.returned_open_mode == "equality_spoof"
+            else OpenEventReceipt
+        )
+        nonidentical = receipt_type(
+            terminal.open_receipt.epoch_id,
+            terminal.open_receipt.replayed,
+            terminal.open_receipt.already_sealed,
+            terminal.open_receipt.publication_id,
+            terminal.open_receipt.already_failed,
+            terminal.open_receipt.failure_reason,
+        )
+        assert nonidentical == open_receipt
+        assert nonidentical is not open_receipt
+        malformed_terminal = replace(terminal, open_receipt=nonidentical)
+        malformed_selected = cast(
+            M5CheckedDirectTerminalFailureReceipt,
+            _unsafe_set(selected, terminal_result=malformed_terminal),
+        )
+        return cast(
+            M5DirectExecutionReceipt,
+            _unsafe_set(
+                wrapper,
+                selected_checked_combined_failure_receipt=malformed_selected,
+            ),
+        )
+
+
+@pytest.mark.parametrize("replay_combined", [False, True], ids=["first", "replay"])
+@pytest.mark.parametrize("resumed", [False, True], ids=["fresh", "resumed"])
+@pytest.mark.parametrize("nonzero", [False, True], ids=["zero", "nonzero"])
+def test_c7_checked_combined_failure_finishes_exact_first_or_active_replay(
+    replay_combined: bool,
+    resumed: bool,
+    nonzero: bool,
+) -> None:
+    harness, plan = _c7_direct_case(
+        f"combined:{replay_combined}:{resumed}:{nonzero}", resumed=resumed
+    )
+    call_work = (
+        M5RuntimeWork(direct_verifier_call_count=1) if nonzero else M5RuntimeWork()
+    )
+    direct = _C7CheckedCombinedFailureDirect(
+        harness.world,
+        replay_combined=replay_combined,
+        call_work=call_work,
+    )
+    harness.direct = direct
+    harness.application.direct = direct
+
+    result = harness.application.run_event(plan)
+
+    assert result.state is (
+        M5RunState.REPLAYED if replay_combined else M5RunState.FAILED
+    )
+    assert result.failure_reason is M5RunFailureReason.RETRIEVAL_ERROR
+    assert result.open_receipt.replayed is resumed
+    assert result.call_work == call_work
+    assert direct.selected_receipt is not None
+    assert len(harness.world.terminal_telemetry) == 1
+    marker_index = harness.world.operation_log.index("c7:checked-combined-failure")
+    measurement_index = next(
+        index
+        for index, marker in enumerate(harness.world.operation_log)
+        if marker.startswith("measure-terminal:")
+    )
+    assert marker_index < measurement_index
+    canonical = harness.runtime.read_typed_event_result(
+        plan.structural_event_id, plan.payload_hash
+    )
+    assert canonical is not None
+    assert canonical.call_work.is_zero
+    assert canonical.failure_reason is M5RunFailureReason.RETRIEVAL_ERROR
+
+
+@pytest.mark.parametrize(
+    "returned_open_mode", ["reconstructed", "equality_spoof"], ids=str
+)
+@pytest.mark.parametrize("resumed", [False, True], ids=["fresh", "resumed"])
+def test_c7_checked_combined_first_failure_requires_identical_held_receipt(
+    returned_open_mode: str,
+    resumed: bool,
+) -> None:
+    harness, plan = _c7_direct_case(
+        f"combined-held:{returned_open_mode}:{resumed}", resumed=resumed
+    )
+    direct = _C7CheckedCombinedFailureDirect(
+        harness.world,
+        returned_open_mode=returned_open_mode,
+    )
+    harness.direct = direct
+    harness.application.direct = direct
+
+    with pytest.raises(ValidationError, match="open receipt"):
+        harness.application.run_event(plan)
+
+    assert harness.world.terminal_telemetry == {}
+    assert not any(
+        marker.startswith("measure-terminal:") for marker in harness.world.operation_log
+    )
+
+
+def test_c7_direct_execution_receipt_new_branches_are_exact_and_exclusive() -> None:
+    assert (
+        M5DirectExecutionReceipt(
+            1, blocked_reason=M5RunFailureReason.WORK_IN_PROGRESS
+        ).blocked_reason
+        is M5RunFailureReason.WORK_IN_PROGRESS
+    )
+    with pytest.raises(ValidationError, match="terminal"):
+        M5DirectExecutionReceipt(
+            1, terminal_failure_reason=M5RunFailureReason.WORK_IN_PROGRESS
+        )
+    parameters = inspect.signature(M5DirectExecutionReceipt).parameters
+    assert parameters["selected_terminal_acquisition_receipt"].default is None
+    assert parameters["selected_checked_combined_failure_receipt"].default is None
+    with pytest.raises(ValidationError, match="another receipt type"):
+        M5DirectExecutionReceipt(
+            1,
+            selected_terminal_acquisition_receipt=cast(
+                M5TypedDirectAcquisitionReceipt, object()
+            ),
+        )
+    with pytest.raises(ValidationError, match="another receipt type"):
+        M5DirectExecutionReceipt(
+            1,
+            selected_checked_combined_failure_receipt=cast(
+                M5CheckedDirectTerminalFailureReceipt, object()
+            ),
+        )
+
+    terminal_harness, terminal_plan = _c7_direct_case(
+        "exclusive-terminal", resumed=False
+    )
+    terminal_direct = _C7TerminalAcquisitionDirect(terminal_harness.world)
+    terminal_harness.application.direct = terminal_direct
+    terminal_harness.application.run_event(terminal_plan)
+    acquisition = terminal_direct.selected_receipt
+    assert acquisition is not None
+
+    checked_harness, checked_plan = _c7_direct_case("exclusive-checked", resumed=False)
+    checked_direct = _C7CheckedCombinedFailureDirect(checked_harness.world)
+    checked_harness.application.direct = checked_direct
+    checked_harness.application.run_event(checked_plan)
+    checked = checked_direct.selected_receipt
+    assert checked is not None
+    assert acquisition.lease.resulting_revision == checked.resulting_revision
+
+    revision = acquisition.lease.resulting_revision
+    successful = FakeDirect._selected_outer_receipt(  # noqa: SLF001
+        epoch_id=acquisition.epoch_id,
+        resulting_revision=revision,
+        job_id=acquisition.job.job_id,
+        return_kind=M5TypedDirectReturnKind.DISCOVERY,
+        branch="late",
+        terminal_logical_result_hash=sha("c7-xor-terminal-result"),
+    )
+    branches: tuple[dict[str, object], ...] = (
+        {"blocked_reason": M5RunFailureReason.WORK_IN_PROGRESS},
+        {"terminal_failure_reason": M5RunFailureReason.RETRIEVAL_ERROR},
+        {
+            "selected_successful_outer_receipt": successful,
+            "selected_successful_outer_return_kind": (
+                M5TypedDirectReturnKind.DISCOVERY
+            ),
+            "selected_successful_outer_job_id": acquisition.job.job_id,
+        },
+        {"selected_terminal_acquisition_receipt": acquisition},
+        {"selected_checked_combined_failure_receipt": checked},
+    )
+    for mask in range(1 << len(branches)):
+        selected_kwargs: dict[str, object] = {}
+        for index, branch in enumerate(branches):
+            if mask & (1 << index):
+                selected_kwargs.update(branch)
+        if mask.bit_count() <= 1:
+            M5DirectExecutionReceipt(
+                revision,
+                **selected_kwargs,  # type: ignore[arg-type]
+            )
+        else:
+            with pytest.raises(ValidationError):
+                M5DirectExecutionReceipt(
+                    revision,
+                    **selected_kwargs,  # type: ignore[arg-type]
+                )
+
+
 @dataclass(slots=True)
 class _UnselectedTerminalDirect(FakeDirect):
     def run_pending_direct(
-        self, epoch_id: int, expected_revision: int, event: M5TypedEventPlan
+        self,
+        epoch_id: int,
+        expected_revision: int,
+        event: M5TypedEventPlan,
+        open_receipt: OpenEventReceipt,
     ) -> M5DirectExecutionReceipt:
         selected = FakeDirect.run_pending_direct(
-            self, epoch_id, expected_revision, event
+            self,
+            epoch_id,
+            expected_revision,
+            event,
+            open_receipt,
         )
         assert selected.selected_successful_outer_receipt is not None
         return M5DirectExecutionReceipt(

@@ -8,7 +8,7 @@ import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import psycopg
 import pytest
@@ -26,6 +26,7 @@ from groundloop.m4.application import (
     DiscoveryResult,
     DynamicEventPlan,
     JobLease,
+    OpenEventReceipt,
     StructuralWithdrawal,
 )
 from groundloop.m4.contracts import (
@@ -55,12 +56,15 @@ from groundloop.m4.pipeline import (
     bootstrap_m4_publication,
 )
 from groundloop.m5.runtime import digests as runtime_digests
+from groundloop.m5.runtime import postgres_direct_recovery as direct_recovery_module
 from groundloop.m5.runtime.contracts import (
     ActiveChunkSnapshot,
     ActiveChunkSnapshotEntry,
     M5AcquisitionDisposition,
     M5CandidatePolicyManifest,
     M5ExecutionEvidenceDisposition,
+    M5RunFailureReason,
+    M5RunState,
     M5RuntimeOperationalConfig,
     M5RuntimeTiming,
     M5RuntimeWork,
@@ -89,6 +93,7 @@ from tests.m5.postgres.helpers import (
     install_test_activation_barrier,
     seed_base,
 )
+from tests.m5.postgres_runtime.d24_application.conftest import database_snapshot
 
 
 def _sha(value: str) -> str:
@@ -801,6 +806,7 @@ class _OpenedDirectEpoch:
     scope: DiscoveryScope
     epoch_id: int
     adapter: PostgresM5DirectM4Adapter
+    open_receipt: OpenEventReceipt | None = None
 
 
 def _open_direct_epoch(
@@ -840,13 +846,14 @@ def _open_direct_epoch(
         cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
     adapter._after_outer_commit()
     return _OpenedDirectEpoch(
-        event,
-        payload,
-        withdrawal,
-        root,
-        scope,
-        epoch_id,
-        adapter,
+        event=event,
+        payload=payload,
+        withdrawal=withdrawal,
+        root=root,
+        scope=scope,
+        epoch_id=epoch_id,
+        adapter=adapter,
+        open_receipt=opened,
     )
 
 
@@ -906,6 +913,250 @@ def test_d24_direct_acquisition_is_db_clock_total(
         """,
         (opened.epoch_id,),
     ).fetchone() == (2, 2, 1, 1, 2, 2, "direct_acquisition")
+
+
+def test_d24_tokenless_acquisition_is_total_and_attempt_bound(
+    direct_runtime_db: DirectRuntimeDatabase,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened = _open_direct_epoch(direct_runtime_db, lease_duration_ms=100)
+    connection = direct_runtime_db.connection
+    before = connection.execute("SELECT clock_timestamp()").fetchone()
+    assert before is not None and isinstance(before[0], datetime)
+    first = opened.adapter.acquire_direct_job_atomically(
+        opened.epoch_id,
+        1,
+        opened.root,
+    )
+    after = connection.execute("SELECT clock_timestamp()").fetchone()
+    assert after is not None and isinstance(after[0], datetime)
+    assert first.lease.disposition is M5AcquisitionDisposition.DISPATCH_NEW
+    assert first.attempt is not None
+    assert first.attempt.attempt_ordinal == 1
+    assert first.attempt.attempt_id == stable_m4_digest(
+        "m4-job-attempt-v1", opened.root.job_id, "1"
+    )
+    assert first.attempt.lease_token_hash == stable_m4_digest(
+        "m4-lease-token-v1", opened.root.job_id, "1"
+    )
+    assert first.lease.lease_expires_at is not None
+    sampled_at = first.lease.lease_expires_at - timedelta(milliseconds=100)
+    assert before[0] <= sampled_at <= after[0]
+
+    snapshot = _direct_replay_snapshot(connection, opened.epoch_id)
+    live = opened.adapter.acquire_direct_job_atomically(
+        opened.epoch_id,
+        1,
+        opened.root,
+    )
+    assert live.lease.disposition is M5AcquisitionDisposition.LIVE_LEASE
+    assert live.attempt == first.attempt
+    assert _direct_replay_snapshot(connection, opened.epoch_id) == snapshot
+
+    equality_time = first.lease.lease_expires_at
+    successor_expiry = equality_time + timedelta(milliseconds=100)
+    monkeypatch.setattr(
+        direct_recovery_module,
+        "_sample_database_deadline",
+        lambda _cursor, _epoch_id: (equality_time, successor_expiry),
+    )
+    takeover = opened.adapter.acquire_direct_job_atomically(
+        opened.epoch_id,
+        2,
+        opened.root,
+    )
+    assert takeover.lease.disposition is M5AcquisitionDisposition.DISPATCH_TAKEOVER
+    assert takeover.attempt is not None
+    assert takeover.attempt.attempt_ordinal == 2
+    assert takeover.attempt.attempt_id == stable_m4_digest(
+        "m4-job-attempt-v1", opened.root.job_id, "2"
+    )
+    assert takeover.attempt.lease_token_hash == stable_m4_digest(
+        "m4-lease-token-v1", opened.root.job_id, "2"
+    )
+    assert takeover.lease.lease_expires_at == successor_expiry
+    assert connection.execute(
+        """
+        SELECT attempt_ordinal, attempt_state, finished_at
+        FROM groundloop_semantic_job_attempt
+        WHERE job_id = %s ORDER BY attempt_ordinal
+        """,
+        (opened.root.job_id,),
+    ).fetchall() == [
+        (1, "expired", equality_time),
+        (2, "leased", None),
+    ]
+
+    discovery = DiscoveryResult(
+        root_job_id=opened.root.job_id,
+        result_artifact_id="tokenless-empty-discovery",
+        result_artifact_hash=_sha("tokenless-empty-discovery"),
+        admitted_pairs=(),
+    )
+    closure = ChildClosure.build(
+        parent_job_id=opened.root.job_id,
+        result_artifact_hash=discovery.result_artifact_hash,
+        child_job_ids=(),
+    )
+    completion = JobCompletion.build(
+        job_id=opened.root.job_id,
+        payload_hash=opened.root.payload_hash,
+        execution_spec_hash=opened.root.execution_spec_hash,
+        result_artifact_id=discovery.result_artifact_id,
+        result_artifact_hash=discovery.result_artifact_hash,
+        terminal_state=JobState.COMPLETED_ACTIVE,
+        child_closure=closure,
+    )
+    envelope = M5TypedDirectLateReturnEnvelope.build_discovery(
+        epoch_id=opened.epoch_id,
+        job=opened.root,
+        attempt=takeover.attempt,
+        completion=completion,
+        discovery=discovery,
+        scope=DiscoveryScope(
+            opened.root.job_id,
+            REGISTRY_ID,
+            direct_runtime_db.base.claim_ids,
+        ),
+        persisted_scope_kind=M5TypedDirectScopeKind.ALL_REGISTERED_CLAIMS,
+        explicit_claim_ids=None,
+        closed_revision=None,
+    )
+    settled = opened.adapter.settle_direct_expansion_atomically(
+        opened.epoch_id,
+        3,
+        takeover.lease,
+        envelope,
+        (),
+        M5ExecutionEvidenceDisposition.RETURNED,
+        M5RuntimeWork(direct_discovery_call_count=1),
+        None,
+    )
+    assert settled.normal is not None
+    assert settled.normal.resulting_revision == 4
+    terminal = opened.adapter.acquire_direct_job_atomically(
+        opened.epoch_id,
+        3,
+        opened.root,
+    )
+    assert terminal.lease.disposition is M5AcquisitionDisposition.TERMINAL
+    assert terminal.lease.already_completed
+    assert terminal.attempt == takeover.attempt
+    assert terminal.lease.resulting_revision == 4
+
+
+@pytest.mark.parametrize("with_attempt", (False, True))
+def test_token_compatibility_checks_bounded_terminal_candidates_on_reconnect(
+    direct_runtime_db: DirectRuntimeDatabase,
+    with_attempt: bool,
+) -> None:
+    database = direct_runtime_db
+    opened = _open_direct_epoch(database)
+    expected_revision = 1
+    persisted_token: str | None = None
+    if with_attempt:
+        acquisition = opened.adapter.acquire_direct_job_atomically(
+            opened.epoch_id,
+            expected_revision,
+            opened.root,
+        )
+        assert acquisition.attempt is not None
+        persisted_token = acquisition.attempt.lease_token_hash
+        expected_revision = acquisition.lease.resulting_revision
+
+    assert opened.open_receipt is not None
+    terminal = opened.adapter.fail_typed_epoch_with_open_receipt_atomically(
+        opened.epoch_id,
+        expected_revision,
+        M5RunFailureReason.INVALID_ARTIFACT,
+        opened.open_receipt,
+        M5RuntimeWork(),
+    )
+    assert terminal.state is M5RunState.FAILED
+    schema_row = database.connection.execute("SELECT current_schema()").fetchone()
+    assert schema_row is not None and type(schema_row[0]) is str
+    schema_name = schema_row[0]
+    before = database_snapshot(database.connection)
+
+    with psycopg.connect(_database_url(), autocommit=True) as connection:
+        connection.execute(
+            sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema_name))
+        )
+        ports = PostgresM4ApplicationPorts(
+            connection,
+            structural_payloads={},
+            execution_mode=M4ExecutionMode.MEASURED,
+        )
+        adapter = PostgresM5DirectM4Adapter(ports)
+        with pytest.raises(
+            EventConflictError,
+            match=(
+                "terminal direct lease token is not a bounded deterministic candidate"
+            ),
+        ):
+            with connection.transaction(), connection.cursor() as cursor:
+                adapter.acquire_direct_job(
+                    cursor,
+                    opened.epoch_id,
+                    expected_revision,
+                    opened.root,
+                    _sha("wrong-terminal-compatibility-token"),
+                )
+        assert database_snapshot(connection) == before
+
+        accepted_tokens = (
+            (_deterministic_lease_token(opened.root, 1),)
+            if persisted_token is None
+            else (
+                persisted_token,
+                _deterministic_lease_token(opened.root, 2),
+            )
+        )
+        for accepted_token in accepted_tokens:
+            with connection.transaction(), connection.cursor() as cursor:
+                replay_lease = adapter.acquire_direct_job(
+                    cursor,
+                    opened.epoch_id,
+                    expected_revision,
+                    opened.root,
+                    accepted_token,
+                )
+            assert replay_lease.disposition is M5AcquisitionDisposition.TERMINAL
+            assert replay_lease.lease_token_hash == persisted_token
+            assert database_snapshot(connection) == before
+
+        if persisted_token is None:
+            replay = adapter.acquire_direct_job_atomically(
+                opened.epoch_id,
+                expected_revision,
+                opened.root,
+            )
+            assert replay.attempt is None
+            assert replay.lease.disposition is M5AcquisitionDisposition.TERMINAL
+        assert database_snapshot(connection) == before
+
+
+def test_token_compatibility_rejects_runtime_none_before_database_action(
+    direct_runtime_db: DirectRuntimeDatabase,
+) -> None:
+    opened = _open_direct_epoch(direct_runtime_db)
+    before = database_snapshot(direct_runtime_db.connection)
+    with (
+        direct_runtime_db.connection.transaction(),
+        direct_runtime_db.connection.cursor() as cursor,
+    ):
+        with pytest.raises(
+            ValidationError,
+            match="compatibility token must be exact text",
+        ):
+            opened.adapter.acquire_direct_job(
+                cursor,
+                opened.epoch_id,
+                1,
+                opened.root,
+                cast(str, None),
+            )
+    assert database_snapshot(direct_runtime_db.connection) == before
 
 
 def test_d24_direct_expansion_is_one_lock_normal_and_exact_replay(
@@ -1397,6 +1648,94 @@ def test_d24_direct_retryable_failure_persists_exact_point_evidence(
     )
 
 
+def test_d24_atomic_retryable_failure_replay_has_no_second_anchor(
+    direct_runtime_db: DirectRuntimeDatabase,
+) -> None:
+    opened = _open_direct_epoch(direct_runtime_db)
+    acquisition = opened.adapter.acquire_direct_job_atomically(
+        opened.epoch_id,
+        1,
+        opened.root,
+    )
+    work = M5RuntimeWork(
+        direct_discovery_call_count=1,
+        embedding_model_call_count=1,
+    )
+    timing = M5RuntimeTiming(
+        coordinator_non_db_non_neural_ns=2,
+        neural_wall_ns=3,
+        postgres_roundtrip_wall_ns=5,
+        external_io_wall_ns=7,
+        end_to_end_wall_ns=11,
+    )
+
+    first = opened.adapter.mark_direct_retryable_failure_atomically(
+        opened.epoch_id,
+        acquisition.lease.resulting_revision,
+        acquisition.lease,
+        _sha("atomic-retryable-replay-error"),
+        work,
+        timing,
+    )
+    assert not first.exact_replay
+    assert first.resulting_revision == acquisition.lease.resulting_revision + 1
+    assert first.transition_anchor is not None
+    anchor = first.transition_anchor
+    store = PostgresM5RuntimeStore(direct_runtime_db.connection)
+    appended = store.append_transition_call_timing(
+        anchor.epoch_id,
+        anchor.contribution_kind,
+        anchor.source_id,
+        anchor.contribution_key_digest,
+        anchor.anchor_revision,
+        timing,
+    )
+    assert not appended.exact_replay
+    assert appended.resulting_revision == first.resulting_revision
+
+    successor = opened.adapter.acquire_direct_job_atomically(
+        opened.epoch_id,
+        first.resulting_revision,
+        opened.root,
+    )
+    before_replay = database_snapshot(direct_runtime_db.connection)
+    pending_before = direct_runtime_db.connection.execute(
+        """
+        SELECT pending_contribution_kind, pending_source_id,
+               pending_anchor_revision, required_expected_count
+        FROM groundloop_m5_runtime_timing_accumulator
+        WHERE epoch_id = %s
+        """,
+        (opened.epoch_id,),
+    ).fetchone()
+    replay = opened.adapter.mark_direct_retryable_failure_atomically(
+        opened.epoch_id,
+        acquisition.lease.resulting_revision,
+        acquisition.lease,
+        _sha("atomic-retryable-replay-error"),
+        work,
+        timing,
+    )
+
+    assert replay.receipt == first.receipt
+    assert replay.resulting_revision == successor.lease.resulting_revision
+    assert replay.exact_replay
+    assert replay.transition_anchor is None
+    assert database_snapshot(direct_runtime_db.connection) == before_replay
+    assert (
+        direct_runtime_db.connection.execute(
+            """
+        SELECT pending_contribution_kind, pending_source_id,
+               pending_anchor_revision, required_expected_count
+        FROM groundloop_m5_runtime_timing_accumulator
+        WHERE epoch_id = %s
+        """,
+            (opened.epoch_id,),
+        ).fetchone()
+        == pending_before
+    )
+
+
 def test_d24_direct_failure_rejects_timing_accumulator_revision_drift(
     direct_runtime_db: DirectRuntimeDatabase,
 ) -> None:
@@ -1456,7 +1795,7 @@ def test_d24_direct_failure_rejects_timing_accumulator_revision_drift(
     ).fetchone() == (0,)
 
 
-def test_d24_direct_terminal_failure_projects_exact_m4_terminal_state(
+def test_d24_standalone_terminal_failure_paths_reject_without_writes(
     direct_runtime_db: DirectRuntimeDatabase,
 ) -> None:
     opened = _open_direct_epoch(direct_runtime_db)
@@ -1472,45 +1811,36 @@ def test_d24_direct_terminal_failure_projects_exact_m4_terminal_state(
         cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
 
     work = M5RuntimeWork(direct_discovery_call_count=1)
-    with connection.transaction(), connection.cursor() as cursor:
-        receipt = opened.adapter.mark_direct_terminal_failure(
-            cursor,
-            opened.epoch_id,
-            2,
-            lease,
-            "retrieval_error",
-            _sha("direct-terminal-error"),
-            work,
-            None,
-        )
-        opened.adapter.install_outer_transition_anchor(
-            cursor,
-            M5TransitionTimingAnchor.build(
-                epoch_id=opened.epoch_id,
-                contribution_kind=(
-                    M5RuntimeWorkContributionKind.DIRECT_ATTEMPT_EXECUTION
-                ),
-                source_id=receipt.attempt_id,
-                anchor_revision=3,
-                terminal_transition=False,
-            ),
-        )
-        cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
-
-    with connection.transaction(), connection.cursor() as cursor:
-        terminal = opened.adapter.acquire_direct_job(
-            cursor,
-            opened.epoch_id,
-            2,
-            opened.root,
-            _deterministic_lease_token(opened.root),
-        )
-        assert terminal.disposition is M5AcquisitionDisposition.TERMINAL
-        assert terminal.terminal_projection is not None
-        assert terminal.terminal_projection.terminal_state is JobState.TERMINAL_FAILED
-        assert terminal.terminal_projection.terminal_reason == "retrieval_error"
-        assert terminal.resulting_revision == 3
-        cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
+    before = _direct_replay_snapshot(connection, opened.epoch_id)
+    for settle in (
+        opened.adapter.mark_direct_terminal_failure,
+        opened.adapter._recovery.mark_direct_terminal_failure,
+    ):
+        with pytest.raises(
+            EventConflictError,
+            match="requires the checked combined operation",
+        ):
+            with connection.transaction(), connection.cursor() as cursor:
+                settle(
+                    cursor,
+                    opened.epoch_id,
+                    2,
+                    lease,
+                    "opaque-provider-terminal-wire",
+                    _sha("direct-terminal-error"),
+                    work,
+                    None,
+                )
+    assert _direct_replay_snapshot(connection, opened.epoch_id) == before
+    assert connection.execute(
+        """
+        SELECT revision, job_state, completion_digest
+        FROM groundloop_epoch
+        JOIN groundloop_semantic_job USING (epoch_id)
+        WHERE epoch_id = %s AND job_id = %s
+        """,
+        (opened.epoch_id, opened.root.job_id),
+    ).fetchone() == (2, "running", None)
 
 
 def _direct_replay_snapshot(

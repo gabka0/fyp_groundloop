@@ -125,6 +125,21 @@ class PointJobRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class _TypedFailurePointJobImage:
+    """Complete job-row image captured before typed-M5 failure detail locks."""
+
+    job: LogicalJobSpec
+    state: JobState
+    child_closed: bool
+    child_set_hash: str | None
+    completion_digest: str | None
+    result_artifact_id: str | None
+    result_artifact_hash: str | None
+    completed_revision: int | None
+    latest_attempt: PointAttemptRecord | None
+
+
+@dataclass(frozen=True, slots=True)
 class PointMutationResult:
     """Result of a measured point/CAS mutation."""
 
@@ -309,9 +324,7 @@ class PostgresM4RuntimeStore:
             raise ValidationError("claim registry claim IDs must be sorted and unique")
         if any(not claim_id.strip() for claim_id in claim_ids):
             raise ValidationError("claim registry claim IDs must be non-empty")
-        claim_set_hash = stable_m4_digest(
-            "m4-claim-registry-snapshot-v1", *claim_ids
-        )
+        claim_set_hash = stable_m4_digest("m4-claim-registry-snapshot-v1", *claim_ids)
         with self._connection.transaction():
             inserted = self._connection.execute(
                 """
@@ -679,9 +692,7 @@ class PostgresM4RuntimeStore:
                     WHERE semantic_status = 'sealed'
                     """
                 ).fetchone()
-                actual_previous = (
-                    None if last_sealed is None else last_sealed[0]
-                )
+                actual_previous = None if last_sealed is None else last_sealed[0]
             if actual_previous != update.previous_published_epoch_id:
                 raise InvalidEventError("update does not name the last sealed epoch")
             row = self._connection.execute(
@@ -851,8 +862,7 @@ class PostgresM4RuntimeStore:
                     root_job_id=str(row[0]),
                     registry_snapshot_id=str(row[1]),
                     registered_claim_ids=tuple(
-                        str(value)
-                        for value in scope_members.get(str(row[0]), ())
+                        str(value) for value in scope_members.get(str(row[0]), ())
                     ),
                     # Scope closure is mutable runtime state, not part of the
                     # immutable open declaration replay identity.
@@ -1083,6 +1093,221 @@ class PostgresM4RuntimeStore:
         )
         return self._point_job_from_row(row, latest)
 
+    def lock_typed_failure_jobs_point_local(
+        self,
+        cursor: SqlExecutor,
+        epoch_id: int,
+    ) -> tuple[_TypedFailurePointJobImage, ...]:
+        """Lock the complete C-ordered M4 job set without locking attempts.
+
+        The latest-attempt values are an unlocked snapshot taken only after all
+        job rows are locked.  A later detail phase locks every attempt and must
+        compare its bytes with this snapshot before any failure write.
+        """
+
+        rows = cursor.execute(
+            """
+            SELECT epoch.event_id,
+                   job.job_id, job.parent_job_id, job.job_kind,
+                   job.candidate_policy_id, job.payload_hash,
+                   job.execution_spec_hash, job.claim_id,
+                   job.chunk_version_id, job.expandable, job.job_state,
+                   job.child_closed, job.child_set_hash,
+                   job.completion_digest, job.result_artifact_id,
+                   job.result_artifact_hash, job.completed_revision
+            FROM groundloop_semantic_job AS job
+            JOIN groundloop_epoch AS epoch ON epoch.epoch_id = job.epoch_id
+            WHERE job.epoch_id = %s
+            ORDER BY job.job_id COLLATE "C"
+            FOR UPDATE OF job
+            """,
+            (epoch_id,),
+        ).fetchall()
+        images: list[_TypedFailurePointJobImage] = []
+        for raw in rows:
+            row = tuple(raw)
+            latest = self._read_latest_attempt_point(
+                str(row[1]), for_update=False, cursor=cursor
+            )
+            images.append(
+                _TypedFailurePointJobImage(
+                    job=self._point_spec_from_row(row[:10]),
+                    state=JobState(str(row[10])),
+                    child_closed=bool(row[11]),
+                    child_set_hash=(None if row[12] is None else _strip(row[12])),
+                    completion_digest=(None if row[13] is None else _strip(row[13])),
+                    result_artifact_id=(None if row[14] is None else str(row[14])),
+                    result_artifact_hash=(None if row[15] is None else _strip(row[15])),
+                    completed_revision=(None if row[16] is None else int(row[16])),
+                    latest_attempt=latest,
+                )
+            )
+        return tuple(images)
+
+    def lock_typed_failure_attempts_point_local(
+        self,
+        cursor: SqlExecutor,
+        epoch_id: int,
+    ) -> tuple[PointAttemptRecord, ...]:
+        """Lock every M4 attempt in the frozen job/ordinal/ID suborder."""
+
+        rows = cursor.execute(
+            """
+            SELECT attempt.attempt_id, attempt.job_id,
+                   attempt.execution_spec_hash, attempt.attempt_ordinal,
+                   attempt.lease_token_hash, attempt.attempt_state,
+                   attempt.lease_expires_at
+            FROM groundloop_semantic_job_attempt AS attempt
+            JOIN groundloop_semantic_job AS job ON job.job_id = attempt.job_id
+            WHERE job.epoch_id = %s
+            ORDER BY job.job_id COLLATE "C", attempt.attempt_ordinal,
+                     attempt.attempt_id COLLATE "C"
+            FOR UPDATE OF attempt
+            """,
+            (epoch_id,),
+        ).fetchall()
+        attempts: list[PointAttemptRecord] = []
+        for row in rows:
+            expiry = row[6]
+            if not isinstance(expiry, datetime):
+                raise ValidationError("stored attempt expiry is not a timestamp")
+            attempts.append(
+                PointAttemptRecord(
+                    attempt=JobAttempt(
+                        attempt_id=str(row[0]),
+                        job_id=str(row[1]),
+                        execution_spec_hash=_strip(row[2]),
+                        attempt_ordinal=int(row[3]),
+                        lease_token_hash=_strip(row[4]),
+                    ),
+                    state=str(row[5]),
+                    lease_expires_at=expiry,
+                )
+            )
+        return tuple(attempts)
+
+    def apply_typed_failure_jobs_point_local(
+        self,
+        cursor: SqlExecutor,
+        *,
+        epoch_id: int,
+        expected_revision: int,
+        target_job_id: str | None,
+        target_attempt_id: str | None,
+        cancelled_job_states: tuple[tuple[str, JobState], ...],
+    ) -> None:
+        """Apply only prelocked target/cancellation rows; acquire no new locks."""
+
+        if (target_job_id is None) != (target_attempt_id is None):
+            raise ValidationError(
+                "typed failure target job and attempt must be jointly present"
+            )
+        resulting_revision = expected_revision + 1
+        if target_job_id is not None:
+            assert target_attempt_id is not None
+            attempt_rows = cursor.execute(
+                """
+                UPDATE groundloop_semantic_job_attempt
+                SET attempt_state = 'failed', finished_at = clock_timestamp()
+                WHERE attempt_id = %s AND job_id = %s
+                  AND attempt_state = 'leased'
+                """,
+                (target_attempt_id, target_job_id),
+            ).rowcount
+            if attempt_rows != 1:
+                raise EventConflictError(
+                    "typed failure target attempt changed before apply"
+                )
+            job_rows = cursor.execute(
+                """
+                UPDATE groundloop_semantic_job
+                SET job_state = 'terminal_failed', completed_revision = %s,
+                    completed_at = clock_timestamp()
+                WHERE epoch_id = %s AND job_id = %s AND job_state = 'running'
+                """,
+                (resulting_revision, epoch_id, target_job_id),
+            ).rowcount
+            if job_rows != 1:
+                raise EventConflictError(
+                    "typed failure target job changed before apply"
+                )
+
+        for job_id, prior_state in cancelled_job_states:
+            if prior_state not in {
+                JobState.DECLARED,
+                JobState.RUNNING,
+                JobState.RETRYABLE_FAILED,
+            }:
+                raise ValidationError(
+                    "typed failure cancellation requires an open prior state"
+                )
+            changed = cursor.execute(
+                """
+                UPDATE groundloop_semantic_job
+                SET job_state = 'cancelled', completed_revision = %s,
+                    completed_at = clock_timestamp()
+                WHERE epoch_id = %s AND job_id = %s AND job_state = %s
+                """,
+                (resulting_revision, epoch_id, job_id, prior_state.value),
+            ).rowcount
+            if changed != 1:
+                raise EventConflictError(
+                    "typed failure cancellation set changed before apply"
+                )
+
+    def stage_typed_failure_projection_point_local(
+        self,
+        cursor: SqlExecutor,
+        *,
+        epoch_id: int,
+        expected_revision: int,
+        reason: str,
+    ) -> PointEpochHeader:
+        """Write the prelocked M4 failure projection and sole base CAS."""
+
+        if type(reason) is not str or not reason.strip():
+            raise ValidationError("epoch failure reason must be exact nonempty text")
+        changed = cursor.execute(
+            """
+            UPDATE groundloop_m4_update
+            SET manifest = jsonb_set(
+                manifest,
+                ARRAY[%s, 'failure_reason'],
+                to_jsonb(%s::text),
+                true
+            )
+            WHERE epoch_id = %s
+            """,
+            (_RUNTIME_MANIFEST_KEY, reason, epoch_id),
+        ).rowcount
+        if changed != 1:
+            raise InvalidEventError("failure projection lacks an M4 update")
+        row = cursor.execute(
+            """
+            UPDATE groundloop_epoch
+            SET revision = %s, structural_status = 'failed',
+                semantic_status = 'failed', evaluation_state = 'failed',
+                publication_mode = 'provisional', sealed_at = NULL
+            WHERE epoch_id = %s AND revision = %s
+              AND structural_status = 'committed'
+              AND semantic_status IN ('pending', 'complete')
+              AND evaluation_state IN ('pending', 'complete')
+            RETURNING event_id, revision, open_job_count, open_scope_count
+            """,
+            (expected_revision + 1, epoch_id, expected_revision),
+        ).fetchone()
+        if row is None:
+            raise EventConflictError("stale base epoch revision")
+        return PointEpochHeader(
+            epoch_id=epoch_id,
+            event_id=str(row[0]),
+            revision=int(row[1]),
+            state=RuntimeEpochState.FAILED,
+            open_job_count=int(row[2]),
+            open_scope_count=int(row[3]),
+            failure_reason=reason,
+        )
+
     def read_children_point(
         self,
         epoch_id: int,
@@ -1179,9 +1404,7 @@ class PostgresM4RuntimeStore:
         database_clock_authoritative: bool,
     ) -> PointMutationResult:
         expiry = lease_expires_at or datetime.now(UTC) + timedelta(minutes=5)
-        header = self.read_epoch_header_point(
-            epoch_id, for_update=True, cursor=cursor
-        )
+        header = self.read_epoch_header_point(epoch_id, for_update=True, cursor=cursor)
         job = self.read_job_point(
             epoch_id, attempt.job_id, for_update=True, cursor=cursor
         )
@@ -1383,9 +1606,7 @@ class PostgresM4RuntimeStore:
     ) -> PointMutationResult:
         """Stage one retryable M4 failure in a caller-owned typed transaction."""
 
-        header = self.read_epoch_header_point(
-            epoch_id, for_update=True, cursor=cursor
-        )
+        header = self.read_epoch_header_point(epoch_id, for_update=True, cursor=cursor)
         job = self.read_job_point(epoch_id, job_id, for_update=True, cursor=cursor)
         latest = job.latest_attempt
         if job.state is JobState.RETRYABLE_FAILED:
@@ -1437,9 +1658,7 @@ class PostgresM4RuntimeStore:
     ) -> PointMutationResult:
         """Stage the M4 half of a typed-direct terminal-attempt failure."""
 
-        header = self.read_epoch_header_point(
-            epoch_id, for_update=True, cursor=cursor
-        )
+        header = self.read_epoch_header_point(epoch_id, for_update=True, cursor=cursor)
         job = self.read_job_point(epoch_id, job_id, for_update=True, cursor=cursor)
         latest = job.latest_attempt
         self._require_point_revision(header, expected_revision)
@@ -1515,12 +1734,8 @@ class PostgresM4RuntimeStore:
         """Complete one point-runtime job in the caller's transaction."""
         epoch_id = plan.expected_epoch_id
         job_id = plan.completion.job_id
-        header = self.read_epoch_header_point(
-            epoch_id, for_update=True, cursor=cursor
-        )
-        job = self.read_job_point(
-            epoch_id, job_id, for_update=True, cursor=cursor
-        )
+        header = self.read_epoch_header_point(epoch_id, for_update=True, cursor=cursor)
+        job = self.read_job_point(epoch_id, job_id, for_update=True, cursor=cursor)
         self._validate_point_lease(
             header,
             job,
@@ -1532,9 +1747,7 @@ class PostgresM4RuntimeStore:
             JobState.COMPLETED_ACTIVE,
             JobState.COMPLETED_INACTIVE,
         }:
-            children = self.read_children_point(
-                epoch_id, job_id, cursor=cursor
-            )
+            children = self.read_children_point(epoch_id, job_id, cursor=cursor)
             if self._point_completion_is_replay(job, plan, children):
                 if (
                     job.latest_attempt is None
@@ -1551,9 +1764,7 @@ class PostgresM4RuntimeStore:
         latest = job.latest_attempt
         if latest is None or latest.state != "leased":
             raise EventConflictError("completion attempt is not leased")
-        target_active = self._point_target_is_active(
-            header, job.spec, cursor=cursor
-        )
+        target_active = self._point_target_is_active(header, job.spec, cursor=cursor)
         self._validate_point_completion(
             header,
             job.spec,
@@ -1711,9 +1922,7 @@ class PostgresM4RuntimeStore:
         """Stage only the M4 failure projection in the caller's transaction."""
         if not reason.strip():
             raise ValidationError("epoch failure reason must be non-empty")
-        header = self.read_epoch_header_point(
-            epoch_id, for_update=True, cursor=cursor
-        )
+        header = self.read_epoch_header_point(epoch_id, for_update=True, cursor=cursor)
         if header.state is RuntimeEpochState.FAILED:
             if header.failure_reason == reason:
                 return PointMutationResult(header, None, replayed=True)
@@ -1811,9 +2020,7 @@ class PostgresM4RuntimeStore:
         failure_injector: FailureInjector | None = None,
     ) -> PointMutationResult:
         """Validate direct point-runtime seal readiness without publishing."""
-        header = self.read_epoch_header_point(
-            epoch_id, for_update=True, cursor=cursor
-        )
+        header = self.read_epoch_header_point(epoch_id, for_update=True, cursor=cursor)
         if header.state is RuntimeEpochState.SEALED:
             return PointMutationResult(header, None, replayed=True)
         self._require_point_revision(header, expected_revision)
@@ -2239,9 +2446,7 @@ class PostgresM4RuntimeStore:
                 and chunk_id is not None
                 else None
             ),
-            target_claim_id=(
-                claim_id if kind is JobKind.FRONTIER_RETRIEVE else None
-            ),
+            target_claim_id=(claim_id if kind is JobKind.FRONTIER_RETRIEVE else None),
             target_chunk_version_id=(
                 chunk_id if kind is JobKind.IMPACT_DISCOVERY else None
             ),
@@ -2363,18 +2568,12 @@ class PostgresM4RuntimeStore:
         if completion.payload_hash != spec.payload_hash:
             raise EventConflictError("completion payload differs from job payload")
         if completion.execution_spec_hash != spec.execution_spec_hash:
-            raise EventConflictError(
-                "completion execution identity differs from job"
-            )
+            raise EventConflictError("completion execution identity differs from job")
         expected_state = (
-            JobState.COMPLETED_ACTIVE
-            if target_active
-            else JobState.COMPLETED_INACTIVE
+            JobState.COMPLETED_ACTIVE if target_active else JobState.COMPLETED_INACTIVE
         )
         if completion.terminal_state is not expected_state:
-            raise InvalidEventError(
-                "completion state disagrees with target activity"
-            )
+            raise InvalidEventError("completion state disagrees with target activity")
         closure = completion.child_closure
         child_ids = tuple(child.job_id for child in plan.child_jobs)
         if not spec.expandable:
@@ -2388,9 +2587,7 @@ class PostgresM4RuntimeStore:
                     "expandable completion requires explicit child closure"
                 )
             if closure.child_job_ids != child_ids:
-                raise EventConflictError(
-                    "child closure and declared child set differ"
-                )
+                raise EventConflictError("child closure and declared child set differ")
             expected_closure_digest = stable_m4_digest(
                 "m4-expandable-completion-v1",
                 spec.job_id,
@@ -2416,9 +2613,7 @@ class PostgresM4RuntimeStore:
                 raise ValidationError("child policy differs from parent policy")
             if spec.kind is JobKind.IMPACT_DISCOVERY:
                 if child.pair.chunk_version_id != spec.target_chunk_version_id:
-                    raise ValidationError(
-                        "impact-discovery child escaped chunk scope"
-                    )
+                    raise ValidationError("impact-discovery child escaped chunk scope")
             elif spec.kind is JobKind.FRONTIER_RETRIEVE:
                 if child.pair.claim_id != spec.target_claim_id:
                     raise ValidationError("frontier child escaped claim scope")
@@ -2540,13 +2735,18 @@ class PostgresM4RuntimeStore:
                 raise ValidationError(
                     "all-claims scope must equal the registered claim snapshot"
                 )
-            if snapshot is not None and scope.registered_claim_ids and (
-                len(scope.registered_claim_ids),
-                stable_m4_digest(
-                    "m4-claim-registry-snapshot-v1",
-                    *scope.registered_claim_ids,
-                ),
-            ) != (int(snapshot[0]), _strip(snapshot[1])):
+            if (
+                snapshot is not None
+                and scope.registered_claim_ids
+                and (
+                    len(scope.registered_claim_ids),
+                    stable_m4_digest(
+                        "m4-claim-registry-snapshot-v1",
+                        *scope.registered_claim_ids,
+                    ),
+                )
+                != (int(snapshot[0]), _strip(snapshot[1]))
+            ):
                 raise ValidationError(
                     "all-claims scope differs from the frozen registry snapshot"
                 )

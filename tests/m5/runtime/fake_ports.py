@@ -1270,9 +1270,24 @@ class FakeDirect:
         )
 
     def run_pending_direct(
-        self, epoch_id: int, expected_revision: int, event: M5TypedEventPlan
+        self,
+        epoch_id: int,
+        expected_revision: int,
+        event: M5TypedEventPlan,
+        open_receipt: OpenEventReceipt,
     ) -> M5DirectExecutionReceipt:
         epoch = self.world.epoch(epoch_id)
+        if (
+            type(open_receipt) is not OpenEventReceipt
+            or open_receipt is not epoch.current_open_receipt
+            or open_receipt.epoch_id != epoch_id
+            or open_receipt.already_sealed is not False
+            or open_receipt.publication_id is not None
+            or open_receipt.already_failed is not False
+            or open_receipt.failure_reason is not None
+        ):
+            raise ValidationError("fake direct runner requires its exact held receipt")
+        replace(open_receipt)
         if expected_revision != epoch.revision:
             raise EventConflictError("stale fake direct revision")
         interruptions = self.world.direct_interruptions_by_event.get(
@@ -2214,14 +2229,39 @@ class FakeRuntime:
             self.world.operation_log.append("verifier-complete")
             return receipt
 
-    def fail_typed_epoch_atomically(
+    def fail_typed_epoch_with_open_receipt_atomically(
         self,
         epoch_id: int,
         expected_revision: int,
         failure_reason: M5RunFailureReason,
+        open_receipt: OpenEventReceipt,
         call_work: M5RuntimeWork,
     ) -> M5EventRunResult:
         epoch = self.world.epoch(epoch_id)
+        if (
+            type(epoch_id) is not int
+            or epoch_id < 1
+            or type(expected_revision) is not int
+            or expected_revision < 1
+            or type(failure_reason) is not M5RunFailureReason
+            or failure_reason
+            in {
+                M5RunFailureReason.WORK_IN_PROGRESS,
+                M5RunFailureReason.RETRIEVAL_UNAVAILABLE,
+                M5RunFailureReason.VERIFIER_UNAVAILABLE,
+            }
+            or type(open_receipt) is not OpenEventReceipt
+            or open_receipt is not epoch.current_open_receipt
+            or open_receipt.epoch_id != epoch_id
+            or open_receipt.already_sealed is not False
+            or open_receipt.publication_id is not None
+            or open_receipt.already_failed is not False
+            or open_receipt.failure_reason is not None
+            or type(call_work) is not M5RuntimeWork
+        ):
+            raise ValidationError("fake typed failure inputs are not exact")
+        replace(open_receipt)
+        replace(call_work)
         competing_reason = self.world.failure_mutator_race_reason
         if competing_reason is not None and epoch.terminal_result is None:
             self.world.failure_mutator_race_reason = None
@@ -2295,7 +2335,7 @@ class FakeRuntime:
                 epoch_id=epoch_id,
                 state=M5RunState.FAILED,
                 replayed_outcome=None,
-                open_receipt=epoch.current_open_receipt,
+                open_receipt=open_receipt,
                 publication_receipt=None,
                 event_work=epoch.event_work,
                 call_work=call_work,
@@ -2310,6 +2350,27 @@ class FakeRuntime:
             epoch.terminal_result = result
             self.world.operation_log.append("typed-failed")
             return result
+
+    def fail_typed_epoch_atomically(
+        self,
+        epoch_id: int,
+        expected_revision: int,
+        failure_reason: M5RunFailureReason,
+        call_work: M5RuntimeWork,
+    ) -> M5EventRunResult:
+        """Checked legacy/test compatibility; production uses the held receipt."""
+
+        epoch = self.world.epoch(epoch_id)
+        open_receipt = epoch.current_open_receipt
+        if open_receipt is None:
+            raise ValidationError("fake legacy failure lacks an open receipt")
+        return self.fail_typed_epoch_with_open_receipt_atomically(
+            epoch_id,
+            expected_revision,
+            failure_reason,
+            open_receipt,
+            call_work,
+        )
 
     def request_typed_seal_atomically(
         self,

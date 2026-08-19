@@ -430,6 +430,7 @@ def validate_structural_open_recovery(
     payload_hash: str,
     config: M5RuntimeOperationalConfig,
     root_fallback_required: dict[str, bool],
+    expected_structural_work: M5RuntimeWork | None = None,
 ) -> None:
     """Validate immutable open rows plus the current accumulator hydration."""
 
@@ -521,6 +522,45 @@ def validate_structural_open_recovery(
         or closure != (1, 1, 1)
     ):
         raise EventConflictError("structural-open recovery image differs on replay")
+    if expected_structural_work is not None:
+        if (
+            type(expected_structural_work) is not M5RuntimeWork
+            or any(
+                type(value) is not int
+                for value in expected_structural_work.counter_values()
+            )
+            or type(expected_structural_work.work_digest) is not str
+        ):
+            raise ValidationError("expected structural work is not exact")
+        contribution = cursor.execute(
+            sql.SQL(
+                "SELECT {}, work_digest "
+                "FROM groundloop_m5_runtime_work_contribution "
+                "WHERE epoch_id = %s AND contribution_kind = 'structural_open' "
+                "AND source_id = %s AND source_identity_hash = %s "
+                "AND contribution_key_digest = %s AND applied_revision = 1"
+            ).format(sql.SQL(", ").join(map(sql.Identifier, _WORK_COUNTER_COLUMNS))),
+            (
+                epoch_id,
+                structural_event_id,
+                payload_hash,
+                anchor.contribution_key_digest,
+            ),
+        ).fetchone()
+        if contribution is None:
+            raise EventConflictError("structural-open work contribution is absent")
+        stored_work = M5RuntimeWork(
+            **dict(
+                zip(
+                    _WORK_COUNTER_COLUMNS,
+                    map(int, contribution[:-1]),
+                    strict=True,
+                )
+            ),
+            work_digest=str(contribution[-1]).strip(),
+        )
+        if stored_work != expected_structural_work:
+            raise EventConflictError("structural-open work changed on replay")
 
 
 def _stored_requirement_attempt(row: tuple[Any, ...]) -> StoredRequirementAttempt:
@@ -1218,7 +1258,11 @@ def _work_from_row(row: tuple[Any, ...], *, digest_index: int) -> M5RuntimeWork:
 
 
 def _lock_work_accumulator(
-    cursor: Cursor[Any], *, epoch_id: int, expected_revision: int
+    cursor: Cursor[Any],
+    *,
+    epoch_id: int,
+    expected_revision: int,
+    terminalized: bool = False,
 ) -> M5RuntimeWork:
     columns = ", ".join(_WORK_COUNTER_COLUMNS)
     row = cursor.execute(
@@ -1234,8 +1278,11 @@ def _lock_work_accumulator(
         raise ValidationError("typed M5 epoch lacks its work accumulator")
     work_end = len(_WORK_COUNTER_COLUMNS)
     work = _work_from_row(tuple(row), digest_index=work_end)
-    if int(row[work_end + 1]) != expected_revision or bool(row[work_end + 2]):
-        raise ValidationError("M5 work accumulator is not at the active revision")
+    if (
+        int(row[work_end + 1]) != expected_revision
+        or bool(row[work_end + 2]) is not terminalized
+    ):
+        raise ValidationError("M5 work accumulator is not at the required revision")
     return work
 
 
@@ -1838,6 +1885,44 @@ def start_event_accounting(
         cursor, epoch_id=epoch_id, expected_revision=expected_revision
     )
     _resolve_pending_anchor(cursor, epoch_id=epoch_id, accumulator=timing)
+    return EventAccountingStart(work, timing)
+
+
+def lock_epoch_failure_accounting(
+    cursor: Cursor[Any],
+    *,
+    epoch_id: int,
+    expected_revision: int,
+    terminal_replay: bool = False,
+) -> EventAccountingStart:
+    """Lock failure accumulators without resolving the pending anchor yet.
+
+    C7's cooperative failure transaction must acquire every M4/M5 detail lock
+    before its first write. ``start_event_accounting`` remains the ordinary
+    transition helper and may materialize a missing prior timing point. This
+    failure-only variant deliberately returns the exact locked images without
+    performing that insertion; the fused terminal finalizer resolves the prior
+    point after the complete lock plan has validated.
+    """
+
+    if type(terminal_replay) is not bool:
+        raise ValidationError("terminal_replay must be an exact boolean")
+    work = _lock_work_accumulator(
+        cursor,
+        epoch_id=epoch_id,
+        expected_revision=expected_revision,
+        terminalized=terminal_replay,
+    )
+    timing = _lock_timing_accumulator(
+        cursor,
+        epoch_id=epoch_id,
+        expected_revision=expected_revision,
+        allow_terminal=terminal_replay,
+    )
+    if timing.terminalized is not terminal_replay:
+        raise ValidationError("M5 timing accumulator terminal shape is inconsistent")
+    if terminal_replay and timing.has_pending_anchor:
+        raise ValidationError("terminal timing accumulator retains a pending anchor")
     return EventAccountingStart(work, timing)
 
 
@@ -2509,10 +2594,13 @@ def finish_epoch_failure_timing_accounting(
     expected_revision: int,
     start: EventAccountingStart,
     anchor: M5TransitionTimingAnchor,
+    attempt_observation: M5RuntimeTimingObservation | None = None,
 ) -> tuple[M5RuntimeTiming, M5RuntimeTimingCoverage]:
-    """Freeze failure timing with the terminal point immediately missing."""
+    """Fuse an optional direct attempt and terminal missing point in one CAS."""
 
     resulting_revision = expected_revision + 1
+    if type(start) is not EventAccountingStart:
+        raise ValidationError("epoch-failure accounting start has another type")
     if (
         anchor.epoch_id != epoch_id
         or anchor.contribution_kind is not M5RuntimeWorkContributionKind.EPOCH_FAILURE
@@ -2520,29 +2608,128 @@ def finish_epoch_failure_timing_accounting(
         or not anchor.terminal_transition
     ):
         raise ValidationError("epoch-failure timing anchor is inconsistent")
+
+    if attempt_observation is not None:
+        if type(attempt_observation) is not M5RuntimeTimingObservation:
+            raise ValidationError("direct attempt timing has another observation type")
+        supplied_timing = attempt_observation.timing
+        if supplied_timing is not None and type(supplied_timing) is not M5RuntimeTiming:
+            raise ValidationError("direct attempt timing has another timing type")
+        rebuilt_timing = (
+            None
+            if supplied_timing is None
+            else M5RuntimeTiming(
+                coordinator_non_db_non_neural_ns=(
+                    supplied_timing.coordinator_non_db_non_neural_ns
+                ),
+                neural_wall_ns=supplied_timing.neural_wall_ns,
+                postgres_roundtrip_wall_ns=supplied_timing.postgres_roundtrip_wall_ns,
+                external_io_wall_ns=supplied_timing.external_io_wall_ns,
+                end_to_end_wall_ns=supplied_timing.end_to_end_wall_ns,
+                postgres_server_execution_ns=(
+                    supplied_timing.postgres_server_execution_ns
+                ),
+                postgres_lock_wait_ns=supplied_timing.postgres_lock_wait_ns,
+                postgres_wal_bytes=supplied_timing.postgres_wal_bytes,
+                postgres_shared_block_reads=(
+                    supplied_timing.postgres_shared_block_reads
+                ),
+            )
+        )
+        rebuilt_observation = M5RuntimeTimingObservation(
+            required_interval_observed=(attempt_observation.required_interval_observed),
+            timing=rebuilt_timing,
+            observation_digest=attempt_observation.observation_digest,
+        )
+        if rebuilt_observation != attempt_observation:
+            raise ValidationError("direct attempt timing reconstruction changed")
+    else:
+        rebuilt_observation = None
+
+    # The failure-only planning path already holds the timing row. Resolve the
+    # prior pending point here, after all cooperative lock plans have validated.
+    _resolve_pending_anchor(cursor, epoch_id=epoch_id, accumulator=start.timing)
     prior_missing = int(start.timing.has_pending_anchor)
+    attempt_count = int(rebuilt_observation is not None)
+    attempt_timing = None if rebuilt_observation is None else rebuilt_observation.timing
+    required_observed = int(attempt_timing is not None)
+    required_missing = attempt_count - required_observed
+
+    def optional(value: int | None) -> tuple[int, int]:
+        observed = int(attempt_timing is not None and value is not None)
+        return observed, attempt_count - observed
+
+    server_observed, server_missing = optional(
+        None if attempt_timing is None else attempt_timing.postgres_server_execution_ns
+    )
+    lock_observed, lock_missing = optional(
+        None if attempt_timing is None else attempt_timing.postgres_lock_wait_ns
+    )
+    wal_observed, wal_missing = optional(
+        None if attempt_timing is None else attempt_timing.postgres_wal_bytes
+    )
+    blocks_observed, blocks_missing = optional(
+        None if attempt_timing is None else attempt_timing.postgres_shared_block_reads
+    )
+    timing_values = (
+        (0,) * len(_TIMING_SUM_COLUMNS)
+        if attempt_timing is None
+        else tuple(
+            0 if value is None else value
+            for value in (
+                attempt_timing.coordinator_non_db_non_neural_ns,
+                attempt_timing.neural_wall_ns,
+                attempt_timing.postgres_roundtrip_wall_ns,
+                attempt_timing.external_io_wall_ns,
+                attempt_timing.end_to_end_wall_ns,
+                attempt_timing.postgres_server_execution_ns,
+                attempt_timing.postgres_lock_wait_ns,
+                attempt_timing.postgres_wal_bytes,
+                attempt_timing.postgres_shared_block_reads,
+            )
+        )
+    )
     returned_columns = ", ".join((*_TIMING_SUM_COLUMNS, *_TIMING_COVERAGE_COLUMNS))
     row = cursor.execute(
         f"""
         UPDATE groundloop_m5_runtime_timing_accumulator
-        SET required_expected_count = required_expected_count + 1,
-            required_missing_count = required_missing_count + %s + 1,
+        SET coordinator_non_db_non_neural_ns =
+                coordinator_non_db_non_neural_ns + %s,
+            neural_wall_ns = neural_wall_ns + %s,
+            postgres_roundtrip_wall_ns = postgres_roundtrip_wall_ns + %s,
+            external_io_wall_ns = external_io_wall_ns + %s,
+            end_to_end_wall_ns = end_to_end_wall_ns + %s,
+            postgres_server_execution_ns = postgres_server_execution_ns + %s,
+            postgres_lock_wait_ns = postgres_lock_wait_ns + %s,
+            postgres_wal_bytes = postgres_wal_bytes + %s,
+            postgres_shared_block_reads = postgres_shared_block_reads + %s,
+            required_expected_count = required_expected_count + %s + 1,
+            required_observed_count = required_observed_count + %s,
+            required_missing_count = required_missing_count + %s + %s + 1,
             postgres_server_execution_expected_count =
-                postgres_server_execution_expected_count + 1,
+                postgres_server_execution_expected_count + %s + 1,
+            postgres_server_execution_observed_count =
+                postgres_server_execution_observed_count + %s,
             postgres_server_execution_missing_count =
-                postgres_server_execution_missing_count + %s + 1,
+                postgres_server_execution_missing_count + %s + %s + 1,
             postgres_lock_wait_expected_count =
-                postgres_lock_wait_expected_count + 1,
+                postgres_lock_wait_expected_count + %s + 1,
+            postgres_lock_wait_observed_count =
+                postgres_lock_wait_observed_count + %s,
             postgres_lock_wait_missing_count =
-                postgres_lock_wait_missing_count + %s + 1,
+                postgres_lock_wait_missing_count + %s + %s + 1,
             postgres_wal_bytes_expected_count =
-                postgres_wal_bytes_expected_count + 1,
+                postgres_wal_bytes_expected_count + %s + 1,
+            postgres_wal_bytes_observed_count =
+                postgres_wal_bytes_observed_count + %s,
             postgres_wal_bytes_missing_count =
-                postgres_wal_bytes_missing_count + %s + 1,
+                postgres_wal_bytes_missing_count + %s + %s + 1,
             postgres_shared_block_reads_expected_count =
-                postgres_shared_block_reads_expected_count + 1,
+                postgres_shared_block_reads_expected_count + %s + 1,
+            postgres_shared_block_reads_observed_count =
+                postgres_shared_block_reads_observed_count + %s,
             postgres_shared_block_reads_missing_count =
-                postgres_shared_block_reads_missing_count + %s + 1,
+                postgres_shared_block_reads_missing_count + %s + %s + 1,
             pending_contribution_kind = NULL,
             pending_source_id = NULL,
             pending_contribution_key_digest = NULL,
@@ -2556,10 +2743,26 @@ def finish_epoch_failure_timing_accounting(
                   pending_contribution_key_digest, pending_anchor_revision
         """,
         (
+            *timing_values,
+            attempt_count,
+            required_observed,
+            required_missing,
             prior_missing,
+            attempt_count,
+            server_observed,
+            server_missing,
             prior_missing,
+            attempt_count,
+            lock_observed,
+            lock_missing,
             prior_missing,
+            attempt_count,
+            wal_observed,
+            wal_missing,
             prior_missing,
+            attempt_count,
+            blocks_observed,
+            blocks_missing,
             prior_missing,
             resulting_revision,
             epoch_id,

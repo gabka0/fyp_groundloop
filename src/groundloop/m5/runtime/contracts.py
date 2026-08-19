@@ -8,7 +8,7 @@ coordination.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from datetime import datetime
 from enum import StrEnum
 from typing import Protocol
@@ -66,6 +66,9 @@ from groundloop.m4.contracts import (
 )
 from groundloop.m4.contracts import (
     LogicalJobSpec as M4LogicalJobSpec,
+)
+from groundloop.m4.contracts import (
+    PairKey as M4PairKey,
 )
 from groundloop.m4.contracts import (
     VectorIndexKind,
@@ -5468,6 +5471,188 @@ class M5TypedDirectJobLease:
             )
 
 
+@dataclass(frozen=True, slots=True)
+class M5TypedDirectAcquisitionReceipt:
+    """Exact M4 job/attempt image returned by one typed-direct acquisition."""
+
+    epoch_id: int
+    job: M4LogicalJobSpec
+    lease: M5TypedDirectJobLease
+    attempt: M4JobAttempt | None
+
+    def __post_init__(self) -> None:
+        if type(self.epoch_id) is not int or self.epoch_id < 1:
+            raise ValidationError(
+                "typed-direct acquisition epoch must be exact positive int"
+            )
+        self._validate_exact_job(self.job)
+        self._validate_exact_lease(self.lease)
+        if self.job.job_id != self.lease.job_id:
+            raise ValidationError(
+                "typed-direct acquisition job and lease identities disagree"
+            )
+
+        if (self.attempt is None) != (self.lease.attempt_id is None):
+            raise ValidationError(
+                "typed-direct acquisition attempt presence disagrees with lease"
+            )
+        if self.attempt is None:
+            return
+        if type(self.attempt) is not M4JobAttempt:
+            raise ValidationError(
+                "typed-direct acquisition attempt must be exact JobAttempt"
+            )
+        for name in (
+            "attempt_id",
+            "job_id",
+            "execution_spec_hash",
+            "lease_token_hash",
+        ):
+            if type(getattr(self.attempt, name)) is not str:
+                raise ValidationError(
+                    f"typed-direct acquisition attempt {name} must be exact text"
+                )
+        if (
+            type(self.attempt.attempt_ordinal) is not int
+            or self.attempt.attempt_ordinal < 1
+        ):
+            raise ValidationError(
+                "typed-direct acquisition attempt ordinal must be exact positive int"
+            )
+        replace(self.attempt)
+        if (
+            self.attempt.attempt_id != self.lease.attempt_id
+            or self.attempt.job_id != self.job.job_id
+            or self.attempt.job_id != self.lease.job_id
+            or self.attempt.execution_spec_hash != self.job.execution_spec_hash
+            or self.attempt.lease_token_hash != self.lease.lease_token_hash
+        ):
+            raise ValidationError(
+                "typed-direct acquisition attempt binding disagrees with job or lease"
+            )
+        expected_attempt_id = stable_m4_digest(
+            "m4-job-attempt-v1",
+            self.job.job_id,
+            str(self.attempt.attempt_ordinal),
+        )
+        expected_token_hash = stable_m4_digest(
+            "m4-lease-token-v1",
+            self.job.job_id,
+            str(self.attempt.attempt_ordinal),
+        )
+        if self.attempt.attempt_id != expected_attempt_id:
+            raise ValidationError(
+                "typed-direct attempt ID changed the stable M4 recipe"
+            )
+        if self.attempt.lease_token_hash != expected_token_hash:
+            raise ValidationError(
+                "typed-direct lease token changed the stable M4 recipe"
+            )
+
+    @staticmethod
+    def _validate_exact_job(job: M4LogicalJobSpec) -> None:
+        if type(job) is not M4LogicalJobSpec:
+            raise ValidationError(
+                "typed-direct acquisition job must be exact LogicalJobSpec"
+            )
+        for name in (
+            "job_id",
+            "event_id",
+            "candidate_policy_id",
+            "payload_hash",
+            "execution_spec_hash",
+        ):
+            if type(getattr(job, name)) is not str:
+                raise ValidationError(
+                    f"typed-direct acquisition job {name} must be exact text"
+                )
+        if type(job.kind) is not M4JobKind or type(job.expandable) is not bool:
+            raise ValidationError(
+                "typed-direct acquisition job kind/expandable fields are not exact"
+            )
+        for name in (
+            "parent_job_id",
+            "target_claim_id",
+            "target_chunk_version_id",
+        ):
+            value = getattr(job, name)
+            if value is not None and type(value) is not str:
+                raise ValidationError(
+                    f"typed-direct acquisition job {name} must be exact text or None"
+                )
+        if job.pair is not None:
+            if type(job.pair) is not M4PairKey:
+                raise ValidationError(
+                    "typed-direct acquisition job pair must be exact PairKey"
+                )
+            if (
+                type(job.pair.claim_id) is not str
+                or type(job.pair.chunk_version_id) is not str
+            ):
+                raise ValidationError(
+                    "typed-direct acquisition job pair fields must be exact text"
+                )
+            replace(job.pair)
+        replace(job)
+
+    @staticmethod
+    def _validate_exact_lease(lease: M5TypedDirectJobLease) -> None:
+        if type(lease) is not M5TypedDirectJobLease:
+            raise ValidationError(
+                "typed-direct acquisition lease must be exact M5TypedDirectJobLease"
+            )
+        if type(lease.job_id) is not str:
+            raise ValidationError("typed-direct acquisition lease job ID is not exact")
+        for name in ("attempt_id", "lease_token_hash", "dispatch_record_digest"):
+            value = getattr(lease, name)
+            if value is not None and type(value) is not str:
+                raise ValidationError(
+                    f"typed-direct acquisition lease {name} must be exact text or None"
+                )
+        if (
+            lease.lease_expires_at is not None
+            and type(lease.lease_expires_at) is not datetime
+        ):
+            raise ValidationError(
+                "typed-direct acquisition deadline must be exact datetime or None"
+            )
+        if (
+            type(lease.resulting_revision) is not int
+            or lease.resulting_revision < 1
+            or type(lease.disposition) is not M5AcquisitionDisposition
+            or type(lease.should_execute) is not bool
+            or type(lease.exact_replay) is not bool
+            or type(lease.already_completed) is not bool
+        ):
+            raise ValidationError(
+                "typed-direct acquisition lease contains nonexact primitives"
+            )
+        if lease.terminal_projection is not None:
+            projection = lease.terminal_projection
+            if type(projection) is not M5TypedDirectTerminalProjection:
+                raise ValidationError(
+                    "typed-direct terminal projection must have its exact type"
+                )
+            if (
+                type(projection.terminal_state) is not M4JobState
+                or (
+                    projection.terminal_reason is not None
+                    and type(projection.terminal_reason) is not str
+                )
+                or (
+                    projection.m4_completion_digest is not None
+                    and type(projection.m4_completion_digest) is not str
+                )
+                or type(projection.completed_revision) is not int
+                or type(projection.terminal_identity_hash) is not str
+            ):
+                raise ValidationError(
+                    "typed-direct terminal projection contains nonexact primitives"
+                )
+            replace(projection)
+        replace(lease)
+
+
 _REQUIREMENT_POSTTERMINAL_RETURN_DISPOSITIONS = frozenset(
     {
         M5RequirementReturnDisposition.EXPIRED_POSTTERMINAL,
@@ -5707,6 +5892,243 @@ class M5DirectCursorContributionReceipt:
             raise ValidationError(
                 "observation_completion must be the unchanged M4 receipt or None"
             )
+
+
+@dataclass(frozen=True, slots=True)
+class M5CheckedDirectTerminalFailureReceipt:
+    """Checked result of the fused direct-attempt and typed-epoch failure."""
+
+    direct_failure: M5DirectCursorContributionReceipt
+    requested_failure_reason: M5RunFailureReason
+    resulting_revision: int
+    terminal_result: M5EventRunResult
+
+    def __post_init__(self) -> None:
+        if type(self.direct_failure) is not M5DirectCursorContributionReceipt:
+            raise ValidationError(
+                "checked direct failure requires an exact cursor receipt"
+            )
+        if type(self.requested_failure_reason) is not M5RunFailureReason:
+            raise ValidationError(
+                "checked direct failure reason must be exact M5RunFailureReason"
+            )
+        if self.requested_failure_reason in {
+            M5RunFailureReason.WORK_IN_PROGRESS,
+            M5RunFailureReason.RETRIEVAL_UNAVAILABLE,
+            M5RunFailureReason.VERIFIER_UNAVAILABLE,
+        }:
+            raise ValidationError("checked direct failure reason must be terminal")
+        if type(self.resulting_revision) is not int or self.resulting_revision < 1:
+            raise ValidationError(
+                "checked direct failure revision must be exact positive int"
+            )
+        if type(self.terminal_result) is not M5EventRunResult:
+            raise ValidationError(
+                "checked direct failure result must be exact M5EventRunResult"
+            )
+        if type(self.terminal_result.open_receipt) is not OpenEventReceipt:
+            raise ValidationError(
+                "checked direct failure result requires an exact open receipt"
+            )
+        if type(self.direct_failure.epoch_id) is not int:
+            raise ValidationError(
+                "checked direct failure cursor epoch must be exact int"
+            )
+        for name in (
+            "job_id",
+            "attempt_id",
+            "execution_evidence_digest",
+            "attempt_execution_contribution_key_digest",
+        ):
+            if type(getattr(self.direct_failure, name)) is not str:
+                raise ValidationError(
+                    f"checked direct failure cursor {name} must be exact text"
+                )
+        replace(self.direct_failure)
+        self._validate_exact_terminal_result(self.terminal_result)
+
+        if self.terminal_result.epoch_id != self.direct_failure.epoch_id:
+            raise ValidationError(
+                "checked direct failure result belongs to another epoch"
+            )
+        if self.terminal_result.failure_reason is not self.requested_failure_reason:
+            raise ValidationError(
+                "checked direct failure result changed the requested reason"
+            )
+        if any(
+            value is not None
+            for value in (
+                self.direct_failure.direct_transition_source_id,
+                self.direct_failure.direct_transition_source_identity_hash,
+                self.direct_failure.direct_transition_contribution_key_digest,
+                self.direct_failure.observation_completion,
+            )
+        ):
+            raise ValidationError(
+                "checked direct failure cannot carry a direct-transition receipt"
+            )
+
+        result = self.terminal_result
+        if result.state is M5RunState.FAILED:
+            if result.replayed_outcome is not None:
+                raise ValidationError(
+                    "first checked direct failure cannot carry a replayed outcome"
+                )
+            return
+        if (
+            result.state is M5RunState.REPLAYED
+            and result.replayed_outcome is M5ReplayedOutcome.FAILED
+            and result.call_work.is_zero
+            and result.open_receipt.replayed is True
+            and result.open_receipt.already_failed is True
+            and result.open_receipt.failure_reason
+            == self.requested_failure_reason.value
+            and result.open_receipt.already_sealed is False
+            and result.open_receipt.publication_id is None
+        ):
+            return
+        raise ValidationError(
+            "checked direct failure result must be first FAILED or canonical replay"
+        )
+
+    @staticmethod
+    def _validate_exact_terminal_result(result: M5EventRunResult) -> None:
+        for name in ("event_id", "payload_hash"):
+            if type(getattr(result, name)) is not str:
+                raise ValidationError(
+                    f"checked direct failure result {name} must be exact text"
+                )
+        if (
+            type(result.epoch_id) is not int
+            or type(result.state) is not M5RunState
+            or (
+                result.replayed_outcome is not None
+                and type(result.replayed_outcome) is not M5ReplayedOutcome
+            )
+            or (
+                result.failure_reason is not None
+                and type(result.failure_reason) is not M5RunFailureReason
+            )
+            or (
+                result.logical_result_hash is not None
+                and type(result.logical_result_hash) is not str
+            )
+        ):
+            raise ValidationError(
+                "checked direct failure result contains nonexact primitives"
+            )
+        opened = result.open_receipt
+        if (
+            type(opened.epoch_id) is not int
+            or type(opened.replayed) is not bool
+            or type(opened.already_sealed) is not bool
+            or type(opened.already_failed) is not bool
+            or (
+                opened.publication_id is not None
+                and type(opened.publication_id) is not str
+            )
+            or (
+                opened.failure_reason is not None
+                and type(opened.failure_reason) is not str
+            )
+        ):
+            raise ValidationError(
+                "checked direct failure open receipt contains nonexact primitives"
+            )
+        replace(opened)
+        if result.publication_receipt is not None:
+            publication = result.publication_receipt
+            if type(publication) is not PublicationReceipt:
+                raise ValidationError(
+                    "checked direct failure publication receipt is not exact"
+                )
+            replace(publication)
+        for name in ("event_work", "call_work"):
+            work = getattr(result, name)
+            if type(work) is not M5RuntimeWork:
+                raise ValidationError(
+                    f"checked direct failure {name} must be exact M5RuntimeWork"
+                )
+            if any(type(value) is not int for value in work.counter_values()):
+                raise ValidationError(
+                    f"checked direct failure {name} counters must be exact ints"
+                )
+            if type(work.work_digest) is not str:
+                raise ValidationError(
+                    f"checked direct failure {name} digest must be exact text"
+                )
+            replace(work)
+        for name in ("event_timing", "call_timing"):
+            timing = getattr(result, name)
+            if type(timing) is not M5RuntimeTiming:
+                raise ValidationError(
+                    f"checked direct failure {name} must be exact M5RuntimeTiming"
+                )
+            for timing_field in fields(M5RuntimeTiming):
+                value = getattr(timing, timing_field.name)
+                if value is not None and type(value) is not int:
+                    raise ValidationError(
+                        f"checked direct failure {name} fields must be exact ints"
+                    )
+            replace(timing)
+        if type(result.combined_deltas) is not tuple:
+            raise ValidationError(
+                "checked direct failure combined_deltas must be exact tuple"
+            )
+        for delta in result.combined_deltas:
+            if type(delta) is not StatusDelta or any(
+                type(getattr(delta, name)) is not str
+                for name in (
+                    "event_id",
+                    "object_type",
+                    "object_id",
+                    "old_status",
+                    "new_status",
+                    "reason",
+                )
+            ):
+                raise ValidationError(
+                    "checked direct failure deltas must have exact nested types"
+                )
+            replace(delta)
+        if type(result.changed_state_references) is not tuple:
+            raise ValidationError(
+                "checked direct failure changed_state_references must be exact tuple"
+            )
+        for reference in result.changed_state_references:
+            if (
+                type(reference) is not M5ChangedStateReference
+                or type(reference.kind) is not M5StateReferenceKind
+                or type(reference.object_id) is not str
+                or type(reference.epoch_id) is not int
+                or type(reference.revision) is not int
+                or type(reference.state_artifact_hash) is not str
+                or type(reference.reference_digest) is not str
+            ):
+                raise ValidationError(
+                    "checked direct failure state references require exact nested types"
+                )
+            replace(reference)
+        for name in ("event_timing_coverage", "call_timing_coverage"):
+            coverage = getattr(result, name)
+            if coverage is not None:
+                if type(coverage) is not M5RuntimeTimingCoverage:
+                    raise ValidationError(
+                        f"checked direct failure {name} must have exact type"
+                    )
+                for coverage_field in fields(M5RuntimeTimingCoverage):
+                    value = getattr(coverage, coverage_field.name)
+                    expected_type = (
+                        bool
+                        if coverage_field.name == "terminal_client_roundtrip_included"
+                        else int
+                    )
+                    if type(value) is not expected_type:
+                        raise ValidationError(
+                            f"checked direct failure {name} fields are not exact"
+                        )
+                replace(coverage)
+        replace(result)
 
 
 @dataclass(frozen=True, slots=True)
@@ -6181,6 +6603,7 @@ __all__ = [
     "M5CancellationReceipt",
     "M5CandidatePolicyManifest",
     "M5ChangedStateReference",
+    "M5CheckedDirectTerminalFailureReceipt",
     "M5DiscoveryDirection",
     "M5DiscoveryScopeContract",
     "M5DirectAttemptReturnReceipt",
@@ -6233,6 +6656,7 @@ __all__ = [
     "M5TerminalReason",
     "M5TextNormalizerProvenance",
     "M5TypedApplication",
+    "M5TypedDirectAcquisitionReceipt",
     "M5TypedDirectJobLease",
     "M5TypedDirectLateReturnEnvelope",
     "M5TypedDirectReturnKind",

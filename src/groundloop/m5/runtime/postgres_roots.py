@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import struct
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, fields, is_dataclass
+from datetime import date, datetime, time, timedelta
+from enum import Enum
 from typing import Any
 
 from psycopg import Cursor
@@ -79,6 +81,7 @@ from groundloop.m5.runtime.postgres_recovery import (
     finish_requirement_execution_accounting,
     finish_root_barrier_accounting,
     load_requirement_dispatch,
+    lock_epoch_failure_accounting,
     persist_cancellation_contribution,
     persist_postterminal_requirement_accounting,
     persist_preterminal_late_return_contribution,
@@ -207,6 +210,216 @@ class M5EpochFailureRequirementClosure:
     open_work_count: int
     open_scope_count: int
     blocking_failure_count: int
+    _authority: _EpochFailurePlanAuthority
+
+
+def _epoch_failure_transaction_identity(cursor: Cursor[Any]) -> str:
+    """Return the exact PostgreSQL transaction owning one failure plan chain."""
+
+    row = cursor.execute("SELECT pg_current_xact_id()::text").fetchone()
+    if row is None or type(row[0]) is not str or not row[0]:
+        raise ValidationError("epoch failure requires a live PostgreSQL transaction")
+    return row[0]
+
+
+class _EpochFailurePlanAuthority:
+    """Identity-and-byte capability binding one plan chain to its live cursor."""
+
+    __slots__ = (
+        "applied",
+        "cursor",
+        "detail_snapshot",
+        "details",
+        "job_snapshot",
+        "jobs",
+        "scope_snapshot",
+        "scopes",
+        "transaction_identity",
+    )
+
+    def __init__(self, cursor: Cursor[Any]) -> None:
+        self.cursor = cursor
+        self.transaction_identity = _epoch_failure_transaction_identity(cursor)
+        self.scopes: M5EpochFailureScopeLocks | None = None
+        self.scope_snapshot: tuple[Any, ...] | None = None
+        self.jobs: M5EpochFailureJobLocks | None = None
+        self.job_snapshot: tuple[Any, ...] | None = None
+        self.details: M5EpochFailureLockedPlan | None = None
+        self.detail_snapshot: tuple[Any, ...] | None = None
+        self.applied = False
+
+
+@dataclass(frozen=True, slots=True)
+class M5EpochFailureScopeLocks:
+    """Exact tier-8 scope/snapshot image issued under an outer prefix lock."""
+
+    header: _EpochHeader
+    expected_revision: int
+    terminal_replay: bool
+    manifest: M5CandidatePolicyManifest
+    scopes: tuple[_StoredScope, ...]
+    _authority: _EpochFailurePlanAuthority
+
+
+@dataclass(frozen=True, slots=True)
+class M5EpochFailureJobLocks:
+    """Complete C-byte-ordered tier-9 requirement-job image."""
+
+    scope_locks: M5EpochFailureScopeLocks
+    jobs: tuple[_StoredJob, ...]
+    _authority: _EpochFailurePlanAuthority
+
+
+@dataclass(frozen=True, slots=True)
+class M5EpochFailureLockedPlan:
+    """Complete read-only M5 detail plan consumed once by the write phase."""
+
+    job_locks: M5EpochFailureJobLocks
+    attempts: tuple[_StoredAttempt, ...]
+    selected_jobs: tuple[_StoredJob, ...]
+    selected_scopes: tuple[_StoredScope, ...]
+    terminal_failed_count: int
+    accounting_start: EventAccountingStart
+    cancellation_plan: M5CancellationPlan | None
+    cancellation_work: M5RuntimeWork
+    settled_at: datetime | None
+    completions: tuple[tuple[str, M5JobCompletion], ...]
+    owner_deltas: tuple[_PendingDelta, ...]
+    answer_deltas: tuple[_PendingDelta, ...]
+    pending_counter_row_counts: tuple[int, int]
+    terminal_replay: bool
+    _authority: _EpochFailurePlanAuthority
+
+
+def _authority_type_tag(value: object) -> str:
+    value_type = type(value)
+    return f"{value_type.__module__}.{value_type.__qualname__}"
+
+
+def _authority_primitive_snapshot(value: object) -> tuple[Any, ...]:
+    """Freeze one authority value into exact, recursively primitive bytes.
+
+    Frozen dataclasses can still be changed through ``object.__setattr__``.
+    Authority comparisons therefore cannot retain aliases to any issued value,
+    including nested dataclasses or containers.  Capability fields are captured
+    by exact type and identity without traversing their cursor-bearing cycles.
+    """
+
+    if value is None:
+        return ("none",)
+    value_type = type(value)
+    type_tag = _authority_type_tag(value)
+    if isinstance(value, Enum):
+        return ("enum", type_tag, _authority_primitive_snapshot(value.value))
+    if value_type is bool:
+        return ("bool", value)
+    if value_type is int:
+        return ("int", value)
+    if value_type is str:
+        return ("str", value)
+    if value_type is bytes:
+        assert isinstance(value, bytes)
+        return ("bytes", value.hex())
+    if value_type is float:
+        assert isinstance(value, float)
+        return ("float", struct.pack(">d", value).hex())
+    if value_type is datetime:
+        assert isinstance(value, datetime)
+        offset = value.utcoffset()
+        return (
+            "datetime",
+            value.isoformat(timespec="microseconds"),
+            value.fold,
+            None if offset is None else offset.days,
+            None if offset is None else offset.seconds,
+            None if offset is None else offset.microseconds,
+            None if value.tzinfo is None else _authority_type_tag(value.tzinfo),
+        )
+    if value_type is date:
+        assert isinstance(value, date)
+        return ("date", value.isoformat())
+    if value_type is time:
+        assert isinstance(value, time)
+        offset = value.utcoffset()
+        return (
+            "time",
+            value.isoformat(timespec="microseconds"),
+            value.fold,
+            None if offset is None else offset.days,
+            None if offset is None else offset.seconds,
+            None if offset is None else offset.microseconds,
+            None if value.tzinfo is None else _authority_type_tag(value.tzinfo),
+        )
+    if value_type is timedelta:
+        assert isinstance(value, timedelta)
+        return ("timedelta", value.days, value.seconds, value.microseconds)
+    if value_type is tuple:
+        assert isinstance(value, tuple)
+        return (
+            "tuple",
+            tuple(_authority_primitive_snapshot(item) for item in value),
+        )
+    if value_type is list:
+        assert isinstance(value, list)
+        return (
+            "list",
+            tuple(_authority_primitive_snapshot(item) for item in value),
+        )
+    if value_type is dict:
+        assert isinstance(value, dict)
+        pair_snapshots = (
+            (
+                _authority_primitive_snapshot(key),
+                _authority_primitive_snapshot(item),
+            )
+            for key, item in value.items()
+        )
+        pairs = tuple(sorted(pair_snapshots, key=lambda pair: repr(pair[0])))
+        return ("dict", pairs)
+    if value_type in {set, frozenset}:
+        assert isinstance(value, (set, frozenset))
+        members = tuple(
+            sorted(
+                (_authority_primitive_snapshot(item) for item in value),
+                key=repr,
+            )
+        )
+        return ("set" if value_type is set else "frozenset", members)
+    if is_dataclass(value) and not isinstance(value, type):
+        field_values: list[tuple[str, tuple[Any, ...]]] = []
+        for descriptor in fields(value):
+            field_value = getattr(value, descriptor.name)
+            if descriptor.name == "_authority":
+                field_snapshot = (
+                    "capability",
+                    _authority_type_tag(field_value),
+                    id(field_value),
+                )
+            else:
+                field_snapshot = _authority_primitive_snapshot(field_value)
+            field_values.append((descriptor.name, field_snapshot))
+        return ("dataclass", type_tag, tuple(field_values))
+    raise ValidationError(
+        f"authority snapshot contains unsupported exact type {type_tag}"
+    )
+
+
+def _scope_lock_snapshot(locks: M5EpochFailureScopeLocks) -> tuple[Any, ...]:
+    if type(locks) is not M5EpochFailureScopeLocks:
+        raise ValidationError("epoch-failure scope locks have another type")
+    return _authority_primitive_snapshot(locks)
+
+
+def _job_lock_snapshot(locks: M5EpochFailureJobLocks) -> tuple[Any, ...]:
+    if type(locks) is not M5EpochFailureJobLocks:
+        raise ValidationError("epoch-failure job locks have another type")
+    return _authority_primitive_snapshot(locks)
+
+
+def _detail_plan_snapshot(plan: M5EpochFailureLockedPlan) -> tuple[Any, ...]:
+    if type(plan) is not M5EpochFailureLockedPlan:
+        raise ValidationError("epoch-failure detail plan has another type")
+    return _authority_primitive_snapshot(plan)
 
 
 def _inject(injector: RuntimeRootFailureInjector | None, point: str) -> None:
@@ -1934,12 +2147,24 @@ def _apply_cancellation_pending_deltas(
     resulting_revision: int,
     owner_deltas: tuple[_PendingDelta, ...],
     answer_deltas: tuple[_PendingDelta, ...],
+    locked_row_counts: tuple[int, int] | None = None,
 ) -> None:
     """CAS the selected owner/answer units, then advance every cutoff."""
 
-    owner_row_count, answer_row_count = _lock_and_validate_pending_counter_revisions(
-        cursor, epoch_id=epoch_id, expected_revision=expected_revision
-    )
+    if locked_row_counts is None:
+        owner_row_count, answer_row_count = (
+            _lock_and_validate_pending_counter_revisions(
+                cursor, epoch_id=epoch_id, expected_revision=expected_revision
+            )
+        )
+    else:
+        if (
+            type(locked_row_counts) is not tuple
+            or len(locked_row_counts) != 2
+            or any(type(value) is not int or value < 0 for value in locked_row_counts)
+        ):
+            raise ValidationError("locked PENDING counter row counts are invalid")
+        owner_row_count, answer_row_count = locked_row_counts
     for delta in owner_deltas:
         values = delta.values
         updated = cursor.execute(
@@ -3972,26 +4197,11 @@ def _persist_new_cancellation(
     return M5CancellationReceipt(plan.cancelled_job_ids, resulting_revision, False)
 
 
-def terminalize_m5_requirement_work_for_epoch_failure(
-    cursor: Cursor[Any],
-    epoch_id: int,
-    expected_revision: int,
-    *,
-    failure_injector: RuntimeRootFailureInjector | None = None,
-) -> M5EpochFailureRequirementClosure:
-    """Cancel every open requirement job at the single epoch-failure cutoff."""
-
-    if (
-        isinstance(expected_revision, bool)
-        or not isinstance(expected_revision, int)
-        or expected_revision < 1
-    ):
-        raise InvalidEventError("expected runtime revision must be positive")
-    header = _lock_epoch(cursor, epoch_id)
+def _classify_epoch_failure_header(
+    header: _EpochHeader, expected_revision: int
+) -> bool:
     if expected_revision > header.revision:
         raise EventConflictError("expected revision is newer than durable runtime")
-    if expected_revision != header.revision:
-        raise EventConflictError("stale typed runtime revision")
     pending_shape = (
         header.structural_status,
         header.semantic_status,
@@ -4006,28 +4216,136 @@ def terminalize_m5_requirement_work_for_epoch_failure(
         header.evaluation_state,
         header.runtime_state,
     ) == ("committed", "complete", "complete", "semantic_complete")
-    if not pending_shape and not complete_shape:
-        raise InvalidEventError("epoch failure requires an active typed epoch")
+    if pending_shape or complete_shape:
+        if expected_revision != header.revision:
+            raise EventConflictError("stale typed runtime revision")
+        return False
+    failed_shape = (
+        header.structural_status,
+        header.semantic_status,
+        header.evaluation_state,
+        header.runtime_state,
+    ) == ("failed", "failed", "failed", "failed")
+    if failed_shape:
+        return True
+    raise InvalidEventError("epoch failure requires an active or failed typed epoch")
 
+
+def lock_m5_requirement_scopes_for_epoch_failure(
+    cursor: Cursor[Any],
+    header: _EpochHeader,
+    expected_revision: int,
+) -> M5EpochFailureScopeLocks:
+    """Lock tier-8 snapshot/scope rows after the outer prefix is held."""
+
+    if type(header) is not _EpochHeader:
+        raise ValidationError("epoch-failure header has another type")
+    terminal_replay = _classify_epoch_failure_header(header, expected_revision)
     manifest = _load_manifest(cursor, header.candidate_policy_id)
-    scopes = _read_all_root_scopes(cursor, epoch_id=epoch_id)
-    job_rows = cursor.execute(
+    _lock_snapshot_headers(cursor, header=header)
+    scopes = _read_all_root_scopes(cursor, epoch_id=header.epoch_id)
+    authority = _EpochFailurePlanAuthority(cursor)
+    locks = M5EpochFailureScopeLocks(
+        header,
+        expected_revision,
+        terminal_replay,
+        manifest,
+        scopes,
+        authority,
+    )
+    authority.scopes = locks
+    authority.scope_snapshot = _scope_lock_snapshot(locks)
+    return locks
+
+
+def _require_scope_lock_authority(
+    cursor: Cursor[Any], locks: M5EpochFailureScopeLocks
+) -> _EpochFailurePlanAuthority:
+    if (
+        type(locks) is not M5EpochFailureScopeLocks
+        or type(locks._authority) is not _EpochFailurePlanAuthority
+        or locks._authority.cursor is not cursor
+        or locks._authority.transaction_identity
+        != _epoch_failure_transaction_identity(cursor)
+        or locks._authority.scopes is not locks
+        or locks._authority.scope_snapshot != _scope_lock_snapshot(locks)
+        or locks._authority.applied
+    ):
+        raise ValidationError("epoch-failure scope locks are stale or copied")
+    return locks._authority
+
+
+def lock_m5_requirement_jobs_for_epoch_failure(
+    cursor: Cursor[Any],
+    scope_locks: M5EpochFailureScopeLocks,
+    *,
+    failure_injector: RuntimeRootFailureInjector | None = None,
+) -> M5EpochFailureJobLocks:
+    """Lock the complete tier-9 M5 job set after the M4 job snapshot."""
+
+    authority = _require_scope_lock_authority(cursor, scope_locks)
+    if authority.jobs is not None:
+        raise ValidationError("epoch-failure M5 jobs were already locked")
+    header = scope_locks.header
+    rows = cursor.execute(
         _JOB_SELECT
         + ' WHERE epoch_id = %s ORDER BY logical_job_id COLLATE "C" FOR UPDATE',
-        (epoch_id,),
+        (header.epoch_id,),
     ).fetchall()
-    jobs = tuple(_job_from_row(tuple(row)) for row in job_rows)
+    jobs = tuple(_job_from_row(tuple(row)) for row in rows)
     _validate_cancellation_bindings(
         header=header,
-        manifest=manifest,
-        scopes=scopes,
+        manifest=scope_locks.manifest,
+        scopes=scope_locks.scopes,
         jobs=jobs,
     )
+    locks = M5EpochFailureJobLocks(scope_locks, jobs, authority)
+    authority.jobs = locks
+    authority.job_snapshot = _job_lock_snapshot(locks)
     _inject(failure_injector, "typed_fail_jobs_locked")
+    return locks
 
-    cursor.execute(
+
+def _require_job_lock_authority(
+    cursor: Cursor[Any], locks: M5EpochFailureJobLocks
+) -> _EpochFailurePlanAuthority:
+    if (
+        type(locks) is not M5EpochFailureJobLocks
+        or type(locks._authority) is not _EpochFailurePlanAuthority
+        or locks._authority.cursor is not cursor
+        or locks._authority.transaction_identity
+        != _epoch_failure_transaction_identity(cursor)
+        or locks._authority.jobs is not locks
+        or locks.scope_locks._authority is not locks._authority
+        or locks._authority.scopes is not locks.scope_locks
+        or locks._authority.scope_snapshot != _scope_lock_snapshot(locks.scope_locks)
+        or locks._authority.job_snapshot != _job_lock_snapshot(locks)
+        or locks._authority.applied
+    ):
+        raise ValidationError("epoch-failure M5 job locks are stale or copied")
+    return locks._authority
+
+
+def lock_m5_requirement_details_for_epoch_failure(
+    cursor: Cursor[Any],
+    job_locks: M5EpochFailureJobLocks,
+    *,
+    failure_injector: RuntimeRootFailureInjector | None = None,
+) -> M5EpochFailureLockedPlan:
+    """Lock all M5 tier-10+ details and derive a no-write failure plan."""
+
+    authority = _require_job_lock_authority(cursor, job_locks)
+    if authority.details is not None:
+        raise ValidationError("epoch-failure M5 details were already locked")
+    scope_locks = job_locks.scope_locks
+    header = scope_locks.header
+    expected_revision = header.revision
+    attempt_rows = cursor.execute(
         """
-        SELECT attempt.attempt_id
+        SELECT attempt.attempt_id, attempt.logical_job_id,
+               attempt.attempt_ordinal, attempt.execution_spec_hash,
+               attempt.lease_token_hash, attempt.attempt_state,
+               attempt.attempt_output_digest
         FROM groundloop_m5_job_attempt AS attempt
         JOIN groundloop_m5_semantic_job AS job
           ON job.logical_job_id = attempt.logical_job_id
@@ -4036,65 +4354,273 @@ def terminalize_m5_requirement_work_for_epoch_failure(
                  attempt.attempt_id COLLATE "C"
         FOR UPDATE OF attempt
         """,
-        (epoch_id,),
+        (header.epoch_id,),
     ).fetchall()
+    attempts = tuple(
+        _StoredAttempt(
+            attempt=M5JobAttempt(
+                attempt_id=_text(row[0]),
+                logical_job_id=_text(row[1]),
+                attempt_ordinal=int(row[2]),
+                execution_spec_hash=_text(row[3]),
+                lease_token_hash=_text(row[4]),
+            ),
+            state=str(row[5]),
+            attempt_output_digest=_optional_text(row[6]),
+        )
+        for row in attempt_rows
+    )
     _inject(failure_injector, "typed_fail_attempts_locked")
 
+    terminal_replay = scope_locks.terminal_replay
     open_job_states = {
         M5JobState.DECLARED,
         M5JobState.RUNNING,
         M5JobState.RETRYABLE_FAILED,
     }
     open_scope_states = {M5ScopeState.OPEN, M5ScopeState.RESULT_STAGED}
-    selected_jobs = tuple(job for job in jobs if job.state in open_job_states)
+    if terminal_replay:
+        if any(job.state in open_job_states for job in job_locks.jobs) or any(
+            scope.state in open_scope_states for scope in scope_locks.scopes
+        ):
+            raise ValidationError("failed epoch retains open requirement work")
+        selected_jobs = tuple(
+            job
+            for job in job_locks.jobs
+            if job.state is M5JobState.CANCELLED
+            and job.archive_reason is M5TerminalReason.EPOCH_FAILED
+            and job.cancelled_by_event_id == header.structural_event_id
+            and job.cancelled_by_epoch_id == header.epoch_id
+            and job.cancellation_reason is M5TerminalReason.EPOCH_FAILED
+            and job.completed_revision == header.revision
+        )
+    else:
+        selected_jobs = tuple(
+            job for job in job_locks.jobs if job.state in open_job_states
+        )
     selected_root_ids = {
         job.spec.logical_job_id
         for job in selected_jobs
         if job.spec.parent_job_id is None
     }
-    selected_scopes = tuple(
-        scope for scope in scopes if scope.state in open_scope_states
-    )
+    if terminal_replay:
+        selected_scopes = tuple(
+            scope
+            for scope in scope_locks.scopes
+            if scope.root_job_id in selected_root_ids
+        )
+        if any(
+            scope.state is not M5ScopeState.CANCELLED
+            or scope.closed_revision != header.revision
+            for scope in selected_scopes
+        ):
+            raise ValidationError(
+                "failed epoch cancellation scopes differ from their job image"
+            )
+    else:
+        selected_scopes = tuple(
+            scope for scope in scope_locks.scopes if scope.state in open_scope_states
+        )
     if {scope.root_job_id for scope in selected_scopes} != selected_root_ids:
         raise ValidationError("open requirement root jobs and scopes diverged")
-    terminal_failed_count = sum(job.state is M5JobState.TERMINAL_FAILED for job in jobs)
+    terminal_failed_count = sum(
+        job.state is M5JobState.TERMINAL_FAILED for job in job_locks.jobs
+    )
     if (
-        header.open_work_count != len(selected_jobs)
-        or header.open_scope_count != len(selected_scopes)
+        header.open_work_count != (0 if terminal_replay else len(selected_jobs))
+        or header.open_scope_count != (0 if terminal_replay else len(selected_scopes))
         or header.blocking_failure_count != terminal_failed_count
     ):
         raise ValidationError("runtime requirement counts are not exact")
 
-    accounting_start = start_event_accounting(
-        cursor, epoch_id=epoch_id, expected_revision=expected_revision
+    accounting_start = lock_epoch_failure_accounting(
+        cursor,
+        epoch_id=header.epoch_id,
+        expected_revision=expected_revision,
+        terminal_replay=terminal_replay,
     )
     _inject(failure_injector, "typed_fail_accounting_started")
-    _authorize(cursor, header)
-    _inject(failure_injector, "typed_fail_authorized")
-
+    if not terminal_replay:
+        _authorize(cursor, header)
+        _inject(failure_injector, "typed_fail_authorized")
     cancellation_plan = (
         None
         if not selected_jobs
         else M5CancellationPlan.build(
             structural_event_id=header.structural_event_id,
-            epoch_id=epoch_id,
+            epoch_id=header.epoch_id,
             cancelled_job_ids=tuple(job.spec.logical_job_id for job in selected_jobs),
             reason=M5TerminalReason.EPOCH_FAILED,
         )
     )
-    settled_row = cursor.execute("SELECT clock_timestamp()").fetchone()
-    if settled_row is None or not isinstance(settled_row[0], datetime):
-        raise ValidationError("PostgreSQL did not return a failure timestamp")
-    settled_at = settled_row[0]
-    completions = {
-        job.spec.logical_job_id: M5JobCompletion.build(
-            job=job.spec,
-            terminal_state=M5JobState.CANCELLED,
-            archive_reason=M5TerminalReason.EPOCH_FAILED,
+    completions = tuple(
+        (
+            job.spec.logical_job_id,
+            M5JobCompletion.build(
+                job=job.spec,
+                terminal_state=M5JobState.CANCELLED,
+                archive_reason=M5TerminalReason.EPOCH_FAILED,
+            ),
         )
         for job in selected_jobs
-    }
-    for job in selected_jobs:
+    )
+    if terminal_replay:
+        for job, (_job_id, completion) in zip(selected_jobs, completions, strict=True):
+            if job.completion_digest != completion.completion_digest:
+                raise ValidationError(
+                    "failed epoch cancellation completion is not canonical"
+                )
+        completion_by_id = dict(completions)
+        if any(
+            scope.completion_digest
+            != completion_by_id[scope.root_job_id].completion_digest
+            for scope in selected_scopes
+        ):
+            raise ValidationError(
+                "failed epoch scope and cancellation completion diverged"
+            )
+        owner_deltas: tuple[_PendingDelta, ...] = ()
+        answer_deltas: tuple[_PendingDelta, ...] = ()
+        settled_at = None
+    else:
+        owner_deltas, answer_deltas = _cancellation_pending_projection(
+            cursor,
+            header=header,
+            scopes=scope_locks.scopes,
+            jobs=selected_jobs,
+        )
+        settled_row = cursor.execute("SELECT clock_timestamp()").fetchone()
+        if settled_row is None or type(settled_row[0]) is not datetime:
+            raise ValidationError("PostgreSQL did not return a failure timestamp")
+        settled_at = settled_row[0]
+    pending_counts = _lock_and_validate_pending_counter_revisions(
+        cursor,
+        epoch_id=header.epoch_id,
+        expected_revision=expected_revision,
+    )
+    cancellation_work = M5RuntimeWork(
+        requirement_cancelled_job_count=len(selected_jobs)
+    )
+    if terminal_replay and cancellation_plan is not None:
+        work_names = M5RuntimeWork.counter_names()
+        contribution = cursor.execute(
+            f"""
+            SELECT {", ".join(work_names)}, work_digest,
+                   source_identity_hash, contribution_key_digest,
+                   applied_revision
+            FROM groundloop_m5_runtime_work_contribution
+            WHERE epoch_id = %s AND contribution_kind = 'cancellation'
+              AND source_id = %s
+            FOR UPDATE
+            """,
+            (header.epoch_id, cancellation_plan.plan_digest),
+        ).fetchone()
+        work_end = len(work_names)
+        expected_key = digests.runtime_work_contribution_key_digest(
+            epoch_id=header.epoch_id,
+            contribution_kind=M5RuntimeWorkContributionKind.CANCELLATION,
+            source_id=cancellation_plan.plan_digest,
+        )
+        if contribution is None:
+            raise ValidationError("failed epoch lacks its cancellation contribution")
+        stored_work = M5RuntimeWork(
+            **dict(
+                zip(
+                    work_names,
+                    map(int, contribution[:work_end]),
+                    strict=True,
+                )
+            ),
+            work_digest=_text(contribution[work_end]),
+        )
+        if (
+            stored_work != cancellation_work
+            or _text(contribution[work_end + 1]) != cancellation_plan.plan_digest
+            or _text(contribution[work_end + 2]) != expected_key
+            or int(contribution[work_end + 3]) != header.revision
+        ):
+            raise ValidationError("failed epoch cancellation contribution changed")
+    plan = M5EpochFailureLockedPlan(
+        job_locks=job_locks,
+        attempts=attempts,
+        selected_jobs=selected_jobs,
+        selected_scopes=selected_scopes,
+        terminal_failed_count=terminal_failed_count,
+        accounting_start=accounting_start,
+        cancellation_plan=cancellation_plan,
+        cancellation_work=cancellation_work,
+        settled_at=settled_at,
+        completions=completions,
+        owner_deltas=owner_deltas,
+        answer_deltas=answer_deltas,
+        pending_counter_row_counts=pending_counts,
+        terminal_replay=terminal_replay,
+        _authority=authority,
+    )
+    authority.details = plan
+    authority.detail_snapshot = _detail_plan_snapshot(plan)
+    return plan
+
+
+def apply_m5_requirement_epoch_failure(
+    cursor: Cursor[Any],
+    plan: M5EpochFailureLockedPlan,
+    *,
+    failure_injector: RuntimeRootFailureInjector | None = None,
+) -> M5EpochFailureRequirementClosure:
+    """Consume one authentic detail plan without acquiring another lock."""
+
+    if (
+        type(plan) is not M5EpochFailureLockedPlan
+        or type(plan._authority) is not _EpochFailurePlanAuthority
+        or plan._authority.cursor is not cursor
+        or plan._authority.transaction_identity
+        != _epoch_failure_transaction_identity(cursor)
+        or plan._authority.details is not plan
+        or plan._authority.jobs is not plan.job_locks
+        or plan._authority.scopes is not plan.job_locks.scope_locks
+        or plan._authority.scope_snapshot
+        != _scope_lock_snapshot(plan.job_locks.scope_locks)
+        or plan._authority.job_snapshot != _job_lock_snapshot(plan.job_locks)
+        or plan._authority.detail_snapshot != _detail_plan_snapshot(plan)
+        or plan._authority.applied
+    ):
+        raise ValidationError("epoch-failure M5 detail plan is stale or copied")
+    if plan.terminal_replay:
+        raise EventConflictError("terminal replay M5 plan is read-only")
+    if plan.settled_at is None:
+        raise ValidationError("active epoch-failure plan lacks its settlement time")
+    authority = plan._authority
+    header = plan.job_locks.scope_locks.header
+    expected_revision = header.revision
+    derived_selected_jobs = tuple(
+        job
+        for job in plan.job_locks.jobs
+        if job.state
+        in {
+            M5JobState.DECLARED,
+            M5JobState.RUNNING,
+            M5JobState.RETRYABLE_FAILED,
+        }
+    )
+    derived_selected_scopes = tuple(
+        scope
+        for scope in plan.job_locks.scope_locks.scopes
+        if scope.state in {M5ScopeState.OPEN, M5ScopeState.RESULT_STAGED}
+    )
+    if (
+        plan.selected_jobs != derived_selected_jobs
+        or plan.selected_scopes != derived_selected_scopes
+        or tuple(job_id for job_id, _completion in plan.completions)
+        != tuple(job.spec.logical_job_id for job in plan.selected_jobs)
+        or plan.cancellation_work.requirement_cancelled_job_count
+        != len(plan.selected_jobs)
+    ):
+        raise ValidationError("epoch-failure M5 detail plan was mutated")
+    completions = dict(plan.completions)
+    authority.applied = True
+
+    for job in plan.selected_jobs:
         completion = completions[job.spec.logical_job_id]
         updated = cursor.execute(
             """
@@ -4111,10 +4637,10 @@ def terminalize_m5_requirement_work_for_epoch_failure(
             (
                 completion.completion_digest,
                 header.structural_event_id,
-                epoch_id,
+                header.epoch_id,
                 expected_revision + 1,
-                settled_at,
-                epoch_id,
+                plan.settled_at,
+                header.epoch_id,
                 job.spec.logical_job_id,
                 job.state.value,
             ),
@@ -4123,7 +4649,7 @@ def terminalize_m5_requirement_work_for_epoch_failure(
             raise EventConflictError("semantic job lost its epoch-failure race")
     _inject(failure_injector, "typed_fail_jobs_cancelled")
 
-    for scope in selected_scopes:
+    for scope in plan.selected_scopes:
         completion = completions[scope.root_job_id]
         updated = cursor.execute(
             """
@@ -4135,8 +4661,8 @@ def terminalize_m5_requirement_work_for_epoch_failure(
             (
                 completion.completion_digest,
                 expected_revision + 1,
-                settled_at,
-                epoch_id,
+                plan.settled_at,
+                header.epoch_id,
                 scope.root_job_id,
                 scope.state.value,
             ),
@@ -4145,22 +4671,16 @@ def terminalize_m5_requirement_work_for_epoch_failure(
             raise EventConflictError("root scope lost its epoch-failure race")
     _inject(failure_injector, "typed_fail_scopes_closed")
 
-    owner_deltas, answer_deltas = _cancellation_pending_projection(
-        cursor,
-        header=header,
-        scopes=scopes,
-        jobs=selected_jobs,
-    )
     _apply_cancellation_pending_deltas(
         cursor,
-        epoch_id=epoch_id,
+        epoch_id=header.epoch_id,
         expected_revision=expected_revision,
         resulting_revision=expected_revision + 1,
-        owner_deltas=owner_deltas,
-        answer_deltas=answer_deltas,
+        owner_deltas=plan.owner_deltas,
+        answer_deltas=plan.answer_deltas,
+        locked_row_counts=plan.pending_counter_row_counts,
     )
     _inject(failure_injector, "typed_fail_counters_updated")
-
     counts = cursor.execute(
         """
         SELECT count(*) FILTER (
@@ -4174,23 +4694,51 @@ def terminalize_m5_requirement_work_for_epoch_failure(
         FROM groundloop_m5_semantic_job
         WHERE epoch_id = %s
         """,
-        (epoch_id, epoch_id),
+        (header.epoch_id, header.epoch_id),
     ).fetchone()
     if counts is None:
         raise ValidationError("failed to read terminal requirement counts")
     exact_counts = tuple(map(int, counts))
-    if exact_counts != (0, terminal_failed_count, 0):
+    if exact_counts != (0, plan.terminal_failed_count, 0):
         raise ValidationError("epoch failure did not close exact requirement counts")
-    cancellation_work = M5RuntimeWork(
-        requirement_cancelled_job_count=len(selected_jobs)
-    )
     return M5EpochFailureRequirementClosure(
-        accounting_start=accounting_start,
-        cancellation_plan=cancellation_plan,
-        cancellation_work=cancellation_work,
+        accounting_start=plan.accounting_start,
+        cancellation_plan=plan.cancellation_plan,
+        cancellation_work=plan.cancellation_work,
         open_work_count=exact_counts[0],
         blocking_failure_count=exact_counts[1],
         open_scope_count=exact_counts[2],
+        _authority=authority,
+    )
+
+
+def terminalize_m5_requirement_work_for_epoch_failure(
+    cursor: Cursor[Any],
+    epoch_id: int,
+    expected_revision: int,
+    *,
+    failure_injector: RuntimeRootFailureInjector | None = None,
+) -> M5EpochFailureRequirementClosure:
+    """Compatibility wrapper over the C7 read-plan/write-apply phases."""
+
+    if (
+        isinstance(expected_revision, bool)
+        or not isinstance(expected_revision, int)
+        or expected_revision < 1
+    ):
+        raise InvalidEventError("expected runtime revision must be positive")
+    header = _lock_epoch(cursor, epoch_id)
+    scope_locks = lock_m5_requirement_scopes_for_epoch_failure(
+        cursor, header, expected_revision
+    )
+    job_locks = lock_m5_requirement_jobs_for_epoch_failure(
+        cursor, scope_locks, failure_injector=failure_injector
+    )
+    details = lock_m5_requirement_details_for_epoch_failure(
+        cursor, job_locks, failure_injector=failure_injector
+    )
+    return apply_m5_requirement_epoch_failure(
+        cursor, details, failure_injector=failure_injector
     )
 
 

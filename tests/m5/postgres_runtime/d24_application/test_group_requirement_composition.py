@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from copy import copy
-from dataclasses import replace
-from typing import cast
+from dataclasses import dataclass, replace
+from typing import Any, cast
 
 import pytest
+from psycopg import Connection
 
 from groundloop.domain import (
     DecisionPolicy,
@@ -23,7 +24,11 @@ from groundloop.events import (
     PolicyChangeEvent,
     ReplaceDocumentVersionEvent,
 )
-from groundloop.m4.application import DynamicEventPlan, StructuralWithdrawal
+from groundloop.m4.application import (
+    DynamicEventPlan,
+    OpenEventReceipt,
+    StructuralWithdrawal,
+)
 from groundloop.m4.contracts import (
     CorpusUpdateIdentity,
     UpdateKind,
@@ -49,8 +54,12 @@ from groundloop.m5.runtime import digests as runtime_digests
 from groundloop.m5.runtime.application import M5RequirementRootDeclaration
 from groundloop.m5.runtime.contracts import (
     ActiveChunkSnapshot,
+    ActiveChunkSnapshotEntry,
     M5CandidatePolicyManifest,
     M5DiscoveryDirection,
+    M5DiscoveryScopeContract,
+    M5JobKind,
+    M5LogicalJobSpec,
     M5RequirementFallbackKey,
     M5RequirementWithdrawalPlan,
     M5RunFailureReason,
@@ -90,6 +99,96 @@ _ATTEMPT_TIMING = M5RuntimeTiming(
     external_io_wall_ns=7,
     end_to_end_wall_ns=46,
 )
+
+
+class _RootTupleSubclass(tuple[object, ...]):
+    pass
+
+
+class _FallbackDictSubclass(dict[str, bool]):
+    pass
+
+
+class _RootDeclarationSubclass(M5RequirementRootDeclaration):
+    pass
+
+
+class _TransactionReached(RuntimeError):
+    pass
+
+
+class _TransactionTripwireConnection:
+    def __init__(self) -> None:
+        self.transaction_calls = 0
+
+    def transaction(self) -> None:
+        self.transaction_calls += 1
+        raise _TransactionReached
+
+
+@pytest.mark.parametrize(
+    "failure_reason",
+    (
+        M5RunFailureReason.WORK_IN_PROGRESS,
+        M5RunFailureReason.RETRIEVAL_UNAVAILABLE,
+        M5RunFailureReason.VERIFIER_UNAVAILABLE,
+    ),
+)
+def test_exact_held_failure_rejects_nonterminal_reason_before_transaction(
+    failure_reason: M5RunFailureReason,
+) -> None:
+    connection = _TransactionTripwireConnection()
+    store = PostgresM5RuntimeStore(cast(Connection[Any], connection))
+
+    with pytest.raises(InvalidEventError, match="requires a terminal reason"):
+        store.fail_typed_epoch_with_open_receipt_atomically(
+            1,
+            1,
+            failure_reason,
+            OpenEventReceipt(1, False, False),
+            M5RuntimeWork(),
+        )
+
+    assert connection.transaction_calls == 0
+
+
+@pytest.mark.parametrize(
+    "failure_reason",
+    (
+        M5RunFailureReason.RETRIEVAL_UNAVAILABLE,
+        M5RunFailureReason.VERIFIER_UNAVAILABLE,
+    ),
+)
+def test_legacy_failure_admits_unavailable_reason_before_transaction(
+    failure_reason: M5RunFailureReason,
+) -> None:
+    connection = _TransactionTripwireConnection()
+    store = PostgresM5RuntimeStore(cast(Connection[Any], connection))
+
+    with pytest.raises(_TransactionReached):
+        store.fail_typed_epoch_atomically(
+            1,
+            1,
+            failure_reason,
+            M5RuntimeWork(),
+        )
+
+    assert connection.transaction_calls == 1
+
+
+def test_legacy_failure_rejects_work_in_progress_before_transaction() -> None:
+    connection = _TransactionTripwireConnection()
+    store = PostgresM5RuntimeStore(cast(Connection[Any], connection))
+
+    with pytest.raises(InvalidEventError, match="requires a terminal reason"):
+        store.fail_typed_epoch_atomically(
+            1,
+            1,
+            M5RunFailureReason.WORK_IN_PROGRESS,
+            M5RuntimeWork(),
+        )
+
+    assert connection.transaction_calls == 0
 
 
 def _plan(
@@ -249,6 +348,87 @@ def _excluded_plan(
         active_chunk_snapshot=database.active_chunk_snapshot,
         expected_previous_published_epoch_id=database.base.epoch_id,
     )
+
+
+def _direct_boundary_declaration(
+    database: ApplicationD24Database,
+) -> tuple[
+    M5TypedEventPlan,
+    tuple[M5RequirementRootDeclaration, ...],
+    dict[str, bool],
+]:
+    """Build valid direct M5 roots without invoking the direct M4 stage."""
+
+    plan = _excluded_plan(database, "document_insert")
+    assert plan.direct_plan is not None
+    inserted_chunk_id = plan.direct_plan.inserted_chunk_version_ids[0]
+    plan = replace(
+        plan,
+        active_chunk_snapshot=ActiveChunkSnapshot.build(
+            (
+                *plan.active_chunk_snapshot.entries,
+                ActiveChunkSnapshotEntry.build(
+                    chunk_version_id=inserted_chunk_id,
+                    chunk_text="excluded chunk",
+                ),
+            )
+        ),
+    )
+    requirement_id = database.published_group.requirements[0].requirement_version_id
+    scopes = (
+        M5DiscoveryScopeContract.build(
+            direction=M5DiscoveryDirection.FORWARD_REQUIREMENT,
+            requirement_version_id=requirement_id,
+            inserted_chunk_version_id=None,
+            candidate_policy_id=plan.candidate_policy_id,
+            requirement_registry_snapshot_digest=(
+                plan.requirement_registry_snapshot.requirement_registry_snapshot_digest
+            ),
+            active_chunk_snapshot_digest=(
+                plan.active_chunk_snapshot.active_chunk_snapshot_digest
+            ),
+        ),
+        M5DiscoveryScopeContract.build(
+            direction=M5DiscoveryDirection.REVERSE_CHUNK,
+            requirement_version_id=None,
+            inserted_chunk_version_id=inserted_chunk_id,
+            candidate_policy_id=plan.candidate_policy_id,
+            requirement_registry_snapshot_digest=(
+                plan.requirement_registry_snapshot.requirement_registry_snapshot_digest
+            ),
+            active_chunk_snapshot_digest=(
+                plan.active_chunk_snapshot.active_chunk_snapshot_digest
+            ),
+        ),
+    )
+    roots = tuple(
+        sorted(
+            (
+                M5RequirementRootDeclaration(
+                    scope,
+                    M5LogicalJobSpec.build(
+                        structural_event_id=plan.structural_event_id,
+                        job_kind=(
+                            M5JobKind.FORWARD_REQUIREMENT_RETRIEVAL
+                            if scope.direction
+                            is M5DiscoveryDirection.FORWARD_REQUIREMENT
+                            else M5JobKind.REVERSE_REQUIREMENT_DISCOVERY
+                        ),
+                        manifest=database.manifest,
+                        scope=scope,
+                    ),
+                )
+                for scope in scopes
+            ),
+            key=lambda declaration: declaration.job.logical_job_id,
+        )
+    )
+    fallback = {
+        root.job.logical_job_id: False
+        for root in roots
+        if root.job.job_kind is M5JobKind.FORWARD_REQUIREMENT_RETRIEVAL
+    }
+    return plan, roots, fallback
 
 
 def _open_exact(
@@ -566,6 +746,111 @@ def test_every_excluded_typed_event_is_rejected_before_write(
     assert database_snapshot(database.connection) == before
 
 
+@pytest.mark.parametrize(
+    "mode",
+    (
+        "root_tuple_subclass",
+        "root_outer_subclass",
+        "wrong_reverse_target",
+        "wrong_root_hash",
+        "fallback_dict_subclass",
+        "fallback_missing",
+        "fallback_extra",
+        "fallback_wrong_key",
+        "fallback_nonstring_key",
+        "fallback_nonbool_value",
+    ),
+)
+def test_direct_store_root_boundary_rejects_before_callback_or_write(
+    d24_application_db: ApplicationD24Database,
+    mode: str,
+) -> None:
+    """Falsify raw-store shapes below the document facade boundary."""
+
+    database = d24_application_db
+    plan, canonical_roots, canonical_fallback = _direct_boundary_declaration(database)
+    roots = canonical_roots
+    fallback = canonical_fallback
+    root_hash = requirement_root_set_hash(roots)
+    forward_id = next(iter(fallback))
+    if mode == "root_tuple_subclass":
+        roots = cast(
+            tuple[M5RequirementRootDeclaration, ...],
+            _RootTupleSubclass(roots),
+        )
+    elif mode == "root_outer_subclass":
+        first = roots[0]
+        roots = (
+            _RootDeclarationSubclass(first.scope, first.job),
+            *roots[1:],
+        )
+    elif mode == "wrong_reverse_target":
+        reverse = next(
+            root
+            for root in roots
+            if root.job.job_kind is M5JobKind.REVERSE_REQUIREMENT_DISCOVERY
+        )
+        wrong_scope = M5DiscoveryScopeContract.build(
+            direction=M5DiscoveryDirection.REVERSE_CHUNK,
+            requirement_version_id=None,
+            inserted_chunk_version_id=database.base.chunk_ids[0],
+            candidate_policy_id=plan.candidate_policy_id,
+            requirement_registry_snapshot_digest=(
+                plan.requirement_registry_snapshot.requirement_registry_snapshot_digest
+            ),
+            active_chunk_snapshot_digest=(
+                plan.active_chunk_snapshot.active_chunk_snapshot_digest
+            ),
+        )
+        wrong_reverse = M5RequirementRootDeclaration(
+            wrong_scope,
+            M5LogicalJobSpec.build(
+                structural_event_id=plan.structural_event_id,
+                job_kind=M5JobKind.REVERSE_REQUIREMENT_DISCOVERY,
+                manifest=database.manifest,
+                scope=wrong_scope,
+            ),
+        )
+        roots = tuple(
+            sorted(
+                (wrong_reverse if item is reverse else item for item in roots),
+                key=lambda declaration: declaration.job.logical_job_id,
+            )
+        )
+        root_hash = requirement_root_set_hash(roots)
+    elif mode == "wrong_root_hash":
+        root_hash = sha("d24-direct-wrong-root-set-hash")
+    elif mode == "fallback_dict_subclass":
+        fallback = cast(dict[str, bool], _FallbackDictSubclass(fallback))
+    elif mode == "fallback_missing":
+        fallback = {}
+    elif mode == "fallback_extra":
+        fallback = {**fallback, sha("d24-direct-extra-root"): False}
+    elif mode == "fallback_wrong_key":
+        fallback = {sha("d24-direct-wrong-root"): False}
+    elif mode == "fallback_nonstring_key":
+        fallback = cast(dict[str, bool], {1: False})
+    elif mode == "fallback_nonbool_value":
+        fallback = cast(dict[str, bool], {forward_id: 1})
+    else:
+        raise AssertionError(f"unknown direct boundary mode: {mode}")
+
+    def unexpected_stage(_: object) -> tuple[OpenEventReceipt, M5RuntimeWork]:
+        raise AssertionError("invalid direct roots reached the M4 stage callback")
+
+    before = database_snapshot(database.connection)
+    with pytest.raises(ValidationError):
+        database.store.open_typed_direct_event_atomically(
+            plan,
+            requirement_roots=roots,
+            requirement_root_set_hash=root_hash,
+            direct_stage=unexpected_stage,
+            recovery_operational_config=database.operational_config,
+            recovery_root_fallback_required=fallback,
+        )
+    assert database_snapshot(database.connection) == before
+
+
 def test_group_plan_with_injected_direct_plan_is_rejected_before_write(
     d24_application_db: ApplicationD24Database,
 ) -> None:
@@ -743,23 +1028,107 @@ def test_structural_preflight_rejection_matrix_is_zero_write(
     assert database_snapshot(database.connection) == before
 
 
+@pytest.mark.parametrize("replayed", (False, True))
 def test_group_direct_port_is_a_checked_zero_write_noop(
     d24_application_db: ApplicationD24Database,
+    replayed: bool,
 ) -> None:
     database = d24_application_db
     plan = database.register_plan(tag="direct-noop")
-    before = database_snapshot(database.connection)
     with pytest.raises(ValidationError, match="does not plan direct events"):
         database.facade.plan_direct_open(plan)
+    withdrawal = database.facade.plan_exact_requirement_withdrawal(plan)
+    roots = requirement_roots(plan, database.manifest)
+    open_args = (
+        plan,
+        None,
+        None,
+        withdrawal,
+        (),
+        (),
+        roots,
+        requirement_root_set_hash(roots),
+    )
+    opened = database.facade.open_typed_event_atomically(*open_args)
+    if replayed:
+        opened = database.facade.open_typed_event_atomically(*open_args)
+    assert opened.replayed is replayed
+    before = database_snapshot(database.connection)
     receipt = database.facade.run_pending_direct(
-        database.base.epoch_id,
+        opened.epoch_id,
         7,
         plan,
+        opened,
     )
     assert receipt.resulting_revision == 7
     assert receipt.call_work.is_zero
     assert receipt.blocked_reason is None
     assert receipt.terminal_failure_reason is None
+    assert database_snapshot(database.connection) == before
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ("wrong_epoch", "sealed", "failed", "subclass", "duck", "nonbool_replay"),
+)
+def test_group_direct_port_rejects_nonheld_open_receipt_without_write(
+    d24_application_db: ApplicationD24Database,
+    mode: str,
+) -> None:
+    database = d24_application_db
+    plan = database.register_plan(tag=f"direct-receipt-{mode}")
+    opened = OpenEventReceipt(
+        epoch_id=database.base.epoch_id,
+        replayed=False,
+        already_sealed=False,
+    )
+    malformed: object
+    if mode == "wrong_epoch":
+        malformed = replace(opened, epoch_id=opened.epoch_id + 1)
+    elif mode == "sealed":
+        malformed = OpenEventReceipt(
+            opened.epoch_id,
+            True,
+            True,
+            publication_id="not-a-held-receipt",
+        )
+    elif mode == "failed":
+        malformed = OpenEventReceipt(
+            opened.epoch_id,
+            True,
+            False,
+            already_failed=True,
+            failure_reason="retrieval_error",
+        )
+    elif mode == "subclass":
+
+        class ReceiptSubclass(OpenEventReceipt):
+            pass
+
+        malformed = ReceiptSubclass(opened.epoch_id, False, False)
+    elif mode == "duck":
+
+        @dataclass(frozen=True)
+        class ReceiptDuck:
+            epoch_id: int
+            replayed: bool = False
+            already_sealed: bool = False
+            publication_id: str | None = None
+            already_failed: bool = False
+            failure_reason: str | None = None
+
+        malformed = ReceiptDuck(opened.epoch_id)
+    else:
+        malformed = copy(opened)
+        object.__setattr__(malformed, "replayed", 0)
+    before = database_snapshot(database.connection)
+    with pytest.raises(ValidationError, match="held nonterminal open receipt"):
+        database.facade.run_pending_direct(
+            opened.epoch_id,
+            7,
+            plan,
+            cast(OpenEventReceipt, malformed),
+        )
     assert database_snapshot(database.connection) == before
 
 

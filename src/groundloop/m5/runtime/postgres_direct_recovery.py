@@ -8,9 +8,9 @@ dispatch, point work and point timing accounting.
 from __future__ import annotations
 
 import struct
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from psycopg import Cursor, sql
 from psycopg.types.json import Jsonb
@@ -20,12 +20,22 @@ from groundloop.incremental import IncrementalMaintenanceEngine
 from groundloop.m4.application import JobLease, ObservationCompletionReceipt
 from groundloop.m4.contracts import (
     JobAttempt,
+    JobKind,
     JobState,
     LogicalJobSpec,
+    PairKey,
     stable_m4_digest,
 )
 from groundloop.m4.persistence import PointJobRecord
-from groundloop.m4.pipeline import PostgresM4ApplicationPorts
+from groundloop.m4.pipeline import (
+    PostgresM4ApplicationPorts,
+)
+from groundloop.m4.pipeline import (
+    _TypedDirectEpochFailureLockedPlan as _M4TypedDirectEpochFailureLockedPlan,
+)
+from groundloop.m4.pipeline import (
+    _TypedDirectEpochFailureStage as _M4TypedDirectEpochFailureStage,
+)
 from groundloop.m5.runtime import digests
 from groundloop.m5.runtime.contracts import (
     M5AcquisitionDisposition,
@@ -42,9 +52,11 @@ from groundloop.m5.runtime.contracts import (
     M5RuntimeWork,
     M5RuntimeWorkContributionKind,
     M5TransitionTimingAnchor,
+    M5TypedDirectAcquisitionReceipt,
     M5TypedDirectJobLease,
     M5TypedDirectLateReturnEnvelope,
     M5TypedDirectReturnKind,
+    M5TypedDirectScopeKind,
     M5TypedDirectTerminalProjection,
 )
 from groundloop.repository import InMemoryRepository
@@ -113,6 +125,34 @@ class _DirectReturnSettlement:
 
 
 @dataclass(frozen=True, slots=True)
+class _DirectRetryableFailureOutcome:
+    receipt: M5DirectCursorContributionReceipt
+    resulting_revision: int
+    exact_replay: bool
+
+    def __post_init__(self) -> None:
+        receipt = self.receipt
+        if (
+            type(receipt) is not M5DirectCursorContributionReceipt
+            or type(receipt.epoch_id) is not int
+            or type(receipt.job_id) is not str
+            or type(receipt.attempt_id) is not str
+            or type(receipt.execution_evidence_digest) is not str
+            or type(receipt.attempt_execution_contribution_key_digest) is not str
+            or receipt.direct_transition_source_id is not None
+            or receipt.direct_transition_source_identity_hash is not None
+            or receipt.direct_transition_contribution_key_digest is not None
+            or receipt.observation_completion is not None
+            or replace(receipt) != receipt
+        ):
+            raise ValidationError("retryable failure outcome receipt must be exact")
+        if type(self.resulting_revision) is not int or self.resulting_revision < 1:
+            raise ValidationError("retryable failure outcome revision must be exact")
+        if type(self.exact_replay) is not bool:
+            raise ValidationError("retryable failure replay flag must be exact")
+
+
+@dataclass(frozen=True, slots=True)
 class _DirectVerifierSettlement:
     settlement: _DirectReturnSettlement
     repository: InMemoryRepository | None
@@ -123,6 +163,101 @@ class _DirectVerifierSettlement:
             raise ValidationError(
                 "direct verifier cache candidates must be jointly present or absent"
             )
+
+
+@dataclass(frozen=True, slots=True)
+class _DirectEpochFailureLockedPlan:
+    """M5-owned direct sidecars checked after the complete M4 job/detail image."""
+
+    m4_plan: _M4TypedDirectEpochFailureLockedPlan
+    branch: Literal["first", "replay", "loser", "generic_first", "generic_replay"]
+    evidence: M5AttemptExecutionEvidence | None
+    observation: M5RuntimeTimingObservation | None
+    direct_failure: M5DirectCursorContributionReceipt | None
+    terminal_acquisition: M5TypedDirectAcquisitionReceipt | None
+    target_terminal_reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _AppliedDirectEpochFailure:
+    """Write-only direct sidecar result consumed by the outer failure finalizer."""
+
+    direct_failure: M5DirectCursorContributionReceipt | None
+    attempt_observation: M5RuntimeTimingObservation | None
+
+
+def _canonical_direct_failure_authority_value(value: object) -> object:
+    """Freeze exact direct-plan DTOs into an immutable primitive snapshot."""
+
+    concrete = type(value)
+    if value is None:
+        return ("none",)
+    if concrete is str:
+        return ("str", value)
+    if concrete is int:
+        return ("int", value)
+    if concrete is bool:
+        return ("bool", value)
+    if concrete is datetime:
+        timestamp = cast(datetime, value)
+        return (
+            "datetime",
+            timestamp.isoformat(timespec="microseconds"),
+            timestamp.fold,
+        )
+    if concrete is tuple:
+        return (
+            "tuple",
+            tuple(
+                _canonical_direct_failure_authority_value(item)
+                for item in cast(tuple[object, ...], value)
+            ),
+        )
+    if concrete in {
+        JobKind,
+        JobState,
+        M5AcquisitionDisposition,
+        M5ExecutionEvidenceDisposition,
+        M5RuntimeSubgraph,
+    }:
+        enum_value = cast(
+            JobKind
+            | JobState
+            | M5AcquisitionDisposition
+            | M5ExecutionEvidenceDisposition
+            | M5RuntimeSubgraph,
+            value,
+        )
+        return (concrete.__qualname__, enum_value.value)
+    if concrete not in {
+        M5AttemptExecutionEvidence,
+        M5RuntimeWork,
+        M5RuntimeTiming,
+        M5RuntimeTimingObservation,
+        M5DirectCursorContributionReceipt,
+        M5TypedDirectAcquisitionReceipt,
+        M5TypedDirectJobLease,
+        M5TypedDirectTerminalProjection,
+        LogicalJobSpec,
+        PairKey,
+        JobAttempt,
+        ObservationCompletionReceipt,
+    }:
+        raise ValidationError(
+            "direct failure authority contains an inexact nested value"
+        )
+    return (
+        concrete.__qualname__,
+        tuple(
+            (
+                descriptor.name,
+                _canonical_direct_failure_authority_value(
+                    getattr(value, descriptor.name)
+                ),
+            )
+            for descriptor in fields(cast(Any, value))
+        ),
+    )
 
 
 def _strip(value: object) -> str:
@@ -303,7 +438,33 @@ def _assert_discovery_scope_binding(
         (envelope.job_id, envelope.epoch_id),
     ).fetchone()
     if row is None:
-        raise ValidationError("direct discovery lacks its persisted M4 scope")
+        if envelope.job.kind is not JobKind.FRONTIER_RETRIEVE:
+            raise ValidationError("direct discovery lacks its persisted M4 scope")
+        update = cursor.execute(
+            """
+            SELECT registry_snapshot_id
+            FROM groundloop_m4_update
+            WHERE epoch_id = %s
+            """,
+            (envelope.epoch_id,),
+        ).fetchone()
+        target = envelope.job.target_claim_id
+        if (
+            update is None
+            or target is None
+            or scope.root_job_id != envelope.job_id
+            or scope.registry_snapshot_id != str(update[0])
+            or scope.registered_claim_ids != (target,)
+            or envelope.persisted_scope_kind
+            is not M5TypedDirectScopeKind.EXPLICIT_CLAIMS
+            or envelope.explicit_claim_ids != (target,)
+            or scope.closed
+            or envelope.closed_revision is not None
+        ):
+            raise EventConflictError(
+                "direct frontier return changed its implicit target scope"
+            )
+        return
     members = tuple(
         str(member[0])
         for member in cursor.execute(
@@ -542,15 +703,10 @@ def _advance_runtime_header(
     expected_revision: int,
     resulting_revision: int,
 ) -> None:
-    base = cursor.execute(
-        "SELECT semantic_status FROM groundloop_epoch WHERE epoch_id = %s",
-        (epoch_id,),
-    ).fetchone()
-    if base is None:
-        raise InvalidEventError(f"unknown typed-direct epoch_id: {epoch_id}")
-    semantic_status = str(base[0])
-    runtime_state = (
-        "semantic_complete" if semantic_status == "complete" else "semantic_pending"
+    runtime_state = _project_direct_runtime_state(
+        cursor,
+        epoch_id=epoch_id,
+        resulting_revision=resulting_revision,
     )
     changed = cursor.execute(
         """
@@ -563,6 +719,120 @@ def _advance_runtime_header(
     ).rowcount
     if changed != 1:
         raise EventConflictError("typed runtime changed during direct settlement")
+    _advance_pending_counter_revisions(
+        cursor,
+        epoch_id=epoch_id,
+        expected_revision=expected_revision,
+        resulting_revision=resulting_revision,
+    )
+
+
+def _project_direct_runtime_state(
+    cursor: Cursor[Any],
+    *,
+    epoch_id: int,
+    resulting_revision: int,
+) -> str:
+    """Co-project base and M5 states after one M4-owned revision advance."""
+
+    row = cursor.execute(
+        """
+        SELECT base.revision,
+               base.structural_status,
+               base.semantic_status,
+               base.evaluation_state,
+               runtime.open_work_count,
+               runtime.open_scope_count,
+               runtime.blocking_failure_count
+        FROM groundloop_epoch AS base
+        JOIN groundloop_m5_runtime_epoch AS runtime USING (epoch_id)
+        WHERE base.epoch_id = %s
+        """,
+        (epoch_id,),
+    ).fetchone()
+    if row is None:
+        raise InvalidEventError(f"unknown typed-direct epoch_id: {epoch_id}")
+    base_revision = int(row[0])
+    structural_status = str(row[1])
+    semantic_status = str(row[2])
+    evaluation_state = str(row[3])
+    if (
+        base_revision != resulting_revision
+        or structural_status != "committed"
+        or (semantic_status, evaluation_state)
+        not in {("pending", "pending"), ("complete", "complete")}
+    ):
+        raise EventConflictError("M4 direct settlement produced an invalid base state")
+    requirement_pending = any(int(value) != 0 for value in row[4:])
+    if semantic_status == "complete" and not requirement_pending:
+        return "semantic_complete"
+    if semantic_status == "complete":
+        changed = cursor.execute(
+            """
+            UPDATE groundloop_epoch
+            SET semantic_status = 'pending', evaluation_state = 'pending'
+            WHERE epoch_id = %s AND revision = %s
+              AND structural_status = 'committed'
+              AND semantic_status = 'complete'
+              AND evaluation_state = 'complete'
+            """,
+            (epoch_id, resulting_revision),
+        ).rowcount
+        if changed != 1:
+            raise EventConflictError(
+                "typed base state changed during direct M5 projection"
+            )
+    return "semantic_pending"
+
+
+def _advance_pending_counter_revisions(
+    cursor: Cursor[Any],
+    *,
+    epoch_id: int,
+    expected_revision: int,
+    resulting_revision: int,
+) -> None:
+    """Carry unchanged M5 PENDING multiplicities across one direct revision."""
+
+    owner_count_row = cursor.execute(
+        """
+        SELECT count(*)
+        FROM groundloop_m5_owner_pending_counter
+        WHERE epoch_id = %s
+        """,
+        (epoch_id,),
+    ).fetchone()
+    answer_count_row = cursor.execute(
+        """
+        SELECT count(*)
+        FROM groundloop_m5_answer_pending_counter
+        WHERE epoch_id = %s
+        """,
+        (epoch_id,),
+    ).fetchone()
+    assert owner_count_row is not None and answer_count_row is not None
+    owner_count = int(owner_count_row[0])
+    answer_count = int(answer_count_row[0])
+    owner_changed = cursor.execute(
+        """
+        UPDATE groundloop_m5_owner_pending_counter
+        SET updated_revision = %s
+        WHERE epoch_id = %s AND updated_revision = %s
+        """,
+        (resulting_revision, epoch_id, expected_revision),
+    ).rowcount
+    answer_changed = cursor.execute(
+        """
+        UPDATE groundloop_m5_answer_pending_counter
+        SET updated_revision = %s
+        WHERE epoch_id = %s AND updated_revision = %s
+        """,
+        (resulting_revision, epoch_id, expected_revision),
+    ).rowcount
+    if owner_changed != owner_count or answer_changed != answer_count:
+        raise EventConflictError(
+            "M5 PENDING counters changed during direct revision advance"
+        )
 
 
 def _insert_terminal_projection(
@@ -2194,6 +2464,7 @@ def _assert_attempt_accounting_replay(
     *,
     evidence: M5AttemptExecutionEvidence,
     observation: M5RuntimeTimingObservation,
+    expected_applied_revision: int | None = None,
 ) -> str:
     """Validate the immutable evidence, timing and attempt-contribution bytes."""
 
@@ -2205,7 +2476,7 @@ def _assert_attempt_accounting_replay(
     row = cursor.execute(
         sql.SQL(
             "SELECT {}, work_digest, source_identity_hash, "
-            "contribution_key_digest "
+            "contribution_key_digest, applied_revision "
             "FROM groundloop_m5_runtime_work_contribution "
             "WHERE epoch_id = %s AND contribution_kind = "
             "'direct_attempt_execution' AND source_id = %s"
@@ -2228,6 +2499,10 @@ def _assert_attempt_accounting_replay(
         or _strip(row[offset]) != evidence.attempt_work.work_digest
         or _strip(row[offset + 1]) != evidence.evidence_digest
         or _strip(row[offset + 2]) != expected_key
+        or (
+            expected_applied_revision is not None
+            and int(row[offset + 3]) != expected_applied_revision
+        )
     ):
         raise EventConflictError("direct attempt contribution replay differs")
     timing = cursor.execute(
@@ -2644,6 +2919,37 @@ def _load_terminal_projection(
     )
 
 
+def _lock_all_terminal_projections(
+    cursor: Cursor[Any], epoch_id: int
+) -> dict[str, M5TypedDirectTerminalProjection]:
+    """Lock and reconstruct the complete direct projection set in C order."""
+
+    rows = cursor.execute(
+        """
+        SELECT job_id, terminal_state, terminal_reason, m4_completion_digest,
+               completed_revision, terminal_identity_hash
+        FROM groundloop_m5_direct_terminal_projection
+        WHERE epoch_id = %s
+        ORDER BY job_id COLLATE "C"
+        FOR UPDATE
+        """,
+        (epoch_id,),
+    ).fetchall()
+    projections: dict[str, M5TypedDirectTerminalProjection] = {}
+    for row in rows:
+        job_id = str(row[0])
+        if job_id in projections:
+            raise ValidationError("typed-direct terminal projection repeats a job")
+        projections[job_id] = M5TypedDirectTerminalProjection(
+            terminal_state=JobState(str(row[1])),
+            terminal_reason=None if row[2] is None else str(row[2]),
+            m4_completion_digest=(None if row[3] is None else _strip(row[3])),
+            completed_revision=int(row[4]),
+            terminal_identity_hash=_strip(row[5]),
+        )
+    return projections
+
+
 def _classify_first_late_return(
     cursor: Cursor[Any],
     *,
@@ -2716,6 +3022,568 @@ class PostgresM5DirectRecoveryStore:
 
     def __init__(self, ports: PostgresM4ApplicationPorts) -> None:
         self._ports = ports
+        self._epoch_failure_plan_authority: dict[
+            int,
+            tuple[
+                int,
+                str,
+                _DirectEpochFailureLockedPlan,
+                tuple[object, ...],
+            ],
+        ] = {}
+
+    @staticmethod
+    def _transaction_identity(cursor: Cursor[Any]) -> str:
+        row = cursor.execute("SELECT pg_current_xact_id()::text").fetchone()
+        if row is None or type(row[0]) is not str or not row[0]:
+            raise ValidationError(
+                "typed-direct failure requires a live PostgreSQL transaction"
+            )
+        return row[0]
+
+    @staticmethod
+    def _validate_complete_terminal_projection_image(
+        m4_plan: _M4TypedDirectEpochFailureLockedPlan,
+        projections: dict[str, M5TypedDirectTerminalProjection],
+    ) -> None:
+        terminal_images = {
+            image.job.job_id: image
+            for image in m4_plan.job_locks.jobs
+            if image.state.terminal
+        }
+        if set(projections) != set(terminal_images):
+            raise ValidationError(
+                "typed-direct terminal projections do not cover terminal jobs exactly"
+            )
+        for job_id, image in terminal_images.items():
+            projection = projections[job_id]
+            projection.validate_job(job_id)
+            if (
+                projection.terminal_state is not image.state
+                or projection.completed_revision != image.completed_revision
+                or projection.m4_completion_digest != image.completion_digest
+            ):
+                raise ValidationError(
+                    "typed-direct projection differs from its locked M4 job"
+                )
+            if (
+                image.state is JobState.CANCELLED
+                and image.completed_revision == m4_plan.job_locks.expected_revision + 1
+                and (
+                    projection.terminal_reason != "epoch_failed"
+                    or projection.m4_completion_digest is not None
+                )
+            ):
+                raise ValidationError(
+                    "newly cancelled direct projection must be epoch_failed"
+                )
+
+    def _epoch_failure_plan_snapshot(
+        self,
+        plan: _DirectEpochFailureLockedPlan,
+    ) -> tuple[object, ...]:
+        if type(plan) is not _DirectEpochFailureLockedPlan:
+            raise ValidationError("direct failure plan has another type")
+        if type(plan.branch) is not str or plan.branch not in {
+            "first",
+            "replay",
+            "loser",
+            "generic_first",
+            "generic_replay",
+        }:
+            raise ValidationError("direct failure plan branch is malformed")
+        for value, expected, label in (
+            (plan.evidence, M5AttemptExecutionEvidence, "evidence"),
+            (plan.observation, M5RuntimeTimingObservation, "observation"),
+            (plan.direct_failure, M5DirectCursorContributionReceipt, "receipt"),
+            (
+                plan.terminal_acquisition,
+                M5TypedDirectAcquisitionReceipt,
+                "terminal acquisition",
+            ),
+        ):
+            if value is not None and type(value) is not expected:
+                raise ValidationError(f"direct failure plan {label} has another type")
+        if plan.target_terminal_reason is not None and (
+            type(plan.target_terminal_reason) is not str
+            or not plan.target_terminal_reason.strip()
+        ):
+            raise ValidationError("direct failure plan terminal reason is malformed")
+        m4_snapshot = self._ports._typed_failure_plan_snapshot(plan.m4_plan)
+        return (
+            "_DirectEpochFailureLockedPlan",
+            m4_snapshot,
+            _canonical_direct_failure_authority_value(plan.branch),
+            _canonical_direct_failure_authority_value(plan.evidence),
+            _canonical_direct_failure_authority_value(plan.observation),
+            _canonical_direct_failure_authority_value(plan.direct_failure),
+            _canonical_direct_failure_authority_value(plan.terminal_acquisition),
+            _canonical_direct_failure_authority_value(plan.target_terminal_reason),
+        )
+
+    def lock_direct_epoch_failure_details(
+        self,
+        cursor: Cursor[Any],
+        *,
+        epoch_id: int,
+        expected_revision: int,
+        m4_plan: _M4TypedDirectEpochFailureLockedPlan,
+        job: LogicalJobSpec | None,
+        lease: M5TypedDirectJobLease | None,
+        direct_terminal_reason: str | None,
+        error_hash: str | None,
+        attempt_work: M5RuntimeWork | None,
+        attempt_timing: M5RuntimeTiming | None,
+    ) -> _DirectEpochFailureLockedPlan:
+        """Lock direct sidecars and classify first/replay/loser without writes."""
+
+        _assert_literal_recovery_bundle(cursor)
+        if type(m4_plan) is not _M4TypedDirectEpochFailureLockedPlan:
+            raise ValidationError("direct failure requires an exact M4 locked plan")
+        if (
+            m4_plan.job_locks.epoch_id != epoch_id
+            or m4_plan.job_locks.expected_revision != expected_revision
+        ):
+            raise EventConflictError("direct and M4 failure coordinates differ")
+        target_values = (
+            job,
+            lease,
+            direct_terminal_reason,
+            error_hash,
+            attempt_work,
+        )
+        target_present = any(value is not None for value in target_values)
+        if target_present != all(value is not None for value in target_values):
+            raise ValidationError(
+                "direct terminal-failure inputs must be jointly present"
+            )
+        if not target_present and attempt_timing is not None:
+            raise ValidationError("generic epoch failure cannot carry attempt timing")
+
+        locked = _lock_direct_header(cursor, epoch_id)
+        if expected_revision > locked.runtime_revision:
+            raise EventConflictError("direct failure names a future revision")
+        projections = _lock_all_terminal_projections(cursor, epoch_id)
+        self._validate_complete_terminal_projection_image(m4_plan, projections)
+
+        if not target_present:
+            if m4_plan.target_job is not None or m4_plan.target_attempt is not None:
+                raise ValidationError("generic epoch failure received an M4 target")
+            branch: Literal["generic_first", "generic_replay"]
+            if locked.runtime_state == "failed":
+                if locked.runtime_revision != expected_revision + 1:
+                    raise EventConflictError(
+                        "generic epoch-failure replay has another revision"
+                    )
+                branch = "generic_replay"
+            else:
+                if locked.runtime_revision != expected_revision:
+                    raise EventConflictError("stale generic epoch-failure revision")
+                branch = "generic_first"
+            plan = _DirectEpochFailureLockedPlan(
+                m4_plan=m4_plan,
+                branch=branch,
+                evidence=None,
+                observation=None,
+                direct_failure=None,
+                terminal_acquisition=None,
+                target_terminal_reason=None,
+            )
+            if branch == "generic_first":
+                self._epoch_failure_plan_authority[id(plan)] = (
+                    id(cursor),
+                    self._transaction_identity(cursor),
+                    plan,
+                    self._epoch_failure_plan_snapshot(plan),
+                )
+            return plan
+
+        assert job is not None
+        assert lease is not None
+        assert direct_terminal_reason is not None
+        assert error_hash is not None
+        assert attempt_work is not None
+        if type(job) is not LogicalJobSpec:
+            raise ValidationError("direct failure job has another type")
+        if type(lease) is not M5TypedDirectJobLease:
+            raise ValidationError("direct failure lease has another type")
+        if (
+            type(direct_terminal_reason) is not str
+            or not direct_terminal_reason.strip()
+        ):
+            raise ValidationError("direct terminal reason must be exact nonempty text")
+        if type(attempt_work) is not M5RuntimeWork:
+            raise ValidationError("direct attempt work has another type")
+        if attempt_timing is not None and type(attempt_timing) is not M5RuntimeTiming:
+            raise ValidationError("direct attempt timing has another type")
+        if (
+            job.job_id != lease.job_id
+            or lease.disposition
+            not in {
+                M5AcquisitionDisposition.DISPATCH_NEW,
+                M5AcquisitionDisposition.DISPATCH_TAKEOVER,
+            }
+            or lease.should_execute is not True
+            or lease.exact_replay is not False
+            or lease.already_completed is not False
+            or lease.resulting_revision != expected_revision
+        ):
+            raise EventConflictError("direct failure lease is not the dispatched input")
+        attempt_id, token, deadline = _require_direct_lease_binding(lease)
+        if (
+            m4_plan.target_job != job
+            or m4_plan.target_attempt is None
+            or m4_plan.target_attempt.attempt_id != attempt_id
+        ):
+            raise EventConflictError("direct failure target differs from its M4 plan")
+        point_job = self._ports.runtime_store.read_job_point(
+            epoch_id, job.job_id, cursor=cursor
+        )
+        if point_job.spec != job or point_job.latest_attempt is None:
+            raise EventConflictError("direct failure job differs from durable M4")
+        binding = _load_named_attempt(
+            cursor, epoch_id=epoch_id, job_id=job.job_id, attempt_id=attempt_id
+        )
+        _validate_lease_against_attempt(lease, binding)
+        latest = point_job.latest_attempt
+        if latest.attempt != binding.attempt or latest.lease_expires_at != deadline:
+            raise EventConflictError("direct failure input is not the latest attempt")
+        if binding.attempt.lease_token_hash != token:
+            raise EventConflictError("direct failure token changed")
+        dispatch = _load_dispatch_record(cursor, epoch_id, attempt_id)
+        if (
+            dispatch.record_digest != lease.dispatch_record_digest
+            or dispatch.logical_job_id != job.job_id
+            or dispatch.attempt_ordinal != binding.attempt.attempt_ordinal
+            or dispatch.job_kind != job.kind.value
+            or dispatch.dispatched_revision != lease.resulting_revision
+            or dispatch.lease_expires_at != deadline
+        ):
+            raise EventConflictError("direct failure dispatch binding differs")
+        observation, timing_digest = _execution_timing_observation(
+            epoch_id=epoch_id, attempt_id=attempt_id, timing=attempt_timing
+        )
+        evidence = M5AttemptExecutionEvidence.build(
+            epoch_id=epoch_id,
+            subgraph=M5RuntimeSubgraph.DIRECT,
+            attempt_id=attempt_id,
+            disposition=M5ExecutionEvidenceDisposition.TERMINAL_FAILURE,
+            result_or_error_hash=error_hash,
+            attempt_work=attempt_work,
+            attempt_timing_digest=timing_digest,
+        )
+        existing = _load_execution_evidence(
+            cursor, epoch_id=epoch_id, attempt_id=attempt_id
+        )
+
+        if (
+            point_job.state is JobState.RUNNING
+            and latest.state == "leased"
+            and locked.runtime_state not in _TERMINAL_RUNTIME_STATES
+        ):
+            if locked.runtime_revision != expected_revision or existing is not None:
+                raise EventConflictError("direct first failure has stale evidence")
+            if job.job_id in projections:
+                raise ValidationError("running direct target already has a projection")
+            contribution_key = digests.runtime_work_contribution_key_digest(
+                epoch_id=epoch_id,
+                contribution_kind=(
+                    M5RuntimeWorkContributionKind.DIRECT_ATTEMPT_EXECUTION
+                ),
+                source_id=attempt_id,
+            )
+            receipt = M5DirectCursorContributionReceipt(
+                epoch_id=epoch_id,
+                job_id=job.job_id,
+                attempt_id=attempt_id,
+                execution_evidence_digest=evidence.evidence_digest,
+                attempt_execution_contribution_key_digest=contribution_key,
+                direct_transition_source_id=None,
+                direct_transition_source_identity_hash=None,
+                direct_transition_contribution_key_digest=None,
+                observation_completion=None,
+            )
+            plan = _DirectEpochFailureLockedPlan(
+                m4_plan=m4_plan,
+                branch="first",
+                evidence=evidence,
+                observation=observation,
+                direct_failure=receipt,
+                terminal_acquisition=None,
+                target_terminal_reason=direct_terminal_reason,
+            )
+            self._epoch_failure_plan_authority[id(plan)] = (
+                id(cursor),
+                self._transaction_identity(cursor),
+                plan,
+                self._epoch_failure_plan_snapshot(plan),
+            )
+            return plan
+
+        projection = projections.get(job.job_id)
+        if (
+            point_job.state is JobState.TERMINAL_FAILED
+            and latest.state == "failed"
+            and locked.runtime_state == "failed"
+        ):
+            if (
+                locked.runtime_revision != expected_revision + 1
+                or projection is None
+                or projection.terminal_state is not JobState.TERMINAL_FAILED
+                or projection.terminal_reason != direct_terminal_reason
+                or projection.m4_completion_digest is not None
+                or projection.completed_revision != locked.runtime_revision
+                or existing is None
+            ):
+                raise EventConflictError("direct terminal-failure replay differs")
+            contribution_key = _assert_attempt_accounting_replay(
+                cursor,
+                evidence=evidence,
+                observation=observation,
+                expected_applied_revision=locked.runtime_revision,
+            )
+            receipt = M5DirectCursorContributionReceipt(
+                epoch_id=epoch_id,
+                job_id=job.job_id,
+                attempt_id=attempt_id,
+                execution_evidence_digest=evidence.evidence_digest,
+                attempt_execution_contribution_key_digest=contribution_key,
+                direct_transition_source_id=None,
+                direct_transition_source_identity_hash=None,
+                direct_transition_contribution_key_digest=None,
+                observation_completion=None,
+            )
+            return _DirectEpochFailureLockedPlan(
+                m4_plan=m4_plan,
+                branch="replay",
+                evidence=evidence,
+                observation=observation,
+                direct_failure=receipt,
+                terminal_acquisition=None,
+                target_terminal_reason=direct_terminal_reason,
+            )
+
+        if (
+            point_job.state is JobState.CANCELLED
+            and latest.state == "leased"
+            and locked.runtime_state == "failed"
+            and existing is None
+        ):
+            if (
+                locked.runtime_revision != expected_revision + 1
+                or projection is None
+                or projection.terminal_state is not JobState.CANCELLED
+                or projection.terminal_reason != "epoch_failed"
+                or projection.m4_completion_digest is not None
+                or projection.completed_revision != locked.runtime_revision
+            ):
+                raise EventConflictError("direct cancellation loser differs")
+            terminal_lease = M5TypedDirectJobLease(
+                job_id=job.job_id,
+                attempt_id=attempt_id,
+                lease_token_hash=token,
+                lease_expires_at=deadline,
+                dispatch_record_digest=dispatch.record_digest,
+                resulting_revision=locked.runtime_revision,
+                disposition=M5AcquisitionDisposition.TERMINAL,
+                should_execute=False,
+                exact_replay=True,
+                already_completed=False,
+                terminal_projection=projection,
+            )
+            acquisition = M5TypedDirectAcquisitionReceipt(
+                epoch_id=epoch_id,
+                job=job,
+                lease=terminal_lease,
+                attempt=binding.attempt,
+            )
+            return _DirectEpochFailureLockedPlan(
+                m4_plan=m4_plan,
+                branch="loser",
+                evidence=None,
+                observation=None,
+                direct_failure=None,
+                terminal_acquisition=acquisition,
+                target_terminal_reason=None,
+            )
+        raise EventConflictError("direct terminal failure has no checked outcome")
+
+    def apply_direct_epoch_failure(
+        self,
+        cursor: Cursor[Any],
+        *,
+        plan: _DirectEpochFailureLockedPlan,
+        m4_stage: _M4TypedDirectEpochFailureStage,
+    ) -> _AppliedDirectEpochFailure:
+        """Write only prevalidated projection/evidence/contribution candidates."""
+
+        if type(m4_stage) is not _M4TypedDirectEpochFailureStage:
+            raise ValidationError("direct failure M4 stage has another type")
+        authority = self._epoch_failure_plan_authority.pop(id(plan), None)
+        if (
+            authority is None
+            or authority[0] != id(cursor)
+            or authority[1] != self._transaction_identity(cursor)
+            or authority[2] is not plan
+            or authority[3] != self._epoch_failure_plan_snapshot(plan)
+        ):
+            raise EventConflictError(
+                "direct failure plan is mutated, stale, copied, or cross-cursor"
+            )
+        if plan.branch not in {"first", "generic_first"}:
+            raise EventConflictError("only a first-write direct plan can be applied")
+        if (
+            m4_stage.target_job != plan.m4_plan.target_job
+            or m4_stage.target_attempt != plan.m4_plan.target_attempt
+            or m4_stage.cancelled_jobs != plan.m4_plan.cancelled_jobs
+            or m4_stage.resulting_revision
+            != plan.m4_plan.job_locks.expected_revision + 1
+        ):
+            raise EventConflictError("direct failure M4 stage changed its locked plan")
+
+        resulting_revision = m4_stage.resulting_revision
+        if plan.branch == "first":
+            if (
+                plan.evidence is None
+                or plan.observation is None
+                or plan.direct_failure is None
+                or m4_stage.target_job is None
+                or m4_stage.target_attempt is None
+            ):
+                raise ValidationError("checked direct first-write plan is incomplete")
+            _insert_terminal_projection(
+                cursor,
+                epoch_id=plan.evidence.epoch_id,
+                job_id=m4_stage.target_job.job_id,
+                terminal_state=JobState.TERMINAL_FAILED,
+                terminal_reason=self._terminal_reason_for_plan(plan),
+                completion_digest=None,
+                completed_revision=resulting_revision,
+            )
+            dispatch = _load_dispatch_record(
+                cursor, plan.evidence.epoch_id, plan.evidence.attempt_id
+            )
+            _insert_execution_evidence(
+                cursor, evidence=plan.evidence, dispatch=dispatch
+            )
+            _insert_attempt_timing(
+                cursor, evidence=plan.evidence, observation=plan.observation
+            )
+            contribution_key = _insert_work_contribution(
+                cursor,
+                epoch_id=plan.evidence.epoch_id,
+                contribution_kind=(
+                    M5RuntimeWorkContributionKind.DIRECT_ATTEMPT_EXECUTION
+                ),
+                source_id=plan.evidence.attempt_id,
+                source_identity_hash=plan.evidence.evidence_digest,
+                work=plan.evidence.attempt_work,
+                applied_revision=resulting_revision,
+            )
+            if (
+                contribution_key
+                != plan.direct_failure.attempt_execution_contribution_key_digest
+            ):
+                raise ValidationError("direct failure contribution identity changed")
+        for cancelled_job in m4_stage.cancelled_jobs:
+            _insert_terminal_projection(
+                cursor,
+                epoch_id=plan.m4_plan.job_locks.epoch_id,
+                job_id=cancelled_job.job_id,
+                terminal_state=JobState.CANCELLED,
+                terminal_reason="epoch_failed",
+                completion_digest=None,
+                completed_revision=resulting_revision,
+            )
+        return _AppliedDirectEpochFailure(
+            direct_failure=plan.direct_failure,
+            attempt_observation=plan.observation,
+        )
+
+    def validate_applied_direct_epoch_failure(
+        self,
+        cursor: Cursor[Any],
+        *,
+        plan: _DirectEpochFailureLockedPlan,
+        m4_stage: _M4TypedDirectEpochFailureStage,
+    ) -> None:
+        """Re-read every compact direct receipt key after shared finalization."""
+
+        if plan.branch not in {"first", "generic_first"}:
+            raise ValidationError("only an applied direct failure can be re-read")
+        epoch_id = plan.m4_plan.job_locks.epoch_id
+        final_revision = m4_stage.resulting_revision
+        for cancelled_job in m4_stage.cancelled_jobs:
+            projection = _load_terminal_projection(
+                cursor, epoch_id, cancelled_job.job_id
+            )
+            if (
+                projection.terminal_state is not JobState.CANCELLED
+                or projection.terminal_reason != "epoch_failed"
+                or projection.m4_completion_digest is not None
+                or projection.completed_revision != final_revision
+            ):
+                raise ValidationError("applied direct cancellation projection changed")
+        if plan.branch == "generic_first":
+            return
+        if (
+            plan.evidence is None
+            or plan.observation is None
+            or plan.direct_failure is None
+            or m4_stage.target_job is None
+            or m4_stage.target_attempt is None
+        ):
+            raise ValidationError("applied checked direct failure is incomplete")
+        target = self._ports.runtime_store.read_job_point(
+            epoch_id, m4_stage.target_job.job_id, cursor=cursor
+        )
+        latest = target.latest_attempt
+        projection = _load_terminal_projection(
+            cursor, epoch_id, m4_stage.target_job.job_id
+        )
+        if (
+            target.spec != m4_stage.target_job
+            or target.state is not JobState.TERMINAL_FAILED
+            or latest is None
+            or latest.attempt != m4_stage.target_attempt
+            or latest.state != "failed"
+            or projection.terminal_state is not JobState.TERMINAL_FAILED
+            or projection.terminal_reason != plan.target_terminal_reason
+            or projection.m4_completion_digest is not None
+            or projection.completed_revision != final_revision
+        ):
+            raise ValidationError("applied direct target projection changed")
+        contribution_key = _assert_attempt_accounting_replay(
+            cursor,
+            evidence=plan.evidence,
+            observation=plan.observation,
+            expected_applied_revision=final_revision,
+        )
+        if (
+            plan.direct_failure.epoch_id != epoch_id
+            or plan.direct_failure.job_id != m4_stage.target_job.job_id
+            or plan.direct_failure.attempt_id != m4_stage.target_attempt.attempt_id
+            or plan.direct_failure.execution_evidence_digest
+            != plan.evidence.evidence_digest
+            or plan.direct_failure.attempt_execution_contribution_key_digest
+            != contribution_key
+        ):
+            raise ValidationError("applied direct failure receipt changed")
+
+    def discard_epoch_failure_authority(self) -> None:
+        """Discard transaction-local candidates after an outer rollback."""
+
+        self._epoch_failure_plan_authority.clear()
+
+    @staticmethod
+    def _terminal_reason_for_plan(plan: _DirectEpochFailureLockedPlan) -> str:
+        target = plan.m4_plan.target_job
+        if target is None:
+            raise ValidationError("direct target projection lacks its target")
+        reason = plan.target_terminal_reason
+        if type(reason) is not str or not reason:
+            raise ValidationError("direct target projection lacks its exact reason")
+        return reason
 
     def acquire_direct_job(
         self,
@@ -2725,9 +3593,58 @@ class PostgresM5DirectRecoveryStore:
         job: LogicalJobSpec,
         lease_token_hash: str,
     ) -> M5TypedDirectJobLease:
-        """Return the total D24 direct acquisition under the caller transaction."""
+        """Retain the checked caller-token cursor compatibility surface."""
+
+        if type(lease_token_hash) is not str:
+            raise ValidationError("typed-direct compatibility token must be exact text")
+        return self._acquire_direct_job(
+            cursor,
+            epoch_id,
+            expected_revision,
+            job,
+            supplied_lease_token_hash=lease_token_hash,
+        ).lease
+
+    def acquire_direct_job_tokenless(
+        self,
+        cursor: Cursor[Any],
+        epoch_id: int,
+        expected_revision: int,
+        job: LogicalJobSpec,
+    ) -> M5TypedDirectAcquisitionReceipt:
+        """Select/read the exact M4 attempt under the owning transaction."""
+
+        return self._acquire_direct_job(
+            cursor,
+            epoch_id,
+            expected_revision,
+            job,
+            supplied_lease_token_hash=None,
+        )
+
+    def _acquire_direct_job(
+        self,
+        cursor: Cursor[Any],
+        epoch_id: int,
+        expected_revision: int,
+        job: LogicalJobSpec,
+        *,
+        supplied_lease_token_hash: str | None,
+    ) -> M5TypedDirectAcquisitionReceipt:
+        """Return one byte-total total acquisition under the caller transaction."""
 
         _assert_literal_recovery_bundle(cursor)
+        if type(epoch_id) is not int or epoch_id < 1:
+            raise InvalidEventError("typed-direct epoch ID must be positive")
+        if type(expected_revision) is not int or expected_revision < 1:
+            raise InvalidEventError("typed-direct revision must be positive")
+        if type(job) is not LogicalJobSpec:
+            raise ValidationError("typed-direct job must be exact LogicalJobSpec")
+        if supplied_lease_token_hash is not None and (
+            type(supplied_lease_token_hash) is not str
+            or len(supplied_lease_token_hash) != 64
+        ):
+            raise ValidationError("typed-direct compatibility token is malformed")
         locked = _lock_direct_header(cursor, epoch_id)
         if expected_revision > locked.runtime_revision:
             raise EventConflictError("direct acquisition names a future revision")
@@ -2740,6 +3657,30 @@ class PostgresM5DirectRecoveryStore:
         latest = point_job.latest_attempt
 
         if point_job.state.terminal:
+            if supplied_lease_token_hash is not None:
+                terminal_token_candidates = (
+                    (
+                        stable_m4_digest(
+                            "m4-lease-token-v1",
+                            job.job_id,
+                            "1",
+                        ),
+                    )
+                    if latest is None
+                    else (
+                        latest.attempt.lease_token_hash,
+                        stable_m4_digest(
+                            "m4-lease-token-v1",
+                            job.job_id,
+                            str(latest.attempt.attempt_ordinal + 1),
+                        ),
+                    )
+                )
+                if supplied_lease_token_hash not in terminal_token_candidates:
+                    raise EventConflictError(
+                        "terminal direct lease token is not a bounded deterministic "
+                        "candidate"
+                    )
             projection = _load_terminal_projection(cursor, epoch_id, job.job_id)
             dispatch: tuple[str, datetime] | None = None
             if latest is not None:
@@ -2750,7 +3691,7 @@ class PostgresM5DirectRecoveryStore:
                     raise ValidationError(
                         "terminal direct attempt lacks its exact dispatch record"
                     )
-            return M5TypedDirectJobLease(
+            lease = M5TypedDirectJobLease(
                 job_id=job.job_id,
                 attempt_id=None if latest is None else latest.attempt.attempt_id,
                 lease_token_hash=(
@@ -2766,6 +3707,12 @@ class PostgresM5DirectRecoveryStore:
                 in {JobState.COMPLETED_ACTIVE, JobState.COMPLETED_INACTIVE},
                 terminal_projection=projection,
             )
+            return M5TypedDirectAcquisitionReceipt(
+                epoch_id=epoch_id,
+                job=job,
+                lease=lease,
+                attempt=None if latest is None else latest.attempt,
+            )
 
         if point_job.state is JobState.RUNNING:
             if latest is None or latest.state != "leased":
@@ -2778,11 +3725,14 @@ class PostgresM5DirectRecoveryStore:
             if dispatch is None or dispatch[1] != latest.lease_expires_at:
                 raise ValidationError("active direct attempt lacks exact dispatch")
             if decision_time < latest.lease_expires_at:
-                if lease_token_hash != latest.attempt.lease_token_hash:
+                if (
+                    supplied_lease_token_hash is not None
+                    and supplied_lease_token_hash != latest.attempt.lease_token_hash
+                ):
                     raise EventConflictError(
                         "live direct lease token differs from active attempt"
                     )
-                return M5TypedDirectJobLease(
+                lease = M5TypedDirectJobLease(
                     job_id=job.job_id,
                     attempt_id=latest.attempt.attempt_id,
                     lease_token_hash=latest.attempt.lease_token_hash,
@@ -2795,6 +3745,12 @@ class PostgresM5DirectRecoveryStore:
                     already_completed=False,
                     terminal_projection=None,
                 )
+                return M5TypedDirectAcquisitionReceipt(
+                    epoch_id=epoch_id,
+                    job=job,
+                    lease=lease,
+                    attempt=latest.attempt,
+                )
             ordinal = latest.attempt.attempt_ordinal + 1
             disposition = M5AcquisitionDisposition.DISPATCH_TAKEOVER
         elif point_job.state in {JobState.DECLARED, JobState.RETRYABLE_FAILED}:
@@ -2806,7 +3762,10 @@ class PostgresM5DirectRecoveryStore:
         if expected_revision != locked.runtime_revision:
             raise EventConflictError("stale revision cannot dispatch direct work")
         expected_token = stable_m4_digest("m4-lease-token-v1", job.job_id, str(ordinal))
-        if lease_token_hash != expected_token:
+        if (
+            supplied_lease_token_hash is not None
+            and supplied_lease_token_hash != expected_token
+        ):
             raise EventConflictError("direct acquisition token is not deterministic")
         attempt = JobAttempt(
             attempt_id=stable_m4_digest("m4-job-attempt-v1", job.job_id, str(ordinal)),
@@ -2845,13 +3804,10 @@ class PostgresM5DirectRecoveryStore:
             raise ValidationError(
                 "M4 direct acquisition advanced an unexpected revision"
             )
-        base = cursor.execute(
-            "SELECT semantic_status FROM groundloop_epoch WHERE epoch_id = %s",
-            (epoch_id,),
-        ).fetchone()
-        assert base is not None
-        runtime_state = (
-            "semantic_complete" if str(base[0]) == "complete" else "semantic_pending"
+        runtime_state = _project_direct_runtime_state(
+            cursor,
+            epoch_id=epoch_id,
+            resulting_revision=resulting_revision,
         )
         changed = cursor.execute(
             """
@@ -2863,6 +3819,12 @@ class PostgresM5DirectRecoveryStore:
         ).rowcount
         if changed != 1:
             raise EventConflictError("typed runtime changed before direct dispatch")
+        _advance_pending_counter_revisions(
+            cursor,
+            epoch_id=epoch_id,
+            expected_revision=expected_revision,
+            resulting_revision=resulting_revision,
+        )
         dispatch_record = M5DispatchRecord.build(
             epoch_id=epoch_id,
             subgraph=M5RuntimeSubgraph.DIRECT,
@@ -2901,7 +3863,7 @@ class PostgresM5DirectRecoveryStore:
             terminal_transition=False,
         )
         _install_pending_anchor(cursor, anchor)
-        return M5TypedDirectJobLease(
+        lease = M5TypedDirectJobLease(
             job_id=job.job_id,
             attempt_id=attempt.attempt_id,
             lease_token_hash=attempt.lease_token_hash,
@@ -2913,6 +3875,12 @@ class PostgresM5DirectRecoveryStore:
             exact_replay=False,
             already_completed=False,
             terminal_projection=None,
+        )
+        return M5TypedDirectAcquisitionReceipt(
+            epoch_id=epoch_id,
+            job=job,
+            lease=lease,
+            attempt=attempt,
         )
 
     def settle_direct_expansion_cursor(
@@ -3599,6 +4567,26 @@ class PostgresM5DirectRecoveryStore:
         attempt_work: M5RuntimeWork,
         attempt_timing: M5RuntimeTiming | None,
     ) -> M5DirectCursorContributionReceipt:
+        return self._mark_direct_retryable_failure_with_outcome(
+            cursor,
+            epoch_id=epoch_id,
+            expected_revision=expected_revision,
+            lease=lease,
+            error_hash=error_hash,
+            attempt_work=attempt_work,
+            attempt_timing=attempt_timing,
+        ).receipt
+
+    def _mark_direct_retryable_failure_with_outcome(
+        self,
+        cursor: Cursor[Any],
+        epoch_id: int,
+        expected_revision: int,
+        lease: M5TypedDirectJobLease,
+        error_hash: str,
+        attempt_work: M5RuntimeWork,
+        attempt_timing: M5RuntimeTiming | None,
+    ) -> _DirectRetryableFailureOutcome:
         return self._settle_direct_failure(
             cursor,
             epoch_id=epoch_id,
@@ -3621,17 +4609,18 @@ class PostgresM5DirectRecoveryStore:
         attempt_work: M5RuntimeWork,
         attempt_timing: M5RuntimeTiming | None,
     ) -> M5DirectCursorContributionReceipt:
-        if not terminal_reason.strip():
-            raise ValidationError("direct terminal reason must be non-empty")
-        return self._settle_direct_failure(
+        del (
             cursor,
-            epoch_id=epoch_id,
-            expected_revision=expected_revision,
-            lease=lease,
-            terminal_reason=terminal_reason,
-            error_hash=error_hash,
-            attempt_work=attempt_work,
-            attempt_timing=attempt_timing,
+            epoch_id,
+            expected_revision,
+            lease,
+            terminal_reason,
+            error_hash,
+            attempt_work,
+            attempt_timing,
+        )
+        raise EventConflictError(
+            "direct terminal failure requires the checked combined operation"
         )
 
     def _settle_direct_failure(
@@ -3645,7 +4634,7 @@ class PostgresM5DirectRecoveryStore:
         error_hash: str,
         attempt_work: M5RuntimeWork,
         attempt_timing: M5RuntimeTiming | None,
-    ) -> M5DirectCursorContributionReceipt:
+    ) -> _DirectRetryableFailureOutcome:
         _assert_literal_recovery_bundle(cursor)
         locked = _lock_direct_header(cursor, epoch_id)
         if expected_revision > locked.runtime_revision:
@@ -3692,16 +4681,20 @@ class PostgresM5DirectRecoveryStore:
                     or projection.terminal_reason != terminal_reason
                 ):
                     raise EventConflictError("direct terminal-failure replay differs")
-            return M5DirectCursorContributionReceipt(
-                epoch_id=epoch_id,
-                job_id=lease.job_id,
-                attempt_id=attempt_id,
-                execution_evidence_digest=evidence.evidence_digest,
-                attempt_execution_contribution_key_digest=contribution_key,
-                direct_transition_source_id=None,
-                direct_transition_source_identity_hash=None,
-                direct_transition_contribution_key_digest=None,
-                observation_completion=None,
+            return _DirectRetryableFailureOutcome(
+                receipt=M5DirectCursorContributionReceipt(
+                    epoch_id=epoch_id,
+                    job_id=lease.job_id,
+                    attempt_id=attempt_id,
+                    execution_evidence_digest=evidence.evidence_digest,
+                    attempt_execution_contribution_key_digest=contribution_key,
+                    direct_transition_source_id=None,
+                    direct_transition_source_identity_hash=None,
+                    direct_transition_contribution_key_digest=None,
+                    observation_completion=None,
+                ),
+                resulting_revision=locked.runtime_revision,
+                exact_replay=True,
             )
 
         if expected_revision != locked.runtime_revision:
@@ -3770,16 +4763,20 @@ class PostgresM5DirectRecoveryStore:
             prior_revision=expected_revision,
             resulting_revision=resulting_revision,
         )
-        return M5DirectCursorContributionReceipt(
-            epoch_id=epoch_id,
-            job_id=lease.job_id,
-            attempt_id=attempt_id,
-            execution_evidence_digest=evidence.evidence_digest,
-            attempt_execution_contribution_key_digest=contribution_key,
-            direct_transition_source_id=None,
-            direct_transition_source_identity_hash=None,
-            direct_transition_contribution_key_digest=None,
-            observation_completion=None,
+        return _DirectRetryableFailureOutcome(
+            receipt=M5DirectCursorContributionReceipt(
+                epoch_id=epoch_id,
+                job_id=lease.job_id,
+                attempt_id=attempt_id,
+                execution_evidence_digest=evidence.evidence_digest,
+                attempt_execution_contribution_key_digest=contribution_key,
+                direct_transition_source_id=None,
+                direct_transition_source_identity_hash=None,
+                direct_transition_contribution_key_digest=None,
+                observation_completion=None,
+            ),
+            resulting_revision=resulting_revision,
+            exact_replay=False,
         )
 
     def install_outer_transition_anchor(

@@ -8,7 +8,7 @@ commits first, but they never manufacture a lease, receipt, result, or row.
 from __future__ import annotations
 
 from copy import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any
 
@@ -16,7 +16,9 @@ import pytest
 from psycopg import Connection, sql
 
 from groundloop.errors import EventConflictError, InvalidEventError, ValidationError
+from groundloop.m4.application import OpenEventReceipt
 from groundloop.m5.runtime.application import (
+    M5DirectExecutionReceipt,
     M5DiscoveryExecution,
     M5TerminalInvocationTelemetry,
 )
@@ -134,19 +136,38 @@ class CompetingFailurePorts(PostgresM5GroupRequirementPreSealPorts):
         self.reason = reason
         self.canonical: M5EventRunResult | None = None
         self.winner: M5EventRunResult | None = None
+        self.held_open_receipts: dict[int, OpenEventReceipt] = {}
         self.validation_checkpoint: (
             tuple[tuple[str, tuple[tuple[str, str], ...]], ...] | None
         ) = None
+
+    def run_pending_direct(
+        self,
+        epoch_id: int,
+        expected_revision: int,
+        event: M5TypedEventPlan,
+        open_receipt: OpenEventReceipt,
+    ) -> M5DirectExecutionReceipt:
+        if open_receipt.epoch_id != epoch_id:
+            raise AssertionError("application supplied another held open receipt")
+        self.held_open_receipts[epoch_id] = open_receipt
+        return super().run_pending_direct(
+            epoch_id,
+            expected_revision,
+            event,
+            open_receipt,
+        )
 
     def commit_competing_failure(self, epoch_id: int) -> None:
         if self.canonical is not None:
             raise AssertionError("competing terminal transaction ran more than once")
         with self.database.reconnect() as competitor:
             revision = competitor.store.current_revision(epoch_id)
-            winner = competitor.store.fail_typed_epoch_atomically(
+            winner = competitor.store.fail_typed_epoch_with_open_receipt_atomically(
                 epoch_id,
                 revision,
                 self.reason,
+                self.held_open_receipts[epoch_id],
                 M5RuntimeWork(),
             )
             assert winner.state is M5RunState.FAILED
@@ -253,20 +274,22 @@ class LaterAcquisitionCutoffPorts(CompetingFailurePorts):
 class FailureMutatorCutoffPorts(CompetingFailurePorts):
     """Let another same-reason failure win before the checked mutator call."""
 
-    def fail_typed_epoch_atomically(
+    def fail_typed_epoch_with_open_receipt_atomically(
         self,
         epoch_id: int,
         expected_revision: int,
         failure_reason: M5RunFailureReason,
+        open_receipt: OpenEventReceipt,
         call_work: M5RuntimeWork,
     ) -> M5EventRunResult:
         if failure_reason is not self.reason:
             raise AssertionError("checked failure used another reason")
         self.commit_competing_failure(epoch_id)
-        return super().fail_typed_epoch_atomically(
+        return super().fail_typed_epoch_with_open_receipt_atomically(
             epoch_id,
             expected_revision,
             failure_reason,
+            open_receipt,
             call_work,
         )
 
@@ -281,19 +304,22 @@ class DifferentReasonFailureMutatorPorts(CompetingFailurePorts):
     ) -> None:
         super().__init__(database, store, M5RunFailureReason.VERIFIER_ERROR)
 
-    def fail_typed_epoch_atomically(
+    def fail_typed_epoch_with_open_receipt_atomically(
         self,
         epoch_id: int,
         expected_revision: int,
         failure_reason: M5RunFailureReason,
+        open_receipt: OpenEventReceipt,
         call_work: M5RuntimeWork,
     ) -> M5EventRunResult:
         self.commit_competing_failure(epoch_id)
-        return PostgresM5GroupRequirementPreSealPorts.fail_typed_epoch_atomically(
+        base_ports = PostgresM5GroupRequirementPreSealPorts
+        return base_ports.fail_typed_epoch_with_open_receipt_atomically(
             self,
             epoch_id,
             expected_revision,
             failure_reason,
+            open_receipt,
             call_work,
         )
 
@@ -1147,7 +1173,7 @@ def test_c5_concrete_discovery_cutoff_preserves_active_invocation_work(
             ControlledVerifier(d24_application_db),
             measurements,
             runtime_override=ports,
-            bound=bound,
+            bound=replace(bound, facade=ports),
         ).run_event(plan)
 
     assert len(discovery.calls) == 1
@@ -1196,7 +1222,7 @@ def test_c5_concrete_verifier_cutoff_uses_postterminal_audit_only(
             verifier,
             measurements,
             runtime_override=ports,
-            bound=bound,
+            bound=replace(bound, facade=ports),
         ).run_event(plan)
 
     assert len(discovery.calls) == len(verifier.calls) == 1
@@ -1244,7 +1270,7 @@ def test_c6_later_acquisition_observes_concrete_epoch_failed_projection(
             ControlledVerifier(d24_application_db),
             measurements,
             runtime_override=ports,
-            bound=bound,
+            bound=replace(bound, facade=ports),
         ).run_event(plan)
 
     assert ports.acquisition_count == 2
@@ -1290,7 +1316,7 @@ def test_c6_same_reason_failure_mutator_replay_preserves_active_work(
             ControlledVerifier(d24_application_db),
             measurements,
             runtime_override=ports,
-            bound=bound,
+            bound=replace(bound, facade=ports),
         ).run_event(plan)
 
     assert len(discovery.calls) == 1
@@ -1325,7 +1351,7 @@ def test_c6_failure_mutator_rejects_different_durable_reason_without_telemetry(
                 ControlledVerifier(d24_application_db),
                 measurements,
                 runtime_override=ports,
-                bound=bound,
+                bound=replace(bound, facade=ports),
             ).run_event(plan)
 
     assert len(discovery.calls) == 1
@@ -1370,7 +1396,7 @@ def test_c5_concrete_cutoff_rejects_malformed_receipt_or_canonical_result(
                 ControlledVerifier(d24_application_db),
                 measurements,
                 runtime_override=ports,
-                bound=bound,
+                bound=replace(bound, facade=ports),
             ).run_event(plan)
 
     assert ports.corrupted
@@ -1400,7 +1426,7 @@ def test_c6_concrete_cutoff_rejects_malformed_terminal_lease_projection(
                 ControlledVerifier(d24_application_db),
                 measurements,
                 runtime_override=ports,
-                bound=bound,
+                bound=replace(bound, facade=ports),
             ).run_event(plan)
 
     assert ports.acquisition_count == 2
@@ -1432,7 +1458,7 @@ def test_discovery_result_first_order_is_applied_before_ordinary_terminal_reconn
                 ControlledVerifier(d24_application_db),
                 measurements,
                 runtime_override=ports,
-                bound=bound,
+                bound=replace(bound, facade=ports),
             ).run_event(plan)
 
     assert len(discovery.calls) == 1

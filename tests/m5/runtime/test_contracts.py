@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import copy
 from dataclasses import fields, replace
 from datetime import UTC, datetime, timedelta
 from inspect import signature
@@ -10,6 +11,7 @@ from groundloop.domain import (
     DecisionPolicy,
     ModelStamp,
     SemanticObservation,
+    StatusDelta,
     SubjectKind,
     VerificationLabel,
 )
@@ -91,6 +93,8 @@ from groundloop.m5.runtime.contracts import (
     M5CancellationReceipt,
     M5CandidatePolicyManifest,
     M5ChangedStateReference,
+    M5CheckedDirectTerminalFailureReceipt,
+    M5DirectCursorContributionReceipt,
     M5DiscoveryDirection,
     M5DiscoveryScopeContract,
     M5DispatchRecord,
@@ -128,6 +132,7 @@ from groundloop.m5.runtime.contracts import (
     M5TextNormalizerProvenance,
     M5TransitionTimingAnchor,
     M5TransitionTimingReceipt,
+    M5TypedDirectAcquisitionReceipt,
     M5TypedDirectJobLease,
     M5TypedDirectLateReturnEnvelope,
     M5TypedDirectReturnKind,
@@ -147,6 +152,34 @@ H2 = "2" * 64
 H3 = "3" * 64
 H4 = "4" * 64
 D24_DEADLINE = datetime(2026, 8, 6, 12, 0, tzinfo=UTC)
+
+
+class _C7IntSubclass(int):
+    """An equality-compatible integer forbidden by the C7 exact boundary."""
+
+
+class _C7TupleSubclass(tuple[object, ...]):
+    """A tuple subtype forbidden at immutable C7 container boundaries."""
+
+
+class _C7StatusDeltaSubclass(StatusDelta):
+    """A structurally valid delta subtype forbidden by the C7 receipt."""
+
+
+class _C7DuckStateReference:
+    kind = M5StateReferenceKind.CLAIM_STATE
+    object_id = "claim"
+    epoch_id = 7
+    revision = 8
+    state_artifact_hash = H3
+    reference_digest = H4
+
+
+def _c7_unsafe_set(value: object, **changes: object) -> object:
+    changed = copy(value)
+    for name, replacement in changes.items():
+        object.__setattr__(changed, name, replacement)
+    return changed
 
 
 def make_manifest(
@@ -1743,6 +1776,18 @@ def test_d24_public_dto_field_topology_is_exact() -> None:
             "already_completed",
             "terminal_projection",
         ),
+        M5TypedDirectAcquisitionReceipt: (
+            "epoch_id",
+            "job",
+            "lease",
+            "attempt",
+        ),
+        M5CheckedDirectTerminalFailureReceipt: (
+            "direct_failure",
+            "requested_failure_reason",
+            "resulting_revision",
+            "terminal_result",
+        ),
         M5DispatchRecord: (
             "epoch_id",
             "subgraph",
@@ -2458,7 +2503,10 @@ def test_d24_timing_observation_coverage_and_anchor_do_not_confuse_zero_missing(
         "end_to_end_wall_ns",
     ):
         with pytest.raises(ValidationError):
-            replace(M5RuntimeTiming(), **{required_field: None})
+            replace(
+                M5RuntimeTiming(),
+                **{required_field: None},  # type: ignore[arg-type]
+            )
 
     missing_coverage = M5RuntimeTimingCoverage.single_point(
         None, terminal_client_roundtrip_included=False
@@ -2485,7 +2533,7 @@ def test_d24_timing_observation_coverage_and_anchor_do_not_confuse_zero_missing(
         with pytest.raises(ValidationError):
             replace(
                 missing_coverage,
-                **{
+                **{  # type: ignore[arg-type]
                     f"{family}_expected_count": 2,
                     f"{family}_missing_count": 2,
                 },
@@ -2691,6 +2739,367 @@ def _m4_attempt(job: M4LogicalJobSpec) -> M4JobAttempt:
         1,
         stable_m4_digest("m4-lease-token-v1", job.job_id, "1"),
     )
+
+
+def _typed_direct_lease(
+    job: M4LogicalJobSpec,
+    *,
+    disposition: M5AcquisitionDisposition = M5AcquisitionDisposition.DISPATCH_NEW,
+    terminal_state: M4JobState | None = None,
+    terminal_reason: str | None = None,
+    with_attempt: bool = True,
+    resulting_revision: int = 7,
+) -> M5TypedDirectJobLease:
+    attempt = _m4_attempt(job) if with_attempt else None
+    terminal = disposition is M5AcquisitionDisposition.TERMINAL
+    projection = (
+        M5TypedDirectTerminalProjection.build(
+            job_id=job.job_id,
+            terminal_state=(terminal_state or M4JobState.TERMINAL_FAILED),
+            terminal_reason=terminal_reason or "provider_terminal",
+            m4_completion_digest=None,
+            completed_revision=resulting_revision,
+        )
+        if terminal
+        else None
+    )
+    return M5TypedDirectJobLease(
+        job_id=job.job_id,
+        attempt_id=None if attempt is None else attempt.attempt_id,
+        lease_token_hash=None if attempt is None else attempt.lease_token_hash,
+        lease_expires_at=None if attempt is None else D24_DEADLINE,
+        dispatch_record_digest=None if attempt is None else H3,
+        resulting_revision=resulting_revision,
+        disposition=disposition,
+        should_execute=disposition
+        in {
+            M5AcquisitionDisposition.DISPATCH_NEW,
+            M5AcquisitionDisposition.DISPATCH_TAKEOVER,
+        },
+        exact_replay=disposition
+        in {
+            M5AcquisitionDisposition.LIVE_LEASE,
+            M5AcquisitionDisposition.TERMINAL,
+        },
+        already_completed=(
+            terminal_state
+            in {M4JobState.COMPLETED_ACTIVE, M4JobState.COMPLETED_INACTIVE}
+            if terminal
+            else False
+        ),
+        terminal_projection=projection,
+    )
+
+
+def test_c7_typed_direct_acquisition_receipt_binds_exact_job_attempt_and_recipes() -> (
+    None
+):
+    job = _m4_job(
+        kind=M4JobKind.IMPACT_DISCOVERY,
+        target_chunk_version_id="chunk-1",
+    )
+    attempt = _m4_attempt(job)
+    for disposition in (
+        M5AcquisitionDisposition.DISPATCH_NEW,
+        M5AcquisitionDisposition.DISPATCH_TAKEOVER,
+        M5AcquisitionDisposition.LIVE_LEASE,
+    ):
+        lease = _typed_direct_lease(job, disposition=disposition)
+        receipt = M5TypedDirectAcquisitionReceipt(7, job, lease, attempt)
+        assert receipt.job is job
+        assert receipt.attempt is attempt
+
+    terminal_with_attempt = _typed_direct_lease(
+        job,
+        disposition=M5AcquisitionDisposition.TERMINAL,
+    )
+    M5TypedDirectAcquisitionReceipt(7, job, terminal_with_attempt, attempt)
+    terminal_without_attempt = _typed_direct_lease(
+        job,
+        disposition=M5AcquisitionDisposition.TERMINAL,
+        with_attempt=False,
+    )
+    M5TypedDirectAcquisitionReceipt(7, job, terminal_without_attempt, None)
+
+    with pytest.raises(ValidationError):
+        M5TypedDirectAcquisitionReceipt(True, job, terminal_with_attempt, attempt)
+    with pytest.raises(ValidationError):
+        M5TypedDirectAcquisitionReceipt(7, job, terminal_with_attempt, None)
+    with pytest.raises(ValidationError):
+        M5TypedDirectAcquisitionReceipt(
+            7,
+            job,
+            terminal_with_attempt,
+            replace(attempt, attempt_id=H4),
+        )
+    with pytest.raises(ValidationError):
+        M5TypedDirectAcquisitionReceipt(
+            7,
+            job,
+            replace(terminal_with_attempt, lease_token_hash=H4),
+            replace(attempt, lease_token_hash=H4),
+        )
+    other_job = _m4_job(
+        kind=M4JobKind.FRONTIER_RETRIEVE,
+        target_claim_id="claim-2",
+    )
+    with pytest.raises(ValidationError):
+        M5TypedDirectAcquisitionReceipt(7, other_job, terminal_with_attempt, attempt)
+
+
+def _c7_direct_failure_cursor(
+    *, epoch_id: int = 7, with_transition: bool = False
+) -> M5DirectCursorContributionReceipt:
+    attempt_id = stable_m4_digest("m4-job-attempt-v1", "direct-job", "1")
+    source_id = "direct-transition" if with_transition else None
+    return M5DirectCursorContributionReceipt(
+        epoch_id=epoch_id,
+        job_id="direct-job",
+        attempt_id=attempt_id,
+        execution_evidence_digest=H3,
+        attempt_execution_contribution_key_digest=(
+            digests.runtime_work_contribution_key_digest(
+                epoch_id=epoch_id,
+                contribution_kind=(
+                    M5RuntimeWorkContributionKind.DIRECT_ATTEMPT_EXECUTION
+                ),
+                source_id=attempt_id,
+            )
+        ),
+        direct_transition_source_id=source_id,
+        direct_transition_source_identity_hash=H4 if with_transition else None,
+        direct_transition_contribution_key_digest=(
+            digests.runtime_work_contribution_key_digest(
+                epoch_id=epoch_id,
+                contribution_kind=M5RuntimeWorkContributionKind.DIRECT_TRANSITION,
+                source_id=source_id or "",
+            )
+            if with_transition
+            else None
+        ),
+        observation_completion=None,
+    )
+
+
+def _c7_failed_result(
+    *, replayed: bool, active_replay: bool = False
+) -> M5EventRunResult:
+    open_receipt = (
+        OpenEventReceipt(7, True, False)
+        if active_replay
+        else OpenEventReceipt(
+            7,
+            replayed,
+            False,
+            already_failed=replayed,
+            failure_reason=(
+                M5RunFailureReason.RETRIEVAL_ERROR.value if replayed else None
+            ),
+        )
+    )
+    return M5EventRunResult.build(
+        event_id="event",
+        payload_hash=H2,
+        epoch_id=7,
+        state=M5RunState.REPLAYED if replayed else M5RunState.FAILED,
+        replayed_outcome=M5ReplayedOutcome.FAILED if replayed else None,
+        open_receipt=open_receipt,
+        publication_receipt=None,
+        event_work=M5RuntimeWork(bytes_hashed=3),
+        call_work=(
+            M5RuntimeWork(bytes_hashed=2)
+            if active_replay or not replayed
+            else M5RuntimeWork()
+        ),
+        event_timing=M5RuntimeTiming(),
+        call_timing=M5RuntimeTiming(),
+        combined_deltas=(),
+        changed_state_references=(),
+        failure_reason=M5RunFailureReason.RETRIEVAL_ERROR,
+    )
+
+
+def test_c7_checked_direct_failure_receipt_admits_only_first_or_canonical_replay() -> (
+    None
+):
+    cursor = _c7_direct_failure_cursor()
+    first = M5CheckedDirectTerminalFailureReceipt(
+        cursor,
+        M5RunFailureReason.RETRIEVAL_ERROR,
+        8,
+        _c7_failed_result(replayed=False),
+    )
+    replay = M5CheckedDirectTerminalFailureReceipt(
+        cursor,
+        M5RunFailureReason.RETRIEVAL_ERROR,
+        8,
+        _c7_failed_result(replayed=True),
+    )
+    assert first.terminal_result.state is M5RunState.FAILED
+    assert replay.terminal_result.state is M5RunState.REPLAYED
+
+    for reason in (
+        M5RunFailureReason.WORK_IN_PROGRESS,
+        M5RunFailureReason.RETRIEVAL_UNAVAILABLE,
+        M5RunFailureReason.VERIFIER_UNAVAILABLE,
+    ):
+        with pytest.raises(ValidationError):
+            M5CheckedDirectTerminalFailureReceipt(
+                cursor, reason, 8, first.terminal_result
+            )
+    with pytest.raises(ValidationError):
+        M5CheckedDirectTerminalFailureReceipt(
+            _c7_direct_failure_cursor(epoch_id=8),
+            M5RunFailureReason.RETRIEVAL_ERROR,
+            8,
+            first.terminal_result,
+        )
+    with pytest.raises(ValidationError):
+        M5CheckedDirectTerminalFailureReceipt(
+            _c7_direct_failure_cursor(with_transition=True),
+            M5RunFailureReason.RETRIEVAL_ERROR,
+            8,
+            first.terminal_result,
+        )
+    with pytest.raises(ValidationError):
+        M5CheckedDirectTerminalFailureReceipt(
+            cursor,
+            M5RunFailureReason.RETRIEVAL_ERROR,
+            8,
+            _c7_failed_result(replayed=True, active_replay=True),
+        )
+
+
+def test_c7_new_receipts_reject_integer_subclasses_at_every_owned_boundary() -> None:
+    job = _m4_job(
+        kind=M4JobKind.IMPACT_DISCOVERY,
+        target_chunk_version_id="chunk-c7-int",
+    )
+    attempt = _m4_attempt(job)
+    lease = _typed_direct_lease(job)
+    with pytest.raises(ValidationError, match="exact positive int"):
+        M5TypedDirectAcquisitionReceipt(_C7IntSubclass(7), job, lease, attempt)
+    with pytest.raises(ValidationError, match="attempt ordinal"):
+        M5TypedDirectAcquisitionReceipt(
+            7,
+            job,
+            lease,
+            M4JobAttempt(
+                stable_m4_digest("m4-job-attempt-v1", job.job_id, "1"),
+                job.job_id,
+                job.execution_spec_hash,
+                _C7IntSubclass(1),
+                stable_m4_digest("m4-lease-token-v1", job.job_id, "1"),
+            ),
+        )
+
+    cursor = _c7_direct_failure_cursor()
+    first = _c7_failed_result(replayed=False)
+    with pytest.raises(ValidationError, match="exact positive int"):
+        M5CheckedDirectTerminalFailureReceipt(
+            cursor,
+            M5RunFailureReason.RETRIEVAL_ERROR,
+            _C7IntSubclass(8),
+            first,
+        )
+    malformed_result = _c7_unsafe_set(first, epoch_id=_C7IntSubclass(7))
+    with pytest.raises(ValidationError, match="nonexact primitives"):
+        M5CheckedDirectTerminalFailureReceipt(
+            cursor,
+            M5RunFailureReason.RETRIEVAL_ERROR,
+            8,
+            malformed_result,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize(
+    "malformed_field",
+    [
+        "event_work_counter",
+        "call_work_counter",
+        "event_timing_counter",
+        "call_timing_counter",
+        "event_coverage_counter",
+        "call_coverage_counter",
+        "delta_subclass",
+        "duck_state_reference",
+        "delta_tuple_subclass",
+        "state_reference_tuple_subclass",
+    ],
+)
+def test_c7_checked_failure_recursively_rejects_nonexact_terminal_nesting(
+    malformed_field: str,
+) -> None:
+    cursor = _c7_direct_failure_cursor()
+    first = _c7_failed_result(replayed=False)
+    changes: dict[str, object]
+    if malformed_field == "event_work_counter":
+        changes = {
+            "event_work": M5RuntimeWork(bytes_hashed=_C7IntSubclass(1)),
+        }
+    elif malformed_field == "call_work_counter":
+        changes = {
+            "call_work": M5RuntimeWork(bytes_hashed=_C7IntSubclass(2)),
+        }
+    elif malformed_field == "event_timing_counter":
+        changes = {
+            "event_timing": M5RuntimeTiming(
+                coordinator_non_db_non_neural_ns=_C7IntSubclass(0)
+            ),
+        }
+    elif malformed_field == "call_timing_counter":
+        changes = {
+            "call_timing": M5RuntimeTiming(end_to_end_wall_ns=_C7IntSubclass(0)),
+        }
+    elif malformed_field in {"event_coverage_counter", "call_coverage_counter"}:
+        coverage = M5RuntimeTimingCoverage.single_point(
+            None,
+            terminal_client_roundtrip_included=False,
+        )
+        malformed_coverage = _c7_unsafe_set(
+            coverage,
+            required_expected_count=_C7IntSubclass(1),
+        )
+        changes = {
+            "event_timing_coverage": (
+                malformed_coverage
+                if malformed_field == "event_coverage_counter"
+                else coverage
+            ),
+            "call_timing_coverage": (
+                malformed_coverage
+                if malformed_field == "call_coverage_counter"
+                else coverage
+            ),
+        }
+    elif malformed_field == "delta_subclass":
+        changes = {
+            "combined_deltas": (
+                _C7StatusDeltaSubclass(
+                    first.event_id,
+                    "claim",
+                    "claim",
+                    "old",
+                    "new",
+                    "reason",
+                ),
+            )
+        }
+    elif malformed_field == "duck_state_reference":
+        changes = {"changed_state_references": (_C7DuckStateReference(),)}
+    elif malformed_field == "delta_tuple_subclass":
+        changes = {"combined_deltas": _C7TupleSubclass()}
+    else:
+        changes = {"changed_state_references": _C7TupleSubclass()}
+    malformed = _c7_unsafe_set(first, **changes)
+
+    with pytest.raises(ValidationError, match="checked direct failure"):
+        M5CheckedDirectTerminalFailureReceipt(
+            cursor,
+            M5RunFailureReason.RETRIEVAL_ERROR,
+            8,
+            malformed,  # type: ignore[arg-type]
+        )
 
 
 def test_d24_typed_direct_discovery_envelope_binds_exact_epoch_policy_and_scope() -> (
@@ -2969,7 +3378,7 @@ def test_d24_typed_direct_verifier_envelope_enforces_whole_optional_tuple() -> N
         if field.name != "reused_from_observation_id"
     ):
         with pytest.raises(ValidationError):
-            replace(execution, **{required_field: None})
+            replace(execution, **{required_field: None})  # type: ignore[arg-type]
     with pytest.raises(ValidationError):
         replace(execution, raw_logits=(1.0, 2.0))  # type: ignore[arg-type]
     with pytest.raises(ValidationError):

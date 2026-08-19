@@ -82,6 +82,30 @@ def _require_nonempty_text(name: str, value: str) -> None:
         raise ValidationError(f"{name} must be nonempty")
 
 
+def _validated_active_open_receipt(
+    open_receipt: OpenEventReceipt, *, epoch_id: int
+) -> OpenEventReceipt:
+    if (
+        type(open_receipt) is not OpenEventReceipt
+        or type(open_receipt.epoch_id) is not int
+        or open_receipt.epoch_id != epoch_id
+        or open_receipt.epoch_id < 1
+        or type(open_receipt.replayed) is not bool
+        or type(open_receipt.already_sealed) is not bool
+        or type(open_receipt.already_failed) is not bool
+        or open_receipt.already_sealed
+        or open_receipt.publication_id is not None
+        or open_receipt.already_failed
+        or open_receipt.failure_reason is not None
+    ):
+        raise ValidationError(
+            "group facade requires the exact held nonterminal open receipt"
+        )
+    if replace(open_receipt) != open_receipt:
+        raise ValidationError("held open receipt reconstruction changed")
+    return open_receipt
+
+
 def _validated_group(group: EvidenceGroupVersion) -> EvidenceGroupVersion:
     if type(group) is not EvidenceGroupVersion:
         raise ValidationError("group lifecycle event carries another group type")
@@ -417,10 +441,12 @@ class PostgresM5GroupRequirementPreSealPorts:
         epoch_id: int,
         expected_revision: int,
         event: M5TypedEventPlan,
+        open_receipt: OpenEventReceipt,
     ) -> M5DirectExecutionReceipt:
         _require_positive_int("epoch_id", epoch_id)
         _require_positive_int("expected_revision", expected_revision)
         self._validate_bound_event(event)
+        _validated_active_open_receipt(open_receipt, epoch_id=epoch_id)
         return M5DirectExecutionReceipt(
             resulting_revision=expected_revision,
             call_work=M5RuntimeWork(),
@@ -540,15 +566,23 @@ class PostgresM5GroupRequirementPreSealPorts:
             attempt_timing,
         )
 
-    def fail_typed_epoch_atomically(
+    def fail_typed_epoch_with_open_receipt_atomically(
         self,
         epoch_id: int,
         expected_revision: int,
         failure_reason: M5RunFailureReason,
+        open_receipt: OpenEventReceipt,
         call_work: M5RuntimeWork,
     ) -> M5EventRunResult:
-        return self._store.fail_typed_epoch_atomically(
-            epoch_id, expected_revision, failure_reason, call_work
+        _require_positive_int("epoch_id", epoch_id)
+        _require_positive_int("expected_revision", expected_revision)
+        _validated_active_open_receipt(open_receipt, epoch_id=epoch_id)
+        return self._store.fail_typed_epoch_with_open_receipt_atomically(
+            epoch_id,
+            expected_revision,
+            failure_reason,
+            open_receipt,
+            call_work,
         )
 
     def request_typed_seal_atomically(

@@ -14,6 +14,7 @@ an M4 or M5 persistence relation directly.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass, fields, replace
 from typing import Protocol
@@ -33,6 +34,9 @@ from groundloop.m4.contracts import (
     JobKind as M4JobKind,
 )
 from groundloop.m4.contracts import (
+    JobState as M4JobState,
+)
+from groundloop.m4.contracts import (
     LogicalJobSpec as M4LogicalJobSpec,
 )
 from groundloop.m4.contracts import stable_m4_digest
@@ -45,6 +49,7 @@ from groundloop.m5.runtime.contracts import (
     M5AttemptOutput,
     M5CandidatePolicyManifest,
     M5ChangedStateReference,
+    M5CheckedDirectTerminalFailureReceipt,
     M5DirectAttemptReturnReceipt,
     M5DirectLateReturnReceipt,
     M5DirectNormalReturnReceipt,
@@ -79,6 +84,7 @@ from groundloop.m5.runtime.contracts import (
     M5TerminalReason,
     M5TransitionTimingAnchor,
     M5TransitionTimingReceipt,
+    M5TypedDirectAcquisitionReceipt,
     M5TypedDirectReturnKind,
     M5TypedEventPlan,
     SemanticPairKey,
@@ -167,6 +173,10 @@ class M5DirectExecutionReceipt:
     selected_successful_outer_receipt: M5DirectAttemptReturnReceipt | None = None
     selected_successful_outer_return_kind: M5TypedDirectReturnKind | None = None
     selected_successful_outer_job_id: str | None = None
+    selected_terminal_acquisition_receipt: M5TypedDirectAcquisitionReceipt | None = None
+    selected_checked_combined_failure_receipt: (
+        M5CheckedDirectTerminalFailureReceipt | None
+    ) = None
 
     def __post_init__(self) -> None:
         if type(self.resulting_revision) is not int or self.resulting_revision < 1:
@@ -174,18 +184,30 @@ class M5DirectExecutionReceipt:
         if type(self.call_work) is not M5RuntimeWork:
             raise ValidationError("direct execution call work must be exact")
         _validate_exact_runtime_work(self.call_work)
-        if self.blocked_reason is not None and self.terminal_failure_reason is not None:
-            raise ValidationError("direct execution cannot be blocked and terminal")
+        if (
+            self.blocked_reason is not None
+            and type(self.blocked_reason) is not M5RunFailureReason
+        ):
+            raise ValidationError("direct blocked reason must be exact")
+        if (
+            self.terminal_failure_reason is not None
+            and type(self.terminal_failure_reason) is not M5RunFailureReason
+        ):
+            raise ValidationError("direct terminal reason must be exact")
         if self.blocked_reason is not None and self.blocked_reason not in {
+            M5RunFailureReason.WORK_IN_PROGRESS,
             M5RunFailureReason.RETRIEVAL_UNAVAILABLE,
             M5RunFailureReason.VERIFIER_UNAVAILABLE,
         }:
-            raise ValidationError("a blocked direct result requires unavailability")
+            raise ValidationError(
+                "a blocked direct result requires work-in-progress or unavailability"
+            )
         if self.terminal_failure_reason in {
+            M5RunFailureReason.WORK_IN_PROGRESS,
             M5RunFailureReason.RETRIEVAL_UNAVAILABLE,
             M5RunFailureReason.VERIFIER_UNAVAILABLE,
         }:
-            raise ValidationError("terminal direct failure cannot remain retryable")
+            raise ValidationError("terminal direct failure must be terminal")
         selected_values = (
             self.selected_successful_outer_receipt,
             self.selected_successful_outer_return_kind,
@@ -252,6 +274,74 @@ class M5DirectExecutionReceipt:
                 raise ValidationError(
                     "selected direct outer receipt lacks a terminal result hash"
                 )
+
+        selected_terminal = self.selected_terminal_acquisition_receipt
+        if selected_terminal is not None:
+            if type(selected_terminal) is not M5TypedDirectAcquisitionReceipt:
+                raise ValidationError(
+                    "selected terminal acquisition has another receipt type"
+                )
+            replace(selected_terminal)
+            lease = selected_terminal.lease
+            projection = lease.terminal_projection
+            if (
+                lease.disposition is not M5AcquisitionDisposition.TERMINAL
+                or lease.should_execute is not False
+                or lease.exact_replay is not True
+                or projection is None
+                or (
+                    projection.terminal_state is not M4JobState.TERMINAL_FAILED
+                    and projection.terminal_reason != "epoch_failed"
+                )
+            ):
+                raise ValidationError(
+                    "selected terminal acquisition lacks checked failure cutoff"
+                )
+            if lease.resulting_revision != self.resulting_revision:
+                raise ValidationError(
+                    "selected terminal acquisition returned another revision"
+                )
+
+        selected_checked = self.selected_checked_combined_failure_receipt
+        if selected_checked is not None:
+            if type(selected_checked) is not M5CheckedDirectTerminalFailureReceipt:
+                raise ValidationError(
+                    "selected combined failure has another receipt type"
+                )
+            replace(selected_checked)
+            if selected_checked.resulting_revision != self.resulting_revision:
+                raise ValidationError(
+                    "selected combined failure returned another revision"
+                )
+            terminal_result = selected_checked.terminal_result
+            if (
+                terminal_result.state is M5RunState.FAILED
+                and terminal_result.call_work != self.call_work
+            ):
+                raise ValidationError(
+                    "selected combined first failure changed invocation work"
+                )
+            if (
+                terminal_result.state is M5RunState.REPLAYED
+                and not terminal_result.call_work.is_zero
+            ):
+                raise ValidationError(
+                    "selected combined replay must retain canonical zero work"
+                )
+
+        selected_branch_count = sum(
+            (
+                self.blocked_reason is not None,
+                self.terminal_failure_reason is not None,
+                self.selected_successful_outer_receipt is not None,
+                selected_terminal is not None,
+                selected_checked is not None,
+            )
+        )
+        if selected_branch_count > 1:
+            raise ValidationError(
+                "direct execution must select exactly one exclusive outcome branch"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -447,6 +537,7 @@ class M5DirectSubgraphPort(Protocol):
         epoch_id: int,
         expected_revision: int,
         event: M5TypedEventPlan,
+        open_receipt: OpenEventReceipt,
     ) -> M5DirectExecutionReceipt: ...
 
 
@@ -540,11 +631,12 @@ class M5RuntimePersistencePort(Protocol):
         attempt_timing: M5RuntimeTiming | None,
     ) -> M5RequirementAttemptReturnReceipt: ...
 
-    def fail_typed_epoch_atomically(
+    def fail_typed_epoch_with_open_receipt_atomically(
         self,
         epoch_id: int,
         expected_revision: int,
         failure_reason: M5RunFailureReason,
+        open_receipt: OpenEventReceipt,
         call_work: M5RuntimeWork,
     ) -> M5EventRunResult: ...
 
@@ -601,6 +693,161 @@ class M5RuntimeMeasurementPort(Protocol):
     def terminal_invocation(
         self, event: M5TypedEventPlan, result: M5EventRunResult
     ) -> M5TerminalInvocationTelemetry: ...
+
+
+_AppendTransitionCallTiming = Callable[
+    [
+        int,
+        M5RuntimeWorkContributionKind,
+        str,
+        str,
+        int,
+        M5RuntimeTiming | None,
+    ],
+    M5TransitionTimingReceipt,
+]
+
+
+def _snapshot_exact_transition_timing(
+    timing: M5RuntimeTiming,
+) -> M5RuntimeTiming:
+    if type(timing) is not M5RuntimeTiming:
+        raise ValidationError("transition timing must be exact M5RuntimeTiming")
+    for descriptor in fields(M5RuntimeTiming):
+        value = getattr(timing, descriptor.name)
+        if value is not None and type(value) is not int:
+            raise ValidationError("transition timing contains a nonexact counter")
+    snapshot = replace(timing)
+    if snapshot != timing:
+        raise ValidationError("transition timing reconstruction changed")
+    return snapshot
+
+
+def _snapshot_exact_transition_timing_coverage(
+    coverage: M5RuntimeTimingCoverage,
+) -> M5RuntimeTimingCoverage:
+    if type(coverage) is not M5RuntimeTimingCoverage:
+        raise ValidationError(
+            "transition timing coverage must be exact M5RuntimeTimingCoverage"
+        )
+    for descriptor in fields(M5RuntimeTimingCoverage):
+        value = getattr(coverage, descriptor.name)
+        expected_type = (
+            bool if descriptor.name == "terminal_client_roundtrip_included" else int
+        )
+        if type(value) is not expected_type:
+            raise ValidationError(
+                "transition timing coverage contains a nonexact value"
+            )
+    snapshot = replace(coverage)
+    if snapshot != coverage:
+        raise ValidationError("transition timing coverage reconstruction changed")
+    return snapshot
+
+
+def _snapshot_exact_transition_anchor(
+    anchor: M5TransitionTimingAnchor,
+) -> M5TransitionTimingAnchor:
+    if (
+        type(anchor) is not M5TransitionTimingAnchor
+        or type(anchor.epoch_id) is not int
+        or type(anchor.contribution_kind) is not M5RuntimeWorkContributionKind
+        or type(anchor.source_id) is not str
+        or type(anchor.contribution_key_digest) is not str
+        or type(anchor.anchor_revision) is not int
+        or type(anchor.terminal_transition) is not bool
+    ):
+        raise ValidationError("transition timing requires an exact anchor")
+    snapshot = replace(anchor)
+    if snapshot != anchor:
+        raise ValidationError("transition timing anchor reconstruction changed")
+    return snapshot
+
+
+def _snapshot_exact_transition_observation(
+    observation: M5RuntimeTimingObservation,
+) -> M5RuntimeTimingObservation:
+    if (
+        type(observation) is not M5RuntimeTimingObservation
+        or type(observation.required_interval_observed) is not bool
+        or type(observation.observation_digest) is not str
+    ):
+        raise ValidationError("transition timing observation must be exact")
+    timing = (
+        None
+        if observation.timing is None
+        else _snapshot_exact_transition_timing(observation.timing)
+    )
+    snapshot = M5RuntimeTimingObservation(
+        observation.required_interval_observed,
+        timing,
+        observation.observation_digest,
+    )
+    if snapshot != observation:
+        raise ValidationError("transition timing observation reconstruction changed")
+    return snapshot
+
+
+def _snapshot_exact_transition_receipt(
+    receipt: M5TransitionTimingReceipt,
+) -> M5TransitionTimingReceipt:
+    if (
+        type(receipt) is not M5TransitionTimingReceipt
+        or type(receipt.transition_timing_digest) is not str
+        or type(receipt.resulting_revision) is not int
+        or type(receipt.exact_replay) is not bool
+    ):
+        raise ValidationError("transition timing returned another receipt type")
+    anchor = _snapshot_exact_transition_anchor(receipt.anchor)
+    event_timing = _snapshot_exact_transition_timing(receipt.event_timing)
+    coverage = _snapshot_exact_transition_timing_coverage(receipt.event_timing_coverage)
+    snapshot = M5TransitionTimingReceipt(
+        anchor=anchor,
+        transition_timing_digest=receipt.transition_timing_digest,
+        event_timing=event_timing,
+        event_timing_coverage=coverage,
+        resulting_revision=receipt.resulting_revision,
+        exact_replay=receipt.exact_replay,
+    )
+    if snapshot != receipt:
+        raise ValidationError("transition timing receipt reconstruction changed")
+    return snapshot
+
+
+def _append_transition_anchor_checked(
+    *,
+    anchor: M5TransitionTimingAnchor,
+    measurements: M5RuntimeMeasurementPort,
+    append_transition_call_timing: _AppendTransitionCallTiming,
+) -> int:
+    """Measure and append one immutable, recursively checked transition point."""
+
+    trusted_anchor = _snapshot_exact_transition_anchor(anchor)
+    callback_anchor = replace(trusted_anchor)
+    observed = measurements.transition_call_timing(callback_anchor)
+    if _snapshot_exact_transition_anchor(anchor) != trusted_anchor:
+        raise ValidationError("transition measurement mutated the requested anchor")
+    if _snapshot_exact_transition_anchor(callback_anchor) != trusted_anchor:
+        raise ValidationError("transition measurement mutated its anchor copy")
+    trusted_timing = (
+        None if observed is None else _snapshot_exact_transition_timing(observed)
+    )
+    observation = _snapshot_exact_transition_observation(
+        M5RuntimeTimingObservation.build(trusted_timing)
+    )
+    receipt = append_transition_call_timing(
+        trusted_anchor.epoch_id,
+        trusted_anchor.contribution_kind,
+        trusted_anchor.source_id,
+        trusted_anchor.contribution_key_digest,
+        trusted_anchor.anchor_revision,
+        trusted_timing,
+    )
+    trusted_receipt = _snapshot_exact_transition_receipt(receipt)
+    if trusted_receipt.anchor != trusted_anchor:
+        raise ValidationError("transition timing receipt changed its anchor")
+    trusted_receipt.validate_observation(observation)
+    return trusted_receipt.resulting_revision
 
 
 class M5PostSealAuditPort(Protocol):
@@ -720,12 +967,33 @@ class M5TypedApplication:
                 )
             )
 
-        direct_result = self.direct.run_pending_direct(opened.epoch_id, revision, event)
+        direct_result = self.direct.run_pending_direct(
+            opened.epoch_id,
+            revision,
+            event,
+            opened,
+        )
         self._validate_direct_execution_receipt(direct_result)
         revision = direct_result.resulting_revision
         call_work = _sum_work(call_work, direct_result.call_work)
         if direct_result.selected_successful_outer_receipt is not None:
             return self._finish_selected_direct_terminal_projection(
+                event,
+                opened,
+                held_opened_snapshot,
+                direct_result,
+                call_work,
+            )
+        if direct_result.selected_terminal_acquisition_receipt is not None:
+            return self._finish_selected_direct_failure_acquisition_projection(
+                event,
+                opened,
+                held_opened_snapshot,
+                direct_result,
+                call_work,
+            )
+        if direct_result.selected_checked_combined_failure_receipt is not None:
+            return self._finish_selected_checked_direct_failure(
                 event,
                 opened,
                 held_opened_snapshot,
@@ -1002,39 +1270,11 @@ class M5TypedApplication:
         )
 
     def _append_transition_anchor(self, anchor: M5TransitionTimingAnchor) -> int:
-        if not isinstance(anchor, M5TransitionTimingAnchor):
-            raise ValidationError("transition timing requires an exact anchor")
-        replace(anchor)
-        observed = self.measurements.transition_call_timing(anchor)
-        if observed is not None:
-            if not isinstance(observed, M5RuntimeTiming):
-                raise ValidationError("transition measurement returned invalid timing")
-            replace(observed)
-        observation = M5RuntimeTimingObservation.build(observed)
-        receipt = self.runtime.append_transition_call_timing(
-            anchor.epoch_id,
-            anchor.contribution_kind,
-            anchor.source_id,
-            anchor.contribution_key_digest,
-            anchor.anchor_revision,
-            observed,
+        return _append_transition_anchor_checked(
+            anchor=anchor,
+            measurements=self.measurements,
+            append_transition_call_timing=self.runtime.append_transition_call_timing,
         )
-        if not isinstance(receipt, M5TransitionTimingReceipt):
-            raise ValidationError("transition timing returned another receipt type")
-        if not isinstance(receipt.anchor, M5TransitionTimingAnchor):
-            raise ValidationError("transition timing receipt changed anchor type")
-        if not isinstance(receipt.event_timing, M5RuntimeTiming):
-            raise ValidationError("transition timing receipt changed timing type")
-        if not isinstance(receipt.event_timing_coverage, M5RuntimeTimingCoverage):
-            raise ValidationError("transition timing receipt changed coverage type")
-        replace(receipt.anchor)
-        replace(receipt.event_timing)
-        replace(receipt.event_timing_coverage)
-        replace(receipt)
-        if receipt.anchor != anchor:
-            raise ValidationError("transition timing receipt changed its anchor")
-        receipt.validate_observation(observation)
-        return receipt.resulting_revision
 
     def _settle_external_failure(
         self,
@@ -1423,6 +1663,149 @@ class M5TypedApplication:
             expected_logical_result_hash=logical_result_hash,
         )
 
+    def _finish_selected_direct_failure_acquisition_projection(
+        self,
+        event: M5TypedEventPlan,
+        opened: OpenEventReceipt,
+        held_opened_snapshot: OpenEventReceipt,
+        direct_result: M5DirectExecutionReceipt,
+        call_work: M5RuntimeWork,
+    ) -> M5EventRunResult:
+        """Project a checked failing direct terminal acquisition."""
+
+        selected = direct_result.selected_terminal_acquisition_receipt
+        if type(selected) is not M5TypedDirectAcquisitionReceipt:
+            raise ValidationError(
+                "direct failure cutoff lacks its exact acquisition receipt"
+            )
+        replace(selected)
+        if event.direct_plan is None:
+            raise ValidationError(
+                "selected terminal acquisition requires a typed direct event"
+            )
+        if opened != held_opened_snapshot:
+            raise ValidationError(
+                "selected terminal acquisition changed its held open receipt"
+            )
+        self._validate_active_open_receipt(opened, selected.epoch_id)
+        if (
+            selected.job.event_id != event.structural_event_id
+            or selected.job.candidate_policy_id != event.candidate_policy_id
+            or selected.job.payload_hash
+            != self._expected_direct_job_payload_hash(event, selected.job)
+        ):
+            raise ValidationError(
+                "selected terminal acquisition belongs to another typed event"
+            )
+        if selected.lease.resulting_revision != direct_result.resulting_revision:
+            raise ValidationError(
+                "selected terminal acquisition returned another revision"
+            )
+        canonical = self.runtime.read_typed_event_result(
+            event.structural_event_id,
+            event.payload_hash,
+        )
+        if canonical is None:
+            raise ValidationError(
+                "selected terminal acquisition lacks a canonical M5 result"
+            )
+        if opened != held_opened_snapshot:
+            raise ValidationError(
+                "terminal acquisition hydration changed its held open receipt"
+            )
+        return self._finish_active_terminal_projection(
+            event,
+            opened,
+            call_work,
+            canonical,
+            expected_outcome=M5ReplayedOutcome.FAILED,
+        )
+
+    @staticmethod
+    def _expected_direct_job_payload_hash(
+        event: M5TypedEventPlan,
+        job: M4LogicalJobSpec,
+    ) -> str:
+        pair = job.pair
+        claim_id = pair.claim_id if pair is not None else job.target_claim_id or ""
+        chunk_id = (
+            pair.chunk_version_id
+            if pair is not None
+            else job.target_chunk_version_id or ""
+        )
+        return stable_m4_digest(
+            "m4-application-job-payload-v1",
+            event.payload_hash,
+            job.kind.value,
+            job.parent_job_id or "",
+            claim_id,
+            chunk_id,
+        )
+
+    def _finish_selected_checked_direct_failure(
+        self,
+        event: M5TypedEventPlan,
+        opened: OpenEventReceipt,
+        held_opened_snapshot: OpenEventReceipt,
+        direct_result: M5DirectExecutionReceipt,
+        call_work: M5RuntimeWork,
+    ) -> M5EventRunResult:
+        """Finish one exact first or replayed fused direct failure."""
+
+        selected = direct_result.selected_checked_combined_failure_receipt
+        if type(selected) is not M5CheckedDirectTerminalFailureReceipt:
+            raise ValidationError(
+                "direct combined failure lacks its exact checked receipt"
+            )
+        replace(selected)
+        if event.direct_plan is None:
+            raise ValidationError(
+                "selected combined direct failure requires a typed direct event"
+            )
+        if opened != held_opened_snapshot:
+            raise ValidationError(
+                "selected combined failure changed its held open receipt"
+            )
+        self._validate_active_open_receipt(opened, selected.direct_failure.epoch_id)
+        if selected.resulting_revision != direct_result.resulting_revision:
+            raise ValidationError(
+                "selected combined direct failure returned another revision"
+            )
+        failed = selected.terminal_result
+        if (
+            failed.event_id != event.structural_event_id
+            or failed.payload_hash != event.payload_hash
+            or failed.epoch_id != opened.epoch_id
+        ):
+            raise ValidationError(
+                "selected combined direct failure belongs to another typed event"
+            )
+        if failed.state is M5RunState.REPLAYED:
+            return self._finish_active_terminal_projection(
+                event,
+                opened,
+                call_work,
+                failed,
+                expected_outcome=M5ReplayedOutcome.FAILED,
+                expected_failure_reason=selected.requested_failure_reason,
+            )
+        if failed.open_receipt is not opened:
+            raise ValidationError(
+                "first combined failure did not return the exact held open receipt"
+            )
+        self._validate_terminal_result(
+            event,
+            opened.epoch_id,
+            M5RunState.FAILED,
+            failed,
+            expected_open_receipt=opened,
+        )
+        if failed.failure_reason is not selected.requested_failure_reason:
+            raise ValidationError("combined failure changed the requested reason")
+        if failed.call_work != call_work:
+            raise ValidationError("combined failure changed invocation call work")
+        return self._finish_terminal_invocation(event, failed)
+
     @staticmethod
     def _validate_active_open_receipt(
         opened: OpenEventReceipt, expected_epoch_id: int
@@ -1523,12 +1906,14 @@ class M5TypedApplication:
             raise ValidationError("direct execution returned an invalid revision")
         if type(receipt.call_work) is not M5RuntimeWork:
             raise ValidationError("direct execution returned invalid call work")
-        if receipt.blocked_reason is not None and not isinstance(
-            receipt.blocked_reason, M5RunFailureReason
+        if (
+            receipt.blocked_reason is not None
+            and type(receipt.blocked_reason) is not M5RunFailureReason
         ):
             raise ValidationError("direct execution returned invalid blocked reason")
-        if receipt.terminal_failure_reason is not None and not isinstance(
-            receipt.terminal_failure_reason, M5RunFailureReason
+        if (
+            receipt.terminal_failure_reason is not None
+            and type(receipt.terminal_failure_reason) is not M5RunFailureReason
         ):
             raise ValidationError("direct execution returned invalid terminal reason")
         _validate_exact_runtime_work(receipt.call_work)
@@ -1571,6 +1956,76 @@ class M5TypedApplication:
                 raise ValidationError(
                     "selected direct outer receipt changed its invoked job"
                 )
+
+        selected_terminal = receipt.selected_terminal_acquisition_receipt
+        if selected_terminal is not None:
+            if type(selected_terminal) is not M5TypedDirectAcquisitionReceipt:
+                raise ValidationError(
+                    "selected terminal acquisition has another receipt type"
+                )
+            replace(selected_terminal)
+            lease = selected_terminal.lease
+            projection = lease.terminal_projection
+            if (
+                lease.disposition is not M5AcquisitionDisposition.TERMINAL
+                or lease.should_execute is not False
+                or lease.exact_replay is not True
+                or projection is None
+                or (
+                    projection.terminal_state is not M4JobState.TERMINAL_FAILED
+                    and projection.terminal_reason != "epoch_failed"
+                )
+            ):
+                raise ValidationError(
+                    "selected terminal acquisition lacks checked failure cutoff"
+                )
+            if lease.resulting_revision != receipt.resulting_revision:
+                raise ValidationError(
+                    "selected terminal acquisition returned another revision"
+                )
+
+        selected_checked = receipt.selected_checked_combined_failure_receipt
+        if selected_checked is not None:
+            if type(selected_checked) is not M5CheckedDirectTerminalFailureReceipt:
+                raise ValidationError(
+                    "selected combined failure has another receipt type"
+                )
+            replace(selected_checked)
+            if selected_checked.resulting_revision != receipt.resulting_revision:
+                raise ValidationError(
+                    "selected combined failure returned another revision"
+                )
+            terminal_result = selected_checked.terminal_result
+            if (
+                terminal_result.state is M5RunState.FAILED
+                and terminal_result.call_work != receipt.call_work
+            ):
+                raise ValidationError(
+                    "selected combined first failure changed invocation work"
+                )
+            if (
+                terminal_result.state is M5RunState.REPLAYED
+                and not terminal_result.call_work.is_zero
+            ):
+                raise ValidationError(
+                    "selected combined replay must retain canonical zero work"
+                )
+
+        if (
+            sum(
+                (
+                    receipt.blocked_reason is not None,
+                    receipt.terminal_failure_reason is not None,
+                    selected is not None,
+                    selected_terminal is not None,
+                    selected_checked is not None,
+                )
+            )
+            > 1
+        ):
+            raise ValidationError(
+                "direct execution must select exactly one exclusive outcome branch"
+            )
         replace(receipt)
 
     @staticmethod
@@ -2012,9 +2467,17 @@ class M5TypedApplication:
         *,
         project_checked_requirement_replay: bool = False,
     ) -> M5EventRunResult:
-        failed = self.runtime.fail_typed_epoch_atomically(
-            opened.epoch_id, revision, reason, call_work
+        self._validate_active_open_receipt(opened, opened.epoch_id)
+        held_opened_snapshot = replace(opened)
+        failed = self.runtime.fail_typed_epoch_with_open_receipt_atomically(
+            opened.epoch_id,
+            revision,
+            reason,
+            opened,
+            call_work,
         )
+        if opened != held_opened_snapshot:
+            raise ValidationError("typed failure changed its held open receipt")
         if failed.state is M5RunState.REPLAYED:
             if project_checked_requirement_replay:
                 return self._finish_active_terminal_projection(
@@ -2036,6 +2499,10 @@ class M5TypedApplication:
                 "generic failure replay lacks active-projection authority"
             )
         else:
+            if failed.open_receipt is not opened:
+                raise ValidationError(
+                    "first typed failure did not return the exact held open receipt"
+                )
             self._validate_terminal_result(
                 event,
                 opened.epoch_id,

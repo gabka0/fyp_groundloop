@@ -14,10 +14,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from psycopg import Connection, Cursor
 
@@ -85,7 +85,13 @@ from groundloop.m4.evaluation_overlay import (
 )
 from groundloop.m4.models.contracts import PairVerificationInput
 from groundloop.m4.models.ports import M4VerificationApplicationPort
-from groundloop.m4.persistence import PointEpochHeader, PostgresM4RuntimeStore
+from groundloop.m4.persistence import (
+    _RUNTIME_MANIFEST_KEY,
+    PointAttemptRecord,
+    PointEpochHeader,
+    PostgresM4RuntimeStore,
+    _TypedFailurePointJobImage,
+)
 from groundloop.m4.runtime import (
     CandidateDependency,
     CompletionPlan,
@@ -102,6 +108,24 @@ from groundloop.repository import InMemoryRepository
 SqlExecutor = Connection[Any] | Cursor[Any]
 
 
+def _length_frame_direct_declaration(value: bytes) -> bytes:
+    return len(value).to_bytes(8, byteorder="big", signed=False) + value
+
+
+def _canonical_direct_declaration_scalar(value: object) -> bytes:
+    if value is None:
+        return b"n"
+    if isinstance(value, bool):
+        return b"b1" if value else b"b0"
+    if isinstance(value, int):
+        return b"i" + str(value).encode("ascii")
+    if isinstance(value, str):
+        return b"s" + value.encode("utf-8")
+    raise ValidationError(
+        f"unsupported typed-direct declaration scalar: {type(value)!r}"
+    )
+
+
 def _require_autocommit(connection: Connection[Any]) -> None:
     """Prevent implicit transactions from spanning external model work."""
     if not connection.autocommit:
@@ -115,12 +139,8 @@ def _certificate_digest(claim_id: str, state: ClaimState) -> str:
     return stable_m4_digest(
         "m4-claim-certificate-v1",
         claim_id,
-        state.supporting_observation_ids[0]
-        if state.supporting_observation_ids
-        else "",
-        state.refuting_observation_ids[0]
-        if state.refuting_observation_ids
-        else "",
+        state.supporting_observation_ids[0] if state.supporting_observation_ids else "",
+        state.refuting_observation_ids[0] if state.refuting_observation_ids else "",
     )
 
 
@@ -129,6 +149,95 @@ class M4ExecutionMode(StrEnum):
 
     AUDIT = "audit"
     MEASURED = "measured"
+
+
+@dataclass(frozen=True, slots=True)
+class _TypedDirectEpochFailureJobImage:
+    """Exact pre-write M4 job/attempt image for typed-M5 epoch failure."""
+
+    job: LogicalJobSpec
+    state: JobState
+    completed_revision: int | None
+    completion_digest: str | None
+    latest_attempt: PointAttemptRecord | None
+
+
+@dataclass(frozen=True, slots=True)
+class _TypedDirectEpochFailureJobLocks:
+    epoch_id: int
+    expected_revision: int
+    jobs: tuple[_TypedDirectEpochFailureJobImage, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _TypedDirectEpochFailureLockedPlan:
+    job_locks: _TypedDirectEpochFailureJobLocks
+    target_job: LogicalJobSpec | None
+    target_attempt: JobAttempt | None
+    cancelled_jobs: tuple[LogicalJobSpec, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _TypedDirectEpochFailureStage:
+    target_job: LogicalJobSpec | None
+    target_attempt: JobAttempt | None
+    cancelled_jobs: tuple[LogicalJobSpec, ...]
+    resulting_revision: int
+
+
+def _canonical_typed_failure_authority_value(value: object) -> object:
+    """Freeze one exact M4 failure-plan value into primitive immutable bytes."""
+
+    concrete = type(value)
+    if value is None:
+        return ("none",)
+    if concrete is str:
+        return ("str", value)
+    if concrete is int:
+        return ("int", value)
+    if concrete is bool:
+        return ("bool", value)
+    if concrete is datetime:
+        timestamp = cast(datetime, value)
+        return (
+            "datetime",
+            timestamp.isoformat(timespec="microseconds"),
+            timestamp.fold,
+        )
+    if concrete is tuple:
+        return (
+            "tuple",
+            tuple(
+                _canonical_typed_failure_authority_value(item)
+                for item in cast(tuple[object, ...], value)
+            ),
+        )
+    if concrete in {JobKind, JobState}:
+        return (concrete.__qualname__, cast(JobKind | JobState, value).value)
+    if concrete not in {
+        _TypedDirectEpochFailureJobImage,
+        _TypedDirectEpochFailureJobLocks,
+        _TypedDirectEpochFailureLockedPlan,
+        LogicalJobSpec,
+        PairKey,
+        PointAttemptRecord,
+        JobAttempt,
+    }:
+        raise ValidationError(
+            "typed failure authority contains an inexact nested value"
+        )
+    return (
+        concrete.__qualname__,
+        tuple(
+            (
+                descriptor.name,
+                _canonical_typed_failure_authority_value(
+                    getattr(value, descriptor.name)
+                ),
+            )
+            for descriptor in fields(cast(Any, value))
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,9 +327,7 @@ class StructuralPayload:
                     for chunk in self.inserted.chunks
                 ]
             ),
-            "source_uri": (
-                None if self.inserted is None else self.inserted.source_uri
-            ),
+            "source_uri": (None if self.inserted is None else self.inserted.source_uri),
             "authority_class": (
                 None if self.inserted is None else self.inserted.authority_class
             ),
@@ -228,9 +335,7 @@ class StructuralPayload:
                 None if self.inserted is None else self.inserted.chunker_version
             ),
             "chunker_artifact_id": (
-                None
-                if self.inserted is None
-                else self.inserted.chunker_artifact_id
+                None if self.inserted is None else self.inserted.chunker_artifact_id
             ),
             "chunker_input_hash": (
                 None if self.inserted is None else self.inserted.chunker_input_hash
@@ -239,9 +344,7 @@ class StructuralPayload:
 
 
 class AdmissionDelegate(Protocol):
-    def discover(
-        self, epoch_id: int, root_job: LogicalJobSpec
-    ) -> DiscoveryResult: ...
+    def discover(self, epoch_id: int, root_job: LogicalJobSpec) -> DiscoveryResult: ...
 
 
 class VerificationProvenanceWriter(Protocol):
@@ -489,9 +592,7 @@ class PersistingAdmissionPort:
     connection: Connection[Any]
     delegate: AdmissionDelegate
 
-    def discover(
-        self, epoch_id: int, root_job: LogicalJobSpec
-    ) -> DiscoveryResult:
+    def discover(self, epoch_id: int, root_job: LogicalJobSpec) -> DiscoveryResult:
         return self.delegate.discover(epoch_id, root_job)
 
 
@@ -570,9 +671,7 @@ def _load_repository_snapshot(
         answer_claims = tuple(claims_by_answer.get(answer.answer_version_id, ()))
         if not answer_claims:
             continue
-        repository.register_answer(
-            answer, answer_claims
-        )
+        repository.register_answer(answer, answer_claims)
 
     policy_row = connection.execute(
         """
@@ -655,9 +754,7 @@ def _load_repository_snapshot(
             )
             for row in chunk_rows
         )
-        repository.register_document_version(
-            version, chunks, repository.current_epoch
-        )
+        repository.register_document_version(version, chunks, repository.current_epoch)
 
     if working_epoch_id is None:
         observation_rows = connection.execute(
@@ -719,9 +816,7 @@ def _load_published_repository(
     connection: Connection[Any], epoch_id: int
 ) -> tuple[InMemoryRepository, IncrementalMaintenanceEngine]:
     """Rebuild process-local strict state after startup, never during an event."""
-    return _load_repository_snapshot(
-        connection, epoch_id, working_epoch_id=None
-    )
+    return _load_repository_snapshot(connection, epoch_id, working_epoch_id=None)
 
 
 def _load_working_repository(
@@ -843,6 +938,28 @@ class PostgresM4ApplicationPorts:
         self._verification_writer = verification_provenance_writer
         self._failure_injector = failure_injector
         self._fallback_blocked: set[str] = set()
+        # These registries make the two private C7 lock values cursor/xact-local,
+        # byte-exact and single-use without adding process-visible fields to their
+        # frozen contract shapes. Durable authority remains in locked SQL.
+        self._typed_failure_job_lock_authority: dict[
+            int,
+            tuple[
+                int,
+                str,
+                _TypedDirectEpochFailureJobLocks,
+                tuple[object, ...],
+            ],
+        ] = {}
+        self._typed_failure_plan_authority: dict[
+            int,
+            tuple[
+                int,
+                str,
+                _TypedDirectEpochFailureLockedPlan,
+                tuple[object, ...],
+                str | None,
+            ],
+        ] = {}
         head = self._publication_head()
         self._published_repository, self._published_engine = _load_published_repository(
             connection, head
@@ -951,8 +1068,8 @@ class PostgresM4ApplicationPorts:
 
     def _adopt_direct_failure_cache(self) -> None:
         head = self._publication_head()
-        self._published_repository, self._published_engine = (
-            _load_published_repository(self.connection, head)
+        self._published_repository, self._published_engine = _load_published_repository(
+            self.connection, head
         )
         self._working_repository = self._published_repository
         self._working_engine = self._published_engine
@@ -971,9 +1088,53 @@ class PostgresM4ApplicationPorts:
             snapshot_id, claim_ids
         )
 
-    def plan_exact_withdrawal(
-        self, event: DynamicEventPlan
-    ) -> StructuralWithdrawal:
+    def _direct_claim_registry_members(self, snapshot_id: str) -> tuple[str, ...]:
+        """Read one exact immutable measured registry for the direct bridge."""
+
+        if type(snapshot_id) is not str or not snapshot_id.strip():
+            raise ValidationError("direct claim registry ID must be exact text")
+        with self.connection.transaction():
+            header = self.connection.execute(
+                """
+                SELECT claim_count, claim_set_hash
+                FROM groundloop_m4_claim_registry_snapshot
+                WHERE claim_registry_snapshot_id = %s
+                """,
+                (snapshot_id,),
+            ).fetchone()
+            rows = self.connection.execute(
+                """
+                SELECT member_ordinal, claim_id
+                FROM groundloop_m4_claim_registry_member
+                WHERE claim_registry_snapshot_id = %s
+                ORDER BY member_ordinal
+                """,
+                (snapshot_id,),
+            ).fetchall()
+        if header is None:
+            raise InvalidEventError("direct claim registry snapshot is absent")
+        if (
+            type(header[0]) is not int
+            or type(header[1]) is not str
+            or any(
+                type(row[0]) is not int or type(row[1]) is not str or not row[1].strip()
+                for row in rows
+            )
+        ):
+            raise ValidationError("direct claim registry snapshot has unsafe values")
+        ordinals = tuple(row[0] for row in rows)
+        members = tuple(row[1] for row in rows)
+        expected_hash = stable_m4_digest("m4-claim-registry-snapshot-v1", *members)
+        if (
+            ordinals != tuple(range(len(rows)))
+            or members != tuple(sorted(set(members)))
+            or len(members) != header[0]
+            or header[1].strip() != expected_hash
+        ):
+            raise ValidationError("direct claim registry snapshot is incomplete")
+        return members
+
+    def plan_exact_withdrawal(self, event: DynamicEventPlan) -> StructuralWithdrawal:
         deactivated_chunk_version_ids = event.deactivated_chunk_version_ids
         existing = self.connection.execute(
             "SELECT epoch_id FROM groundloop_epoch WHERE event_id = %s",
@@ -1004,9 +1165,7 @@ class PostgresM4ApplicationPorts:
                 (epoch_id,),
             ).fetchall()
             observations = tuple(
-                ObservationDependency(
-                    str(row[0]), PairKey(str(row[1]), str(row[2]))
-                )
+                ObservationDependency(str(row[0]), PairKey(str(row[1]), str(row[2])))
                 for row in observation_rows
             )
             plan = plan_withdrawal(
@@ -1048,9 +1207,7 @@ class PostgresM4ApplicationPorts:
             ),
         ).fetchall()
         observations = tuple(
-            ObservationDependency(
-                str(row[0]), PairKey(str(row[1]), str(row[2]))
-            )
+            ObservationDependency(str(row[0]), PairKey(str(row[1]), str(row[2])))
             for row in observation_rows
         )
         candidates = tuple(
@@ -1173,8 +1330,7 @@ class PostgresM4ApplicationPorts:
         ):
             raise ValidationError("DELETE structural payload has the wrong shape")
         if event.update.update_kind is UpdateKind.REPLACE and (
-            payload.inserted is None
-            or payload.deactivated_document_version_id is None
+            payload.inserted is None or payload.deactivated_document_version_id is None
         ):
             raise ValidationError("REPLACE structural payload has the wrong shape")
 
@@ -1207,9 +1363,7 @@ class PostgresM4ApplicationPorts:
         ).fetchall()
         return tuple(str(row[0]) for row in rows)
 
-    def _answer_ids_for_claims(
-        self, claim_ids: tuple[str, ...]
-    ) -> tuple[str, ...]:
+    def _answer_ids_for_claims(self, claim_ids: tuple[str, ...]) -> tuple[str, ...]:
         if not claim_ids:
             return ()
         return tuple(
@@ -1312,9 +1466,7 @@ class PostgresM4ApplicationPorts:
                 (),
             )
         if measured:
-            patch = engine.prepare_committed_event_patch(
-                semantic_event, before, after
-            )
+            patch = engine.prepare_committed_event_patch(semantic_event, before, after)
             engine.apply_state_patch(patch)
         else:
             engine.apply_committed_event(semantic_event, before, after)
@@ -1366,9 +1518,7 @@ class PostgresM4ApplicationPorts:
             transaction_cursor: Cursor[Any], structural_epoch_id: int
         ) -> None:
             assert staged_engine is not None
-            self._register_execution_accounting(
-                transaction_cursor, structural_epoch_id
-            )
+            self._register_execution_accounting(transaction_cursor, structural_epoch_id)
             self._write_structural_rows(
                 transaction_cursor, structural_epoch_id, payload
             )
@@ -1432,6 +1582,68 @@ class PostgresM4ApplicationPorts:
             staged_repository,
             staged_engine,
         )
+
+    def _measure_typed_direct_open_local(
+        self, cursor: Cursor[Any], epoch_id: int
+    ) -> tuple[int, int]:
+        """Measure the exact immutable M4 declaration without exposing its SQL."""
+
+        if cursor.connection is not self.connection:
+            raise ValidationError("typed-direct measurement cursor is foreign")
+        if type(epoch_id) is not int or epoch_id < 1:
+            raise ValidationError("typed-direct measurement epoch must be positive")
+        queries = (
+            (
+                "m4_update",
+                """
+                SELECT update_kind, previous_published_epoch_id,
+                       candidate_policy_id, registry_snapshot_id, manifest::text
+                FROM groundloop_m4_update WHERE epoch_id = %s
+                """,
+            ),
+            (
+                "semantic_job",
+                """
+                SELECT btrim(job_id), parent_job_id, job_kind,
+                       candidate_policy_id, btrim(payload_hash),
+                       btrim(execution_spec_hash), claim_id, chunk_version_id,
+                       expandable, created_revision
+                FROM groundloop_semantic_job
+                WHERE epoch_id = %s AND parent_job_id IS NULL
+                ORDER BY job_id COLLATE "C"
+                """,
+            ),
+            (
+                "discovery_scope",
+                """
+                SELECT btrim(root_job_id), registry_snapshot_id, scope_kind,
+                       explicit_claim_ids::text
+                FROM groundloop_discovery_scope
+                WHERE epoch_id = %s ORDER BY root_job_id COLLATE "C"
+                """,
+            ),
+        )
+        framed = [_length_frame_direct_declaration(b"m5-d24-direct-declaration-v1")]
+        for relation_name, query in queries:
+            rows = cursor.execute(query, (epoch_id,)).fetchall()
+            if relation_name == "m4_update" and len(rows) != 1:
+                raise ValidationError(
+                    "typed-direct declaration lacks its exact M4 update"
+                )
+            relation = [_length_frame_direct_declaration(relation_name.encode("ascii"))]
+            for row in rows:
+                row_bytes = b"".join(
+                    _length_frame_direct_declaration(
+                        _canonical_direct_declaration_scalar(value)
+                    )
+                    for value in row
+                )
+                relation.append(_length_frame_direct_declaration(row_bytes))
+            framed.append(_length_frame_direct_declaration(b"".join(relation)))
+        byte_count = len(b"".join(framed))
+        if byte_count < 1:
+            raise ValidationError("typed-direct declaration measured zero bytes")
+        return byte_count, byte_count
 
     def open_event(
         self,
@@ -1625,13 +1837,13 @@ class PostgresM4ApplicationPorts:
         ):
             raise EventConflictError("claim registry snapshot content changed")
         stored_count_row = cursor.execute(
-                """
+            """
                 SELECT count(*)
                 FROM groundloop_m4_claim_registry_member
                 WHERE claim_registry_snapshot_id = %s
                 """,
-                (event.claim_registry_snapshot_id,),
-            ).fetchone()
+            (event.claim_registry_snapshot_id,),
+        ).fetchone()
         assert stored_count_row is not None
         stored_count = int(stored_count_row[0])
         if stored_count == 0:
@@ -1850,9 +2062,7 @@ class PostgresM4ApplicationPorts:
         scope_by_claim: dict[str, bool] = {}
         for (claim_id,) in claim_rows:
             claim = str(claim_id)
-            open_count = sum(
-                1 for job in root_jobs if job.target_claim_id == claim
-            )
+            open_count = sum(1 for job in root_jobs if job.target_claim_id == claim)
             scope_open = any(scope.contains(claim) for scope in discovery_scopes)
             state = "pending" if open_count or scope_open else "complete"
             if state == "pending":
@@ -2071,9 +2281,7 @@ class PostgresM4ApplicationPorts:
         ).fetchone()
         if self._measured:
             with self.connection.cursor() as cursor:
-                self._account(
-                    cursor, epoch_id, "active_chunk_rows_examined", 1
-                )
+                self._account(cursor, epoch_id, "active_chunk_rows_examined", 1)
         return row is not None
 
     def pending_claim_ids(self, epoch_id: int) -> tuple[str, ...]:
@@ -2245,14 +2453,10 @@ class PostgresM4ApplicationPorts:
             raise ValidationError(
                 "typed cursor-local M4 composition requires measured mode"
             )
-        header = self.runtime_store.read_epoch_header_point(
-            epoch_id, cursor=cursor
-        )
+        header = self.runtime_store.read_epoch_header_point(epoch_id, cursor=cursor)
         if header.revision != expected_revision:
             raise EventConflictError("stale epoch revision")
-        job = self.runtime_store.read_job_point(
-            epoch_id, spec.job_id, cursor=cursor
-        )
+        job = self.runtime_store.read_job_point(epoch_id, spec.job_id, cursor=cursor)
         if job.spec != spec:
             raise EventConflictError("requested job differs from persisted job")
         if job.state in {
@@ -2303,9 +2507,7 @@ class PostgresM4ApplicationPorts:
                         transition_id=attempt.attempt_id,
                         expected_revision=expected_revision,
                         claim_job_deltas=(
-                            (
-                                ClaimJobDelta(job.spec.target_claim_id, 1),
-                            )
+                            (ClaimJobDelta(job.spec.target_claim_id, 1),)
                             if first_attempt
                             and job.spec.kind is JobKind.FRONTIER_RETRIEVE
                             and job.spec.target_claim_id is not None
@@ -2379,6 +2581,505 @@ class PostgresM4ApplicationPorts:
             expected_revision=result.header.revision,
         )
 
+    @staticmethod
+    def _typed_failure_xact_identity(cursor: Cursor[Any]) -> str:
+        row = cursor.execute("SELECT pg_current_xact_id()::text").fetchone()
+        if row is None or type(row[0]) is not str or not row[0]:
+            raise ValidationError("typed failure requires a live PostgreSQL xact")
+        return row[0]
+
+    @staticmethod
+    def _validate_typed_failure_attempt_image(
+        image: PointAttemptRecord,
+        *,
+        job: LogicalJobSpec,
+    ) -> None:
+        if type(image) is not PointAttemptRecord:
+            raise ValidationError("typed failure latest attempt has another type")
+        attempt = image.attempt
+        if type(attempt) is not JobAttempt:
+            raise ValidationError("typed failure attempt has another type")
+        if (
+            attempt.job_id != job.job_id
+            or attempt.execution_spec_hash != job.execution_spec_hash
+            or attempt.attempt_id
+            != stable_m4_digest(
+                "m4-job-attempt-v1", job.job_id, str(attempt.attempt_ordinal)
+            )
+            or attempt.lease_token_hash
+            != stable_m4_digest(
+                "m4-lease-token-v1", job.job_id, str(attempt.attempt_ordinal)
+            )
+            or type(image.state) is not str
+            or image.state not in {"leased", "completed", "failed", "expired"}
+            or type(image.lease_expires_at) is not datetime
+        ):
+            raise ValidationError("typed failure attempt image is not exact M4-v1")
+        _canonical_typed_failure_authority_value(image)
+
+    @classmethod
+    def _validate_typed_failure_job_locks_value(
+        cls,
+        locks: _TypedDirectEpochFailureJobLocks,
+    ) -> None:
+        if type(locks) is not _TypedDirectEpochFailureJobLocks:
+            raise ValidationError("typed failure job locks have another type")
+        if (
+            type(locks.epoch_id) is not int
+            or locks.epoch_id < 1
+            or type(locks.expected_revision) is not int
+            or locks.expected_revision < 1
+            or type(locks.jobs) is not tuple
+        ):
+            raise ValidationError("typed failure job locks are malformed")
+        job_ids: list[str] = []
+        for image in locks.jobs:
+            if type(image) is not _TypedDirectEpochFailureJobImage:
+                raise ValidationError("typed failure job image has another type")
+            if type(image.job) is not LogicalJobSpec:
+                raise ValidationError("typed failure job spec has another type")
+            _canonical_typed_failure_authority_value(image.job)
+            if type(image.state) is not JobState:
+                raise ValidationError("typed failure job state has another type")
+            if image.completed_revision is not None and (
+                type(image.completed_revision) is not int
+                or image.completed_revision < 1
+            ):
+                raise ValidationError(
+                    "typed failure job completion revision is malformed"
+                )
+            if image.completion_digest is not None and (
+                type(image.completion_digest) is not str
+                or len(image.completion_digest) != 64
+            ):
+                raise ValidationError(
+                    "typed failure job completion digest is malformed"
+                )
+            if image.latest_attempt is not None:
+                cls._validate_typed_failure_attempt_image(
+                    image.latest_attempt, job=image.job
+                )
+            job_ids.append(image.job.job_id)
+        if tuple(job_ids) != tuple(sorted(set(job_ids))):
+            raise ValidationError(
+                "typed failure jobs must be C-byte ordered and unique"
+            )
+
+    @classmethod
+    def _typed_failure_job_locks_snapshot(
+        cls,
+        locks: _TypedDirectEpochFailureJobLocks,
+    ) -> tuple[object, ...]:
+        cls._validate_typed_failure_job_locks_value(locks)
+        snapshot = _canonical_typed_failure_authority_value(locks)
+        if type(snapshot) is not tuple:
+            raise AssertionError("typed failure lock snapshot must be a tuple")
+        return snapshot
+
+    @classmethod
+    def _typed_failure_plan_snapshot(
+        cls,
+        plan: _TypedDirectEpochFailureLockedPlan,
+    ) -> tuple[object, ...]:
+        if type(plan) is not _TypedDirectEpochFailureLockedPlan:
+            raise ValidationError("typed failure locked plan has another type")
+        cls._validate_typed_failure_job_locks_value(plan.job_locks)
+        if type(plan.cancelled_jobs) is not tuple:
+            raise ValidationError("typed failure cancellations must be an exact tuple")
+        for job in plan.cancelled_jobs:
+            if type(job) is not LogicalJobSpec:
+                raise ValidationError("typed failure cancellation has another type")
+        if (plan.target_job is None) != (plan.target_attempt is None):
+            raise ValidationError(
+                "typed failure target job and attempt must be jointly present"
+            )
+        if plan.target_job is not None:
+            if (
+                type(plan.target_job) is not LogicalJobSpec
+                or type(plan.target_attempt) is not JobAttempt
+            ):
+                raise ValidationError("typed failure target has another type")
+        snapshot = _canonical_typed_failure_authority_value(plan)
+        if type(snapshot) is not tuple:
+            raise AssertionError("typed failure plan snapshot must be a tuple")
+        return snapshot
+
+    def _lock_typed_direct_epoch_failure_jobs_local(
+        self,
+        cursor: Cursor[Any],
+        epoch_id: int,
+        expected_revision: int,
+    ) -> _TypedDirectEpochFailureJobLocks:
+        """Tier-9 read-only lock of the complete M4 direct-job set."""
+
+        if not self._measured:
+            raise ValidationError(
+                "typed cursor-local M4 composition requires measured mode"
+            )
+        if type(epoch_id) is not int or epoch_id < 1:
+            raise ValidationError("typed failure epoch_id must be positive")
+        if type(expected_revision) is not int or expected_revision < 1:
+            raise ValidationError("typed failure expected revision must be positive")
+        stored = self.runtime_store.lock_typed_failure_jobs_point_local(
+            cursor, epoch_id
+        )
+        images: list[_TypedDirectEpochFailureJobImage] = []
+        for item in stored:
+            if type(item) is not _TypedFailurePointJobImage:
+                raise ValidationError("typed failure store returned another image")
+            images.append(
+                _TypedDirectEpochFailureJobImage(
+                    job=item.job,
+                    state=item.state,
+                    completed_revision=item.completed_revision,
+                    completion_digest=item.completion_digest,
+                    latest_attempt=item.latest_attempt,
+                )
+            )
+        locks = _TypedDirectEpochFailureJobLocks(
+            epoch_id=epoch_id,
+            expected_revision=expected_revision,
+            jobs=tuple(images),
+        )
+        self._validate_typed_failure_job_locks_value(locks)
+        xact = self._typed_failure_xact_identity(cursor)
+        self._typed_failure_job_lock_authority[id(locks)] = (
+            id(cursor),
+            xact,
+            locks,
+            self._typed_failure_job_locks_snapshot(locks),
+        )
+        return locks
+
+    def _lock_typed_direct_epoch_failure_details_local(
+        self,
+        cursor: Cursor[Any],
+        job_locks: _TypedDirectEpochFailureJobLocks,
+        target_lease: JobLease | None,
+    ) -> _TypedDirectEpochFailureLockedPlan:
+        """Lock M4 attempts/details and derive the immutable write plan."""
+
+        xact = self._typed_failure_xact_identity(cursor)
+        authority = self._typed_failure_job_lock_authority.pop(id(job_locks), None)
+        if (
+            authority is None
+            or authority[0] != id(cursor)
+            or authority[1] != xact
+            or authority[2] is not job_locks
+            or authority[3] != self._typed_failure_job_locks_snapshot(job_locks)
+        ):
+            raise EventConflictError(
+                "typed failure job locks are mutated, copied, stale, or cross-cursor"
+            )
+
+        attempts = self.runtime_store.lock_typed_failure_attempts_point_local(
+            cursor, job_locks.epoch_id
+        )
+        attempts_by_job: dict[str, list[PointAttemptRecord]] = {
+            image.job.job_id: [] for image in job_locks.jobs
+        }
+        for attempt_image in attempts:
+            job_attempts = attempts_by_job.get(attempt_image.attempt.job_id)
+            if job_attempts is None:
+                raise ValidationError("typed failure attempt has no locked job")
+            job_attempts.append(attempt_image)
+        for image in job_locks.jobs:
+            job_attempts = attempts_by_job[image.job.job_id]
+            for ordinal, attempt_image in enumerate(job_attempts, start=1):
+                self._validate_typed_failure_attempt_image(attempt_image, job=image.job)
+                if attempt_image.attempt.attempt_ordinal != ordinal:
+                    raise ValidationError(
+                        "typed failure attempt ordinals are not dense"
+                    )
+            latest = None if not job_attempts else job_attempts[-1]
+            if latest != image.latest_attempt:
+                raise EventConflictError(
+                    "typed failure latest attempt changed after job locking"
+                )
+
+        # These are later detail-tier locks. Staging subsequently reselects
+        # the already-held rows through unchanged helpers but acquires no
+        # earlier job/attempt authority.
+        update_row = cursor.execute(
+            """
+            SELECT epoch_id, manifest
+            FROM groundloop_m4_update
+            WHERE epoch_id = %s
+            FOR UPDATE
+            """,
+            (job_locks.epoch_id,),
+        ).fetchone()
+        evaluation_row = cursor.execute(
+            """
+            SELECT lifecycle_state, revision
+            FROM groundloop_m4_evaluation_epoch_counter
+            WHERE epoch_id = %s
+            FOR UPDATE
+            """,
+            (job_locks.epoch_id,),
+        ).fetchone()
+        if update_row is None:
+            raise InvalidEventError("typed failure lacks its M4 update")
+        if type(update_row[0]) is not int or update_row[0] != job_locks.epoch_id:
+            raise ValidationError("typed failure M4 update identity is malformed")
+        manifest = update_row[1]
+        if type(manifest) is not dict:
+            raise ValidationError("typed failure M4 update manifest is malformed")
+        runtime_metadata = manifest.get(_RUNTIME_MANIFEST_KEY)
+        if (
+            type(runtime_metadata) is not dict
+            or "failure_reason" not in runtime_metadata
+        ):
+            raise ValidationError(
+                "typed failure M4 update lacks exact runtime failure metadata"
+            )
+        locked_failure_reason = runtime_metadata["failure_reason"]
+        if locked_failure_reason is not None and (
+            type(locked_failure_reason) is not str or not locked_failure_reason.strip()
+        ):
+            raise ValidationError("typed failure M4 projection reason is malformed")
+        evaluation_image = None if evaluation_row is None else tuple(evaluation_row)
+        if evaluation_image not in {
+            ("active", job_locks.expected_revision),
+            ("failed", job_locks.expected_revision + 1),
+        }:
+            raise EventConflictError(
+                "typed failure evaluation image differs from locked revision"
+            )
+        if evaluation_image == ("active", job_locks.expected_revision):
+            if locked_failure_reason is not None:
+                raise EventConflictError(
+                    "active typed failure plan already has an M4 failure reason"
+                )
+        elif type(locked_failure_reason) is not str:
+            raise EventConflictError(
+                "terminal typed failure plan lacks its M4 failure reason"
+            )
+
+        target_job: LogicalJobSpec | None = None
+        target_attempt: JobAttempt | None = None
+        target_id: str | None = None
+        if target_lease is not None:
+            if type(target_lease) is not JobLease:
+                raise ValidationError("typed failure target lease has another type")
+            if (
+                target_lease.should_execute is not True
+                or target_lease.already_completed is not False
+                or type(target_lease.attempt_id) is not str
+                or type(target_lease.lease_token_hash) is not str
+                or type(target_lease.expected_revision) is not int
+                or target_lease.expected_revision != job_locks.expected_revision
+            ):
+                raise ValidationError(
+                    "typed failure target requires an exact executable M4 lease"
+                )
+            target_id = target_lease.job_id
+            target_image = next(
+                (
+                    image
+                    for image in job_locks.jobs
+                    if image.job.job_id == target_lease.job_id
+                ),
+                None,
+            )
+            if target_image is None or target_image.latest_attempt is None:
+                raise EventConflictError("typed failure target is not in the job set")
+            latest = target_image.latest_attempt
+            if (
+                latest.attempt.attempt_id != target_lease.attempt_id
+                or latest.attempt.lease_token_hash != target_lease.lease_token_hash
+                or target_image.state
+                not in {JobState.RUNNING, JobState.TERMINAL_FAILED, JobState.CANCELLED}
+                or (target_image.state is JobState.RUNNING and latest.state != "leased")
+                or (
+                    target_image.state is JobState.TERMINAL_FAILED
+                    and latest.state != "failed"
+                )
+                or (
+                    target_image.state is JobState.CANCELLED
+                    and latest.state != "leased"
+                )
+            ):
+                raise EventConflictError(
+                    "typed failure target lease differs from its locked attempt"
+                )
+            target_job = target_image.job
+            target_attempt = latest.attempt
+
+        open_states = {
+            JobState.DECLARED,
+            JobState.RUNNING,
+            JobState.RETRYABLE_FAILED,
+        }
+        cancelled_jobs = tuple(
+            image.job
+            for image in job_locks.jobs
+            if image.job.job_id != target_id and image.state in open_states
+        )
+        plan = _TypedDirectEpochFailureLockedPlan(
+            job_locks=job_locks,
+            target_job=target_job,
+            target_attempt=target_attempt,
+            cancelled_jobs=cancelled_jobs,
+        )
+        self._typed_failure_plan_authority[id(plan)] = (
+            id(cursor),
+            xact,
+            plan,
+            self._typed_failure_plan_snapshot(plan),
+            locked_failure_reason,
+        )
+        return plan
+
+    def _stage_typed_direct_epoch_failure_local(
+        self,
+        cursor: Cursor[Any],
+        locked_plan: _TypedDirectEpochFailureLockedPlan,
+        failure_reason: str,
+        target_terminal_reason: str | None,
+    ) -> _TypedDirectEpochFailureStage:
+        """Write only the fully locked M4 target/cancellation/failure plan."""
+
+        xact = self._typed_failure_xact_identity(cursor)
+        authority = self._typed_failure_plan_authority.pop(id(locked_plan), None)
+        if (
+            authority is None
+            or authority[0] != id(cursor)
+            or authority[1] != xact
+            or authority[2] is not locked_plan
+            or authority[3] != self._typed_failure_plan_snapshot(locked_plan)
+        ):
+            raise EventConflictError(
+                "typed failure locked plan is mutated, copied, stale, or cross-cursor"
+            )
+        if authority[4] is not None:
+            raise EventConflictError(
+                "typed failure first-write plan already records an M4 failure reason"
+            )
+        if type(failure_reason) is not str or not failure_reason.strip():
+            raise ValidationError("typed M4 failure reason must be exact nonempty text")
+        target_present = locked_plan.target_job is not None
+        if target_present != (
+            locked_plan.target_attempt is not None
+        ) or target_present != (target_terminal_reason is not None):
+            raise ValidationError(
+                "typed failure target job, attempt, and reason are jointly present"
+            )
+        if target_terminal_reason is not None and (
+            type(target_terminal_reason) is not str
+            or not target_terminal_reason.strip()
+        ):
+            raise ValidationError(
+                "typed direct terminal reason must be exact nonempty text"
+            )
+
+        image_by_id = {image.job.job_id: image for image in locked_plan.job_locks.jobs}
+        target_job_id: str | None = None
+        target_attempt_id: str | None = None
+        if locked_plan.target_job is not None:
+            assert locked_plan.target_attempt is not None
+            target_job_id = locked_plan.target_job.job_id
+            target_attempt_id = locked_plan.target_attempt.attempt_id
+            target_image = image_by_id.get(target_job_id)
+            if (
+                target_image is None
+                or target_image.state is not JobState.RUNNING
+                or target_image.latest_attempt is None
+                or target_image.latest_attempt.state != "leased"
+                or target_image.latest_attempt.attempt != locked_plan.target_attempt
+            ):
+                raise EventConflictError(
+                    "typed failure target is not the locked executable attempt"
+                )
+
+        open_states = {
+            JobState.DECLARED,
+            JobState.RUNNING,
+            JobState.RETRYABLE_FAILED,
+        }
+        expected_cancelled = tuple(
+            image.job
+            for image in locked_plan.job_locks.jobs
+            if image.job.job_id != target_job_id and image.state in open_states
+        )
+        if locked_plan.cancelled_jobs != expected_cancelled:
+            raise EventConflictError("typed failure cancellation plan is incomplete")
+        cancelled_states = tuple(
+            (job.job_id, image_by_id[job.job_id].state)
+            for job in locked_plan.cancelled_jobs
+        )
+        self.runtime_store.apply_typed_failure_jobs_point_local(
+            cursor,
+            epoch_id=locked_plan.job_locks.epoch_id,
+            expected_revision=locked_plan.job_locks.expected_revision,
+            target_job_id=target_job_id,
+            target_attempt_id=target_attempt_id,
+            cancelled_job_states=cancelled_states,
+        )
+        transition = EvaluationTransition(
+            transition_id=stable_m4_digest(
+                "m4-evaluation-failure-v1",
+                str(locked_plan.job_locks.epoch_id),
+                failure_reason,
+            ),
+            expected_revision=locked_plan.job_locks.expected_revision,
+            kind=EvaluationTransitionKind.FAIL,
+        )
+        receipt = self.evaluation_store.apply_transition_local(
+            cursor, locked_plan.job_locks.epoch_id, transition
+        )
+        if receipt.replayed:
+            raise EventConflictError(
+                "typed failure first-write plan encountered an M4 replay"
+            )
+        header = self.runtime_store.stage_typed_failure_projection_point_local(
+            cursor,
+            epoch_id=locked_plan.job_locks.epoch_id,
+            expected_revision=locked_plan.job_locks.expected_revision,
+            reason=failure_reason,
+        )
+        return _TypedDirectEpochFailureStage(
+            target_job=locked_plan.target_job,
+            target_attempt=locked_plan.target_attempt,
+            cancelled_jobs=locked_plan.cancelled_jobs,
+            resulting_revision=header.revision,
+        )
+
+    def _discard_typed_direct_epoch_failure_plan_local(
+        self,
+        cursor: Cursor[Any],
+        locked_plan: _TypedDirectEpochFailureLockedPlan,
+        terminal_failure_reason: str,
+    ) -> None:
+        """Consume a terminal plan after matching its durable M4 reason."""
+
+        authority = self._typed_failure_plan_authority.pop(id(locked_plan), None)
+        if (
+            authority is None
+            or authority[0] != id(cursor)
+            or authority[1] != self._typed_failure_xact_identity(cursor)
+            or authority[2] is not locked_plan
+            or authority[3] != self._typed_failure_plan_snapshot(locked_plan)
+        ):
+            raise EventConflictError(
+                "typed failure terminal plan is mutated, copied, stale, or cross-cursor"
+            )
+        if locked_plan.cancelled_jobs:
+            raise EventConflictError(
+                "typed failure terminal plan still has open direct jobs"
+            )
+        if (
+            type(terminal_failure_reason) is not str
+            or not terminal_failure_reason.strip()
+        ):
+            raise ValidationError(
+                "typed failure canonical terminal reason must be exact nonempty text"
+            )
+        if authority[4] != terminal_failure_reason:
+            raise EventConflictError(
+                "typed failure M4 projection records another reason"
+            )
+
     def mark_retryable_failure(self, epoch_id: int, lease: JobLease) -> None:
         """Atomically retain one failed attempt as retryable semantic work.
 
@@ -2386,8 +3087,8 @@ class PostgresM4ApplicationPorts:
         semantic jobs.  Measured mode therefore advances the signed evaluation
         overlay with a zero-delta transition in the same database transaction.
         """
-        attempt_id, _lease_token_hash, lease_revision = (
-            self._completion_lease_binding(lease, lease.job_id)
+        attempt_id, _lease_token_hash, lease_revision = self._completion_lease_binding(
+            lease, lease.job_id
         )
         if self._measured:
             transition_id = stable_m4_digest(
@@ -2510,9 +3211,7 @@ class PostgresM4ApplicationPorts:
                     )
                 self._inject("expansion_discovery_persisted")
                 header = self.runtime_store.read_epoch_header_point(epoch_id)
-                parent = self.runtime_store.read_job_point(
-                    epoch_id, completion.job_id
-                )
+                parent = self.runtime_store.read_job_point(epoch_id, completion.job_id)
                 point_transition = self.runtime_store.complete_point(
                     CompletionPlan(
                         epoch_id,
@@ -2535,9 +3234,7 @@ class PostgresM4ApplicationPorts:
                         parent.spec.kind is JobKind.FRONTIER_RETRIEVE
                         and parent.spec.target_claim_id is not None
                     ):
-                        deltas += (
-                            ClaimJobDelta(parent.spec.target_claim_id, -1),
-                        )
+                        deltas += (ClaimJobDelta(parent.spec.target_claim_id, -1),)
                     self.evaluation_store.apply_transition(
                         epoch_id,
                         EvaluationTransition(
@@ -2603,20 +3300,16 @@ class PostgresM4ApplicationPorts:
             raise ValidationError(
                 "typed cursor-local M4 composition requires measured mode"
             )
-        attempt_id, lease_token_hash, lease_revision = (
-            self._completion_lease_binding(lease, completion.job_id)
+        attempt_id, lease_token_hash, lease_revision = self._completion_lease_binding(
+            lease, completion.job_id
         )
-        header = self.runtime_store.read_epoch_header_point(
-            epoch_id, cursor=cursor
-        )
+        header = self.runtime_store.read_epoch_header_point(epoch_id, cursor=cursor)
         if header.revision != expected_revision:
             raise EventConflictError("stale epoch revision")
         parent = self.runtime_store.read_job_point(
             epoch_id, completion.job_id, cursor=cursor
         )
-        self._persist_discovery_result(
-            cursor, epoch_id, completion.job_id, discovery
-        )
+        self._persist_discovery_result(cursor, epoch_id, completion.job_id, discovery)
         self._inject("expansion_discovery_persisted")
         point_transition = self.runtime_store.complete_point_local(
             cursor,
@@ -2649,9 +3342,7 @@ class PostgresM4ApplicationPorts:
             EvaluationTransition(
                 transition_id=completion.completion_digest,
                 expected_revision=expected_revision,
-                scope_delta=(
-                    -1 if parent.spec.kind is JobKind.IMPACT_DISCOVERY else 0
-                ),
+                scope_delta=(-1 if parent.spec.kind is JobKind.IMPACT_DISCOVERY else 0),
                 claim_job_deltas=deltas,
             ),
         )
@@ -2688,9 +3379,7 @@ class PostgresM4ApplicationPorts:
         return stable_m4_digest("m4-discovery-channel-set-v1", *identities)
 
     @classmethod
-    def _admitted_pair_set_hash(
-        cls, admitted_pairs: tuple[AdmittedPair, ...]
-    ) -> str:
+    def _admitted_pair_set_hash(cls, admitted_pairs: tuple[AdmittedPair, ...]) -> str:
         identities = tuple(
             sorted(cls._admitted_pair_id(item) for item in admitted_pairs)
         )
@@ -3095,9 +3784,7 @@ class PostgresM4ApplicationPorts:
 
         if self._measured:
             header = self.runtime_store.read_epoch_header_point(epoch_id)
-            point_job = self.runtime_store.read_job_point(
-                epoch_id, completion.job_id
-            )
+            point_job = self.runtime_store.read_job_point(epoch_id, completion.job_id)
             if point_job.spec != verifier_job:
                 raise EventConflictError(
                     "verifier completion differs from persisted job"
@@ -3138,9 +3825,7 @@ class PostgresM4ApplicationPorts:
                     replayed = point_transition.replayed
                     self._inject("verifier_runtime_completed")
                     if replayed:
-                        self._validate_observation(
-                            observation, epoch_id, completion
-                        )
+                        self._validate_observation(observation, epoch_id, completion)
                     else:
                         inserted = self._insert_observation(
                             observation, epoch_id, completion
@@ -3389,8 +4074,8 @@ class PostgresM4ApplicationPorts:
             )
         if completion.job_id != verifier_job.job_id:
             raise EventConflictError("completion belongs to another verifier job")
-        attempt_id, lease_token_hash, lease_revision = (
-            self._completion_lease_binding(lease, completion.job_id)
+        attempt_id, lease_token_hash, lease_revision = self._completion_lease_binding(
+            lease, completion.job_id
         )
         if observation.key != (
             SubjectKind.CLAIM,
@@ -3399,25 +4084,17 @@ class PostgresM4ApplicationPorts:
             observation.task_type,
         ):
             raise EventConflictError("observation does not match verifier job")
-        expected_effective = (
-            completion.terminal_state is JobState.COMPLETED_ACTIVE
-        )
+        expected_effective = completion.terminal_state is JobState.COMPLETED_ACTIVE
         if make_effective != expected_effective:
-            raise EventConflictError(
-                "observation activity and completion disagree"
-            )
-        header = self.runtime_store.read_epoch_header_point(
-            epoch_id, cursor=cursor
-        )
+            raise EventConflictError("observation activity and completion disagree")
+        header = self.runtime_store.read_epoch_header_point(epoch_id, cursor=cursor)
         if header.revision != expected_revision:
             raise EventConflictError("stale epoch revision")
         point_job = self.runtime_store.read_job_point(
             epoch_id, completion.job_id, cursor=cursor
         )
         if point_job.spec != verifier_job:
-            raise EventConflictError(
-                "verifier completion differs from persisted job"
-            )
+            raise EventConflictError("verifier completion differs from persisted job")
         already_completed = point_job.state in {
             JobState.COMPLETED_ACTIVE,
             JobState.COMPLETED_INACTIVE,
@@ -3452,9 +4129,7 @@ class PostgresM4ApplicationPorts:
         replayed = point_transition.replayed
         self._inject("verifier_runtime_completed")
         if replayed:
-            self._validate_observation(
-                observation, epoch_id, completion, cursor=cursor
-            )
+            self._validate_observation(observation, epoch_id, completion, cursor=cursor)
             inserted = False
         else:
             inserted = self._insert_observation(
@@ -3581,9 +4256,7 @@ class PostgresM4ApplicationPorts:
                 ),
             ),
         ).fetchone()
-        self._validate_observation(
-            observation, epoch_id, completion, cursor=cursor
-        )
+        self._validate_observation(observation, epoch_id, completion, cursor=cursor)
         return inserted is not None
 
     def _validate_observation(
@@ -4047,10 +4720,7 @@ class PostgresM4ApplicationPorts:
                 for job in epoch.jobs
                 if job.open
                 and (
-                    (
-                        job.spec.pair is not None
-                        and job.spec.pair.claim_id in required
-                    )
+                    (job.spec.pair is not None and job.spec.pair.claim_id in required)
                     or job.spec.target_claim_id in required
                 )
             )
@@ -4245,9 +4915,7 @@ class PostgresM4ApplicationPorts:
                     cursor, epoch_id, require_complete=True
                 )
             else:
-                self._assert_evaluation_surface(
-                    cursor, epoch_id, require_complete=True
-                )
+                self._assert_evaluation_surface(cursor, epoch_id, require_complete=True)
 
     def _assert_incremental_evaluation(
         self,
@@ -4380,9 +5048,7 @@ class PostgresM4ApplicationPorts:
         }
         if actual_overrides != expected_overrides:
             raise ValidationError("compact evaluation overrides differ from runtime")
-        if require_complete and (
-            default_state != "complete" or expected_overrides
-        ):
+        if require_complete and (default_state != "complete" or expected_overrides):
             raise ValidationError("compact evaluation surface is not sealable")
 
     def _assert_evaluation_surface(
@@ -4452,10 +5118,7 @@ class PostgresM4ApplicationPorts:
                 for job in epoch.jobs
                 if job.open
                 and (
-                    (
-                        job.spec.pair is not None
-                        and job.spec.pair.claim_id in claims
-                    )
+                    (job.spec.pair is not None and job.spec.pair.claim_id in claims)
                     or job.spec.target_claim_id in claims
                 )
             )
@@ -4539,9 +5202,7 @@ class PostgresM4ApplicationPorts:
                     "publication update differs from runtime epoch"
                 )
 
-            def publish_point(
-                cursor: Cursor[Any], published_epoch_id: int
-            ) -> None:
+            def publish_point(cursor: Cursor[Any], published_epoch_id: int) -> None:
                 self._assert_incremental_evaluation(
                     cursor, published_epoch_id, require_complete=True
                 )
@@ -4588,9 +5249,7 @@ class PostgresM4ApplicationPorts:
             self._published_repository = self._working_repository
             self._published_engine = self._working_engine
             self._active_epoch_id = None
-            publication_id = stable_m4_digest(
-                "m4-publication-v1", str(epoch_id)
-            )
+            publication_id = stable_m4_digest("m4-publication-v1", str(epoch_id))
             return PublicationReceipt(epoch_id, publication_id)
 
         epoch = self.runtime_store.read_epoch(epoch_id)
@@ -4634,17 +5293,13 @@ class PostgresM4ApplicationPorts:
                 cursor, published_epoch_id, expected_revision + 1
             )
             self._inject("publication_evaluation_promoted")
-            self._assert_sealed_evaluation(
-                published_epoch_id, expected_revision + 1
-            )
+            self._assert_sealed_evaluation(published_epoch_id, expected_revision + 1)
 
         self.runtime_store.seal_epoch(
             epoch_id,
             expected_revision,
             publication_action=publish,
-            failure_injector=(
-                lambda point: self._inject(f"publication_store_{point}")
-            ),
+            failure_injector=(lambda point: self._inject(f"publication_store_{point}")),
         )
         self._published_repository = deepcopy(self._working_repository)
         self._published_engine = deepcopy(self._working_engine)
@@ -4689,9 +5344,7 @@ class PostgresM4ApplicationPorts:
             )
         )
         if persisted_update != update:
-            raise EventConflictError(
-                "publication update differs from runtime epoch"
-            )
+            raise EventConflictError("publication update differs from runtime epoch")
         checked = self.runtime_store.validate_seal_point_local(
             cursor,
             epoch_id,
@@ -4702,18 +5355,12 @@ class PostgresM4ApplicationPorts:
                 )
             ),
         )
-        publication_id = stable_m4_digest(
-            "m4-publication-v1", str(epoch_id)
-        )
+        publication_id = stable_m4_digest("m4-publication-v1", str(epoch_id))
         if checked.replayed:
             return PublicationReceipt(epoch_id, publication_id)
         if self._active_epoch_id != epoch_id:
-            raise InvalidEventError(
-                "direct seal requires the adopted working cache"
-            )
-        self._assert_incremental_evaluation(
-            cursor, epoch_id, require_complete=True
-        )
+            raise InvalidEventError("direct seal requires the adopted working cache")
+        self._assert_incremental_evaluation(cursor, epoch_id, require_complete=True)
         self._promote_structural_overlay(cursor, epoch_id)
         self._inject("publication_structure_promoted")
         self._promote_observation_currency(cursor, epoch_id)
@@ -4730,9 +5377,7 @@ class PostgresM4ApplicationPorts:
             cursor,
             epoch_id,
             EvaluationTransition(
-                transition_id=stable_m4_digest(
-                    "m4-evaluation-seal-v1", str(epoch_id)
-                ),
+                transition_id=stable_m4_digest("m4-evaluation-seal-v1", str(epoch_id)),
                 expected_revision=expected_revision,
                 kind=EvaluationTransitionKind.SEAL,
             ),
@@ -4780,9 +5425,7 @@ class PostgresM4ApplicationPorts:
                 "seal could not promote the complete evaluation surface"
             )
 
-    def _assert_sealed_evaluation(
-        self, epoch_id: int, final_revision: int
-    ) -> None:
+    def _assert_sealed_evaluation(self, epoch_id: int, final_revision: int) -> None:
         if self._measured:
             row = self.connection.execute(
                 """
@@ -4827,9 +5470,7 @@ class PostgresM4ApplicationPorts:
         ):
             raise ValidationError("sealed evaluation surface differs from runtime")
 
-    def _promote_structural_overlay(
-        self, cursor: Cursor[Any], epoch_id: int
-    ) -> None:
+    def _promote_structural_overlay(self, cursor: Cursor[Any], epoch_id: int) -> None:
         self._promote_document_metadata(cursor, epoch_id)
         previous_row = cursor.execute(
             """
@@ -4867,9 +5508,7 @@ class PostgresM4ApplicationPorts:
             (previous_epoch, previous_epoch, epoch_id),
         ).fetchone()
         if ambiguous is not None:
-            raise EventConflictError(
-                "frontier key has multiple published predecessors"
-            )
+            raise EventConflictError("frontier key has multiple published predecessors")
         cursor.execute(
             """
             UPDATE groundloop_candidate_frontier AS predecessor
@@ -4951,9 +5590,7 @@ class PostgresM4ApplicationPorts:
                 (epoch_id, document_version_id, previous_epoch, previous_epoch),
             )
 
-    def _promote_document_metadata(
-        self, cursor: Cursor[Any], epoch_id: int
-    ) -> None:
+    def _promote_document_metadata(self, cursor: Cursor[Any], epoch_id: int) -> None:
         rows = cursor.execute(
             """
             SELECT overlay.document_id, overlay.source_uri,
@@ -4999,9 +5636,7 @@ class PostgresM4ApplicationPorts:
                     "unpublished document placeholder changed before sealing"
                 )
 
-    def _promote_observation_currency(
-        self, cursor: Cursor[Any], epoch_id: int
-    ) -> None:
+    def _promote_observation_currency(self, cursor: Cursor[Any], epoch_id: int) -> None:
         rows = cursor.execute(
             """
             SELECT subject_kind, subject_id, chunk_version_id, task_type,
