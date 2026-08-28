@@ -97,7 +97,9 @@ from groundloop.m5.runtime.contracts import (
     ActiveChunkSnapshotEntry,
     M5AcquisitionDisposition,
     M5AttemptCompletionReceipt,
+    M5AttemptDisposition,
     M5AttemptOutput,
+    M5AttemptResultArtifact,
     M5CandidatePolicyManifest,
     M5ChangedStateReference,
     M5DirectAttemptReturnReceipt,
@@ -146,6 +148,7 @@ from groundloop.m5.runtime.contracts import (
 from groundloop.m5.runtime.frontier import (
     build_rank_interleaved_discovery_result,
     build_root_barrier_plan,
+    classify_attempt_activity,
     deduplicate_discovery_results,
 )
 from groundloop.repository import InMemoryRepository
@@ -476,6 +479,9 @@ class _FakeJob:
     attempts: list[M5JobAttempt] = field(default_factory=list)
     dispatch_digests: dict[str, str] = field(default_factory=dict)
     completion: M5JobCompletion | None = None
+    cancelled_by_event_id: str | None = None
+    cancelled_by_epoch_id: int | None = None
+    cancellation_reason: M5TerminalReason | None = None
 
 
 @dataclass(slots=True)
@@ -498,6 +504,13 @@ class _FakeEpoch:
     failed: bool = False
     terminal_result: M5EventRunResult | None = None
     sealed_states: M5ReferenceStates | None = None
+    sealed_certificates: (
+        tuple[
+            dict[str, GroupMatchingCertificateArtifact],
+            dict[str, ClaimCertificateArtifact],
+        ]
+        | None
+    ) = None
     pending_transition_anchor: M5TransitionTimingAnchor | None = None
     timing_points: list[M5RuntimeTiming | None] = field(default_factory=list)
     transition_observations: dict[
@@ -540,6 +553,7 @@ class FakeTypedWorld:
     verifier_outcomes: dict[tuple[str, str], list[FakeVerifierOutcome]] = field(
         default_factory=dict
     )
+    retire_group_before_verifier_return: set[str] = field(default_factory=set)
     fallback_by_event: dict[str, tuple[M5RequirementFallbackKey, ...]] = field(
         default_factory=dict
     )
@@ -553,6 +567,9 @@ class FakeTypedWorld:
         default_factory=dict
     )
     late_attempt_artifacts: list[tuple[int, str]] = field(default_factory=list)
+    late_attempt_results: dict[str, tuple[M5AttemptOutput, M5AttemptResultArtifact]] = (
+        field(default_factory=dict)
+    )
     takeover_jobs_once: set[str] = field(default_factory=set)
     return_dispositions_by_job: dict[str, list[M5RequirementReturnDisposition]] = field(
         default_factory=dict
@@ -702,6 +719,16 @@ class FakeTypedWorld:
                 ).owner_claim_id
                 counts[owner] = counts.get(owner, 0) + 1
         return dict(sorted(counts.items()))
+
+    def reference_certificates(
+        self,
+    ) -> tuple[
+        dict[str, GroupMatchingCertificateArtifact],
+        dict[str, ClaimCertificateArtifact],
+    ]:
+        """Return the complete independent certificate image at the head."""
+
+        return _certificates(self.published)
 
 
 @dataclass(slots=True)
@@ -1223,6 +1250,9 @@ class FakeDirect:
                     terminal_state=M5JobState.CANCELLED,
                     archive_reason=M5TerminalReason.SCOPE_RETIRED,
                 )
+                runtime_job.cancelled_by_event_id = event.structural_event_id
+                runtime_job.cancelled_by_epoch_id = epoch.epoch_id
+                runtime_job.cancellation_reason = M5TerminalReason.SCOPE_RETIRED
                 cancelled += 1
             for root_id, scope_state in tuple(epoch.scope_states.items()):
                 if scope_state in {M5ScopeState.OPEN, M5ScopeState.RESULT_STAGED}:
@@ -1517,6 +1547,17 @@ class FakeVerifier:
             result_artifact_id=artifact.artifact_id,
             result_artifact_hash=artifact.artifact_hash,
         )
+        if group.group_version_id in self.world.retire_group_before_verifier_return:
+            self.world.retire_group_before_verifier_return.remove(
+                group.group_version_id
+            )
+            with self.world.transaction("activity-fixture"):
+                epoch.working.retire_group(
+                    group.group_version_id,
+                    epoch.epoch_id,
+                    f"fake-retire-before-return:{job.logical_job_id}",
+                )
+                self.world.operation_log.append("activity:group-retired")
         return M5VerifierExecution(
             pair_input,
             artifact,
@@ -1918,6 +1959,9 @@ class FakeRuntime:
                         result_artifact_hash=None,
                         archive_reason=M5TerminalReason.SCOPE_RETIRED,
                     )
+                    runtime_job.cancelled_by_event_id = epoch.plan.structural_event_id
+                    runtime_job.cancelled_by_epoch_id = epoch.epoch_id
+                    runtime_job.cancellation_reason = M5TerminalReason.SCOPE_RETIRED
                     if job.logical_job_id in epoch.scope_states:
                         epoch.scope_states[job.logical_job_id] = M5ScopeState.CANCELLED
             anchor = M5TransitionTimingAnchor.build(
@@ -2309,6 +2353,9 @@ class FakeRuntime:
                         result_artifact_hash=None,
                         archive_reason=M5TerminalReason.EPOCH_FAILED,
                     )
+                    runtime_job.cancelled_by_event_id = epoch.plan.structural_event_id
+                    runtime_job.cancelled_by_epoch_id = epoch.epoch_id
+                    runtime_job.cancellation_reason = M5TerminalReason.EPOCH_FAILED
                     cancelled += 1
             for root_id in epoch.scope_states:
                 if epoch.scope_states[root_id] in {
@@ -2494,6 +2541,7 @@ class FakeRuntime:
             )
             epoch.terminal_result = result
             epoch.sealed_states = after
+            epoch.sealed_certificates = _certificates(epoch.working)
             self.world.operation_log.append("typed-seal")
             return result
 
@@ -2613,24 +2661,122 @@ class FakeRuntime:
         return self.world.epoch(epoch_id).revision
 
     def archive_terminal_late_attempt_for_test(
-        self, epoch_id: int, logical_job_id: str
-    ) -> None:
-        """Exercise the audit-only late-return boundary without reopening work."""
+        self,
+        epoch_id: int,
+        logical_job_id: str,
+        attempt_output: M5AttemptOutput | None = None,
+    ) -> M5AttemptResultArtifact:
+        """Archive one deterministic terminal return without reopening semantics."""
 
         epoch = self.world.epoch(epoch_id)
         job = epoch.jobs[logical_job_id]
-        if not job.state.terminal:
-            raise InvalidEventError("late-attempt audit requires a terminal job")
+        if not job.state.terminal or not job.attempts:
+            raise InvalidEventError(
+                "late-attempt audit requires a terminal job with an attempt"
+            )
+        attempt = job.attempts[-1]
+        output = attempt_output or M5AttemptOutput.build(
+            attempt=attempt,
+            job_epoch_id=epoch_id,
+            payload_hash=job.spec.payload_hash,
+            result_artifact_id=sha(f"late-result-artifact:{epoch_id}:{logical_job_id}"),
+            result_artifact_hash=sha(
+                f"late-result-artifact-hash:{epoch_id}:{logical_job_id}"
+            ),
+        )
+        if (
+            output.attempt_id != attempt.attempt_id
+            or output.logical_job_id != logical_job_id
+            or output.job_epoch_id != epoch_id
+            or output.payload_hash != job.spec.payload_hash
+            or output.execution_spec_hash != job.spec.execution_spec_hash
+        ):
+            raise EventConflictError("late-attempt output binds another job")
+        existing = self.world.late_attempt_results.get(output.attempt_id)
+        if existing is not None:
+            stored_output, stored_artifact = existing
+            if stored_output != output:
+                raise EventConflictError("late-attempt output replay conflicts")
+            return stored_artifact
+
+        chunk_active: bool | None
+        requirement_active: bool | None
+        group_active: bool | None
+        if job.spec.job_kind is M5JobKind.REVERSE_REQUIREMENT_DISCOVERY:
+            direction, chunk_id = self.world.root_target(epoch, job.spec)
+            assert direction is M5DiscoveryDirection.REVERSE_CHUNK
+            chunk_active = self.world.published.base.is_chunk_active(chunk_id)
+            requirement_active = None
+            group_active = None
+        else:
+            if job.spec.job_kind is M5JobKind.FORWARD_REQUIREMENT_RETRIEVAL:
+                direction, requirement_id = self.world.root_target(epoch, job.spec)
+                assert direction is M5DiscoveryDirection.FORWARD_REQUIREMENT
+                chunk_active = None
+            else:
+                if job.spec.pair is None:
+                    raise AssertionError("fake verifier late return lacks its pair")
+                requirement_id = job.spec.pair.subject_id
+                chunk_active = self.world.published.base.is_chunk_active(
+                    job.spec.pair.chunk_version_id
+                )
+            requirement = self.world.published.requirement(requirement_id)
+            requirement_active = self.world.published.is_requirement_active(
+                requirement_id
+            )
+            group_active = self.world.published.is_group_active(
+                requirement.group_version_id
+            )
+        epoch_active = not epoch.failed
+        archive_reason = classify_attempt_activity(
+            epoch_active=epoch_active,
+            requirement_active=requirement_active,
+            group_active=group_active,
+            chunk_active=chunk_active,
+            job_already_terminal=True,
+        )
+        if archive_reason is None:
+            raise AssertionError("terminal late return lacks an archive reason")
+        artifact = M5AttemptResultArtifact.build(
+            attempt_output=output,
+            job_state_at_receipt=job.state,
+            job_state_after=job.state,
+            disposition=M5AttemptDisposition.TERMINAL_AUDIT_ONLY,
+            activity_snapshot_epoch_id=self.world.published.current_epoch,
+            activity_snapshot_revision=self.world.published.current_point.revision,
+            epoch_active=epoch_active,
+            chunk_active=chunk_active,
+            requirement_active=requirement_active,
+            group_active=group_active,
+            archive_reason=archive_reason,
+            cancelled_by_event_id=job.cancelled_by_event_id,
+            cancelled_by_epoch_id=job.cancelled_by_epoch_id,
+            cancellation_reason=job.cancellation_reason,
+        )
+        artifact.validate_job_shape(job.spec.job_kind)
+
         revision = epoch.revision
+        event_work = epoch.event_work
+        scope_states = dict(epoch.scope_states)
+        pending = self.world.pending_by_owner(epoch_id)
         published = self.world.published.export_snapshot()
+        certificates = self.world.reference_certificates()
+        external_calls = self.world.external_call_count
         with self.world.transaction("late-attempt-audit"):
+            self.world.late_attempt_results[output.attempt_id] = (output, artifact)
             self.world.late_attempt_artifacts.append((epoch_id, logical_job_id))
             self.world.operation_log.append("late-attempt-audit-only")
         if (
             epoch.revision != revision
+            or epoch.event_work != event_work
+            or epoch.scope_states != scope_states
+            or self.world.pending_by_owner(epoch_id) != pending
             or self.world.published.export_snapshot() != published
+            or self.world.reference_certificates() != certificates
+            or self.world.external_call_count != external_calls
         ):
             raise AssertionError("audit-only late attempt mutated semantic state")
+        return artifact
 
 
 def _status_deltas(
@@ -2787,6 +2933,9 @@ class FakeAudit:
         independently_recomputed = compute_reference_states(self.world.published)
         if epoch.sealed_states != independently_recomputed:
             raise AssertionError("fake post-seal Python-oracle mismatch")
+        independently_recomputed_certificates = _certificates(self.world.published)
+        if epoch.sealed_certificates != independently_recomputed_certificates:
+            raise AssertionError("fake post-seal certificate-oracle mismatch")
         if event.structural_event_id != result.event_id:
             raise AssertionError("fake post-seal event binding drift")
 
@@ -2804,8 +2953,9 @@ class FakeHarness:
     application: M5TypedApplication
 
 
-def make_harness(repository: M5Repository | None = None) -> FakeHarness:
-    world = FakeTypedWorld(repository or make_repository())
+def reconnect_harness(world: FakeTypedWorld) -> FakeHarness:
+    """Build fresh application and port objects over one retained fake store."""
+
     structural = FakeStructural(world)
     direct = FakeDirect(world)
     runtime = FakeRuntime(world)
@@ -2837,6 +2987,10 @@ def make_harness(repository: M5Repository | None = None) -> FakeHarness:
     )
 
 
+def make_harness(repository: M5Repository | None = None) -> FakeHarness:
+    return reconnect_harness(FakeTypedWorld(repository or make_repository()))
+
+
 __all__ = [
     "FakeDirectInterruption",
     "FakeDirectSelectedOutcome",
@@ -2849,6 +3003,7 @@ __all__ = [
     "make_manifest",
     "make_repository",
     "make_typed_plan",
+    "reconnect_harness",
     "requirement_snapshot",
     "sha",
 ]
