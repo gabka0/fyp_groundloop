@@ -1,0 +1,135 @@
+# M5-D25 Persisted-Matching Contract Review Activation
+
+Status: activated remediation-only contract lane; migration 017 and runtime
+implementation remain unauthorized
+
+Date: 2026-09-02
+
+## 1. Exact activation point
+
+```text
+base_commit = 8b3c006fa959e9c0d13f12282853006b4dfbbd78
+branch = workstream/m5-d25-contract-candidate
+worktree = /home/kassym/Desktop/groundloop-worktrees/m5-d25-contract-candidate
+protected_draft_path = docs/workstreams/m5_runtime_contract/PERSISTED_MATCHING_AMENDMENT_DRAFT.md
+protected_draft_sha256 = 167d1e7df5a720041fe0ff51879d08357f0dfbe3a7781ffaa08c0d958a47aa94
+candidate_path = docs/workstreams/m5_runtime_contract/PERSISTED_MATCHING_AMENDMENT.md
+```
+
+The protected draft is user-held, untracked main-worktree input. This lane may
+read it and create the new candidate path. It MUST NOT edit, delete, stage,
+rename, or overwrite the protected draft. The different candidate filename is
+mandatory so that later integration cannot collide with that untracked input.
+
+## 2. Authority and prerequisite result
+
+Current authority remains the frozen M5 design, runtime-addendum revision 5,
+M5-D24 recovery amendment, accepted M5-D24-C1 through C7 corrections, and
+their recorded implementation boundary. This activation is not itself an M5
+decision and grants no schema or source authority.
+
+An independent byte audit returned `GO` for the migration-016 prerequisite.
+The exact accepted tuple is:
+
+```text
+accepted_016_bundle_id = "m5-runtime-recovery-schema-bundle-v1"
+accepted_016_migration_sha256 = a63d2a878a5196e071e3e51c6e6737cf76552057ade65da4112e0f0bafb412d7
+accepted_016_bundle_sha256 = 28a31f37c13cdaa2b89676e6279740a1f366e1acd16502c4fa722c2e0be21565
+accepted_016_oracle_sha256 = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+accepted_016_prerequisite_sha256 = b7b03574dc2ba62fd6ba7be22744e2fe6d9ec178ffb2b4b9b552c5ff6281dacd
+```
+
+The migration-016 SQL and installer blobs have not drifted since acceptance
+commit `61875894172c8e0b36866d6b215ecab7a57b76ec`. This removes the prerequisite
+ledger blocker; it does not accept D25.
+
+## 3. Independent pre-activation verdict
+
+The protected draft received `HOLD`, with no P0 and five P1 contract defects.
+A literal-only placeholder update is forbidden. The candidate MUST remediate:
+
+1. the contradiction between a caller-supplied complete patch and the store's
+   duty to derive physical/logical changes and work from locked PostgreSQL
+   rows and actual indexed operations;
+2. prose-only physical child/preimage encodings where replay requires exact,
+   byte-total observation, edge, mask, and Hall recipes;
+3. an incomplete tier-15 order that does not place D25 rows relative to the
+   existing owner/answer PENDING and compact-evaluation rows;
+4. an activated-without-history backfill input set that omits strict direct-M4
+   state/certificates and claim/answer ownership while promising combined
+   claim/answer reconstruction; and
+5. an undefined physical-corruption audit despite the intentional ban on
+   allowing the independent semantic oracles to consume D25 relations.
+
+The candidate MUST also make edge absence explicit, replace all four accepted-
+016 placeholders, update stale pre-acceptance dependency text, and cite runtime
+addendum revision 5 plus C1 through C7.
+
+## 4. Exact path ownership
+
+This lane owns only:
+
+1. `docs/workstreams/m5_runtime_contract/PERSISTED_MATCHING_AMENDMENT.md`
+   (new); and
+2. `docs/workstreams/m5_runtime_implementation/D25_CONTRACT_REVIEW_HANDOFF.md`
+   (this file).
+
+It MUST NOT edit the protected `_DRAFT.md`, `AGENTS.md`, any frozen authority
+document, migration, source, test, provider configuration, runtime mode, or
+database. A retained historical worktree grants no additional ownership.
+
+## 5. Execution plan and stop gates
+
+1. Copy the protected draft bytes to the new candidate path and record the
+   protected source digest.
+2. Apply only the prerequisite/stale corrections and the five P1 remediations
+   above. Preserve the semantic claim boundary and all unrelated draft text.
+3. Run deterministic document checks: placeholder absence, accepted-literal
+   presence, old-status absence, exact owned-path diff, and candidate SHA-256.
+4. Freeze the candidate commit and obtain two independent same-byte reviews:
+   one semantic/digest/counter review and one SQL/migration/lock/replay review.
+5. Any P0/P1, byte change, ambiguous recipe, or reviewer disagreement returns
+   the lane to `HOLD`. Do not update authority documents.
+6. Only two independent `GO` verdicts authorize a separate coordinator-owned
+   freeze tranche. That later tranche must record M5-D25 in the design freeze,
+   runtime addendum, acceptance matrix, implementation plan, execution plan,
+   decision log, status, roadmap, and applicable agent routing instructions.
+7. Migration 017 receives a separate activation commit and disjoint
+   implementation manifest only after the frozen authority tranche reaches
+   main. No migration, source, or database work belongs to this lane.
+
+## 6. Exact reviewer prompt
+
+```text
+You are an independent adversarial reviewer for GroundLoop M5-D25. Work
+read-only from the exact candidate commit and candidate SHA supplied by the
+coordinator. Read AGENTS.md and the required authority chain first. Then read
+the complete candidate, not excerpts, and compare it with M5 design freeze,
+runtime-addendum revision 5, M5-D24 recovery amendment, C1-C7 corrections,
+migration 016, the accepted five-field ledger, and relevant current runtime
+contracts.
+
+Classify every finding P0, P1, or P2. In particular falsify: store-versus-
+caller derivation authority; exact typed physical point/change/preimage
+recipes including absence and tombstones; all 37 D25 counters and digest
+ownership; total lock ordering including existing tier-15 rows; closed
+activation/backfill inputs; independent semantic-oracle separation; the
+out-of-band physical audit; replay/crash/concurrency/failed-epoch isolation;
+and migration-017 ledger-first/no-guess behavior. Verify every accepted-016
+literal from exact bytes. Confirm that the candidate changes no frozen
+semantic truth table, M4-v1 identity, D24 counter/timing identity, objective-
+truth claim, provider exactly-once claim, or superiority claim.
+
+Return GO only if the exact bytes have zero unresolved P0/P1. Report the exact
+commit, candidate SHA-256, files read, checks run, and residual P2/debt. Do not
+edit files, Git, the database, or external systems. Do not authorize migration
+017 or implementation; your verdict concerns contract-candidate readiness
+only.
+```
+
+## 7. Current boundary
+
+This activation completes the planning and prompt step. The lane is now
+authorized only to produce and audit the remediated contract candidate. D25 is
+not frozen; migration 017 remains blocked; runtime remains `v1_only` outside
+isolated fixtures; and M5.4-05 through M5.4-09 remain pending.
