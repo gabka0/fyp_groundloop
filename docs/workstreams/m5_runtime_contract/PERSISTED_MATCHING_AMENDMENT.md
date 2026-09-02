@@ -992,6 +992,26 @@ accumulator relation MUST be rejected by privileges and triggers; only the
 checked cursor-local procedures and the separately authorized migration/
 activation bootstrap may write them.
 
+Migration 017 MUST install a `BEFORE INSERT OR UPDATE OR DELETE` guard trigger
+on every D25 current, working, image, patch, contribution, and accumulator
+relation. Runtime DML requires the existing transaction-local
+`groundloop.m5_checked_transition=on` authorization set by the accepted
+`groundloop_m5_authorize_checked_transition(epoch_id,expected_revision)` only
+after its tier locks and CAS validation; the D25 deferred validators also bind
+every changed row to that authorized epoch/resulting revision. Activation DML
+requires a new checked
+`groundloop_m5_authorize_persisted_matching_activation(
+expected_m4_head_epoch_id bigint, expected_m4_head_revision bigint,
+decision_policy_version text)` helper installed by 017. That helper locks and
+validates mode, the M4 head and referenced epoch revision, M5-head/activation
+absence, the exact 017 ledger, policy and zero-live-epoch preconditions before
+setting the same transaction-local authorization. First-install DDL/backfill creates
+and validates its rows before enabling these guards, then installs every guard
+before the ledger insert and commit. No ordinary application path may set the
+authorization flag directly or disable a guard. This is a database-correctness
+boundary for trusted GroundLoop credentials, not a security claim against a
+malicious schema owner.
+
 ## 6. Localized transition validators
 
 The cursor-local store MUST validate all fallible before images before its
@@ -1080,11 +1100,17 @@ AUDIT_HALL =
 ```
 
 The family rank is exactly `observation=0`, `edge=1`, `mask=2`, `hall=3`;
-lexical enum-value order is forbidden. Within a family, rows sort exactly as
-Section 4.7: observation ID; edge
-`(group_version_id,requirement_ordinal,text_hash,requirement_version_id)`;
-mask `(group_version_id,text_hash)`; and Hall group ID. Hall arrays retain
-numeric subset order.
+lexical enum-value order is forbidden. Audit projection rows and mismatches
+sort and pair one-to-one only by the canonical outer physical key:
+observation ID; edge `(requirement_version_id,text_hash)`; mask
+`(group_version_id,text_hash)`; and Hall group ID. Duplicate outer keys are an
+invalid audit. Edge group ID and requirement ordinal remain validated
+`AUDIT_EDGE` payload, never sort/pair coordinates. A decodable key with a
+malformed or different payload produces one keyed mismatch. An outer key that
+cannot decode as the typed `AUDIT_KEY` is a typed invalid-audit failure for
+which no audit digest may be reported; it is never serialized through an
+invented key. This audit order is separate from and does not change the
+Section-4.7 patch-change order. Hall arrays retain numeric subset order.
 
 The exact typed outer audit keys are:
 
@@ -1214,12 +1240,34 @@ reached through its source key and resulting-revision key is one
 `PATCH_PROVENANCE` record, not two. A failed decode returns a typed audit
 failure rather than hashing a partially trusted row set.
 
-The expected and actual working-image sequences are separately hashed with
-domain `m5-persisted-matching-working-image-provenance-v1`; the expected and
-actual accumulator sequences are separately hashed with domain
-`m5-persisted-matching-accumulator-provenance-v1`. Each uses the complete row
-encoding above in epoch order. Equality of these pairwise digests is a compact
-check only; the audit must also compare every row and field.
+The four pairwise digests use these exact calls:
+
+```text
+working_image_expected_provenance_digest = stable_m5_digest(
+  "m5-persisted-matching-working-image-provenance-v1",
+  *SEQ(WORKING_IMAGE_PROVENANCE(row)
+       for row in expected working-image epoch order))
+
+working_image_actual_provenance_digest = stable_m5_digest(
+  "m5-persisted-matching-working-image-provenance-v1",
+  *SEQ(WORKING_IMAGE_PROVENANCE(row)
+       for row in actual working-image epoch order))
+
+accumulator_expected_provenance_digest = stable_m5_digest(
+  "m5-persisted-matching-accumulator-provenance-v1",
+  *SEQ(ACCUMULATOR_PROVENANCE(row)
+       for row in expected accumulator epoch order))
+
+accumulator_actual_provenance_digest = stable_m5_digest(
+  "m5-persisted-matching-accumulator-provenance-v1",
+  *SEQ(ACCUMULATOR_PROVENANCE(row)
+       for row in actual accumulator epoch order))
+```
+
+The outer `SEQ` framing, including its zero-row count, is mandatory; directly
+flattening rows into the domain call is forbidden. Equality of each expected/
+actual pair is a compact check only; the audit must also compare every row and
+field.
 
 For a per-epoch mismatch, the working-image row digest uses domain
 `m5-persisted-matching-working-image-provenance-row-v1` followed by the exact
@@ -1414,6 +1462,25 @@ promote_matching_overlay(
 
 current_matching_work(cursor, epoch_id) -> M5OverlayWork
 ```
+
+`M5MatchingImagePoint` is the exact lossless composite:
+
+```text
+M5MatchingImagePoint(
+  current_decision_policy_version,
+  current_installed_epoch_id,
+  current_installed_revision,
+  working_epoch_id,
+  working_base_epoch_id,
+  working_base_revision,
+  working_decision_policy_version,
+  working_updated_revision
+)
+```
+
+Its fields appear in that order and equal the already-locked Section-4.1
+current and requested-epoch working headers. It is not an ambient mapping or
+serialization and it cannot omit either header.
 
 Every `M5MatchingObservationPoint`, `M5MatchingEdgePoint`,
 `M5MatchingMaskPoint`, and `M5MatchingHallPoint` is a lossless tagged union of
@@ -1784,6 +1851,15 @@ effective or representative query MUST assert the already-held epoch and image
 rows; the epoch row serializes semantic microtransactions and prevents
 representative-query phantoms from another completion.
 
+The migration-017 installer MUST own one top-level, read-write PostgreSQL
+`READ COMMITTED` transaction from its initial ledger read through commit. It
+MUST reject invocation inside an ambient transaction, nested transaction or
+savepoint, and MUST reject any other isolation level. Consequently the
+mandatory post-lock ledger query below receives a fresh statement snapshot and
+can observe an installer that committed after the initial read. Lock-not-
+available, connection, or transaction errors abort the whole transaction;
+there is no in-transaction retry or serialization-error reinterpretation.
+
 Migration 017 applies its ledger-first exact-rerun/conflict decision and exact
 accepted-016 validation before the installation lock phase. For a first
 installation it attempts `ACCESS EXCLUSIVE MODE NOWAIT` table locks in exactly
@@ -2127,7 +2203,10 @@ failed test remains non-PASS.
     same-byte installers, two conflicting installers, a commit between the
     initial ledger read and first lock, partial-prefix lock failure/release,
     and successful new-transaction retry prove the mandatory post-lock ledger
-    recheck and prohibit waiting or retry inside the transaction.
+    recheck and prohibit waiting or retry inside the transaction. Ambient,
+    nested/savepoint, read-only, REPEATABLE READ, and SERIALIZABLE installer
+    invocations are rejected before the initial ledger decision; the accepted
+    path proves one top-level read-write READ COMMITTED transaction.
 32. **Activation bootstrap.** Activation creates image policy plus exact
     observation/refcount/mask/Hall state equal to semantic states/current
     bindings/certificates at the existing M4 head, without a synthetic epoch,
@@ -2162,6 +2241,15 @@ failed test remains non-PASS.
 39. **Direct-only/v1 regression.** A zero-group typed event and every never-
     activated M4-v1 route preserve frozen M4 identities/behavior; new
     relations remain empty or physically inert as appropriate.
+40. **All-relation raw-DML guard.** For every D25 current, working, image,
+    patch, contribution, and accumulator relation, an unauthorized raw
+    `INSERT`, `UPDATE`, and `DELETE` each fail before a row changes. Checked
+    runtime authorization succeeds only after the exact epoch/revision CAS;
+    checked activation authorization succeeds only after the exact ledger/
+    head/policy/no-live-epoch checks; first-install backfill commits with all
+    guards enabled; direct flag setting and guard disabling are absent from
+    every ordinary application path. Rollback and reconnect show no partial
+    physical, logical, ledger, or authorization state.
 
 ## 14. Claim boundary
 

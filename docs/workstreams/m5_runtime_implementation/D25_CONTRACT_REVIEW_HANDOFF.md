@@ -253,3 +253,41 @@ The next commit must contain only this handoff and the candidate. Two fresh
 independent reviews must cite the second candidate SHA and exact commit, and
 both must return zero unresolved P0/P1 before the coordinator creates any
 authority-freeze activation.
+
+## 10. Second exact-byte HOLD and final audit-byte hardening
+
+Both independent reviews examined exact commit `d3262e7` and exact candidate
+SHA `81d3eb75e3f9c5c9571c583743c550df0ca70eb45d55ef83b8f261333daa0f81`.
+Each returned `HOLD` with zero P0 and the same two P1 audit-byte defects:
+
+1. edge projection order used group/ordinal payload coordinates while mismatch
+   pairing retained only the physical outer key, leaving malformed two-sided
+   order undefined; and
+2. the four working-image/accumulator provenance sub-digests named domains and
+   row order but did not display the mandatory outer `SEQ` framing.
+
+The reviews also recorded three P2 hardening items: define the image-header
+point DTO, freeze installer transaction isolation/ownership, and add a
+dedicated raw `INSERT`/`UPDATE`/`DELETE` rejection gate for every D25 relation.
+
+The final remediation makes projection and mismatch order equal to family rank
+plus canonical physical outer key, pairs both sides one-to-one, rejects
+duplicates, and makes an undecodable outer key a typed invalid audit. It gives
+all four sub-digests exact `stable_m5_digest(domain,*SEQ(...))` calls including
+zero-row framing; defines the complete current-plus-working
+`M5MatchingImagePoint`; requires one top-level read-write READ COMMITTED
+installer transaction; freezes the checked-transition/activation DML guard
+mechanism; and adds mandatory falsifier 40 for all-relation raw DML.
+
+Final pre-audit byte pin:
+
+```text
+candidate_sha256 = 5d140abf10bb9b89509f6e7e269a407817b4930a1c84aac78b3ac10068fce201
+candidate_lines = 2308
+candidate_bytes = 109138
+mandatory_falsifiers = 40
+```
+
+Any prior verdict is invalid for these bytes. The complete no-database gates
+must rerun, this two-path remediation must commit, and both independent reviews
+must restart from the resulting exact commit/SHA before any authority freeze.
