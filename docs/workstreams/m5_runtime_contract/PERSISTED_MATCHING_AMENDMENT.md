@@ -501,9 +501,15 @@ stable_m5_digest(
 ```
 
 Structural open creates this row at revision 1 with the exact structural
-matching work, or canonical zero when there is none. Every later active
-semantic transition routed through the joint matching/combined-state path adds
-its nonnegative work exactly once and records that transition's resulting
+matching work. A patch with no physical, logical-state, artifact, binding, or
+status-delta change still has empty change/binding sequences and zero
+applicable operation counters, but it is not the all-zero work vector: its
+mandatory accepted `m5-overlay-logical-output-v2` empty-record image is 71
+bytes, has SHA-256
+`b4e641b66a06cb7d204377c37cfe031d958ce6d959832620fc2e9441339581c3`,
+and therefore contributes `output_bytes=71`. Every later active semantic
+transition routed through the joint matching/combined-state path adds its
+nonnegative work exactly once and records that transition's resulting
 revision. Coordination-only acquisition, root staging/barrier, cancellation,
 inactive completion, audit-only return, failure, and seal revisions do not
 advance this D25 revision. Exact replay and conflict rejection change no
@@ -520,15 +526,19 @@ requirement_completion
 direct_transition
 ```
 
-All group register/replace/retire, document insert/delete/replace,
-`observe_requirement`, and policy effects belong to the one `structural_open`
-source. Its source ID is the structural event ID and its identity hash is the
-event payload hash, including for the canonical rootless
-`observe_requirement` event. Only an active requirement verifier completion
-uses `requirement_completion`. Only a cursor-local active M4 transition that
-enters the combined M5 overlay uses `direct_transition`. Activation bootstrap
-has no source or contribution because it is outside a typed event. Inactive
-and audit-only completions have no D25 patch or contribution.
+All group register/replace/retire, document insert/delete/replace, standalone
+claim `ObserveEvent`, `ObserveRequirementEvent`, and policy effects belong to
+the one revision-1 `structural_open` source. Its source ID is the structural
+event ID and its identity hash is the event payload hash, including for the
+canonical rootless requirement-observation event. A standalone claim
+`ObserveEvent` coalesces its direct-M4 observation/currency/state/certificate
+effects and combined-v2 effects into that one contribution; it MUST NOT create
+a second revision-1 `direct_transition`. Only an active requirement verifier
+completion uses `requirement_completion`. Only a later cursor-local active M4
+transition that enters the combined M5 overlay uses `direct_transition`.
+Activation bootstrap has no source or contribution because it is outside a
+typed event. Inactive and audit-only completions have no D25 patch or
+contribution.
 
 The immutable patch is:
 
@@ -696,7 +706,20 @@ stable_m5_digest(
   *HASH(certificate_digest))
 ```
 
-Close rows precede open rows for one object. The byte-total logical patch is:
+The exact binding sequence is not independently sorted. It is the decoded
+`group_binding` block of `logical_output_preimage`, followed by that image's
+decoded `claim_binding` block, preserving the already frozen producer/
+first-touch object order. For one `(kind,object_id)` a patch contains at most
+one close row and at most one open row, with the close immediately before the
+open. A close has non-NULL `valid_to_revision=resulting_revision`, retains its
+earlier `valid_from_revision`, and names the prior certificate. An open has
+`valid_from_revision=resulting_revision`, NULL `valid_to_revision`, and names
+the after certificate. The row's kind and object ID MUST equal its output-
+record kind/object and its decoded binding payload. The digest sequence and
+the two output binding blocks have one-to-one equality; a missing, extra,
+duplicated, reordered, cross-object, or revision-invalid row is rejected.
+
+The byte-total logical patch is:
 
 ```text
 logical_overlay_patch_digest = stable_m5_digest(
@@ -787,14 +810,28 @@ type, duplicate/missing/reordered/unknown field, noncanonical integer, invalid
 or nonfinite binary64, length overrun, trailing byte, and any value whose exact
 re-encoding differs from the stored preimage.
 
-`output_records` retains the existing producer order, without a local sort:
-requirement-state, group-state, claim-state, answer-state, group-certificate-
-artifact, claim-certificate-artifact, group-binding, claim-binding, then
-status-delta blocks. Within each block it preserves first-touch key order.
-Repeated binding rows preserve close-before-open order. Each record is the
+`output_records` retains the existing producer order, without a local sort.
+The exact built-in `str` kind literals and block order are:
+
+```text
+requirement_state
+group_state
+claim_state
+answer_state
+group_certificate
+claim_certificate
+group_binding
+claim_binding
+status_delta
+```
+
+Hyphens, enum instances, aliases, or inferred class names are forbidden.
+Within each block the producer preserves first-touch key order. Binding rows
+use the exact sequence and close/open laws above. Each record is the
 three-tuple `(kind, object_id, after_value)`, including an explicit `None`
-after-value where applicable. The separately sorted logical patch preimage
-MUST decode to the same multiset and binding sequence, but MUST NOT change
+after-value where applicable. The separately sorted logical state/artifact
+change portion MUST decode to the same multiset, and the binding portion MUST
+equal the two decoded output binding blocks one-for-one; neither may change
 these accepted output bytes. Thus an empty physical patch can still bind
 direct, state-only, certificate-only, or policy-rebind work.
 
@@ -945,9 +982,12 @@ At seal:
 - present Hall rows upsert current; Hall tombstones delete current; and
 - every current upsert records the sealing epoch and revision.
 
-Working rows, image rows, patch artifacts, and contributions are retained after
-both seal and failure. Direct updates or deletes outside checked cursor-local
-procedures MUST be rejected by privileges and triggers.
+Working rows, image rows, patch artifacts, contributions, and accumulators are
+retained after both seal and failure. Unauthorized direct inserts, updates, or
+deletes against any D25 current, working, image, patch, contribution, or
+accumulator relation MUST be rejected by privileges and triggers; only the
+checked cursor-local procedures and the separately authorized migration/
+activation bootstrap may write them.
 
 ## 6. Localized transition validators
 
@@ -1036,7 +1076,24 @@ AUDIT_HALL =
        INT(distinct_hash_count)))
 ```
 
-Rows use the same unique-key sorting and Hall subset order as Section 4.7.
+The family rank is exactly `observation=0`, `edge=1`, `mask=2`, `hall=3`;
+lexical enum-value order is forbidden. Within a family, rows sort exactly as
+Section 4.7: observation ID; edge
+`(group_version_id,requirement_ordinal,text_hash,requirement_version_id)`;
+mask `(group_version_id,text_hash)`; and Hall group ID. Hall arrays retain
+numeric subset order.
+
+The exact typed outer audit keys are:
+
+```text
+AUDIT_KEY(observation) = SEQ((TEXT(observation_id)))
+AUDIT_KEY(edge) =
+  SEQ((TEXT(requirement_version_id), HASH(text_hash)))
+AUDIT_KEY(mask) =
+  SEQ((TEXT(group_version_id), HASH(text_hash)))
+AUDIT_KEY(hall) = SEQ((TEXT(group_version_id)))
+```
+
 For each family `f`, with literal enum value
 `observation | edge | mask | hall`:
 
@@ -1061,18 +1118,41 @@ revision, and whose policy equals the strict current policy. It projects every
 current row, not a sample. A missing, extra, duplicated, reordered, malformed,
 or different row changes a family digest and fails the audit.
 
-Physical-only installed coordinates and retained working history are checked
-by a separate provenance pass, because they are not semantic-oracle outputs.
-That pass decodes and rehashes every applicable Section-4.7 child/outer
-preimage, replays only successfully sealed patches in `(epoch_id,
-resulting_revision, source_kind, source_id)` order from the accepted bootstrap,
-and verifies the current row's exact `installed_epoch_id`/
-`installed_revision`. It verifies, but does not promote, failed and nonterminal
-working rows against their patch/contribution bijection. A malformed digest,
-missing patch, contribution mismatch, terminal-state mismatch, or current
-installed coordinate is an audit failure. This provenance pass may read D25
+Physical-only installed coordinates, retained working history, working-image
+headers, and matching-work accumulators are checked by a separate provenance
+pass because they are not semantic-oracle outputs. This pass may read D25
 relations because it is an integrity audit, not an independent expected-state
 oracle or a measured transition.
+
+The pass decodes and rehashes every applicable Section-4.7 child/outer
+preimage, then replays patches per epoch in
+`(epoch_id,resulting_revision,source_kind,source_id)` order from the accepted
+bootstrap. It first reconstructs and compares every retained working row for
+sealed, failed, and nonterminal epochs. For a sealed epoch it then applies the
+one deterministic seal promotion: a final present/positive working value
+becomes a current-layer value with `installed_epoch_id=epoch_id` and
+`installed_revision=terminal_seal_revision`; a tombstone deletes the current
+value. Failed and nonterminal epochs never promote. Replay across sealed epochs
+must produce the exact current rows and installed coordinates at the audited
+head.
+
+For every D25 runtime epoch the pass independently derives the expected
+working-image header: its base is the current image at structural open, its
+policy is the immutable update policy, its status and optional terminal
+revision come from the checked runtime/epoch rows, and its `updated_revision`
+is the greatest committed D25 contribution revision. It compares every header
+field and rejects a missing or extra row. Separately, it component-wise sums
+all 37 decoded, validated contribution vectors for the epoch in contribution-
+revision order, recomputes the Section-4.6 `m5-matching-work-v1` digest, and
+requires the accumulator's complete vector and digest to equal that sum and
+its `updated_revision` to equal the greatest contribution revision. A
+consistently re-digested but altered accumulator still fails this independent
+sum.
+
+A malformed digest, missing or extra patch/contribution/header/accumulator,
+contribution mismatch, terminal-state mismatch, retained-working mismatch, or
+current installed-coordinate mismatch is an audit failure. No value from an
+accumulator is permitted to seed its expected sum.
 
 After validating every child and contribution, the provenance pass encodes:
 
@@ -1081,6 +1161,21 @@ PATCH_PROVENANCE =
   SEQ((INT(epoch_id), INT(resulting_revision), ENUM(source_kind),
        TEXT(source_id), ENUM(nonterminal|failed|sealed),
        HASH(patch_digest), HASH(contribution_digest)))
+
+WORKING_IMAGE_PROVENANCE =
+  SEQ((INT(epoch_id), ENUM(nonterminal|failed|sealed),
+       OPTION(INT(terminal_revision)), INT(base_epoch_id),
+       INT(base_revision), TEXT(decision_policy_version),
+       INT(updated_revision), HASH(last_patch_digest)))
+
+MATCHING_WORK_VECTOR =
+  the exact 37 INT fields from contribution_additions through
+  public_status_deltas in the displayed Section-4.6 order
+
+ACCUMULATOR_PROVENANCE =
+  SEQ((INT(epoch_id), ENUM(nonterminal|failed|sealed),
+       MATCHING_WORK_VECTOR, HASH(matching_work_digest),
+       INT(updated_revision)))
 
 CURRENT_PROVENANCE =
   SEQ((ENUM(observation|edge|mask|hall), KEY(family),
@@ -1094,18 +1189,41 @@ provenance_replay_digest = stable_m5_digest(
   "m5-persisted-matching-provenance-replay-v1",
   *INT(head_epoch_id), *INT(head_revision),
   *SEQ(PATCH_PROVENANCE in the replay order above),
-  *SEQ(CURRENT_PROVENANCE in family/key order),
-  *SEQ(WORKING_PROVENANCE in epoch/family/key order))
+  *SEQ(WORKING_IMAGE_PROVENANCE in epoch order),
+  *SEQ(ACCUMULATOR_PROVENANCE in epoch order),
+  *SEQ(CURRENT_PROVENANCE in family-rank/key order),
+  *SEQ(WORKING_PROVENANCE in epoch/family-rank/key order))
 ```
 
+`MATCHING_WORK_VECTOR` is a literal macro splice of those 37 `INT(...)`
+arguments, not one text, sequence, JSON, or composite field. The expected and
+actual encoders expand the same 37 arguments before hashing.
+
 `KEY` and `*_POINT` are exactly the outer-key and point encodings in Section
-4.7. `last_touch_patch_digest` is `None` only for a current row created by the
-accepted activation/bootstrap, whose installed coordinates MUST equal that
-bootstrap point; every later current or working row names the last decoded
-patch that produced its exact bytes. The same contribution row reached through
-its source key and resulting-revision key is one `PATCH_PROVENANCE` record, not
-two. A failed decode returns a typed audit failure rather than hashing a
-partially trusted row set.
+4.7. Family rank is the exact rank frozen above. `last_touch_patch_digest` is
+`None` only for a current row created by the accepted activation/bootstrap,
+whose installed coordinates MUST equal that bootstrap point. For every later
+current row it names the patch responsible for the effective working value
+that the deterministic seal transformation promoted; the patch did not itself
+produce the different current-layer encoding. Every retained working row names
+the patch that produced its exact working bytes. The same contribution row
+reached through its source key and resulting-revision key is one
+`PATCH_PROVENANCE` record, not two. A failed decode returns a typed audit
+failure rather than hashing a partially trusted row set.
+
+The expected and actual working-image sequences are separately hashed with
+domain `m5-persisted-matching-working-image-provenance-v1`; the expected and
+actual accumulator sequences are separately hashed with domain
+`m5-persisted-matching-accumulator-provenance-v1`. Each uses the complete row
+encoding above in epoch order. Equality of these pairwise digests is a compact
+check only; the audit must also compare every row and field.
+
+For a per-epoch mismatch, the working-image row digest uses domain
+`m5-persisted-matching-working-image-provenance-row-v1` followed by the exact
+fields inside one `WORKING_IMAGE_PROVENANCE` row. The accumulator row digest
+uses domain `m5-persisted-matching-accumulator-provenance-row-v1` followed by
+the exact fields inside one `ACCUMULATOR_PROVENANCE` row. No sequence wrapper,
+field, or status value may be inferred or omitted.
 
 The evaluation harness returns and retains:
 
@@ -1119,7 +1237,12 @@ M5PersistedMatchingPhysicalAudit(
   actual_projection_digest,
   provenance_ok,
   provenance_replay_digest?,
+  working_image_expected_provenance_digest?,
+  working_image_actual_provenance_digest?,
+  accumulator_expected_provenance_digest?,
+  accumulator_actual_provenance_digest?,
   mismatches,
+  provenance_mismatches,
   audit_digest
 )
 ```
@@ -1128,17 +1251,35 @@ Each mismatch is:
 
 ```text
 M5PersistedMatchingPhysicalMismatch(
-  family, key_preimage, expected_row_digest?, actual_row_digest?
+  family, key, expected_row_digest?, actual_row_digest?
 )
 
 row_digest = stable_m5_digest(
   "m5-persisted-matching-physical-audit-row-v1",
   *ENUM(family), *AUDIT_ROW(family))
+
+physical_mismatch_preimage =
+  SEQ((ENUM(family), AUDIT_KEY(family),
+       OPTION(HASH(expected_row_digest)),
+       OPTION(HASH(actual_row_digest))))
+
+M5PersistedMatchingProvenanceMismatch(
+  kind, epoch_id, expected_row_digest?, actual_row_digest?
+)
+
+provenance_mismatch_preimage =
+  SEQ((ENUM(kind), INT(epoch_id),
+       OPTION(HASH(expected_row_digest)),
+       OPTION(HASH(actual_row_digest))))
 ```
 
-`mismatches` is sorted by family enum then the exact Section-4.7 family key;
-an absent side is `OPTION(None)`. `key_preimage` is the exact typed outer key
-from Section 4.7. The audit digest is:
+`mismatches` is sorted by the exact family rank above and then the exact within-
+family order. Its `key` is the typed `AUDIT_KEY(family)` value, never an
+opaque byte string. `provenance_mismatches` admits exact kind values
+`working_image | accumulator`, with rank `working_image=0` and
+`accumulator=1`, then sorts by epoch ID. An absent or undecodable side is
+`OPTION(None)`. Raw `bytea`, JSON, `repr`, or an untyped preimage is forbidden
+in either mismatch digest. The audit digest is:
 
 ```text
 audit_digest = stable_m5_digest(
@@ -1149,14 +1290,20 @@ audit_digest = stable_m5_digest(
   *HASH(sql_expected_projection_digest),
   *HASH(actual_projection_digest), *BOOL(provenance_ok),
   *OPTION(HASH(provenance_replay_digest)),
-  *SEQ(each mismatch encoded in displayed field order))
+  *OPTION(HASH(working_image_expected_provenance_digest)),
+  *OPTION(HASH(working_image_actual_provenance_digest)),
+  *OPTION(HASH(accumulator_expected_provenance_digest)),
+  *OPTION(HASH(accumulator_actual_provenance_digest)),
+  *SEQ(physical_mismatch_preimage in the frozen order),
+  *SEQ(provenance_mismatch_preimage in the frozen order))
 ```
 
 `PASS` requires all three projection digests equal, an empty mismatch tuple,
-`provenance_ok=true`, and a present provenance digest. The artifact is
-evaluation evidence only; it is not written into a runtime, semantic, patch,
-contribution, result, or publication identity and its work/time is reported
-separately.
+`provenance_ok=true`, a present provenance digest, both present expected/actual
+working-image digests equal, both present expected/actual accumulator digests
+equal, and an empty provenance-mismatch tuple. The artifact is evaluation
+evidence only; it is not written into a runtime, semantic, patch, contribution,
+result, or publication identity and its work/time is reported separately.
 
 ## 7. Deterministic certificate representatives
 
@@ -1206,6 +1353,22 @@ effective_matching_image(
   cursor, epoch_id
 ) -> M5MatchingImagePoint
 
+resolved_matching_observation_point(
+  cursor, epoch_id, observation_id
+) -> M5MatchingObservationPoint | None
+
+resolved_matching_edge_point(
+  cursor, epoch_id, requirement_version_id, text_hash
+) -> M5MatchingEdgePoint | None
+
+resolved_matching_mask_point(
+  cursor, epoch_id, group_version_id, text_hash
+) -> M5MatchingMaskPoint | None
+
+resolved_matching_hall_point(
+  cursor, epoch_id, group_version_id
+) -> M5MatchingHallPoint | None
+
 effective_matching_observation(
   cursor, epoch_id, observation_id
 ) -> M5MatchingObservationPoint | None
@@ -1249,10 +1412,22 @@ promote_matching_overlay(
 current_matching_work(cursor, epoch_id) -> M5OverlayWork
 ```
 
-An absent edge is returned as `None`. It MUST NOT be represented by a
-synthetic zero point; a persisted working zero-refcount tombstone remains a
-present `M5MatchingEdgePoint`. Observation/Hall absence and mask zero follow
-the same absence-versus-working-tombstone distinction in Sections 4 and 5.
+Every `M5MatchingObservationPoint`, `M5MatchingEdgePoint`,
+`M5MatchingMaskPoint`, and `M5MatchingHallPoint` is a lossless tagged union of
+the corresponding `*_CURRENT` and `*_WORKING` Section-4.7 recipes, in exactly
+that field order. It retains the layer tag and every epoch/install coordinate,
+payload, `present` flag or zero value, and revision; no ambient dataclass
+serialization defines it.
+
+A `resolved_*_point` result of `None` means neither a working row nor an
+unshadowed current row exists. A persisted working observation/Hall
+`present=false`, edge `refcount=0`, or mask `mask=0` tombstone remains a
+present tagged working point. The `effective_*` value helpers apply the
+Section-5 eligibility filter after resolution: they return `None` for a
+filtered observation, edge, or Hall value and integer zero for a filtered mask
+value. Transition derivation, before-image validation, replay, and physical
+audit MUST use the resolved point operations and MUST NOT infer physical
+absence from a filtered effective value. A synthetic zero point is forbidden.
 
 The transition intent is a byte-total, persistence-internal lock plan, not a
 patch or result assertion:
@@ -1367,19 +1542,30 @@ The revision-1 typed-open transaction MUST install all matching effects that
 are already determined before external work:
 
 - every structural form creates the working-image header and one immutable
-  `structural_open` patch/contribution, even when its physical/logical work is
-  canonical zero;
+  `structural_open` patch/contribution. A no-change form uses empty change and
+  binding sequences plus zero applicable operation counters, but still
+  records the mandatory 71-byte empty logical-output image from Section 4.6;
 - document insert normally has no requirement-membership change but still
-  records that exact zero/nonzero joint structural patch;
+  records that exact byte-total joint structural patch;
 - document delete/replace removes exactly the withdrawn current requirement
   observations named by the frozen withdrawal plan;
-- `observe_requirement` atomically archives the supplied immutable typed
-  observation, applies exact currency supersession, and coalesces the old
-  holder's removal with the new holder's policy-relative membership. SUPPORT
-  may add the new membership; REFUTE or NEUTRAL adds none; every label still
-  removes a superseded SUPPORT holder when applicable. The rootless revision-1
-  transaction creates exactly one structural patch/contribution and invokes no
-  model;
+- standalone claim `ObserveEvent` atomically coalesces its accepted direct-M4
+  observation/currency/state/certificate transition with the derived
+  combined-v2 claim/answer/certificate transition in the same revision-1
+  `structural_open` patch/contribution. It creates no separate
+  `direct_transition`;
+- rootless `ObserveRequirementEvent` may reference an existing inactive
+  requirement or chunk. Eligibility is evaluated at the resulting point. An
+  inactive observation is archived with `eligible_for_currency=false`, does
+  not supersede currency, and changes no matching, requirement, group, claim,
+  answer, or certificate state. It still receives the one mandatory byte-total
+  structural patch/contribution. An active noncanonical-task observation may
+  hold its own typed currency key but remains matching-inert. Only an active
+  canonical `verify_requirement_v1` observation applies the coalesced old-
+  holder removal/new-holder policy-relative addition: SUPPORT may add the new
+  membership, while REFUTE or NEUTRAL adds none; every active canonical label
+  removes a superseded SUPPORT holder when applicable. The rootless
+  transaction invokes no model;
 - group registration creates one present empty Hall row and empty working
   requirement/group semantic state for the successor;
 - group replacement/retirement applies one coalesced before/after structural
@@ -1597,8 +1783,8 @@ representative-query phantoms from another completion.
 
 Migration 017 applies its ledger-first exact-rerun/conflict decision and exact
 accepted-016 validation before the installation lock phase. For a first
-installation it takes `SHARE ROW EXCLUSIVE` table locks in exactly this order
-before any singleton row read, history check, DDL, or backfill:
+installation it attempts `ACCESS EXCLUSIVE MODE NOWAIT` table locks in exactly
+this order before any singleton row read, history check, DDL, or backfill:
 
 ```text
 groundloop_runtime_mode
@@ -1644,18 +1830,32 @@ groundloop_m5_published_group_certificate_binding
 groundloop_m5_published_claim_certificate_binding
 ```
 
-The table-lock mode matches migrations 015 and 016. No installation query may
-lock or read a later-listed relation and then acquire an earlier-listed one.
-After every table lock is held, the installer row-locks with
-`SELECT ... FOR UPDATE` the runtime-mode singleton, M4 publication-head
-singleton, M5 publication-head singleton when present, and activation
-singleton when present, in that order. A missing M5 head or activation row is
-protected by the runtime-mode table and singleton locks: every v1 open and
-activation takes that surface first, so absence cannot turn into presence
-during installation. The installer then checks the no-typed-history predicate
-and all Section-11 preconditions. Any changed singleton or forbidden row
-aborts before DDL. The exact ledger no-op path takes none of these installation
-locks, even if typed history was created after a successful installation.
+This deliberately strengthens the migration-015/016 installation mode. It is
+a fail-fast maintenance barrier, not an availability claim. `ACCESS EXCLUSIVE
+... NOWAIT` conflicts before waiting with every pre-existing reader/mutator
+lock on a tuple relation. If any lock in the ordered prefix is unavailable,
+the whole transaction MUST abort and release the prefix; it MUST NOT wait,
+savepoint-retry, or continue. A caller may retry only in a new transaction
+starting again from the ledger-first decision. No installation query may lock
+or read a later-listed relation and then acquire an earlier-listed one.
+
+After every table lock is held, the installer MUST re-read the migration-017
+ledger row before any singleton or history read. An exact row returns the
+ordinary no-op result, a same-ID different row conflicts, and only continued
+absence may proceed. This closes the race in which another installer commits
+between the initial ledger read and this installer's first lock. The ordinary
+exact rerun that observes the accepted row in its initial ledger read takes no
+installation lock; only the commit-between-reads race can reach the locked
+exact no-op.
+
+With continued ledger absence, the installer row-locks with `SELECT ... FOR
+UPDATE` the runtime-mode singleton, M4 publication-head singleton, M5
+publication-head singleton when present, and activation singleton when
+present, in that order. A missing M5 head or activation row is protected by
+the complete table-lock barrier, so absence cannot turn into presence during
+installation. The installer then checks the no-typed-history predicate and all
+Section-11 preconditions. Any changed singleton or forbidden row aborts before
+DDL.
 
 D25 patch/contribution insertion participates in the existing mutator's one
 D24 transition timing anchor; it MUST NOT designate or append a second timing
@@ -1837,23 +2037,29 @@ failed test remains non-PASS.
     maximum, matching-size, or distinct-hash field is rejected by the bounded
     row validator or detected by the post-seal independent audit.
 12. **Representative shadow/order/cardinality.** Non-ASCII and prefix-
-    adversarial IDs/hashes prove `COLLATE "C"` ordering; any working tombstone
-    or different-mask row hides current; every mask returns exactly
-    `min(C[m],r_g)` hashes; and a selected positive edge cannot return NULL
-    provenance.
+    adversarial IDs/hashes prove `COLLATE "C"` ordering; resolved point APIs
+    distinguish physical absence, current values, working values, and every
+    working tombstone before the filtered effective-value API collapses an
+    inactive value; any working tombstone or different-mask row hides current;
+    every mask returns exactly `min(C[m],r_g)` hashes; and a selected positive
+    edge cannot return NULL provenance.
 13. **Patch one-field identity.** Mutating every source, point, policy, group
     shape, physical before/after field, logical state/artifact/binding field,
     logical-output byte, or one of all 37 work counters changes the applicable
-    child, patch, work, and contribution digest.
+    child, patch, work, and contribution digest. Golden vectors cover all nine
+    exact output-kind strings, group-then-claim first-touch binding sequence,
+    close/open laws, physical-audit family rank, typed audit keys, and exact
+    mismatch preimages.
 14. **Patch/contribution replay.** Exact structural, requirement, and direct
     source replay point-reads one retained artifact/contribution and performs
     zero writes; same source or resulting revision with different patch/work/
     before image conflicts atomically.
 15. **Semantic-transition coverage.** Structural open creates one contribution
-    even when zero; active requirement/direct transitions each create one;
-    intervening acquisition/root/barrier/cancellation/inactive/audit/failure/
-    seal revisions do not alter D25 work, and seal does not require D25
-    `updated_revision` to equal the runtime revision.
+    even when every change sequence is empty and then charges the exact
+    71-byte empty logical output; active requirement/direct transitions each
+    create one; intervening acquisition/root/barrier/cancellation/inactive/
+    audit/failure/seal revisions do not alter D25 work, and seal does not
+    require D25 `updated_revision` to equal the runtime revision.
 16. **Completion crash matrix.** Injection after each image, observation,
     edge, mask, Hall, semantic state, certificate, combined-state, patch
     artifact, D25 contribution, D24 accumulator, D25 accumulator, job, and
@@ -1886,12 +2092,15 @@ failed test remains non-PASS.
     point-removed without rediscovery, a hidden reserve, or model work;
     changed withdrawal/predecessor bytes conflict on replay.
 26. **Document insert and explicit observation.** A no-membership document
-    insert still records the exact working image and canonical structural
-    patch/contribution without inventing matching work. Parameterized
-    `observe_requirement` SUPPORT/REFUTE/NEUTRAL, first-holder, supersession,
-    selected-provenance, exact replay, and conflicting-payload cases prove one
-    rootless revision-1 structural contribution, exact currency/matching
-    effects, and zero model calls.
+    insert still records the exact working image and byte-total structural
+    patch/contribution without inventing physical work. Standalone claim
+    `ObserveEvent` proves its direct-M4 and combined-v2 effects coalesce into
+    the sole revision-1 structural contribution. Parameterized
+    `ObserveRequirementEvent` SUPPORT/REFUTE/NEUTRAL, active canonical,
+    active noncanonical, inactive requirement, inactive chunk, first-holder,
+    supersession, selected-provenance, exact replay, and conflicting-payload
+    cases prove one rootless revision-1 structural contribution, the exact
+    eligible/ineligible currency and matching effects, and zero model calls.
 27. **Policy nonzero flips.** Ordered candidate probes produce every exact
     SUPPORT addition/removal, coalesced mask/Hall changes, policy-bound
     certificates, image identity, patch, and counters.
@@ -1908,9 +2117,14 @@ failed test remains non-PASS.
     same-ID hash conflict, live/pre-D25-terminal history rejection, and every
     mid-DDL/backfill injection are atomic. Exact 017 rerun checks its ledger
     first and is a no-op after later typed history exists; activation/open/
-    nonterminal resume reject a missing 017 ledger before consumption. A
-    static/spy test asserts the complete Section-10 table tuple, `SHARE ROW
-    EXCLUSIVE` mode, singleton-row order, and absence protection exactly.
+    nonterminal resume reject a missing 017 ledger before consumption. Static/
+    spy and live both-order tests assert the complete Section-10 table tuple,
+    `ACCESS EXCLUSIVE MODE NOWAIT`, singleton-row order, and absence protection
+    against public-v1 open, activation, and pre-017 typed open/resume. Two
+    same-byte installers, two conflicting installers, a commit between the
+    initial ledger read and first lock, partial-prefix lock failure/release,
+    and successful new-transaction retry prove the mandatory post-lock ledger
+    recheck and prohibit waiting or retry inside the transaction.
 32. **Activation bootstrap.** Activation creates image policy plus exact
     observation/refcount/mask/Hall state equal to semantic states/current
     bindings/certificates at the existing M4 head, without a synthetic epoch,
@@ -1924,8 +2138,12 @@ failed test remains non-PASS.
 35. **Oracle and physical-audit separation.** Python and SQL expected-state
     oracle definitions contain no D25 relation name and return byte-identical
     Section-6.1 expected projections. The separate actual-image adapter plus
-    provenance pass detects each seeded image-policy, installed-coordinate,
-    observation, refcount, mask, Hall, patch, or contribution corruption;
+    provenance pass detects each seeded current-image policy, working-image
+    base/policy/status/revision, installed-coordinate, observation, refcount,
+    mask, Hall, patch, contribution, retained-working, or accumulator
+    corruption. Missing/extra rows and every accumulator field are covered;
+    consistently re-digesting a corrupted accumulator still fails the
+    independent contribution sum and pairwise provenance digest comparison;
     ordinary three-oracle semantic equality independently detects seeded
     requirement/group/claim/answer-state and certificate divergence. Giving a
     D25 value to an expected-state oracle fails the test.
@@ -1970,8 +2188,12 @@ This candidate derives from protected draft SHA-256
 `167d1e7df5a720041fe0ff51879d08357f0dfbe3a7781ffaa08c0d958a47aa94`.
 It pins the accepted migration-016 tuple and remediates the pre-activation
 caller/store, physical encoding, lock-order, bootstrap-input, physical-audit,
-and head-revision defects. Those edits are proposals until the reviews and
-authority freeze below complete.
+and head-revision defects. It further freezes lossless raw point APIs, exact
+logical-output kinds/binding order and audit encodings, standalone claim and
+inactive requirement observation behavior, deterministic seal provenance,
+nonzero empty-output bytes, fail-fast migration concurrency with a post-lock
+ledger recheck, and complete working-image/accumulator reconciliation. Those
+edits are proposals until the reviews and authority freeze below complete.
 
 The production runtime remains NO-GO for durable matching completion,
 reconnect, measured seal, and maintained M5.5 evidence until:

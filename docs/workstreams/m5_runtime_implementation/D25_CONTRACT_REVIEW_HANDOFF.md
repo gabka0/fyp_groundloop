@@ -186,3 +186,69 @@ This is candidate evidence only. Two independent reviews must cite the exact
 candidate SHA above and return zero unresolved P0/P1 before any authority-freeze
 tranche may start. A candidate-byte edit invalidates both verdicts and this
 pin.
+
+## 9. First exact-byte HOLD and complete remediation restart
+
+Two independent post-commit reviews examined exact commit `f2faf25` and exact
+candidate SHA
+`22032d5e077cdc48faa919d2379c05ca2a602683fd6fb059be43e0b558ac6135`.
+Both returned `HOLD`; neither verdict is a `GO`. The semantic/digest/counter/
+oracle review reported zero P0, seven P1 and one P2. The PostgreSQL/migration/
+lock/replay review reported zero P0, two P1 and two P2, including one overlap
+with the semantic review. The old SHA is superseded as a candidate and both
+reviews must restart on the new bytes.
+
+The second remediation resolves the consolidated findings without editing any
+schema, source, test, frozen authority, runtime mode, database, or protected
+input:
+
+1. raw resolved observation/edge/mask/Hall point operations now preserve
+   physical absence versus tagged current/working values and tombstones;
+2. all nine logical-output kind strings and the accepted group-then-claim
+   first-touch binding sequence, close/open laws and one-to-one patch binding
+   relationship are exact;
+3. physical-audit family rank, typed keys and both mismatch encodings are
+   byte-total;
+4. standalone claim `ObserveEvent` coalesces into the sole revision-1
+   structural contribution;
+5. active canonical, active noncanonical and inactive rootless
+   `ObserveRequirementEvent` branches have explicit currency/matching effects;
+6. provenance replay validates retained working rows and applies the
+   deterministic working-to-current seal transformation rather than claiming a
+   patch directly emitted current-layer bytes;
+7. an empty-change patch charges the accepted 71-byte logical output with SHA-
+   256 `b4e641b66a06cb7d204377c37cfe031d958ce6d959832620fc2e9441339581c3`
+   instead of claiming an all-zero work vector;
+8. migration-017 first install uses the complete ordered `ACCESS EXCLUSIVE
+   MODE NOWAIT` barrier, aborts a partial prefix, retries only from a new
+   ledger-first transaction, and rechecks its ledger after all table locks;
+9. the provenance audit derives every working-image header and independently
+   sums all 37 validated contribution counters before comparing the retained
+   accumulator, including consistently re-digested corruption; and
+10. unauthorized inserts as well as updates/deletes are rejected across every
+    D25 relation family, with expanded adversarial falsifiers for each repair.
+
+Second pre-audit byte pin:
+
+```text
+candidate_sha256 = f267f01b43dbbf6adeaecedcdc14b2839913d88d739e53efff07448c56ff953f
+candidate_lines = 2217
+candidate_bytes = 104448
+mandatory_falsifiers = 39
+```
+
+Fresh pre-commit gates on these bytes:
+
+- `git diff --check`: pass;
+- accepted-016 placeholder/stale-status scan: zero hits;
+- exact empty logical output: 71 bytes and the pinned digest above;
+- pure runtime contract/digest tests: 112/112 passed;
+- public-M4/legacy compatibility selection: 14/14 passed;
+- protected main `pyproject.toml`, two PDFs, renderer, and `_DRAFT.md` hashes:
+  unchanged; and
+- database/network operations: none.
+
+The next commit must contain only this handoff and the candidate. Two fresh
+independent reviews must cite the second candidate SHA and exact commit, and
+both must return zero unresolved P0/P1 before the coordinator creates any
+authority-freeze activation.
