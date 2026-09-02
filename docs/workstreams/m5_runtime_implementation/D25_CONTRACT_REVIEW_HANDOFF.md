@@ -133,3 +133,56 @@ This activation completes the planning and prompt step. The lane is now
 authorized only to produce and audit the remediated contract candidate. D25 is
 not frozen; migration 017 remains blocked; runtime remains `v1_only` outside
 isolated fixtures; and M5.4-05 through M5.4-09 remain pending.
+
+## 8. Executed candidate checkpoint
+
+The activation committed as `a3c7dfc` on the exact base above. The protected
+draft was copied mechanically to the different tracked candidate path and then
+remediated there; the protected input remains byte-identical.
+
+The candidate resolves the five activation P1s and the four additional defects
+found during the complete remediation read:
+
+1. PostgreSQL derives patch, logical output, preimages, and all 37 counters
+   from locked rows; callers can provide only compare-only expectations;
+2. absent physical rows are distinct from present working tombstones;
+3. observation, edge, mask, and Hall point/change bytes are exact M5-D1 typed
+   recipes;
+4. the existing logical-output-v2 tags, framing, block order, ten wire type
+   names, and field order are frozen rather than inferred from reflection;
+5. tier 15 has a complete PENDING/evaluation/D24/D25 suborder;
+6. migration 017 has an exact relation tuple, lock mode, singleton order, and
+   missing-row protection;
+7. activated no-history construction inputs are closed and stored semantic/
+   certificate rows are comparison targets only;
+8. expected-state oracles remain independent while a separate repeatable-read
+   physical/provenance audit detects D25-only corruption;
+9. the M4 head is used only for epoch identity, and
+   `observe_requirement` has an explicit structural source, transaction, and
+   falsifier.
+
+Pre-audit byte pin:
+
+```text
+candidate_sha256 = 22032d5e077cdc48faa919d2379c05ca2a602683fd6fb059be43e0b558ac6135
+candidate_lines = 1995
+candidate_bytes = 92673
+mandatory_falsifiers = 39
+```
+
+Pre-commit gates on these bytes:
+
+- `git diff --check`: pass;
+- accepted-016 placeholder/stale-status scan: zero hits;
+- independent installer-helper tuple comparison: exact five-field match;
+- frozen logical wire-schema introspection: 10/10 type schemas match;
+- pure runtime contract/digest tests: 112/112 passed;
+- public-M4/legacy compatibility selection: 14/14 passed;
+- protected main `pyproject.toml`, two PDFs, renderer, and `_DRAFT.md` hashes:
+  unchanged; and
+- database/network operations: none.
+
+This is candidate evidence only. Two independent reviews must cite the exact
+candidate SHA above and return zero unresolved P0/P1 before any authority-freeze
+tranche may start. A candidate-byte edit invalidates both verdicts and this
+pin.
