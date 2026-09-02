@@ -18,7 +18,7 @@
       "id": "M4-RUNTIME-READ-001",
       "kind": "resolved_claim_read",
       "path": "src/groundloop/m4/pipeline.py",
-      "line": 668,
+      "line": 768,
       "table": "groundloop_observation_currency",
       "context": "strict repository bootstrap is mechanically claim-scoped",
       "evidence": "WHERE currency.subject_kind = 'claim'"
@@ -27,7 +27,7 @@
       "id": "M4-RUNTIME-READ-002",
       "kind": "resolved_claim_read",
       "path": "src/groundloop/m4/pipeline.py",
-      "line": 685,
+      "line": 785,
       "table": "groundloop_semantic_observation",
       "context": "working repository reconnect is mechanically claim-scoped",
       "evidence": "AND currency.subject_kind = 'claim'"
@@ -36,7 +36,7 @@
       "id": "M4-RUNTIME-READ-003",
       "kind": "resolved_claim_read",
       "path": "src/groundloop/m4/pipeline.py",
-      "line": 765,
+      "line": 863,
       "table": "groundloop_observation_currency",
       "context": "v1 publication bootstrap copies only claim currency",
       "evidence": "WHERE subject_kind = 'claim'"
@@ -45,7 +45,7 @@
       "id": "M4-RUNTIME-READ-004",
       "kind": "resolved_claim_read",
       "path": "src/groundloop/m4/pipeline.py",
-      "line": 943,
+      "line": 1149,
       "table": "groundloop_working_observation_delta",
       "context": "withdrawal replay is mechanically claim-scoped",
       "evidence": "AND delta.subject_kind = 'claim'"
@@ -54,7 +54,7 @@
       "id": "M4-RUNTIME-READ-005",
       "kind": "resolved_claim_read",
       "path": "src/groundloop/m4/pipeline.py",
-      "line": 977,
+      "line": 1181,
       "table": "groundloop_observation_currency",
       "context": "reverse withdrawal discovers only claim current observations",
       "evidence": "WHERE currency.subject_kind = 'claim'"
@@ -63,7 +63,7 @@
       "id": "M4-RUNTIME-READ-006",
       "kind": "resolved_claim_read",
       "path": "src/groundloop/m4/pipeline.py",
-      "line": 1619,
+      "line": 2026,
       "table": "groundloop_semantic_observation",
       "context": "withdrawal overlay lookup asserts claim subject kind",
       "evidence": "WHERE observation_id = %s AND subject_kind = 'claim'"
@@ -72,7 +72,7 @@
       "id": "M4-RUNTIME-READ-007",
       "kind": "resolved_claim_read",
       "path": "src/groundloop/m4/pipeline.py",
-      "line": 2908,
+      "line": 4282,
       "table": "groundloop_semantic_observation",
       "context": "v1 completion replay validates observation ID and claim kind",
       "evidence": "WHERE observation_id = %s AND subject_kind = 'claim'"
@@ -81,7 +81,7 @@
       "id": "M4-RUNTIME-READ-008",
       "kind": "resolved_claim_read",
       "path": "src/groundloop/m4/pipeline.py",
-      "line": 4214,
+      "line": 5644,
       "table": "groundloop_working_observation_delta",
       "context": "v1 seal promotion scans only claim legacy deltas",
       "evidence": "WHERE epoch_id = %s AND subject_kind = 'claim'"
@@ -90,7 +90,7 @@
       "id": "M4-RUNTIME-WRITE-001",
       "kind": "resolved_explicit_insert",
       "path": "src/groundloop/m4/pipeline.py",
-      "line": 4245,
+      "line": 5675,
       "table": "groundloop_published_observation_currency",
       "context": "v1 seal publication names all shared-table columns",
       "evidence": "subject_kind, subject_id, chunk_version_id, task_type"
@@ -99,7 +99,7 @@
       "id": "M4-RUNTIME-WRITE-002",
       "kind": "resolved_explicit_insert",
       "path": "src/groundloop/m4/pipeline.py",
-      "line": 4254,
+      "line": 5684,
       "table": "groundloop_observation_currency",
       "context": "v1 seal current-holder promotion names installed_revision explicitly",
       "evidence": "observation_id, installed_revision"
