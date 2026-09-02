@@ -228,12 +228,13 @@ input:
 10. unauthorized inserts as well as updates/deletes are rejected across every
     D25 relation family, with expanded adversarial falsifiers for each repair.
 
-Second pre-audit byte pin:
+Final pre-audit byte pin after the coordinator corrected the exact
+`group -> group_binding` and `claim -> claim_binding` output-kind mapping:
 
 ```text
-candidate_sha256 = f267f01b43dbbf6adeaecedcdc14b2839913d88d739e53efff07448c56ff953f
-candidate_lines = 2217
-candidate_bytes = 104448
+candidate_sha256 = 81d3eb75e3f9c5c9571c583743c550df0ca70eb45d55ef83b8f261333daa0f81
+candidate_lines = 2220
+candidate_bytes = 104597
 mandatory_falsifiers = 39
 ```
 

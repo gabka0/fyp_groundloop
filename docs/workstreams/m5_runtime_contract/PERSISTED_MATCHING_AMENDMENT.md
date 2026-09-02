@@ -714,10 +714,13 @@ one close row and at most one open row, with the close immediately before the
 open. A close has non-NULL `valid_to_revision=resulting_revision`, retains its
 earlier `valid_from_revision`, and names the prior certificate. An open has
 `valid_from_revision=resulting_revision`, NULL `valid_to_revision`, and names
-the after certificate. The row's kind and object ID MUST equal its output-
-record kind/object and its decoded binding payload. The digest sequence and
-the two output binding blocks have one-to-one equality; a missing, extra,
-duplicated, reordered, cross-object, or revision-invalid row is rejected.
+the after certificate. Binding kind `group` maps only to output kind
+`group_binding`, whose `object_id` equals the decoded binding's
+`group_version_id`; binding kind `claim` maps only to output kind
+`claim_binding`, whose `object_id` equals the decoded binding's `claim_id`.
+The digest sequence and the two output binding blocks have one-to-one
+equality; a missing, extra, duplicated, reordered, cross-object, or revision-
+invalid row is rejected.
 
 The byte-total logical patch is:
 
