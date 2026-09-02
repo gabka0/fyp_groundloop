@@ -7,11 +7,13 @@ M5-D24-C1 through M5-D24-C7 accepted; R2b pure orchestration integrated at
 `bfeef3f`, and R2c group/requirement PostgreSQL pre-seal composition integrated
 at `0e0ff43`; R2d pure typed-direct application outcome integrated at
 `c892cc8`; R2e PostgreSQL typed-direct pre-seal composition integrated at
-`2c2aed9`; M5.0-24 is contract-`PASS` / implementation-`PENDING`, all prior
-grants are closed, and no D24 implementation lane has current edit ownership
+`2c2aed9`; the later M5.4-02/-03/-04 late-result activity evidence and
+inventory-location repair are integrated at `290dbb3`; M5.0-24 is
+contract-`PASS` / implementation-`PENDING`, all implementation grants are
+closed, and no D24 implementation lane has current edit ownership
 
 Date: 2026-08-02; M5-D24 path amendments and integration records 2026-08-06
-through 2026-08-19
+through 2026-08-19; M5.4-02/-03/-04 integration record 2026-09-02
 
 Authority: `docs/m5_design_freeze.md` defines semantics and
 `docs/m5_implementation_plan.md` defines gates. This document defines only
@@ -523,7 +525,7 @@ retire requirement path through the concrete store up to its explicit
 fail-closed pre-seal boundary. It is not typed-direct outer settlement,
 cursor-local direct failure, production seal/publication, production provider,
 M5-D25, or whole-M5.4 evidence. M5.0-24 remains contract-`PASS` /
-implementation-`PENDING`, and every M5.4 row is unchanged.
+implementation-`PENDING`; at that R2c checkpoint every M5.4 row was unchanged.
 
 The coordinator then activated the exact four-path R2d tranche at
 `b5c4c06ee81f79638771831d80b8ca21df58e0bd` and integrated it on main at
@@ -551,8 +553,8 @@ selected successful typed-direct discovery/verifier outer receipt that loses
 the active terminal cutoff, plus ordinary reconnect preservation. It is not a
 production PostgreSQL typed-direct application/outer-settlement bridge,
 cursor-local direct failure, seal/publication, provider, M5-D25, or whole-M5.4
-result. M5.0-24 remains contract-`PASS` / implementation-`PENDING`, and every
-M5.4 row is unchanged.
+result. M5.0-24 remains contract-`PASS` / implementation-`PENDING`; at that
+R2d checkpoint every M5.4 row was unchanged.
 
 At the R2d integration checkpoint, the R2b, R2c, and exact four-path R2d grants
 were closed. A retained historical worktree granted no edit authority. The
@@ -666,9 +668,65 @@ integration audits returned `GO` with no unresolved P0/P1.
 This is scoped `PASS` evidence for the C7 typed-direct pre-seal PostgreSQL
 bridge, not production seal/publication or lifecycle-head advancement, deployed
 providers or runtime enablement, M5-D25/migration 017, or whole-M5.4 evidence.
-M5.0-24 remains contract-`PASS` / implementation-`PENDING`; every M5.4 row is
-unchanged. Integration closed the exact R2e grant, and no D24 implementation
-lane has current edit ownership. A retained R2e worktree is audit evidence only.
+M5.0-24 remains contract-`PASS` / implementation-`PENDING`; at that R2e
+checkpoint every M5.4 row was unchanged. Integration closed the exact R2e
+grant, and no D24 implementation lane has current edit ownership. A retained
+R2e worktree is audit evidence only.
+
+### Wave R3 -- integrated M5.4-02/-03/-04 evidence qualification
+
+The coordinator separately activated the late-result activity tranche at
+`3200b39cfe01a4f41fdd1cd1492e85afc468cc2e`. Its path-exclusive execution used:
+
+```text
+Lane A branch:   workstream/m5-4-02-03-fake-history
+Lane A worktree: /home/kassym/Desktop/groundloop-worktrees/m5-4-02-03-fake-history
+Lane B branch:   workstream/m5-4-04-postgres-activity
+Lane B worktree: /home/kassym/Desktop/groundloop-worktrees/m5-4-04-postgres-activity
+Integration:     integration/m5-4-02-04-late-result-activity
+```
+
+Lane A owned only the fake ports, typed-history tests and its handoff. Lane B
+owned only the PostgreSQL recovery test and its handoff. The exact accepted
+technical ordering is `3200b39 -> b9d251b -> a41386f`; no merge, squash or
+cross-lane path edit occurred. A complete-suite metadata check later required
+the separate `eb8a314 -> 290dbb3` scalar-only inventory-location correction,
+which changed no source, test or runtime semantics. The final ancestry is:
+
+```text
+3200b39 -> b9d251b -> a41386f -> eb8a314 -> 290dbb3
+```
+
+The integrated gate passed 39/39 focused pure and 392/392 complete pure-runtime
+tests. The repair did not touch the live inputs, so the exact `a41386f` results
+of 40/40 focused activity, 122/122 recovery, 171/171 D24 requirement, 200/200
+migration 016 and 797/797 complete PostgreSQL runtime remain carried dependency
+evidence with exact inventory restoration. The repaired full suite passed 2,210
+tests with nine pre-existing opt-in skips and zero failures/xfails, and the M4/
+legacy selection passed 14/14. Exact-main reruns passed 39/39 pure and 40/40
+live with 82 deselected and exact inventory equality. Two independent
+same-byte integrated audits returned `GO`.
+
+That evidence promotes only M5.4-02, M5.4-03, and M5.4-04. Lane A, Lane B, the
+repair lane and integration grants are closed and historical. The separately
+authorized status reconciliation uses only branch
+`workstream/m5-4-02-04-status-reconciliation`, worktree
+`/home/kassym/Desktop/groundloop-worktrees/m5-4-02-04-status-reconciliation`,
+and these six coordinator-owned paths:
+
+1. `docs/decision_log.md`;
+2. `docs/m5_acceptance_matrix.md`;
+3. `docs/m5_implementation_plan.md`;
+4. `docs/m5_implementation_status.md`;
+5. `docs/m5_multiagent_execution_plan.md`; and
+6. `docs/roadmap.md`.
+
+It grants no production, test, migration, model/provider, D25, runtime-mode or
+other status ownership. M5.0-24's implementation half, M5.4-01 and M5.4-05
+through M5.4-09, and every M5.5/M5.6 row remain unchanged. After its exact
+six-path commit, two same-byte audits and main fast-forward, this documentation
+grant closes; the containing reconciliation commit identity is reported
+externally rather than self-referenced here.
 
 No D24 wave owns the untracked persisted-matching draft. M5-D25 and migration
 017 remain blocked until migration 016 is accepted, all five 016 ledger values

@@ -1,12 +1,12 @@
 # GroundLoop M5 Implementation Status
 
-Status date: 2026-08-19
+Status date: 2026-09-02
 
 Milestone status: **M5.0 contract through accepted C7 and M5.1--M5.3 are
 complete; M5.4 is partially complete.**
-M5.4-01 passes. M5.4-02 through M5.4-09 and every M5.5--M5.6
-implementation/evaluation closure remain pending. M5-D24-C1 through
-M5-D24-C7 are accepted. M5.0-24 is contract-`PASS` / implementation-`PENDING`.
+M5.4-01 through M5.4-04 pass. M5.4-05 through M5.4-09 and every M5.5--M5.6
+implementation/evaluation closure remain pending. M5-D24-C1 through M5-D24-C7
+are accepted. M5.0-24 is contract-`PASS` / implementation-`PENDING`.
 C7's accepted reviewed-candidate SHA-256 is
 `633f4fa8cb789b7a0245cb87e7f602d3946457a7448692dc1bc6ae88c1ff4441`.
 C6's accepted reviewed-candidate SHA-256 remains
@@ -36,6 +36,14 @@ seconds, and its immutable commit/post-integration audits returned `GO`. The
 R2b, R2c, exact four-path R2d, and exact 21-path R2e grants are closed with no
 current edit ownership, and overall decision-row implementation evidence
 remains pending.
+
+The later M5.4-02/-03/-04 evidence tranche is integrated on main at
+`290dbb306394d4a6f18ef26c6fa66a96de2ad9ac` with exact ancestry
+`3200b39 -> b9d251b -> a41386f -> eb8a314 -> 290dbb3`. Its deterministic
+fake-history, pure activity and live PostgreSQL activity evidence closes only
+those three stage rows. Both technical lanes, the inventory-location repair
+lane and their path grants are closed; two independent immutable integrated
+audits returned `GO` with no unresolved P0/P1.
 
 C7 is an accepted six-document authoritative correction on exact candidate
 base `254e9c27b0dfc74df1e02ba2d8cd04c7fa9a2c6a`. Its separately activated R2e
@@ -84,12 +92,16 @@ application-outcome cutoff and ordinary reconnect. The scoped R2e tranche adds
 the live PostgreSQL typed-direct pre-seal bridge, including transaction-owned
 acquisition, exact-held direct execution/failure routing, checked combined
 failure, all-direct failure closure, WIP stops, cooperative locks, fused timing,
-rollback and reconnect. There is still no accepted M5 evidence for complete
-dynamic requirement execution, combined sparse seal, successful production
-seal/publication and lifecycle-head advancement, deployed production providers
-or runtime enablement, maintained-runtime model quality, production latency,
-call savings, utility, novelty, or publishing potential. Those claims remain
-blocked by the executable gates in `docs/m5_acceptance_matrix.md`.
+rollback and reconnect. The M5.4-02/-03/-04 tranche additionally supplies one
+retained-world deterministic requirement history, exact no-parent-refutation
+evidence, and maintained pure/live activity, late-archive, rollback and
+reconnect falsifiers. There is still no accepted M5 evidence for complete
+production end-to-end dynamic requirement execution, combined sparse seal,
+successful production seal/publication and lifecycle-head advancement,
+deployed production providers or runtime enablement, maintained-runtime model
+quality, production latency, call savings, utility, novelty, or publishing
+potential. Those claims remain blocked by the executable gates in
+`docs/m5_acceptance_matrix.md`.
 
 Production typed-direct preflight found that the pre-C7 accepted contract did
 not make the bridge total: the cursor acquisition requires a caller token
@@ -411,7 +423,7 @@ settlement, cursor-local direct failure, successful production seal or
 combined publication, production discovery/verifier/measurement adapters, or
 successful terminal application completion. M5.0-24 therefore remains
 historically contract-`PASS` / implementation-`PENDING` at the pre-C7 point;
-all M5.4 rows are unchanged and M5.4 remains partial. The R2c activation is
+at that R2c checkpoint all M5.4 rows were unchanged. The R2c activation is
 historical and owns no path.
 
 The subsequent exact four-path R2d integration at `c892cc8` adds the pure
@@ -437,8 +449,8 @@ production PostgreSQL typed-direct application/outer-settlement bridge,
 cursor-local direct failure, seal/publication, provider adapters, or combined
 end-to-end recovery. M5.0-24 remains contract-`PASS` /
 implementation-`PENDING`; at that checkpoint accepted C7 by itself changed no
-implementation evidence. All M5.4 rows are unchanged and M5.4 remains partial.
-The R2d activation is historical and owns no path.
+implementation evidence, and all M5.4 rows were unchanged. The R2d activation
+is historical and owns no path.
 
 The subsequent exact 21-path R2e integration at
 `2c2aed91b5c91f2f6a107fc856d646794a1654c9` implements the bounded C7
@@ -465,14 +477,85 @@ rollback and reconnect through the concrete stores. Runtime mode remains
 publication or lifecycle-head advancement, deployed discovery/verifier/
 measurement providers, runtime enablement, M5-D25/migration 017, or complete
 end-to-end M5.4 evidence. M5.0-24 remains contract-`PASS` / implementation-
-`PENDING`; every M5.4 row is unchanged and M5.4 remains partial. The R2e
+`PENDING`; at that R2e checkpoint every M5.4 row was unchanged. The R2e
 activation is historical, its exact grant is closed, and none of its paths has
 current edit ownership.
 
+### 4.1 Integrated M5.4-02/-03/-04 late-result activity evidence
+
+The subsequent coordinator activation at `3200b39` produced the exact Lane A
+commit `b9d251b` and Lane B commit `a41386f`. A complete-suite metadata failure
+then required the separate one-path activation `eb8a314` and scalar-only
+inventory-location repair `290dbb3`; neither changed production or test
+semantics. The resulting exact technical ancestry is:
+
+```text
+3200b39 -> b9d251b -> a41386f -> eb8a314 -> 290dbb3
+```
+
+M5.4-02 is `PASS`. The named retained-world fake history enters every semantic
+event through `M5TypedApplication.run_event` and composes forward/reverse
+retrieval, overlap deduplication, requirement verification and retained
+observations, withdrawal/fallback, cancellation/failure, fake sealing, complete
+state/certificate oracle comparison, and fresh-application/fresh-facade replay.
+
+M5.4-03 is `PASS`. The same history and focused node retain exact requirement
+REFUTE and NEUTRAL observations while proving they create no SUPPORT witness,
+parent-refutation edge, group/claim certificate input, direct `refute_count`, or
+status delta. A direct claim-subject REFUTE still refutes normally.
+
+M5.4-04 is `PASS`. The exhaustive 16-case pure classifier and pure inactive-
+verifier node are joined by a live eight-row PostgreSQL activity matrix,
+inactive root and verifier settlement, all four pre/postterminal and expired/
+nonexpired audit-only archive shapes, injected rollback/conflict and fresh-
+connection replay. The evidence binds exact activity precedence, cancellation
+attribution, artifacts, work/timing and PENDING accounting while preserving
+prior currency, edges, matching/reference state, certificates, semantic state,
+publication and heads. The all-active verifier remains an intentional
+zero-write M5-D25 stop.
+
+Final integrated static/pure gates passed 39/39 focused and 392/392 complete
+runtime tests. Because the later repair changes only evidence metadata,
+byte-identical `a41386f` live dependencies carry exact passing selections of
+40/40 focused activity, 122/122 recovery, 171/171 D24 requirement, 200/200
+migration 016 and 797/797 complete PostgreSQL runtime. Every live gate restored
+the exact pre-gate inventory with no remaining session, lock or orphan delta.
+
+The repaired complete repository suite passed **2,210 tests with nine
+pre-existing opt-in skips, zero failures and zero xfails in 2,111.33 seconds**.
+The literal M4/legacy compatibility selection passed 14/14. On exact main
+`290dbb3`, focused reruns passed 39/39 in 1.68 seconds and 40/40 live with 82
+deselected in 72.15 seconds; the live rerun again restored the exact database
+inventory. The durations are validation wall times, not runtime-performance
+evidence. Two independent same-byte integrated audits returned `GO` with no
+unresolved P0/P1.
+
+The complete-suite record preserves its command-preflight and two pre-existing
+environment/metadata blockers as non-results. The first command failed during
+collection because four nested M4 flat-harness import paths were absent. The
+next complete attempt stopped on persisted Dynagox remote metadata drift; an
+independently accepted process-only Git overlay avoided changing or fetching
+that checkout. The following run exposed stale line anchors in the existing M4
+shared-surface inventory. A separately activated ten-integer location repair
+fixed only those anchors, after which the complete suite restarted from test
+one and passed.
+
+The serialized integration Gate 4 record also retains one strict non-result.
+Its preguard rejected one competing session and four locks with `rc=91`, but a
+wrapper missing fail-fast `-e` allowed the migration-016 command to begin. It
+was interrupted after 30 partial passes (`pytest rc=2`, 38.82 seconds), restored
+the exact baseline, and was not pooled. The whole 200-test gate restarted from
+test one under the corrected fail-closed guard and passed.
+
+No production source, schema, migration, provider/model, deployment or runtime
+mode changed. Runtime remains `v1_only` outside isolated fixtures. M5.0-24's
+implementation half, M5.4-05 through M5.4-09, and all M5.5/M5.6 gates remain
+pending.
+
 ## 5. Remaining closure boundary
 
-M5 completes only after M5.1--M5.6 pass. Closure still requires the remaining
-production M5.4 dynamic paths, deployed production provider adapters/runtime
+M5 completes only after M5.1--M5.6 pass. Closure still requires M5.4-05 through
+M5.4-09, including the remaining production dynamic paths and provider/runtime
 enablement, sparse publication, lifecycle-head advancement and production
 seal, and the complete end-to-end crash/reconnect matrix; the separately
 blocked M5-D25/migration-017 persisted-matching boundary; a real maintained-

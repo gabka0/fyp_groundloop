@@ -1,10 +1,11 @@
 # GroundLoop M5 Acceptance Matrix
 
 Status: accepted M5 falsification contract through M5-D24-C7; staged evidence
-is current through the integrated R2e PostgreSQL typed-direct pre-seal bridge
-and partial M5.4; M5.0-24 is `PASS / PENDING`
+is current through the integrated M5.4-02/-03/-04 late-result activity tranche;
+M5.4-01 through M5.4-04 are `PASS`, M5.4 remains partial, and M5.0-24 is
+`PASS / PENDING`
 
-Date: 2026-08-19
+Date: 2026-09-02
 
 Authority: each row is a necessary condition, not a menu. In Section 1, the
 first status is the M5.0 contract audit and the second is implementation
@@ -55,7 +56,8 @@ through M5-D24-C7 plus runtime-addendum revision 5, the M5-D24 recovery
 amendment and its accepted corrections, and rows M5.0-21 through M5.0-24.
 M5.0-24 is contract-`PASS` / implementation-`PENDING`; the exact R2e C7
 implementation lane integrated at `2c2aed9` and its grant is closed. No D24
-lane is active and no M5.4 row is promoted.
+lane is active. The later separately activated evidence tranche integrated at
+`290dbb3` and promotes only M5.4-02, M5.4-03, and M5.4-04 as recorded below.
 The decision-row implementation halves remain `PENDING` until the
 final cross-stage evidence mapping at M5.6; the stage tables below record the
 current executable evidence without silently remapping M5-D1 through M5-D24.
@@ -193,14 +195,41 @@ activation/publication transaction. See
 | Gate | Required outcome | Evidence | Status |
 |---|---|---|---|
 | M5.4-01 | Claim and requirement jobs have collision-free, byte-total typed v2 identities, exact forward/reverse target/root/pair shapes, and valid state shapes | Golden contract/digest/direction/null/F64/child-order tests | PASS |
-| M5.4-02 | Requirement retrieval, verification, observation, withdrawal, and fallback compose through fake ports | Deterministic end-to-end tests | PENDING |
-| M5.4-03 | Requirement REFUTE/NEUTRAL never creates parent refutation | Runtime integration test | PENDING |
-| M5.4-04 | Late result checks chunk, subject/group, and epoch activity without superseding currency | In-flight replacement/retirement/failed-epoch tests | PENDING |
+| M5.4-02 | Requirement retrieval, verification, observation, withdrawal, and fallback compose through fake ports | Deterministic end-to-end tests | PASS |
+| M5.4-03 | Requirement REFUTE/NEUTRAL never creates parent refutation | Runtime integration test | PASS |
+| M5.4-04 | Late result checks chunk, subject/group, and epoch activity without superseding currency | In-flight replacement/retirement/failed-epoch tests | PASS |
 | M5.4-05 | Forward/reverse lazy scopes, exact-once cancel/late-attempt PENDING, strict reads, measured sealing, activation heads, and sparse publication obey frozen rules | Crash/publication/route-mixing/no-inline-oracle matrix | PENDING |
 | M5.4-06 | Reconnect replay is exact and performs zero model calls | Durable replay test | PENDING |
 | M5.4-07 | Controlled runtime history covers every frozen adversary; out-of-band three-oracle audit follows each measured seal | Signed history/audit artifact | PENDING |
 | M5.4-08 | Bounded pinned-model run records complete provenance and is labelled diagnostic | Opt-in result artifact | PENDING |
 | M5.4-09 | M4 v1 and direct-only behavior remain byte-for-byte stable | Frozen regression suite | PENDING |
+
+M5.4-02 passes through
+`test_m54_02_03_sequential_fake_history_is_exact`: one retained fake world
+composes forward/reverse retrieval, overlap deduplication, requirement
+verification and retained observations, withdrawal/fallback, cancellation,
+failure, complete state/certificate oracle comparison, and fresh-facade replay.
+M5.4-03 passes in that maintained history and the focused refutation node:
+requirement REFUTE and NEUTRAL remain auditable but create no parent witness,
+refutation, certificate input or status delta, while direct claim REFUTE retains
+its independent meaning. M5.4-04 passes through the exhaustive 16-case pure
+classifier, pure inactive-verifier history, live eight-row PostgreSQL activity
+matrix, inactive root/verifier paths and four exact audit-only archive shapes.
+Those tests bind precedence, currency preservation, artifacts, work/timing,
+PENDING, rollback, conflict and reconnect without changing protected semantic
+or publication surfaces.
+
+The exact technical ancestry is `3200b39` -> `b9d251b` -> `a41386f` ->
+`eb8a314` -> `290dbb3`. Final integrated gates passed 39/39 focused pure,
+392/392 complete pure runtime, the carried exact-`a41386f` live selections of
+40/40, 122/122, 171/171, 200/200 and 797/797 with inventory restoration, the
+repaired full suite at 2,210 passes plus nine pre-existing opt-in skips and zero
+failures/xfails, and the 14/14 M4/legacy selection. Main reruns passed 39/39
+pure and 40/40 live with exact database inventory equality. Two independent
+integrated audits returned `GO`. These are deterministic/test results, not
+model-quality or runtime-performance measurements; no production source was
+changed. Runtime remains `v1_only`, and the all-active verifier remains blocked
+behind M5-D25/migration 017.
 
 M5.4-05 through M5.4-07 cannot pass until M5.0-24's implementation half is
 PASS. A dispatch row alone is not confirmed execution evidence; a live lease

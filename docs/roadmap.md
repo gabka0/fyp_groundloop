@@ -238,8 +238,8 @@ is explicit pre-dissertation/M6 debt, not a hidden extension of M4.
 Status: active. The M5.0 contract freeze is complete through accepted
 M5-D24-C7; M5.1 pure reference semantics completed on 2026-08-03 after an
 independent high-confidence audit GO. M5.2 and M5.3 are complete. M5.4-01
-passes; public activation and partial root/direct transitions have live
-evidence but do not independently close M5.4-05. M5-D24's R0 contracts and
+through M5.4-04 pass; public activation and partial root/direct transitions have
+live evidence but do not independently close M5.4-05. M5-D24's R0 contracts and
 migration 016 are accepted on main; R1-D, R1-P, R2a, and R1-C are integrated.
 The bounded R2b pure requirement-application/fake-seal orchestration tranche
 is integrated at `bfeef3f` with 87/87 focused and 237/237 pure evidence. It has
@@ -262,9 +262,18 @@ implementation evidence for transaction-owned acquisition, direct execution/
 failure routing and all-direct failure closure through the concrete stores. It
 stops before production seal/publication and lifecycle-head advancement,
 deployed provider adapters, runtime enablement, M5-D25, and the remaining end-
-to-end M5.4 evidence. M5.0-24 therefore remains
-contract-`PASS` / implementation-`PENDING`, M5.4 remains partial, and every
-remaining M5.4--M5.6 row is unchanged. See
+to-end M5.4 evidence. The later separately activated fake-history and
+PostgreSQL late-result activity tranche is integrated at `290dbb3` with exact
+ancestry `3200b39 -> b9d251b -> a41386f -> eb8a314 -> 290dbb3`. Its final
+gates include 39/39 focused pure, 392/392 complete pure runtime, carried
+byte-identical live selections of 40/40, 122/122, 171/171, 200/200 and 797/797
+with exact inventory restoration, a repaired complete-suite result of 2,210
+passes plus nine pre-existing opt-in skips and zero failures/xfails, and 14/14
+M4/legacy compatibility. Exact-main reruns passed 39/39 pure and 40/40 live
+with exact inventory equality; two independent integrated audits returned
+`GO`. No production source changed. M5.0-24 therefore remains contract-`PASS`
+/ implementation-`PENDING`; M5.4 remains partial; M5.4-05 through M5.4-09 and
+every M5.5/M5.6 row remain pending. See
 `docs/m5_implementation_status.md`.
 
 Deliverables:
@@ -299,7 +308,10 @@ Stages:
 - **M5.4:** dynamic requirement retrieval/verification/publication/replay,
   recoverable at-least-once dispatch with durable work/timing, persisted Hall
   state, and bounded frozen-model diagnostic. **Active; partial only.** The
-  scoped R2e typed-direct pre-seal bridge passes, but no stage row is promoted.
+  scoped R2e typed-direct pre-seal bridge passes, and the later evidence tranche
+  promotes M5.4-02/-03/-04. M5.4-01 through M5.4-04 are `PASS`; M5.4-05 through
+  M5.4-09 remain `PENDING`. Runtime stays `v1_only`, and M5-D25/migration 017 is
+  the next contract/implementation barrier.
 - **M5.5:** controlled dataset adapter, seven qualified baselines, and
   reproducible systems/semantic reports.
 - **M5.6:** full validation, evidence bundle, documentation and honest verdict.

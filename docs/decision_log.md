@@ -1,5 +1,69 @@
 # GroundLoop Decision Log
 
+## 2026-09-02 — M5.4-02/-03/-04 Late-Result Activity Evidence Integrated
+
+Decision status: the separately activated M5.4-02/-03/-04 evidence tranche is
+integrated on main at
+`290dbb306394d4a6f18ef26c6fa66a96de2ad9ac`. The exact ancestry is
+`3200b39cfe01a4f41fdd1cd1492e85afc468cc2e` ->
+`b9d251bfdcc4e617240b820f1da9ad289f0d6a23` ->
+`a41386fcf18a96536c0be23aef99cac1ff9d96e3` ->
+`eb8a314ee22b566fb586f4a95165711e01e1282d` -> `290dbb3`. The first two
+implementation commits change exactly the activated five test/handoff paths;
+the last two commits activate and apply only the mechanical M4 inventory-line
+repair required by the complete-suite gate. Two independent immutable
+integrated audits returned `GO` with no unresolved P0/P1.
+
+M5.4-02 is `PASS`: one retained-world deterministic history composes
+requirement forward/reverse retrieval, deduplication, verification,
+observation, withdrawal, fallback, cancellation, failure, sealing, complete
+state/certificate oracle comparison, and fresh-facade replay through the
+accepted fake ports. M5.4-03 is `PASS`: exact retained requirement REFUTE and
+NEUTRAL observations create no witness, parent-refutation edge, certificate
+input, direct `refute_count`, or status delta, while a direct claim REFUTE still
+refutes normally. M5.4-04 is `PASS`: the exhaustive pure classifier and live
+eight-row PostgreSQL activity matrix cover epoch, requirement/group, chunk,
+and terminal-job precedence; inactive verifier/root settlement; all four
+audit-only archive shapes; rollback, conflict and reconnect; exact work/timing
+and PENDING accounting; and preservation of prior currency and every protected
+semantic/publication surface.
+
+On the final integrated bytes, the focused pure and complete pure-runtime gates
+passed 39/39 and 392/392. The unchanged `a41386f` live inputs carried exact
+passing gates of 40/40 focused activity, 122/122 recovery, 171/171 D24
+requirement, 200/200 migration 016, and 797/797 complete PostgreSQL runtime,
+each with exact inventory restoration. The repaired complete repository suite
+then passed 2,210 tests with nine pre-existing opt-in skips, zero failures and
+zero xfails in 2,111.33 seconds; the literal M4/legacy compatibility selection
+passed 14/14. After the main fast-forward, the focused pure rerun passed 39/39
+in 1.68 seconds and the focused live rerun passed 40/40 with 82 deselected in
+72.15 seconds, again with exact pre/post inventory equality. These durations
+are validation wall times, not system-performance measurements.
+
+The complete-suite record retains three non-results rather than pooling partial
+counts: the original command failed collection because nested M4 harness paths
+were absent; the corrected command stopped on pre-existing persisted Dynagox
+remote metadata drift; and the next run exposed stale M4 inventory line anchors.
+Only process-local import/Git overlays and the separately activated ten-scalar
+inventory-location repair were accepted before restarting the complete suite
+from test one. Separately, the serialized integration Gate 4 preguard correctly
+rejected one competing session and four locks (`rc=91`), but a wrapper missing
+fail-fast `-e` allowed migration-016 pytest to start. That attempt was
+interrupted after 30 partial passes (`pytest rc=2`, 38.82 seconds), is a strict
+`NON-RESULT`, restored the exact baseline, and was not pooled with the complete
+200/200 rerun under the corrected fail-closed guard.
+
+No production source, runtime behavior, model, provider, schema, migration, or
+runtime mode changed in this evidence tranche. Runtime remains `v1_only`
+outside isolated fixtures, and the all-active PostgreSQL verifier remains
+fail-closed behind M5-D25/migration 017. M5.0-24 remains contract-`PASS` /
+implementation-`PENDING`; M5.4-01 remains `PASS`; M5.4-05 through M5.4-09 and
+every M5.5/M5.6 row remain `PENDING`. Production seal/publication,
+lifecycle-head advancement, provider composition, runtime activation,
+maintained-history/model evidence, deployment, utility, security, and novelty
+are not established. The technical lane grants are closed, and this
+reconciliation grants no implementation ownership.
+
 ## 2026-08-19 — M5-D24 R2e PostgreSQL Typed-Direct Pre-Seal Bridge Integrated
 
 Decision status: the bounded R2e PostgreSQL typed-direct pre-seal bridge is
