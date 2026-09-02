@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from typing import Any
 
@@ -23,7 +23,10 @@ from groundloop.m5.runtime import persistence as persistence_module
 from groundloop.m5.runtime import postgres_roots as postgres_roots_module
 from groundloop.m5.runtime.contracts import (
     M5AcquisitionDisposition,
+    M5AttemptArchiveReason,
+    M5AttemptDisposition,
     M5AttemptOutput,
+    M5AttemptResultArtifact,
     M5CancellationPlan,
     M5ExecutionEvidenceDisposition,
     M5JobCompletion,
@@ -40,6 +43,7 @@ from groundloop.m5.runtime.contracts import (
     M5RuntimeOperationalConfig,
     M5RuntimeTiming,
     M5RuntimeTimingCoverage,
+    M5RuntimeTimingObservation,
     M5RuntimeWork,
     M5RuntimeWorkContributionKind,
     M5TerminalReason,
@@ -47,6 +51,11 @@ from groundloop.m5.runtime.contracts import (
 )
 from groundloop.m5.runtime.persistence import PostgresM5RuntimeStore
 from groundloop.m5.runtime.postgres_recovery import AcquisitionClock
+from tests.m5.postgres.helpers import (
+    force_deferred_checks,
+    insert_observation,
+    install_current_currency,
+)
 from tests.m5.postgres_runtime.d24_requirement.conftest import (
     build_d24_verifier_fixture,
     terminalize_recovered_epoch_for_storage_fixture,
@@ -152,6 +161,56 @@ _LATE_SEMANTIC_TABLES = (
     "groundloop_published_observation_currency",
     "groundloop_working_observation_delta",
     "groundloop_m5_working_currency_history",
+)
+
+_M54_04_PRESERVED_SEMANTIC_TABLES = (
+    "groundloop_m5_requirement_admitted_pair",
+    "groundloop_m5_requirement_admitted_pair_source",
+    "groundloop_admitted_pair",
+    "groundloop_observation_currency",
+    "groundloop_published_observation_currency",
+    "groundloop_working_observation_delta",
+    "groundloop_m5_working_currency_history",
+    "groundloop_m4_working_claim_state",
+    "groundloop_m4_working_answer_state",
+    "groundloop_m5_working_requirement_state",
+    "groundloop_m5_working_group_state",
+    "groundloop_m5_working_claim_state",
+    "groundloop_m5_working_answer_state",
+    "groundloop_m5_requirement_state_materialized",
+    "groundloop_m5_group_state_materialized",
+    "groundloop_m5_claim_state_materialized",
+    "groundloop_m5_answer_state_materialized",
+    "groundloop_claim_state_materialized",
+    "groundloop_answer_state_materialized",
+    "groundloop_published_claim_state",
+    "groundloop_published_answer_state",
+    "groundloop_m5_published_requirement_state",
+    "groundloop_m5_published_group_state",
+    "groundloop_m5_published_claim_state",
+    "groundloop_m5_published_answer_state",
+    "groundloop_claim_certificate",
+    "groundloop_m5_group_certificate_artifact",
+    "groundloop_m5_group_certificate_artifact_row",
+    "groundloop_m5_working_group_certificate_binding",
+    "groundloop_m5_claim_certificate_artifact",
+    "groundloop_m5_working_claim_certificate_binding",
+    "groundloop_m5_published_group_certificate_binding",
+    "groundloop_m5_published_claim_certificate_binding",
+    "groundloop_m5_requirement_frontier_head",
+    "groundloop_m4_publication_head",
+    "groundloop_m5_publication_head",
+    "groundloop_m5_event_result",
+    "groundloop_m5_event_result_delta",
+    "groundloop_m5_event_result_state_reference",
+    "groundloop_status_delta",
+)
+
+_M54_04_VERIFIER_PRESERVED_SEMANTIC_TABLES = (
+    *_M54_04_PRESERVED_SEMANTIC_TABLES,
+    "groundloop_m5_requirement_channel_hit",
+    "groundloop_m5_requirement_scope_selection",
+    "groundloop_m5_requirement_discovery_result",
 )
 
 
@@ -334,6 +393,58 @@ def _root_barrier_projection_byte_count(
         for payload in payloads
     )
     return sum(8 + len(row) for row in encoded)
+
+
+def _root_stage_projection_byte_count(
+    connection: Connection[Any],
+    *,
+    epoch_id: int,
+    logical_job_id: str,
+    attempt_id: str,
+) -> int:
+    """Independently frame the six physically owned root-stage rows."""
+
+    rows = connection.execute(
+        """
+        SELECT serialized FROM (
+            SELECT to_jsonb(item)::text AS serialized
+            FROM groundloop_m5_job_attempt AS item
+            WHERE item.attempt_id = %s
+            UNION ALL
+            SELECT to_jsonb(item)::text
+            FROM groundloop_m5_attempt_result_artifact AS item
+            WHERE item.attempt_id = %s
+            UNION ALL
+            SELECT to_jsonb(item)::text
+            FROM groundloop_m5_requirement_channel_hit AS item
+            WHERE item.root_job_id = %s
+            UNION ALL
+            SELECT to_jsonb(item)::text
+            FROM groundloop_m5_requirement_scope_selection AS item
+            WHERE item.root_job_id = %s
+            UNION ALL
+            SELECT to_jsonb(item)::text
+            FROM groundloop_m5_requirement_discovery_result AS item
+            WHERE item.root_job_id = %s
+            UNION ALL
+            SELECT to_jsonb(item)::text
+            FROM groundloop_m5_discovery_scope AS item
+            WHERE item.epoch_id = %s AND item.root_job_id = %s
+        ) AS root_rows
+        ORDER BY serialized COLLATE "C"
+        """,
+        (
+            attempt_id,
+            attempt_id,
+            logical_job_id,
+            logical_job_id,
+            logical_job_id,
+            epoch_id,
+            logical_job_id,
+        ),
+    ).fetchall()
+    assert len(rows) == 6
+    return sum(8 + len(str(row[0]).encode("utf-8")) for row in rows)
 
 
 def _root_result(database: Any, *, job: Any) -> M5RequirementDiscoveryResult:
@@ -2696,7 +2807,7 @@ def test_root_barrier_is_point_accounted_and_replays_after_verifier_acquisition(
     assert _full_snapshot(d24_requirement_db.connection) == before_regressed
 
 
-def test_inactive_root_stage_remains_result_reserved_on_fresh_reconnect(
+def test_m54_04_inactive_root_uses_two_cas_and_reconnects_terminal(
     d24_requirement_db: Any,
 ) -> None:
     store = PostgresM5RuntimeStore(d24_requirement_db.connection)
@@ -2704,6 +2815,10 @@ def test_inactive_root_stage_remains_result_reserved_on_fresh_reconnect(
     job = d24_requirement_db.jobs[0]
     lease = store.acquire_m5_job(epoch_id, 1, job)
     assert lease.attempt is not None
+    attempt_work = _forward_attempt_work()
+    attempt_timing = _attempt_timing()
+    stage_call_timing = _attempt_timing()
+    barrier_call_timing = _attempt_timing()
 
     group = d24_requirement_db.plan.event.group
     d24_requirement_db.connection.execute(
@@ -2741,6 +2856,28 @@ def test_inactive_root_stage_remains_result_reserved_on_fresh_reconnect(
         result_artifact_id=result.result_artifact_id,
         result_artifact_hash=result.result_artifact_hash,
     )
+    expected_artifact = M5AttemptResultArtifact.build(
+        attempt_output=output,
+        job_state_at_receipt=M5JobState.RUNNING,
+        job_state_after=M5JobState.RUNNING,
+        disposition=M5AttemptDisposition.ROOT_RESULT_STAGED,
+        activity_snapshot_epoch_id=epoch_id,
+        activity_snapshot_revision=2,
+        epoch_active=True,
+        chunk_active=None,
+        requirement_active=False,
+        group_active=False,
+        archive_reason=M5AttemptArchiveReason.SUBJECT_INACTIVE,
+    )
+    preserved_before = _snapshot_tables(
+        d24_requirement_db.connection,
+        _M54_04_PRESERVED_SEMANTIC_TABLES,
+    )
+    pending_before = _m54_04_pending_projection(
+        d24_requirement_db.connection,
+        epoch_id=epoch_id,
+    )
+    work_before_stage = store.current_event_work(epoch_id)
     receipt = store.stage_m5_discovery_result_atomically(
         epoch_id,
         2,
@@ -2749,21 +2886,346 @@ def test_inactive_root_stage_remains_result_reserved_on_fresh_reconnect(
         result,
         output,
         M5ExecutionEvidenceDisposition.RETURNED,
-        M5RuntimeWork(),
-        _attempt_timing(),
+        attempt_work,
+        attempt_timing,
         eligible_snapshot_exhausted=True,
     )
-    assert receipt.resulting_revision == 3
+    stage_key = digests.runtime_work_contribution_key_digest(
+        epoch_id=epoch_id,
+        contribution_kind=M5RuntimeWorkContributionKind.ROOT_RESULT_STAGE,
+        source_id=lease.attempt.attempt_id,
+    )
+    assert receipt.disposition is M5RequirementReturnDisposition.APPLIED
+    assert receipt.resulting_revision == 3 and not receipt.exact_replay
+    assert receipt.current_terminal_logical_result_hash is None
+    assert receipt.transition_anchor is not None
+    assert receipt.transition_anchor.contribution_kind is (
+        M5RuntimeWorkContributionKind.ROOT_RESULT_STAGE
+    )
+    assert receipt.transition_anchor.source_id == lease.attempt.attempt_id
+    assert receipt.transition_anchor.contribution_key_digest == stage_key
+    assert receipt.transition_anchor.anchor_revision == 3
+
     artifact_activity = d24_requirement_db.connection.execute(
         """
-        SELECT archive_reason, epoch_active, chunk_active,
-               requirement_active, group_active
+        SELECT attempt_result_artifact_id, attempt_result_artifact_hash,
+               attempt_output_digest, attempt_id, logical_job_id, job_epoch_id,
+               payload_hash, execution_spec_hash, result_artifact_id,
+               result_artifact_hash, job_state_at_receipt, job_state_after,
+               disposition, activity_snapshot_epoch_id,
+               activity_snapshot_revision, epoch_active, chunk_active,
+               requirement_active, group_active, archive_reason,
+               cancelled_by_event_id, cancelled_by_epoch_id,
+               cancellation_reason
         FROM groundloop_m5_attempt_result_artifact
         WHERE attempt_id = %s
         """,
         (lease.attempt.attempt_id,),
     ).fetchone()
-    assert artifact_activity == ("subject_inactive", True, None, False, False)
+    assert artifact_activity == (
+        expected_artifact.attempt_result_artifact_id,
+        expected_artifact.attempt_result_artifact_hash,
+        output.attempt_output_digest,
+        lease.attempt.attempt_id,
+        job.logical_job_id,
+        epoch_id,
+        job.payload_hash,
+        job.execution_spec_hash,
+        result.result_artifact_id,
+        result.result_artifact_hash,
+        "running",
+        "running",
+        "root_result_staged",
+        epoch_id,
+        2,
+        True,
+        None,
+        False,
+        False,
+        "subject_inactive",
+        None,
+        None,
+        None,
+    )
+    assert (
+        receipt.return_artifact_digest == expected_artifact.attempt_result_artifact_hash
+    )
+
+    timing_observation = M5RuntimeTimingObservation.build(attempt_timing)
+    attempt_timing_digest = digests.attempt_runtime_timing_digest(
+        epoch_id=epoch_id,
+        subgraph="requirement",
+        attempt_id=lease.attempt.attempt_id,
+        observation_digest=timing_observation.observation_digest,
+    )
+    evidence_and_inner_timing = d24_requirement_db.connection.execute(
+        """
+        SELECT evidence.disposition, evidence.result_or_error_hash,
+               evidence.attempt_work_digest, evidence.attempt_timing_digest,
+               evidence.evidence_digest,
+               timing.execution_evidence_digest,
+               timing.required_interval_observed,
+               timing.coordinator_non_db_non_neural_ns,
+               timing.neural_wall_ns, timing.postgres_roundtrip_wall_ns,
+               timing.external_io_wall_ns, timing.end_to_end_wall_ns,
+               timing.postgres_server_execution_ns,
+               timing.postgres_lock_wait_ns, timing.postgres_wal_bytes,
+               timing.postgres_shared_block_reads,
+               timing.observation_digest, timing.attempt_timing_digest,
+               attempt.attempt_state, attempt.attempt_output_digest,
+               attempt.attempt_work_digest
+        FROM groundloop_m5_attempt_execution_evidence AS evidence
+        JOIN groundloop_m5_runtime_timing_contribution AS timing
+          ON timing.epoch_id = evidence.epoch_id
+         AND timing.subgraph = evidence.subgraph
+         AND timing.attempt_id = evidence.attempt_id
+        JOIN groundloop_m5_job_attempt AS attempt
+          ON attempt.attempt_id = evidence.attempt_id
+        WHERE evidence.epoch_id = %s AND evidence.subgraph = 'requirement'
+          AND evidence.attempt_id = %s
+        """,
+        (epoch_id, lease.attempt.attempt_id),
+    ).fetchone()
+    assert evidence_and_inner_timing == (
+        "returned",
+        output.attempt_output_digest,
+        attempt_work.work_digest,
+        attempt_timing_digest,
+        receipt.execution_evidence_digest,
+        receipt.execution_evidence_digest,
+        True,
+        attempt_timing.coordinator_non_db_non_neural_ns,
+        attempt_timing.neural_wall_ns,
+        attempt_timing.postgres_roundtrip_wall_ns,
+        attempt_timing.external_io_wall_ns,
+        attempt_timing.end_to_end_wall_ns,
+        attempt_timing.postgres_server_execution_ns,
+        attempt_timing.postgres_lock_wait_ns,
+        attempt_timing.postgres_wal_bytes,
+        attempt_timing.postgres_shared_block_reads,
+        timing_observation.observation_digest,
+        attempt_timing_digest,
+        "completed",
+        output.attempt_output_digest,
+        attempt_work.work_digest,
+    )
+
+    work_names = M5RuntimeWork.counter_names()
+    execution_work_row = d24_requirement_db.connection.execute(
+        sql.SQL(
+            "SELECT {}, work_digest, source_identity_hash, "
+            "contribution_key_digest, applied_revision "
+            "FROM groundloop_m5_runtime_work_contribution "
+            "WHERE epoch_id = %s "
+            "AND contribution_kind = 'm5_attempt_execution' "
+            "AND source_id = %s"
+        ).format(sql.SQL(", ").join(map(sql.Identifier, work_names))),
+        (epoch_id, lease.attempt.attempt_id),
+    ).fetchone()
+    assert execution_work_row is not None
+    work_end = len(work_names)
+    assert (
+        M5RuntimeWork(
+            **dict(
+                zip(work_names, map(int, execution_work_row[:work_end]), strict=True)
+            ),
+            work_digest=str(execution_work_row[work_end]),
+        )
+        == attempt_work
+    )
+    assert tuple(execution_work_row[work_end + 1 :]) == (
+        receipt.execution_evidence_digest,
+        digests.runtime_work_contribution_key_digest(
+            epoch_id=epoch_id,
+            contribution_kind=M5RuntimeWorkContributionKind.M5_ATTEMPT_EXECUTION,
+            source_id=lease.attempt.attempt_id,
+        ),
+        3,
+    )
+
+    stage_byte_count = _root_stage_projection_byte_count(
+        d24_requirement_db.connection,
+        epoch_id=epoch_id,
+        logical_job_id=job.logical_job_id,
+        attempt_id=lease.attempt.attempt_id,
+    )
+    stage_work = M5RuntimeWork(
+        requirement_channel_hit_count=1,
+        requirement_pre_dedup_selection_count=1,
+        bytes_hashed=stage_byte_count,
+        bytes_serialized=stage_byte_count,
+    )
+    expected_stage_event_work = _sum_work(
+        work_before_stage,
+        attempt_work,
+        stage_work,
+    )
+    stage_work_row = d24_requirement_db.connection.execute(
+        sql.SQL(
+            "SELECT {}, contribution.work_digest, "
+            "contribution.source_identity_hash, "
+            "contribution.contribution_key_digest, "
+            "contribution.applied_revision, accumulator.work_digest, "
+            "accumulator.updated_revision, accumulator.terminalized "
+            "FROM groundloop_m5_runtime_work_contribution AS contribution "
+            "JOIN groundloop_m5_runtime_work_accumulator AS accumulator "
+            "USING (epoch_id) "
+            "WHERE contribution.epoch_id = %s "
+            "AND contribution.contribution_kind = 'root_result_stage' "
+            "AND contribution.source_id = %s"
+        ).format(
+            sql.SQL(", ").join(
+                sql.SQL("contribution.{}").format(sql.Identifier(name))
+                for name in work_names
+            )
+        ),
+        (epoch_id, lease.attempt.attempt_id),
+    ).fetchone()
+    assert stage_work_row is not None
+    assert (
+        M5RuntimeWork(
+            **dict(zip(work_names, map(int, stage_work_row[:work_end]), strict=True)),
+            work_digest=str(stage_work_row[work_end]),
+        )
+        == stage_work
+    )
+    assert tuple(stage_work_row[work_end + 1 :]) == (
+        output.attempt_output_digest,
+        stage_key,
+        3,
+        expected_stage_event_work.work_digest,
+        3,
+        False,
+    )
+    assert store.current_event_work(epoch_id) == expected_stage_event_work
+
+    assert d24_requirement_db.connection.execute(
+        """
+            SELECT job.job_state, job.completed_revision,
+                   scope.scope_state, scope.closed_revision,
+                   runtime.revision, runtime.open_work_count,
+                   runtime.open_scope_count,
+                   (SELECT count(*)
+                    FROM groundloop_m5_requirement_channel_hit
+                    WHERE root_job_id = job.logical_job_id),
+                   (SELECT count(*)
+                    FROM groundloop_m5_requirement_scope_selection
+                    WHERE root_job_id = job.logical_job_id),
+                   (SELECT count(*)
+                    FROM groundloop_m5_requirement_discovery_result
+                    WHERE root_job_id = job.logical_job_id)
+            FROM groundloop_m5_semantic_job AS job
+            JOIN groundloop_m5_discovery_scope AS scope
+              ON scope.epoch_id = job.epoch_id
+             AND scope.root_job_id = job.logical_job_id
+            JOIN groundloop_m5_runtime_epoch AS runtime
+              ON runtime.epoch_id = job.epoch_id
+            WHERE job.epoch_id = %s AND job.logical_job_id = %s
+            """,
+        (epoch_id, job.logical_job_id),
+    ).fetchone() == ("running", None, "result_staged", None, 3, 1, 1, 1, 1, 1)
+    pending_after_stage = _m54_04_pending_projection(
+        d24_requirement_db.connection,
+        epoch_id=epoch_id,
+    )
+    assert pending_after_stage[0][:4] == pending_before[0][:4]
+    assert pending_after_stage[1][:4] == pending_before[1][:4]
+    assert pending_after_stage[0][4] == pending_after_stage[1][4] == 3
+    assert (
+        _snapshot_tables(
+            d24_requirement_db.connection,
+            _M54_04_PRESERVED_SEMANTIC_TABLES,
+        )
+        == preserved_before
+    )
+
+    stage_timing_receipt = store.append_transition_call_timing(
+        epoch_id,
+        M5RuntimeWorkContributionKind.ROOT_RESULT_STAGE,
+        lease.attempt.attempt_id,
+        stage_key,
+        3,
+        stage_call_timing,
+    )
+    stage_call_observation = M5RuntimeTimingObservation.build(stage_call_timing)
+    stage_call_digest = digests.transition_call_timing_digest(
+        epoch_id=epoch_id,
+        contribution_kind=M5RuntimeWorkContributionKind.ROOT_RESULT_STAGE,
+        source_id=lease.attempt.attempt_id,
+        contribution_key_digest=stage_key,
+        anchor_revision=3,
+        observation_digest=stage_call_observation.observation_digest,
+    )
+    assert not stage_timing_receipt.exact_replay
+    assert stage_timing_receipt.anchor == receipt.transition_anchor
+    assert stage_timing_receipt.transition_timing_digest == stage_call_digest
+    assert stage_timing_receipt.resulting_revision == 3
+    stage_call_row = d24_requirement_db.connection.execute(
+        """
+        SELECT contribution_key_digest, anchor_revision,
+               required_interval_observed,
+               coordinator_non_db_non_neural_ns, neural_wall_ns,
+               postgres_roundtrip_wall_ns, external_io_wall_ns,
+               end_to_end_wall_ns, postgres_server_execution_ns,
+               postgres_lock_wait_ns, postgres_wal_bytes,
+               postgres_shared_block_reads, observation_digest,
+               transition_timing_digest
+        FROM groundloop_m5_transition_call_timing
+        WHERE epoch_id = %s AND contribution_kind = 'root_result_stage'
+          AND source_id = %s AND anchor_revision = 3
+        """,
+        (epoch_id, lease.attempt.attempt_id),
+    ).fetchone()
+    assert stage_call_row == (
+        stage_key,
+        3,
+        True,
+        stage_call_timing.coordinator_non_db_non_neural_ns,
+        stage_call_timing.neural_wall_ns,
+        stage_call_timing.postgres_roundtrip_wall_ns,
+        stage_call_timing.external_io_wall_ns,
+        stage_call_timing.end_to_end_wall_ns,
+        stage_call_timing.postgres_server_execution_ns,
+        stage_call_timing.postgres_lock_wait_ns,
+        stage_call_timing.postgres_wal_bytes,
+        stage_call_timing.postgres_shared_block_reads,
+        stage_call_observation.observation_digest,
+        stage_call_digest,
+    )
+    assert _m54_04_timing_accumulator(
+        d24_requirement_db.connection,
+        epoch_id=epoch_id,
+    ) == (
+        22,
+        26,
+        34,
+        38,
+        46,
+        58,
+        0,
+        62,
+        0,
+        4,
+        2,
+        2,
+        4,
+        2,
+        2,
+        4,
+        0,
+        4,
+        4,
+        2,
+        2,
+        4,
+        0,
+        4,
+        None,
+        None,
+        None,
+        None,
+        3,
+    )
 
     before_reserved = _snapshot(d24_requirement_db.connection)
     with d24_requirement_db.reconnect() as reconnected:
@@ -2771,6 +3233,305 @@ def test_inactive_root_stage_remains_result_reserved_on_fresh_reconnect(
     assert reserved.disposition is M5AcquisitionDisposition.RESULT_RESERVED
     assert reserved.resulting_revision == 3 and reserved.exact_replay
     assert _snapshot(d24_requirement_db.connection) == before_reserved
+
+    root_set = d24_requirement_db.connection.execute(
+        """
+        SELECT requirement_root_set_hash
+        FROM groundloop_m5_runtime_epoch WHERE epoch_id = %s
+        """,
+        (epoch_id,),
+    ).fetchone()
+    assert root_set is not None
+    root_set_hash = str(root_set[0]).strip()
+    before_cutoff = _full_snapshot(d24_requirement_db.connection)
+
+    def fail_after_barrier_contribution(point: str) -> None:
+        if point == "root_barrier_contribution_inserted":
+            raise RuntimeError("rollback inactive root barrier")
+
+    with pytest.raises(RuntimeError, match="rollback inactive root barrier"):
+        store.close_m5_requirement_roots_atomically(
+            epoch_id,
+            3,
+            root_set_hash,
+            failure_injector=fail_after_barrier_contribution,
+        )
+    assert _full_snapshot(d24_requirement_db.connection) == before_cutoff
+
+    with d24_requirement_db.reconnect() as reconnected:
+        reconnect_store = PostgresM5RuntimeStore(reconnected)
+        barrier = reconnect_store.close_m5_requirement_roots_atomically(
+            epoch_id,
+            3,
+            root_set_hash,
+        )
+    assert not barrier.exact_replay and barrier.resulting_revision == 4
+    barrier_key = digests.runtime_work_contribution_key_digest(
+        epoch_id=epoch_id,
+        contribution_kind=M5RuntimeWorkContributionKind.ROOT_BARRIER,
+        source_id=d24_requirement_db.plan.structural_event_id,
+    )
+    barrier_byte_count = _root_barrier_projection_byte_count(
+        d24_requirement_db.connection,
+        epoch_id=epoch_id,
+        barrier_completion_hash=barrier.barrier_completion_hash,
+    )
+    barrier_work = M5RuntimeWork(
+        bytes_hashed=barrier_byte_count,
+        bytes_serialized=barrier_byte_count,
+    )
+    barrier_work_row = d24_requirement_db.connection.execute(
+        sql.SQL(
+            "SELECT {}, contribution.work_digest, "
+            "contribution.source_identity_hash, "
+            "contribution.contribution_key_digest, "
+            "contribution.applied_revision, accumulator.work_digest, "
+            "accumulator.updated_revision, accumulator.terminalized "
+            "FROM groundloop_m5_runtime_work_contribution AS contribution "
+            "JOIN groundloop_m5_runtime_work_accumulator AS accumulator "
+            "USING (epoch_id) "
+            "WHERE contribution.epoch_id = %s "
+            "AND contribution.contribution_kind = 'root_barrier' "
+            "AND contribution.source_id = %s"
+        ).format(
+            sql.SQL(", ").join(
+                sql.SQL("contribution.{}").format(sql.Identifier(name))
+                for name in work_names
+            )
+        ),
+        (epoch_id, d24_requirement_db.plan.structural_event_id),
+    ).fetchone()
+    assert barrier_work_row is not None
+    assert (
+        M5RuntimeWork(
+            **dict(zip(work_names, map(int, barrier_work_row[:work_end]), strict=True)),
+            work_digest=str(barrier_work_row[work_end]),
+        )
+        == barrier_work
+    )
+    expected_barrier_event_work = _sum_work(expected_stage_event_work, barrier_work)
+    assert tuple(barrier_work_row[work_end + 1 :]) == (
+        barrier.barrier_completion_hash,
+        barrier_key,
+        4,
+        expected_barrier_event_work.work_digest,
+        4,
+        False,
+    )
+    assert store.current_event_work(epoch_id) == expected_barrier_event_work
+    assert _m54_04_timing_accumulator(
+        d24_requirement_db.connection,
+        epoch_id=epoch_id,
+    ) == (
+        22,
+        26,
+        34,
+        38,
+        46,
+        58,
+        0,
+        62,
+        0,
+        5,
+        2,
+        2,
+        5,
+        2,
+        2,
+        5,
+        0,
+        4,
+        5,
+        2,
+        2,
+        5,
+        0,
+        4,
+        "root_barrier",
+        d24_requirement_db.plan.structural_event_id,
+        barrier_key,
+        4,
+        4,
+    )
+    assert d24_requirement_db.connection.execute(
+        """
+            SELECT job.job_state, job.archive_reason, job.completed_revision,
+                   scope.scope_state, scope.closed_revision,
+                   runtime.revision, runtime.open_work_count,
+                   runtime.open_scope_count,
+                   owner.forward_scope_count, owner.updated_revision,
+                   answer.forward_scope_count, answer.updated_revision,
+                   (SELECT count(*)
+                    FROM groundloop_m5_requirement_admitted_pair AS admitted
+                    WHERE admitted.epoch_id = job.epoch_id),
+                   (SELECT count(*)
+                    FROM groundloop_m5_semantic_job AS child
+                    WHERE child.epoch_id = job.epoch_id
+                      AND child.parent_job_id = job.logical_job_id),
+                   (SELECT count(*)
+                    FROM groundloop_m5_requirement_frontier_head AS frontier
+                    WHERE frontier.completed_epoch_id = job.epoch_id),
+                   contribution.requirement_admitted_pair_count,
+                   contribution.applied_revision
+            FROM groundloop_m5_semantic_job AS job
+            JOIN groundloop_m5_discovery_scope AS scope
+              ON scope.epoch_id = job.epoch_id
+             AND scope.root_job_id = job.logical_job_id
+            JOIN groundloop_m5_runtime_epoch AS runtime
+              ON runtime.epoch_id = job.epoch_id
+            JOIN groundloop_m5_owner_pending_counter AS owner
+              ON owner.epoch_id = job.epoch_id
+            JOIN groundloop_m5_answer_pending_counter AS answer
+              ON answer.epoch_id = job.epoch_id
+            JOIN groundloop_m5_runtime_work_contribution AS contribution
+              ON contribution.epoch_id = job.epoch_id
+             AND contribution.contribution_kind = 'root_barrier'
+            WHERE job.epoch_id = %s AND job.logical_job_id = %s
+            """,
+        (epoch_id, job.logical_job_id),
+    ).fetchone() == (
+        "completed_inactive",
+        "subject_inactive",
+        4,
+        "closed_inactive",
+        4,
+        4,
+        0,
+        0,
+        0,
+        4,
+        0,
+        4,
+        0,
+        0,
+        0,
+        0,
+        4,
+    )
+    assert (
+        _snapshot_tables(
+            d24_requirement_db.connection,
+            _M54_04_PRESERVED_SEMANTIC_TABLES,
+        )
+        == preserved_before
+    )
+
+    barrier_timing_receipt = store.append_transition_call_timing(
+        epoch_id,
+        M5RuntimeWorkContributionKind.ROOT_BARRIER,
+        d24_requirement_db.plan.structural_event_id,
+        barrier_key,
+        4,
+        barrier_call_timing,
+    )
+    barrier_call_observation = M5RuntimeTimingObservation.build(barrier_call_timing)
+    barrier_call_digest = digests.transition_call_timing_digest(
+        epoch_id=epoch_id,
+        contribution_kind=M5RuntimeWorkContributionKind.ROOT_BARRIER,
+        source_id=d24_requirement_db.plan.structural_event_id,
+        contribution_key_digest=barrier_key,
+        anchor_revision=4,
+        observation_digest=barrier_call_observation.observation_digest,
+    )
+    assert not barrier_timing_receipt.exact_replay
+    assert barrier_timing_receipt.anchor.contribution_kind is (
+        M5RuntimeWorkContributionKind.ROOT_BARRIER
+    )
+    assert barrier_timing_receipt.anchor.source_id == (
+        d24_requirement_db.plan.structural_event_id
+    )
+    assert barrier_timing_receipt.anchor.contribution_key_digest == barrier_key
+    assert barrier_timing_receipt.anchor.anchor_revision == 4
+    assert barrier_timing_receipt.transition_timing_digest == barrier_call_digest
+    assert barrier_timing_receipt.resulting_revision == 4
+    barrier_call_row = d24_requirement_db.connection.execute(
+        """
+        SELECT contribution_key_digest, anchor_revision,
+               required_interval_observed,
+               coordinator_non_db_non_neural_ns, neural_wall_ns,
+               postgres_roundtrip_wall_ns, external_io_wall_ns,
+               end_to_end_wall_ns, postgres_server_execution_ns,
+               postgres_lock_wait_ns, postgres_wal_bytes,
+               postgres_shared_block_reads, observation_digest,
+               transition_timing_digest
+        FROM groundloop_m5_transition_call_timing
+        WHERE epoch_id = %s AND contribution_kind = 'root_barrier'
+          AND source_id = %s AND anchor_revision = 4
+        """,
+        (epoch_id, d24_requirement_db.plan.structural_event_id),
+    ).fetchone()
+    assert barrier_call_row == (
+        barrier_key,
+        4,
+        True,
+        barrier_call_timing.coordinator_non_db_non_neural_ns,
+        barrier_call_timing.neural_wall_ns,
+        barrier_call_timing.postgres_roundtrip_wall_ns,
+        barrier_call_timing.external_io_wall_ns,
+        barrier_call_timing.end_to_end_wall_ns,
+        barrier_call_timing.postgres_server_execution_ns,
+        barrier_call_timing.postgres_lock_wait_ns,
+        barrier_call_timing.postgres_wal_bytes,
+        barrier_call_timing.postgres_shared_block_reads,
+        barrier_call_observation.observation_digest,
+        barrier_call_digest,
+    )
+    assert _m54_04_timing_accumulator(
+        d24_requirement_db.connection,
+        epoch_id=epoch_id,
+    ) == (
+        33,
+        39,
+        51,
+        57,
+        69,
+        87,
+        0,
+        93,
+        0,
+        5,
+        3,
+        2,
+        5,
+        3,
+        2,
+        5,
+        0,
+        5,
+        5,
+        3,
+        2,
+        5,
+        0,
+        5,
+        None,
+        None,
+        None,
+        None,
+        4,
+    )
+
+    before_replay = _full_snapshot(d24_requirement_db.connection)
+    with d24_requirement_db.reconnect() as reconnected:
+        reconnect_store = PostgresM5RuntimeStore(reconnected)
+        replay = reconnect_store.close_m5_requirement_roots_atomically(
+            epoch_id,
+            3,
+            root_set_hash,
+        )
+        terminal = reconnect_store.acquire_m5_job(epoch_id, 4, job)
+    assert replay.exact_replay and replay.resulting_revision == 4
+    assert terminal.disposition is M5AcquisitionDisposition.TERMINAL
+    assert not terminal.should_execute
+    assert _full_snapshot(d24_requirement_db.connection) == before_replay
+
+    with pytest.raises(EventConflictError, match="root-set hash"):
+        store.close_m5_requirement_roots_atomically(
+            epoch_id,
+            4,
+            _sha("m54-04-conflicting-root-set"),
+        )
+    assert _full_snapshot(d24_requirement_db.connection) == before_replay
 
 
 def test_retryable_failure_is_exact_accounted_and_replays_after_successor(
@@ -4219,7 +4980,7 @@ def test_late_discovery_revalidates_every_nested_context(
     assert _full_snapshot(d24_requirement_db.connection) == before
 
 
-def test_expired_preterminal_return_is_same_revision_and_replays_after_terminal(
+def test_m54_04_expired_preterminal_return_is_exact_and_replays_after_terminal(
     d24_requirement_db: Any,
 ) -> None:
     store = PostgresM5RuntimeStore(d24_requirement_db.connection)
@@ -4473,7 +5234,7 @@ def test_expired_preterminal_return_is_same_revision_and_replays_after_terminal(
     assert _full_snapshot(d24_requirement_db.connection) == before_replay
 
 
-def test_still_current_cancellation_return_is_preterminal_audit_with_one_anchor(
+def test_m54_04_nonexpired_preterminal_return_has_one_exact_anchor(
     d24_requirement_db: Any,
 ) -> None:
     store = PostgresM5RuntimeStore(d24_requirement_db.connection)
@@ -4488,19 +5249,49 @@ def test_still_current_cancellation_return_is_preterminal_audit_with_one_anchor(
     result, output = _root_result_and_output(
         d24_requirement_db, job=job, attempt=lease.attempt
     )
+    attempt_work = _forward_attempt_work()
+    attempt_timing = _attempt_timing()
     work_before = store.current_event_work(epoch_id)
-    receipt = store.stage_m5_discovery_result_atomically(
-        epoch_id,
-        cancelled_revision,
-        lease,
-        job,
-        result,
-        output,
-        M5ExecutionEvidenceDisposition.REUSED_ARTIFACT,
-        M5RuntimeWork(),
-        _attempt_timing(),
-        eligible_snapshot_exhausted=True,
-    )
+    before_cutoff = _full_snapshot(d24_requirement_db.connection)
+
+    def fail_after_accounting(point: str) -> None:
+        if point == "late_return_accounting_inserted":
+            raise RuntimeError("rollback nonexpired preterminal accounting")
+
+    with pytest.raises(
+        RuntimeError,
+        match="rollback nonexpired preterminal accounting",
+    ):
+        store.stage_m5_discovery_result_atomically(
+            epoch_id,
+            cancelled_revision,
+            lease,
+            job,
+            result,
+            output,
+            M5ExecutionEvidenceDisposition.RETURNED,
+            attempt_work,
+            attempt_timing,
+            eligible_snapshot_exhausted=True,
+            failure_injector=fail_after_accounting,
+        )
+    assert _full_snapshot(d24_requirement_db.connection) == before_cutoff
+
+    with d24_requirement_db.reconnect() as reconnected:
+        receipt = PostgresM5RuntimeStore(
+            reconnected
+        ).stage_m5_discovery_result_atomically(
+            epoch_id,
+            cancelled_revision,
+            lease,
+            job,
+            result,
+            output,
+            M5ExecutionEvidenceDisposition.RETURNED,
+            attempt_work,
+            attempt_timing,
+            eligible_snapshot_exhausted=True,
+        )
     assert (
         receipt.disposition is M5RequirementReturnDisposition.TERMINAL_AUDIT_PRETERMINAL
     )
@@ -4553,7 +5344,7 @@ def test_still_current_cancellation_return_is_preterminal_audit_with_one_anchor(
         d24_requirement_db.plan.structural_event_id,
         epoch_id,
         "scope_retired",
-        "reused_artifact",
+        "returned",
         0,
         cancelled_revision,
         cancelled_revision,
@@ -4571,7 +5362,11 @@ def test_still_current_cancellation_return_is_preterminal_audit_with_one_anchor(
         bytes_hashed=int(row[11]),
         bytes_serialized=int(row[12]),
     )
-    assert store.current_event_work(epoch_id) == _sum_work(work_before, late_work)
+    assert store.current_event_work(epoch_id) == _sum_work(
+        work_before,
+        attempt_work,
+        late_work,
+    )
 
     before_replay = _full_snapshot(d24_requirement_db.connection)
     with d24_requirement_db.reconnect() as reconnected:
@@ -4584,9 +5379,9 @@ def test_still_current_cancellation_return_is_preterminal_audit_with_one_anchor(
             job,
             result,
             output,
-            M5ExecutionEvidenceDisposition.REUSED_ARTIFACT,
-            M5RuntimeWork(),
-            _attempt_timing(),
+            M5ExecutionEvidenceDisposition.RETURNED,
+            attempt_work,
+            attempt_timing,
             eligible_snapshot_exhausted=True,
         )
     assert replay.exact_replay and replay.transition_anchor is None
@@ -4594,6 +5389,119 @@ def test_still_current_cancellation_return_is_preterminal_audit_with_one_anchor(
         replay.disposition is M5RequirementReturnDisposition.TERMINAL_AUDIT_PRETERMINAL
     )
     assert _full_snapshot(d24_requirement_db.connection) == before_replay
+
+    base_hit = result.channel_hits[0]
+    changed_hit = M5RequirementChannelHit.build(
+        epoch_id=base_hit.epoch_id,
+        root_job_id=base_hit.root_job_id,
+        scope_contract_digest=base_hit.scope_contract_digest,
+        pair=base_hit.pair,
+        candidate_policy_id=base_hit.candidate_policy_id,
+        channel=base_hit.channel,
+        rank=base_hit.rank,
+        score=base_hit.score,
+        channel_artifact_hash=_sha("m54-04-changed-preterminal-hit"),
+    )
+    changed_result = M5RequirementDiscoveryResult.build(
+        root_job_id=result.root_job_id,
+        scope_contract_digest=result.scope_contract_digest,
+        termination=result.termination,
+        channel_hits=(changed_hit,),
+        selections=result.selections,
+    )
+    changed_output = M5AttemptOutput.build(
+        attempt=lease.attempt,
+        job_epoch_id=epoch_id,
+        payload_hash=job.payload_hash,
+        result_artifact_id=changed_result.result_artifact_id,
+        result_artifact_hash=changed_result.result_artifact_hash,
+    )
+    conflict_cases = (
+        (
+            changed_result,
+            changed_output,
+            M5ExecutionEvidenceDisposition.RETURNED,
+            attempt_work,
+            attempt_timing,
+        ),
+        (
+            result,
+            output,
+            M5ExecutionEvidenceDisposition.REUSED_ARTIFACT,
+            M5RuntimeWork(),
+            None,
+        ),
+        (
+            result,
+            output,
+            M5ExecutionEvidenceDisposition.RETURNED,
+            replace(
+                attempt_work,
+                bytes_hashed=attempt_work.bytes_hashed + 1,
+                work_digest="",
+            ),
+            attempt_timing,
+        ),
+        (
+            result,
+            output,
+            M5ExecutionEvidenceDisposition.RETURNED,
+            attempt_work,
+            replace(attempt_timing, neural_wall_ns=37),
+        ),
+    )
+    for (
+        conflicting_result,
+        conflicting_output,
+        conflicting_disposition,
+        conflicting_work,
+        conflicting_timing,
+    ) in conflict_cases:
+        before_conflict = _full_snapshot(d24_requirement_db.connection)
+        with pytest.raises(EventConflictError, match="immutable evidence"):
+            store.stage_m5_discovery_result_atomically(
+                epoch_id,
+                cancelled_revision,
+                lease,
+                job,
+                conflicting_result,
+                conflicting_output,
+                conflicting_disposition,
+                conflicting_work,
+                conflicting_timing,
+                eligible_snapshot_exhausted=True,
+            )
+        assert _full_snapshot(d24_requirement_db.connection) == before_conflict
+
+    terminal_hash = terminalize_recovered_epoch_for_storage_fixture(
+        d24_requirement_db.connection,
+        epoch_id=epoch_id,
+    )
+    d24_requirement_db.connection.commit()
+    terminal_revision = store.current_revision(epoch_id)
+    before_terminal_replay = _full_snapshot(d24_requirement_db.connection)
+    with d24_requirement_db.reconnect() as reconnected:
+        terminal_replay = PostgresM5RuntimeStore(
+            reconnected
+        ).stage_m5_discovery_result_atomically(
+            epoch_id,
+            terminal_revision,
+            lease,
+            job,
+            result,
+            output,
+            M5ExecutionEvidenceDisposition.RETURNED,
+            attempt_work,
+            attempt_timing,
+            eligible_snapshot_exhausted=True,
+        )
+    assert terminal_replay.exact_replay and terminal_replay.transition_anchor is None
+    assert terminal_replay.resulting_revision == terminal_revision
+    assert terminal_replay.disposition is (
+        M5RequirementReturnDisposition.TERMINAL_AUDIT_PRETERMINAL
+    )
+    assert terminal_replay.current_terminal_logical_result_hash == terminal_hash
+    assert _full_snapshot(d24_requirement_db.connection) == before_terminal_replay
 
 
 @pytest.mark.parametrize(
@@ -4608,7 +5516,7 @@ def test_still_current_cancellation_return_is_preterminal_audit_with_one_anchor(
         "late_return_constraints_validated",
     ),
 )
-def test_expired_postterminal_member_cutoffs_roll_back_and_reconnect(
+def test_m54_04_expired_postterminal_cutoffs_roll_back_and_reconnect(
     d24_requirement_db: Any,
     cutoff: str,
 ) -> None:
@@ -4726,7 +5634,7 @@ def test_expired_postterminal_member_cutoffs_roll_back_and_reconnect(
         M5ExecutionEvidenceDisposition.REUSED_ARTIFACT,
     ),
 )
-def test_postterminal_terminal_audit_isolated_and_equal_zero_kinds_stay_distinct(
+def test_m54_04_nonexpired_postterminal_audit_is_isolated(
     d24_requirement_db: Any,
     execution_disposition: M5ExecutionEvidenceDisposition,
 ) -> None:
@@ -4912,7 +5820,7 @@ def test_postterminal_terminal_audit_isolated_and_equal_zero_kinds_stay_distinct
     assert _full_snapshot(d24_requirement_db.connection) == before_replay
 
 
-def test_expired_postterminal_return_uses_only_audit_sidecars(
+def test_m54_04_expired_postterminal_return_uses_exact_five_row_archive(
     d24_requirement_db: Any,
 ) -> None:
     """Prove C3 storage shape with a labelled non-production terminal fixture."""
@@ -5313,6 +6221,421 @@ def _complete_verifier(
     )
 
 
+def _set_m54_04_activity_precondition(
+    database: Any,
+    fixture: Any,
+    *,
+    subject_mode: str,
+    chunk_active: bool,
+) -> tuple[bool, bool]:
+    """Install only schema-valid activity inputs, never a return outcome."""
+
+    connection = database.connection
+    if not chunk_active:
+        assert (
+            connection.execute(
+                """
+                UPDATE groundloop_chunk_version
+                SET valid_to_epoch = %s
+                WHERE chunk_version_id = %s AND valid_to_epoch IS NULL
+                """,
+                (database.epoch_id, fixture.pair_input.pair.chunk_version_id),
+            ).rowcount
+            == 1
+        )
+    if subject_mode == "requirement":
+        assert (
+            connection.execute(
+                """
+                UPDATE groundloop_m5_requirement_version
+                SET lifecycle_state = 'FAILED'
+                WHERE requirement_version_id = %s
+                  AND lifecycle_state = 'STAGED'
+                """,
+                (fixture.pair_input.pair.subject_id,),
+            ).rowcount
+            == 1
+        )
+        assert (
+            connection.execute(
+                """
+                UPDATE groundloop_m5_group_version
+                SET lifecycle_state = 'FAILED'
+                WHERE group_version_id = %s AND lifecycle_state = 'STAGED'
+                """,
+                (fixture.pair_input.group_version_id,),
+            ).rowcount
+            == 1
+        )
+    elif subject_mode == "group":
+        assert (
+            connection.execute(
+                """
+                UPDATE groundloop_m5_group_family
+                SET lifecycle_state = 'FAILED'
+                WHERE group_family_id = %s AND lifecycle_state = 'STAGED'
+                """,
+                (fixture.pair_input.group_family_id,),
+            ).rowcount
+            == 1
+        )
+    elif subject_mode != "active":
+        raise AssertionError(subject_mode)
+    connection.execute("SET CONSTRAINTS ALL IMMEDIATE")
+    connection.commit()
+    requirement_active = subject_mode != "requirement"
+    group_active = subject_mode == "active"
+    return requirement_active, group_active
+
+
+@dataclass(frozen=True, slots=True)
+class _M5404PredecessorCurrency:
+    subject_kind: str
+    subject_id: str
+    chunk_version_id: str
+    task_type: str
+    observation_id: str
+    installed_revision: int
+    published_epoch_id: int
+
+
+def _install_m54_04_predecessor_currency(
+    database: Any,
+    fixture: Any,
+) -> _M5404PredecessorCurrency:
+    """Seed one inert holder at a genuinely predecessor-published key."""
+
+    returned = fixture.verifier_artifact.to_semantic_observation()
+    published_epoch_id = database.plan.expected_previous_published_epoch_id
+    row = database.connection.execute(
+        """
+        SELECT requirement.requirement_version_id, chunk.chunk_version_id
+        FROM groundloop_m5_requirement_version AS requirement
+        JOIN groundloop_m5_group_version AS group_version
+          ON group_version.group_version_id = requirement.group_version_id
+        JOIN groundloop_m5_group_family AS family
+          ON family.group_family_id = group_version.group_family_id
+        CROSS JOIN groundloop_chunk_version AS chunk
+        WHERE requirement.lifecycle_state = 'PUBLISHED'
+          AND group_version.lifecycle_state = 'PUBLISHED'
+          AND family.lifecycle_state = 'PUBLISHED'
+          AND requirement.creator_epoch_id <= %s
+          AND group_version.creator_epoch_id <= %s
+          AND family.creator_epoch_id <= %s
+          AND chunk.valid_from_epoch <= %s
+          AND (chunk.valid_to_epoch IS NULL OR chunk.valid_to_epoch > %s)
+          AND requirement.requirement_version_id <> %s
+        ORDER BY requirement.requirement_version_id, chunk.chunk_version_id
+        LIMIT 1
+        """,
+        (
+            published_epoch_id,
+            published_epoch_id,
+            published_epoch_id,
+            published_epoch_id,
+            published_epoch_id,
+            returned.subject_id,
+        ),
+    ).fetchone()
+    assert row is not None
+    subject_id, chunk_version_id = map(str, row)
+    subject_kind = SubjectKind.REQUIREMENT.value
+    task_type = returned.task_type
+    prior_id = f"m54-04-prior-{_sha(f'{subject_id}:{chunk_version_id}:{task_type}')}"
+    assert prior_id != returned.observation_id
+    installed_revision = 0
+    with database.connection.transaction():
+        insert_observation(
+            database.connection,
+            observation_id=prior_id,
+            subject_kind=subject_kind,
+            subject_id=subject_id,
+            chunk_id=chunk_version_id,
+            task_type=task_type,
+            produced_epoch=published_epoch_id,
+            scores=(0.05, 0.05, 0.9),
+            eligible=True,
+        )
+        install_current_currency(
+            database.connection,
+            observation_id=prior_id,
+            subject_kind=subject_kind,
+            subject_id=subject_id,
+            chunk_id=chunk_version_id,
+            task_type=task_type,
+            epoch_id=published_epoch_id,
+            revision=installed_revision,
+        )
+        force_deferred_checks(database.connection)
+    return _M5404PredecessorCurrency(
+        subject_kind=subject_kind,
+        subject_id=subject_id,
+        chunk_version_id=chunk_version_id,
+        task_type=task_type,
+        observation_id=prior_id,
+        installed_revision=installed_revision,
+        published_epoch_id=published_epoch_id,
+    )
+
+
+def _m54_04_currency_projection(
+    database: Any,
+    *,
+    currency: _M5404PredecessorCurrency,
+) -> tuple[Any, ...]:
+    row = database.connection.execute(
+        """
+        SELECT current.observation_id, current.installed_revision,
+               published.observation_id, published.valid_from_epoch,
+               published.valid_to_epoch, prior.eligible_for_currency
+        FROM groundloop_observation_currency AS current
+        JOIN groundloop_published_observation_currency AS published
+          ON published.subject_kind = current.subject_kind
+         AND published.subject_id = current.subject_id
+         AND published.chunk_version_id = current.chunk_version_id
+         AND published.task_type = current.task_type
+         AND published.observation_id = current.observation_id
+         AND published.valid_to_epoch IS NULL
+        JOIN groundloop_semantic_observation AS prior
+          ON prior.observation_id = current.observation_id
+        WHERE current.subject_kind = %s AND current.subject_id = %s
+          AND current.chunk_version_id = %s AND current.task_type = %s
+          AND current.observation_id = %s
+        """,
+        (
+            currency.subject_kind,
+            currency.subject_id,
+            currency.chunk_version_id,
+            currency.task_type,
+            currency.observation_id,
+        ),
+    ).fetchone()
+    assert row is not None
+    return tuple(row)
+
+
+def _m54_04_returned_currency_projection(
+    database: Any,
+    fixture: Any,
+) -> tuple[Any, int, int]:
+    returned = fixture.verifier_artifact.to_semantic_observation()
+    row = database.connection.execute(
+        """
+        SELECT (
+                   SELECT observation.eligible_for_currency
+                   FROM groundloop_semantic_observation AS observation
+                   WHERE observation.observation_id = %s
+               ),
+               (
+                   SELECT count(*)
+                   FROM groundloop_observation_currency AS current
+                   WHERE current.subject_kind = %s
+                     AND current.subject_id = %s
+                     AND current.chunk_version_id = %s
+                     AND current.task_type = %s
+               ),
+               (
+                   SELECT count(*)
+                   FROM groundloop_published_observation_currency AS published
+                   WHERE published.subject_kind = %s
+                     AND published.subject_id = %s
+                     AND published.chunk_version_id = %s
+                     AND published.task_type = %s
+                     AND published.valid_to_epoch IS NULL
+               )
+        """,
+        (
+            returned.observation_id,
+            returned.subject_kind.value,
+            returned.subject_id,
+            returned.chunk_version_id,
+            returned.task_type,
+            returned.subject_kind.value,
+            returned.subject_id,
+            returned.chunk_version_id,
+            returned.task_type,
+        ),
+    ).fetchone()
+    assert row is not None
+    return row[0], int(row[1]), int(row[2])
+
+
+def _m54_04_pending_projection(
+    connection: Connection[Any], *, epoch_id: int
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    query = """
+        SELECT broad_reverse_scope_count, forward_scope_count,
+               verifier_job_count, blocking_failure_count, updated_revision
+        FROM {} WHERE epoch_id = %s
+    """
+    owner = connection.execute(
+        sql.SQL(query).format(sql.Identifier("groundloop_m5_owner_pending_counter")),
+        (epoch_id,),
+    ).fetchone()
+    answer = connection.execute(
+        sql.SQL(query).format(sql.Identifier("groundloop_m5_answer_pending_counter")),
+        (epoch_id,),
+    ).fetchone()
+    assert owner is not None and answer is not None
+    return tuple(map(int, owner)), tuple(map(int, answer))
+
+
+def _m54_04_verifier_owned_row_counts(database: Any, fixture: Any) -> tuple[int, ...]:
+    attempt_id = fixture.lease.attempt.attempt_id
+    row = database.connection.execute(
+        """
+        SELECT
+          (SELECT count(*) FROM groundloop_m5_attempt_result_artifact
+           WHERE attempt_id = %s),
+          (SELECT count(*) FROM groundloop_m5_requirement_pair_input
+           WHERE pair_input_hash = %s),
+          (SELECT count(*) FROM groundloop_m5_requirement_verifier_artifact
+           WHERE artifact_id = %s),
+          (SELECT count(*) FROM groundloop_m5_requirement_verifier_execution
+           WHERE logical_job_id = %s AND attempt_id = %s),
+          (SELECT count(*) FROM groundloop_semantic_observation
+           WHERE observation_id = %s),
+          (SELECT count(*) FROM groundloop_m5_attempt_execution_evidence
+           WHERE epoch_id = %s AND subgraph = 'requirement'
+             AND attempt_id = %s),
+          (SELECT count(*) FROM groundloop_m5_expired_attempt_return
+           WHERE epoch_id = %s AND subgraph = 'requirement'
+             AND attempt_id = %s),
+          (SELECT count(*) FROM groundloop_m5_post_terminal_attempt_timing
+           WHERE epoch_id = %s AND subgraph = 'requirement'
+             AND attempt_id = %s),
+          (SELECT count(*) FROM groundloop_m5_post_terminal_attempt_audit
+           WHERE epoch_id = %s AND subgraph = 'requirement'
+             AND attempt_id = %s)
+        """,
+        (
+            attempt_id,
+            fixture.pair_input.pair_input_hash,
+            fixture.verifier_artifact.artifact_id,
+            fixture.job.logical_job_id,
+            attempt_id,
+            fixture.verifier_artifact.to_semantic_observation().observation_id,
+            database.epoch_id,
+            attempt_id,
+            database.epoch_id,
+            attempt_id,
+            database.epoch_id,
+            attempt_id,
+            database.epoch_id,
+            attempt_id,
+        ),
+    ).fetchone()
+    assert row is not None
+    return tuple(map(int, row))
+
+
+def _m54_04_verifier_completion_work(database: Any, fixture: Any) -> M5RuntimeWork:
+    """Independently frame the exact seven-row inactive completion image."""
+
+    attempt_id = fixture.lease.attempt.attempt_id
+    job_id = fixture.job.logical_job_id
+    rows = database.connection.execute(
+        """
+        SELECT serialized FROM (
+            SELECT to_jsonb(item)::text AS serialized
+            FROM groundloop_m5_requirement_pair_input AS item
+            JOIN groundloop_m5_requirement_verifier_execution AS execution
+              ON execution.pair_input_hash = item.pair_input_hash
+            WHERE execution.logical_job_id = %s AND execution.attempt_id = %s
+            UNION ALL
+            SELECT to_jsonb(item)::text
+            FROM groundloop_m5_requirement_verifier_artifact AS item
+            JOIN groundloop_m5_requirement_verifier_execution AS execution
+              ON execution.artifact_id = item.artifact_id
+            WHERE execution.logical_job_id = %s AND execution.attempt_id = %s
+            UNION ALL
+            SELECT to_jsonb(item)::text
+            FROM groundloop_semantic_observation AS item
+            JOIN groundloop_m5_requirement_verifier_execution AS execution
+              ON execution.observation_id = item.observation_id
+            WHERE execution.logical_job_id = %s AND execution.attempt_id = %s
+            UNION ALL
+            SELECT to_jsonb(item)::text
+            FROM groundloop_m5_requirement_verifier_execution AS item
+            WHERE item.logical_job_id = %s AND item.attempt_id = %s
+            UNION ALL
+            SELECT to_jsonb(item)::text
+            FROM groundloop_m5_attempt_result_artifact AS item
+            WHERE item.logical_job_id = %s AND item.attempt_id = %s
+            UNION ALL
+            SELECT to_jsonb(item)::text
+            FROM groundloop_m5_job_attempt AS item
+            WHERE item.logical_job_id = %s AND item.attempt_id = %s
+            UNION ALL
+            SELECT to_jsonb(item)::text
+            FROM groundloop_m5_semantic_job AS item
+            WHERE item.epoch_id = %s AND item.logical_job_id = %s
+        ) AS verifier_rows
+        ORDER BY serialized COLLATE "C"
+        """,
+        (
+            job_id,
+            attempt_id,
+            job_id,
+            attempt_id,
+            job_id,
+            attempt_id,
+            job_id,
+            attempt_id,
+            job_id,
+            attempt_id,
+            job_id,
+            attempt_id,
+            database.epoch_id,
+            job_id,
+        ),
+    ).fetchall()
+    assert len(rows) == 7
+    byte_count = sum(8 + len(str(row[0]).encode("utf-8")) for row in rows)
+    return M5RuntimeWork(
+        requirement_observation_artifact_count=1,
+        requirement_inactive_completion_count=1,
+        bytes_hashed=byte_count,
+        bytes_serialized=byte_count,
+    )
+
+
+def _m54_04_timing_accumulator(
+    connection: Connection[Any], *, epoch_id: int
+) -> tuple[Any, ...]:
+    row = connection.execute(
+        """
+        SELECT coordinator_non_db_non_neural_ns, neural_wall_ns,
+               postgres_roundtrip_wall_ns, external_io_wall_ns,
+               end_to_end_wall_ns, postgres_server_execution_ns,
+               postgres_lock_wait_ns, postgres_wal_bytes,
+               postgres_shared_block_reads,
+               required_expected_count, required_observed_count,
+               required_missing_count,
+               postgres_server_execution_expected_count,
+               postgres_server_execution_observed_count,
+               postgres_server_execution_missing_count,
+               postgres_lock_wait_expected_count,
+               postgres_lock_wait_observed_count,
+               postgres_lock_wait_missing_count,
+               postgres_wal_bytes_expected_count,
+               postgres_wal_bytes_observed_count,
+               postgres_wal_bytes_missing_count,
+               postgres_shared_block_reads_expected_count,
+               postgres_shared_block_reads_observed_count,
+               postgres_shared_block_reads_missing_count,
+               pending_contribution_kind, pending_source_id,
+               pending_contribution_key_digest, pending_anchor_revision,
+               updated_revision
+        FROM groundloop_m5_runtime_timing_accumulator
+        WHERE epoch_id = %s
+        """,
+        (epoch_id,),
+    ).fetchone()
+    assert row is not None
+    return tuple(row)
+
+
 def _verifier_fixture_with_changed_immutable_core(
     database: Any, fixture: Any
 ) -> tuple[M5RequirementPairInput, M5RequirementVerifierArtifact, M5AttemptOutput]:
@@ -5387,7 +6710,572 @@ def _verifier_fixture_with_changed_immutable_core(
     return changed_input, changed_artifact, changed_output
 
 
-def test_verifier_all_active_first_write_is_d25_blocked_without_mutation(
+@pytest.mark.parametrize(
+    (
+        "epoch_active",
+        "subject_mode",
+        "chunk_active",
+        "expected_requirement_active",
+        "expected_group_active",
+    ),
+    (
+        pytest.param(True, "active", True, True, True, id="active-all-active"),
+        pytest.param(
+            True,
+            "active",
+            False,
+            True,
+            True,
+            id="active-chunk-inactive",
+        ),
+        pytest.param(
+            True,
+            "requirement",
+            True,
+            False,
+            False,
+            id="active-requirement-inactive",
+        ),
+        pytest.param(
+            True,
+            "group",
+            False,
+            True,
+            False,
+            id="active-group-and-chunk-inactive",
+        ),
+        pytest.param(False, "active", True, True, True, id="failed-all-active"),
+        pytest.param(
+            False,
+            "active",
+            False,
+            True,
+            True,
+            id="failed-chunk-inactive",
+        ),
+        pytest.param(
+            False,
+            "requirement",
+            True,
+            False,
+            False,
+            id="failed-requirement-inactive",
+        ),
+        pytest.param(
+            False,
+            "group",
+            False,
+            True,
+            False,
+            id="failed-group-and-chunk-inactive",
+        ),
+    ),
+)
+def test_m54_04_live_activity_matrix_is_exact_and_reconnects_without_dispatch(
+    d24_requirement_db: Any,
+    epoch_active: bool,
+    subject_mode: str,
+    chunk_active: bool,
+    expected_requirement_active: bool,
+    expected_group_active: bool,
+) -> None:
+    """Exercise the accepted 2x2x2 activity table at the serialized return."""
+
+    store, fixture = _prepare_verifier_attempt(d24_requirement_db)
+    epoch_id = d24_requirement_db.epoch_id
+    assert fixture.lease.attempt is not None
+    predecessor_currency = _install_m54_04_predecessor_currency(
+        d24_requirement_db,
+        fixture,
+    )
+    currency_before = (
+        predecessor_currency.observation_id,
+        predecessor_currency.installed_revision,
+        predecessor_currency.observation_id,
+        predecessor_currency.published_epoch_id,
+        None,
+        True,
+    )
+    assert (
+        _m54_04_currency_projection(
+            d24_requirement_db,
+            currency=predecessor_currency,
+        )
+        == currency_before
+    )
+    assert _m54_04_returned_currency_projection(
+        d24_requirement_db,
+        fixture,
+    ) == (None, 0, 0)
+
+    if epoch_active:
+        expected_revision = 5
+        terminal_hash = None
+    else:
+        cancelled_revision = _cancel_requirement_job_for_setup(
+            d24_requirement_db,
+            job=fixture.job,
+            reason=M5TerminalReason.EPOCH_FAILED,
+        )
+        assert cancelled_revision == 6
+        terminal_hash = terminalize_recovered_epoch_for_storage_fixture(
+            d24_requirement_db.connection,
+            epoch_id=epoch_id,
+        )
+        d24_requirement_db.connection.commit()
+        expected_revision = 7
+
+    actual_requirement_active, actual_group_active = _set_m54_04_activity_precondition(
+        d24_requirement_db,
+        fixture,
+        subject_mode=subject_mode,
+        chunk_active=chunk_active,
+    )
+    assert (actual_requirement_active, actual_group_active) == (
+        expected_requirement_active,
+        expected_group_active,
+    )
+    assert (
+        _m54_04_currency_projection(
+            d24_requirement_db,
+            currency=predecessor_currency,
+        )
+        == currency_before
+    )
+    assert _m54_04_returned_currency_projection(
+        d24_requirement_db,
+        fixture,
+    ) == (None, 0, 0)
+    subject_active = expected_requirement_active and expected_group_active
+    preserved_before = _snapshot_tables(
+        d24_requirement_db.connection,
+        _M54_04_VERIFIER_PRESERVED_SEMANTIC_TABLES,
+    )
+    pending_before = _m54_04_pending_projection(
+        d24_requirement_db.connection,
+        epoch_id=epoch_id,
+    )
+    work_before = store.current_event_work(epoch_id)
+    accumulators_before = _snapshot_tables(
+        d24_requirement_db.connection,
+        (
+            "groundloop_m5_runtime_work_accumulator",
+            "groundloop_m5_runtime_timing_accumulator",
+        ),
+    )
+    timing_before = _m54_04_timing_accumulator(
+        d24_requirement_db.connection,
+        epoch_id=epoch_id,
+    )
+
+    if epoch_active and subject_active and chunk_active:
+        before = _full_snapshot(d24_requirement_db.connection)
+        with pytest.raises(ValidationError, match="M5-D25 persisted matching"):
+            _complete_verifier(
+                store,
+                d24_requirement_db,
+                fixture,
+                expected_revision=expected_revision,
+                disposition=M5ExecutionEvidenceDisposition.RETURNED,
+                timing=_attempt_timing(),
+            )
+        assert _full_snapshot(d24_requirement_db.connection) == before
+        assert (
+            _m54_04_verifier_owned_row_counts(d24_requirement_db, fixture) == (0,) * 9
+        )
+        with d24_requirement_db.reconnect() as reconnected:
+            live = PostgresM5RuntimeStore(reconnected).acquire_m5_job(
+                epoch_id,
+                expected_revision,
+                fixture.job,
+            )
+        assert live.disposition is M5AcquisitionDisposition.LIVE_LEASE
+        assert not live.should_execute and live.resulting_revision == expected_revision
+        assert _full_snapshot(d24_requirement_db.connection) == before
+        assert (
+            _m54_04_currency_projection(
+                d24_requirement_db,
+                currency=predecessor_currency,
+            )
+            == currency_before
+        )
+        assert _m54_04_returned_currency_projection(
+            d24_requirement_db,
+            fixture,
+        ) == (None, 0, 0)
+        return
+
+    receipt = _complete_verifier(
+        store,
+        d24_requirement_db,
+        fixture,
+        expected_revision=expected_revision,
+        disposition=M5ExecutionEvidenceDisposition.RETURNED,
+        timing=_attempt_timing(),
+    )
+    expected_reason = (
+        "epoch_failed"
+        if not epoch_active
+        else "subject_inactive"
+        if not subject_active
+        else "chunk_inactive"
+    )
+    expected_result_disposition = (
+        "verifier_completed_inactive" if epoch_active else "terminal_audit_only"
+    )
+    expected_job_state_at_receipt = "running" if epoch_active else "cancelled"
+    expected_job_state = "completed_inactive" if epoch_active else "cancelled"
+    expected_attempt_state = "completed" if epoch_active else "dispatched"
+    expected_return_disposition = (
+        M5RequirementReturnDisposition.APPLIED
+        if epoch_active
+        else M5RequirementReturnDisposition.TERMINAL_AUDIT_POSTTERMINAL
+    )
+    assert receipt.disposition is expected_return_disposition
+    assert not receipt.exact_replay
+    assert receipt.resulting_revision == expected_revision + int(epoch_active)
+    assert receipt.current_terminal_logical_result_hash == terminal_hash
+    assert (receipt.transition_anchor is not None) is epoch_active
+
+    activity = d24_requirement_db.connection.execute(
+        """
+        SELECT artifact.disposition, artifact.archive_reason,
+               artifact.activity_snapshot_epoch_id,
+               artifact.activity_snapshot_revision,
+               artifact.epoch_active, artifact.requirement_active,
+               artifact.group_active, artifact.chunk_active,
+               artifact.job_state_at_receipt, artifact.job_state_after,
+               artifact.cancelled_by_event_id,
+               artifact.cancelled_by_epoch_id,
+               artifact.cancellation_reason,
+               job.job_state, attempt.attempt_state,
+               runtime.runtime_state, runtime.revision,
+               runtime.open_work_count, runtime.open_scope_count,
+               parent.scope_state, parent.closed_revision
+        FROM groundloop_m5_attempt_result_artifact AS artifact
+        JOIN groundloop_m5_semantic_job AS job
+          ON job.epoch_id = artifact.job_epoch_id
+         AND job.logical_job_id = artifact.logical_job_id
+        JOIN groundloop_m5_job_attempt AS attempt
+          ON attempt.attempt_id = artifact.attempt_id
+        JOIN groundloop_m5_runtime_epoch AS runtime
+          ON runtime.epoch_id = artifact.job_epoch_id
+        JOIN groundloop_m5_discovery_scope AS parent
+          ON parent.epoch_id = job.epoch_id
+         AND parent.root_job_id = job.parent_job_id
+        WHERE artifact.attempt_id = %s
+        """,
+        (fixture.lease.attempt.attempt_id,),
+    ).fetchone()
+    assert activity is not None
+    assert tuple(activity[:10]) == (
+        expected_result_disposition,
+        expected_reason,
+        epoch_id,
+        expected_revision,
+        epoch_active,
+        expected_requirement_active,
+        expected_group_active,
+        chunk_active,
+        expected_job_state_at_receipt,
+        expected_job_state,
+    )
+    if epoch_active:
+        assert tuple(activity[10:13]) == (None, None, None)
+        assert tuple(activity[13:]) == (
+            "completed_inactive",
+            expected_attempt_state,
+            "semantic_pending",
+            6,
+            0,
+            0,
+            "closed_active",
+            4,
+        )
+        assert _m54_04_verifier_owned_row_counts(d24_requirement_db, fixture) == (
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            0,
+            0,
+        )
+        pending_after = _m54_04_pending_projection(
+            d24_requirement_db.connection,
+            epoch_id=epoch_id,
+        )
+        assert pending_before[0][:2] == pending_after[0][:2]
+        assert pending_before[1][:2] == pending_after[1][:2]
+        assert pending_before[0][2] == pending_before[1][2] == 1
+        assert pending_after[0][2:] == pending_after[1][2:] == (0, 0, 6)
+        verifier_work = _m54_04_verifier_completion_work(
+            d24_requirement_db,
+            fixture,
+        )
+        work_names = M5RuntimeWork.counter_names()
+        contribution = d24_requirement_db.connection.execute(
+            sql.SQL(
+                "SELECT {}, contribution.work_digest, contribution.source_id, "
+                "contribution.source_identity_hash, "
+                "contribution.contribution_key_digest, "
+                "contribution.applied_revision, evidence.attempt_work_digest, "
+                "evidence.evidence_digest, "
+                "timing.execution_evidence_digest, "
+                "evidence.attempt_timing_digest, timing.observation_digest, "
+                "timing.attempt_timing_digest "
+                "FROM groundloop_m5_runtime_work_contribution AS contribution "
+                "JOIN groundloop_m5_attempt_execution_evidence AS evidence "
+                "ON evidence.epoch_id = contribution.epoch_id "
+                "AND evidence.attempt_id = contribution.source_id "
+                "AND evidence.subgraph = 'requirement' "
+                "JOIN groundloop_m5_runtime_timing_contribution AS timing "
+                "ON timing.epoch_id = evidence.epoch_id "
+                "AND timing.attempt_id = evidence.attempt_id "
+                "AND timing.subgraph = evidence.subgraph "
+                "WHERE contribution.epoch_id = %s "
+                "AND contribution.contribution_kind = 'verifier_completion' "
+                "AND contribution.source_id = %s"
+            ).format(
+                sql.SQL(", ").join(
+                    sql.SQL("contribution.{}").format(sql.Identifier(name))
+                    for name in work_names
+                )
+            ),
+            (epoch_id, fixture.lease.attempt.attempt_id),
+        ).fetchone()
+        assert contribution is not None
+        work_end = len(work_names)
+        stored_verifier_work = M5RuntimeWork(
+            **dict(
+                zip(
+                    work_names,
+                    map(int, contribution[:work_end]),
+                    strict=True,
+                )
+            ),
+            work_digest=str(contribution[work_end]),
+        )
+        assert stored_verifier_work == verifier_work
+        timing_observation = M5RuntimeTimingObservation.build(_attempt_timing())
+        expected_attempt_timing_digest = digests.attempt_runtime_timing_digest(
+            epoch_id=epoch_id,
+            subgraph="requirement",
+            attempt_id=fixture.lease.attempt.attempt_id,
+            observation_digest=timing_observation.observation_digest,
+        )
+        evidence_digest = str(contribution[work_end + 7]).strip()
+        assert tuple(contribution[work_end + 1 :]) == (
+            fixture.lease.attempt.attempt_id,
+            receipt.return_artifact_digest,
+            digests.runtime_work_contribution_key_digest(
+                epoch_id=epoch_id,
+                contribution_kind=M5RuntimeWorkContributionKind.VERIFIER_COMPLETION,
+                source_id=fixture.lease.attempt.attempt_id,
+            ),
+            6,
+            _verifier_attempt_work(M5ExecutionEvidenceDisposition.RETURNED).work_digest,
+            evidence_digest,
+            evidence_digest,
+            expected_attempt_timing_digest,
+            timing_observation.observation_digest,
+            expected_attempt_timing_digest,
+        )
+        expected_event_work = _sum_work(
+            work_before,
+            _verifier_attempt_work(M5ExecutionEvidenceDisposition.RETURNED),
+            verifier_work,
+        )
+        assert store.current_event_work(epoch_id) == expected_event_work
+        timing_after = _m54_04_timing_accumulator(
+            d24_requirement_db.connection,
+            epoch_id=epoch_id,
+        )
+        timing_deltas = (11, 13, 17, 19, 23, 29, 0, 31, 0)
+        assert tuple(map(int, timing_after[:9])) == tuple(
+            int(before) + delta
+            for before, delta in zip(
+                timing_before[:9],
+                timing_deltas,
+                strict=True,
+            )
+        )
+        coverage_deltas = (
+            2,
+            1,
+            1,
+            2,
+            1,
+            1,
+            2,
+            0,
+            2,
+            2,
+            1,
+            1,
+            2,
+            0,
+            2,
+        )
+        assert tuple(map(int, timing_after[9:24])) == tuple(
+            int(before) + delta
+            for before, delta in zip(
+                timing_before[9:24],
+                coverage_deltas,
+                strict=True,
+            )
+        )
+        assert timing_after[24:] == (
+            "verifier_completion",
+            fixture.lease.attempt.attempt_id,
+            digests.runtime_work_contribution_key_digest(
+                epoch_id=epoch_id,
+                contribution_kind=M5RuntimeWorkContributionKind.VERIFIER_COMPLETION,
+                source_id=fixture.lease.attempt.attempt_id,
+            ),
+            6,
+            6,
+        )
+    else:
+        assert tuple(activity[10:13]) == (
+            d24_requirement_db.plan.structural_event_id,
+            epoch_id,
+            "epoch_failed",
+        )
+        assert tuple(activity[13:]) == (
+            "cancelled",
+            expected_attempt_state,
+            "failed",
+            7,
+            0,
+            0,
+            "closed_active",
+            4,
+        )
+        assert _m54_04_verifier_owned_row_counts(d24_requirement_db, fixture) == (
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            1,
+            1,
+        )
+        assert (
+            _m54_04_pending_projection(
+                d24_requirement_db.connection,
+                epoch_id=epoch_id,
+            )
+            == pending_before
+        )
+        assert store.current_event_work(epoch_id) == work_before
+        assert (
+            _snapshot_tables(
+                d24_requirement_db.connection,
+                (
+                    "groundloop_m5_runtime_work_accumulator",
+                    "groundloop_m5_runtime_timing_accumulator",
+                ),
+            )
+            == accumulators_before
+        )
+
+    assert (
+        _snapshot_tables(
+            d24_requirement_db.connection,
+            _M54_04_VERIFIER_PRESERVED_SEMANTIC_TABLES,
+        )
+        == preserved_before
+    )
+    assert (
+        _m54_04_currency_projection(
+            d24_requirement_db,
+            currency=predecessor_currency,
+        )
+        == currency_before
+    )
+    expected_returned_currency = (False, 0, 0) if epoch_active else (None, 0, 0)
+    assert (
+        _m54_04_returned_currency_projection(
+            d24_requirement_db,
+            fixture,
+        )
+        == expected_returned_currency
+    )
+    before_replay = _full_snapshot(d24_requirement_db.connection)
+    with d24_requirement_db.reconnect() as reconnected:
+        reconnect_store = PostgresM5RuntimeStore(reconnected)
+        replay = _complete_verifier(
+            reconnect_store,
+            d24_requirement_db,
+            fixture,
+            expected_revision=receipt.resulting_revision,
+            disposition=M5ExecutionEvidenceDisposition.RETURNED,
+            timing=_attempt_timing(),
+        )
+        terminal = reconnect_store.acquire_m5_job(
+            epoch_id,
+            receipt.resulting_revision,
+            fixture.job,
+        )
+    assert replay.exact_replay and replay.transition_anchor is None
+    assert replay.disposition is expected_return_disposition
+    assert terminal.disposition is M5AcquisitionDisposition.TERMINAL
+    assert not terminal.should_execute
+    assert _full_snapshot(d24_requirement_db.connection) == before_replay
+    assert (
+        _m54_04_currency_projection(
+            d24_requirement_db,
+            currency=predecessor_currency,
+        )
+        == currency_before
+    )
+    assert (
+        _m54_04_returned_currency_projection(
+            d24_requirement_db,
+            fixture,
+        )
+        == expected_returned_currency
+    )
+
+    changed = build_d24_verifier_fixture(
+        d24_requirement_db,
+        lease=fixture.lease,
+        job=fixture.job,
+        raw_output_tag="m54-04-conflict",
+    )
+    before_conflict = _full_snapshot(d24_requirement_db.connection)
+    with pytest.raises((EventConflictError, ValidationError)):
+        _complete_verifier(
+            store,
+            d24_requirement_db,
+            changed,
+            expected_revision=receipt.resulting_revision,
+            disposition=M5ExecutionEvidenceDisposition.RETURNED,
+            timing=_attempt_timing(),
+        )
+    assert _full_snapshot(d24_requirement_db.connection) == before_conflict
+    assert (
+        _m54_04_currency_projection(
+            d24_requirement_db,
+            currency=predecessor_currency,
+        )
+        == currency_before
+    )
+    assert (
+        _m54_04_returned_currency_projection(
+            d24_requirement_db,
+            fixture,
+        )
+        == expected_returned_currency
+    )
+
+
+def test_m54_04_verifier_all_active_is_d25_blocked_without_mutation(
     d24_requirement_db: Any,
 ) -> None:
     store, fixture = _prepare_verifier_attempt(d24_requirement_db)
@@ -5420,7 +7308,7 @@ def test_verifier_all_active_first_write_is_d25_blocked_without_mutation(
         (M5ExecutionEvidenceDisposition.REUSED_ARTIFACT, None),
     ),
 )
-def test_inactive_verifier_persists_exact_closure_and_replays(
+def test_m54_04_inactive_verifier_persists_exact_closure_and_replays(
     d24_requirement_db: Any,
     disposition: M5ExecutionEvidenceDisposition,
     timing: M5RuntimeTiming | None,
@@ -5641,7 +7529,7 @@ def test_inactive_verifier_persists_exact_closure_and_replays(
         "requirement_timing_accumulator_updated",
     ),
 )
-def test_inactive_verifier_cutoffs_roll_back_every_owned_row(
+def test_m54_04_inactive_verifier_cutoffs_roll_back_every_owned_row(
     d24_requirement_db: Any,
     cutoff: str,
 ) -> None:
