@@ -49,8 +49,8 @@ database, deployment, or runtime mode was touched.
 
 ## Executed gates
 
-- focused owned tests: **131 passed**;
-- complete pure M5 runtime directory: **407 passed**;
+- focused owned tests: **134 passed**;
+- complete pure M5 runtime directory: **414 passed**;
 - M4 public API plus legacy compatibility: **14 passed**;
 - Ruff over both owned source and test files: passed;
 - strict mypy over both owned source files: passed;
