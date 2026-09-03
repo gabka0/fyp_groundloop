@@ -3548,3 +3548,363 @@ def test_d24_event_result_coverage_bridge_never_fabricates_observed_zero() -> No
         assert missing_replay.state is M5RunState.REPLAYED
         with pytest.raises(ValidationError):
             replayed_with_coverage(outcome, measured_zero)
+
+
+def test_d25_hall_contract_recomputes_bounded_hall_state() -> None:
+    from groundloop.m5.runtime.contracts import M5MatchingHallCurrent, M5MatchingLayer
+
+    point = M5MatchingHallCurrent(
+        M5MatchingLayer.CURRENT,
+        "group",
+        2,
+        (0, 0, 0, 2),
+        (0, 2, 2, 2),
+        (0, -1, -1, 0),
+        0,
+        2,
+        2,
+        1,
+        1,
+    )
+    assert point.deficiencies[1] == -1
+    with pytest.raises(ValidationError):
+        replace(point, neighbor_counts=(0, 1, 2, 2))
+    with pytest.raises(ValidationError):
+        replace(
+            point,
+            requirement_count=0,
+            mask_histogram=(0,),
+            neighbor_counts=(0,),
+            deficiencies=(0,),
+        )
+
+
+def test_d25_tombstones_are_present_points_not_absence() -> None:
+    from groundloop.m5.runtime import digests as runtime_digests
+    from groundloop.m5.runtime.contracts import (
+        M5MatchingHallWorking,
+        M5MatchingLayer,
+        M5MatchingMaskWorking,
+    )
+
+    mask = M5MatchingMaskWorking(M5MatchingLayer.WORKING, 2, "group", "1" * 64, 0, 1)
+    hall = M5MatchingHallWorking(
+        M5MatchingLayer.WORKING,
+        2,
+        "group",
+        False,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        1,
+    )
+    assert runtime_digests.matching_point_fields(mask)
+    assert runtime_digests.matching_point_fields(hall)
+    with pytest.raises(ValidationError):
+        replace(hall, requirement_count=1)
+
+
+def test_d25_malformed_current_audit_forces_skipped_provenance() -> None:
+    from groundloop.m5.runtime import digests as runtime_digests
+    from groundloop.m5.runtime.contracts import (
+        M5MatchingAuditError,
+        M5MatchingAuditFamily,
+        M5PersistedMatchingPhysicalAudit,
+        M5PersistedMatchingPhysicalMismatch,
+    )
+
+    mismatch = M5PersistedMatchingPhysicalMismatch(
+        M5MatchingAuditFamily.OBSERVATION,
+        ("observation",),
+        "1" * 64,
+        None,
+        M5MatchingAuditError.MALFORMED_PAYLOAD,
+    )
+    digest = runtime_digests.physical_audit_digest(
+        head_epoch_id=1,
+        head_revision=1,
+        decision_policy_version="policy",
+        python_expected_projection_digest="2" * 64,
+        sql_expected_projection_digest="2" * 64,
+        actual_projection_digest=None,
+        actual_error=M5MatchingAuditError.MALFORMED_PAYLOAD,
+        provenance_ok=False,
+        provenance_replay_digest=None,
+        working_image_expected_provenance_digest=None,
+        working_image_actual_provenance_digest=None,
+        accumulator_expected_provenance_digest=None,
+        accumulator_actual_provenance_digest=None,
+        mismatches=(
+            (
+                mismatch.family,
+                mismatch.key,
+                mismatch.expected_row_digest,
+                None,
+                mismatch.actual_error,
+            ),
+        ),
+        provenance_mismatches=(),
+    )
+    artifact = M5PersistedMatchingPhysicalAudit(
+        1,
+        1,
+        "policy",
+        "2" * 64,
+        "2" * 64,
+        None,
+        M5MatchingAuditError.MALFORMED_PAYLOAD,
+        False,
+        None,
+        None,
+        None,
+        None,
+        None,
+        (mismatch,),
+        (),
+        digest,
+    )
+    assert not artifact.passed
+    with pytest.raises(ValidationError):
+        replace(artifact, provenance_ok=True)
+    with pytest.raises(ValidationError):
+        replace(
+            artifact,
+            actual_error=None,
+            actual_projection_digest="2" * 64,
+            provenance_ok=True,
+            provenance_replay_digest="3" * 64,
+            working_image_expected_provenance_digest="4" * 64,
+            working_image_actual_provenance_digest="4" * 64,
+            accumulator_expected_provenance_digest="5" * 64,
+            accumulator_actual_provenance_digest="5" * 64,
+        )
+    with pytest.raises(ValidationError):
+        replace(artifact, mismatches=(mismatch, mismatch))
+
+
+def test_d25_work_contract_has_exact_named_37_field_order() -> None:
+    from groundloop.m5.runtime.contracts import (
+        MATCHING_WORK_COUNTER_NAMES,
+        M5PersistedMatchingWork,
+    )
+
+    work = M5PersistedMatchingWork(output_bytes=71)
+    assert len(work.counter_values) == len(MATCHING_WORK_COUNTER_NAMES) == 37
+    assert tuple(field.name for field in fields(work)) == (
+        *MATCHING_WORK_COUNTER_NAMES,
+        "matching_work_digest",
+    )
+    with pytest.raises(ValidationError):
+        replace(work, output_bytes=72)
+    changed = replace(work, output_bytes=72, matching_work_digest="")
+    assert changed.matching_work_digest != work.matching_work_digest
+    with pytest.raises(ValidationError):
+        replace(work, groups_touched=-1)
+
+
+def test_d25_mask_change_binds_outer_key_and_point_bytes() -> None:
+    from groundloop.m5.digests import hash_field, text_field
+    from groundloop.m5.runtime import digests as runtime_digests
+    from groundloop.m5.runtime.contracts import (
+        M5MatchingLayer,
+        M5MatchingMaskChange,
+        M5MatchingMaskWorking,
+    )
+
+    before = M5MatchingMaskWorking(M5MatchingLayer.WORKING, 2, "group", "1" * 64, 0, 1)
+    after = replace(before, mask=1, updated_revision=2)
+    digest = runtime_digests.matching_change_digest(
+        "m5-persisted-matching-mask-change-v1",
+        (text_field("group"), hash_field("1" * 64)),
+        before,
+        after,
+    )
+    change = M5MatchingMaskChange("group", "1" * 64, before, after, digest)
+    assert change.change_digest == digest
+    with pytest.raises(ValidationError):
+        replace(change, group_version_id="other")
+    with pytest.raises(ValidationError):
+        runtime_digests.matching_change_digest(
+            "m5-persisted-matching-mask-change-v1", (), None, None
+        )
+
+
+def test_d25_intent_enforces_canonical_keys_revision_and_digest() -> None:
+    from groundloop.m5.runtime import digests as runtime_digests
+    from groundloop.m5.runtime.contracts import (
+        M5MatchingGroupShape,
+        M5PersistedMatchingSourceKind,
+        M5PersistedMatchingTransitionIntent,
+    )
+
+    values = dict(
+        source_kind=M5PersistedMatchingSourceKind.DIRECT_TRANSITION,
+        source_id="source",
+        source_identity_hash="1" * 64,
+        before_epoch_id=2,
+        before_revision=3,
+        resulting_epoch_id=2,
+        resulting_revision=4,
+        decision_policy_version="policy",
+        group_shapes=(),
+        observation_ids=("a", "b"),
+        edge_keys=(),
+        mask_keys=(),
+        hall_group_ids=(),
+        requirement_state_ids=(),
+        group_state_ids=(),
+        claim_state_ids=(),
+        answer_state_ids=(),
+        group_certificate_ids=(),
+        claim_certificate_ids=(),
+    )
+    digest = runtime_digests.persisted_matching_transition_intent_digest(**values)
+    intent = M5PersistedMatchingTransitionIntent(**values, intent_digest=digest)
+    assert intent.intent_digest == digest
+    with pytest.raises(ValidationError):
+        replace(intent, observation_ids=("b", "a"))
+    with pytest.raises(ValidationError):
+        replace(intent, resulting_revision=5)
+    with pytest.raises(ValidationError):
+        replace(intent, source_id="changed")
+    with pytest.raises(ValidationError):
+        M5MatchingGroupShape("empty", 0, ())
+
+
+def test_d25_contribution_and_binding_identities_reject_mutation() -> None:
+    from groundloop.m5.incremental_overlay import M5OverlayWork
+    from groundloop.m5.runtime import digests as runtime_digests
+    from groundloop.m5.runtime.contracts import (
+        M5PersistedBindingKind,
+        M5PersistedCertificateBindingRow,
+        M5PersistedMatchingContribution,
+        M5PersistedMatchingSourceKind,
+    )
+
+    work = M5OverlayWork()
+    contribution_hash = runtime_digests.matching_work_contribution_digest(
+        epoch_id=2,
+        source_kind=M5PersistedMatchingSourceKind.DIRECT_TRANSITION,
+        source_id="source",
+        source_identity_hash="1" * 64,
+        before_epoch_id=2,
+        before_revision=3,
+        resulting_revision=4,
+        patch_digest="2" * 64,
+        matching_work_digest_value=runtime_digests.matching_work_digest((0,) * 37),
+    )
+    contribution = M5PersistedMatchingContribution(
+        2,
+        M5PersistedMatchingSourceKind.DIRECT_TRANSITION,
+        "source",
+        "1" * 64,
+        2,
+        3,
+        4,
+        "2" * 64,
+        work,
+        contribution_hash,
+    )
+    with pytest.raises(ValidationError):
+        replace(contribution, source_id="other")
+    binding_hash = runtime_digests.certificate_binding_row_digest(
+        M5PersistedBindingKind.GROUP, 2, "group", 1, 4, "3" * 64
+    )
+    binding = M5PersistedCertificateBindingRow(
+        M5PersistedBindingKind.GROUP, 2, "group", 1, 4, "3" * 64, binding_hash
+    )
+    with pytest.raises(ValidationError):
+        replace(binding, valid_to_revision=1)
+
+
+def test_d25_points_and_audit_accept_frozen_revision_zero() -> None:
+    from groundloop.m5.runtime import digests as runtime_digests
+    from groundloop.m5.runtime.contracts import (
+        M5MatchingLayer,
+        M5MatchingMaskCurrent,
+        M5PersistedMatchingPhysicalAudit,
+    )
+
+    point = M5MatchingMaskCurrent(M5MatchingLayer.CURRENT, "group", "1" * 64, 1, 1, 0)
+    assert point.installed_revision == 0
+    values = dict(
+        head_epoch_id=1,
+        head_revision=0,
+        decision_policy_version="policy",
+        python_expected_projection_digest="1" * 64,
+        sql_expected_projection_digest="1" * 64,
+        actual_projection_digest="1" * 64,
+        actual_error=None,
+        provenance_ok=True,
+        provenance_replay_digest="2" * 64,
+        working_image_expected_provenance_digest="3" * 64,
+        working_image_actual_provenance_digest="3" * 64,
+        accumulator_expected_provenance_digest="4" * 64,
+        accumulator_actual_provenance_digest="4" * 64,
+        mismatches=(),
+        provenance_mismatches=(),
+    )
+    digest = runtime_digests.physical_audit_digest(**values)
+    assert M5PersistedMatchingPhysicalAudit(**values, audit_digest=digest).passed
+
+
+def test_d25_canonical_audit_pass_requires_all_provenance_evidence() -> None:
+    from groundloop.m5.runtime import digests as runtime_digests
+    from groundloop.m5.runtime.contracts import (
+        M5MatchingAuditFamily,
+        M5MatchingProvenanceKind,
+        M5PersistedMatchingPhysicalAudit,
+        M5PersistedMatchingPhysicalMismatch,
+        M5PersistedMatchingProvenanceMismatch,
+    )
+
+    with pytest.raises(ValidationError):
+        M5PersistedMatchingProvenanceMismatch(
+            M5MatchingProvenanceKind.ACCUMULATOR, 1, None, None
+        )
+    with pytest.raises(ValidationError):
+        M5PersistedMatchingProvenanceMismatch(
+            M5MatchingProvenanceKind.ACCUMULATOR, 1, "1" * 64, "1" * 64
+        )
+    with pytest.raises(ValidationError):
+        M5PersistedMatchingPhysicalMismatch(
+            M5MatchingAuditFamily.HALL,
+            ("group",),
+            "1" * 64,
+            "1" * 64,
+            None,
+        )
+
+    values = dict(
+        head_epoch_id=2,
+        head_revision=4,
+        decision_policy_version="policy",
+        python_expected_projection_digest="1" * 64,
+        sql_expected_projection_digest="1" * 64,
+        actual_projection_digest="1" * 64,
+        actual_error=None,
+        provenance_ok=True,
+        provenance_replay_digest="2" * 64,
+        working_image_expected_provenance_digest="3" * 64,
+        working_image_actual_provenance_digest="3" * 64,
+        accumulator_expected_provenance_digest="4" * 64,
+        accumulator_actual_provenance_digest="4" * 64,
+        mismatches=(),
+        provenance_mismatches=(),
+    )
+    digest = runtime_digests.physical_audit_digest(**values)
+    artifact = M5PersistedMatchingPhysicalAudit(**values, audit_digest=digest)
+    assert artifact.passed
+    with pytest.raises(ValidationError):
+        replace(artifact, provenance_replay_digest=None)
+    assert not replace(
+        artifact,
+        actual_projection_digest="5" * 64,
+        audit_digest=runtime_digests.physical_audit_digest(
+            **{**values, "actual_projection_digest": "5" * 64}
+        ),
+    ).passed
