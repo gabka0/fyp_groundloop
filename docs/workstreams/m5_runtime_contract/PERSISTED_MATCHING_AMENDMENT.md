@@ -997,20 +997,54 @@ on every D25 current, working, image, patch, contribution, and accumulator
 relation. Runtime DML requires the existing transaction-local
 `groundloop.m5_checked_transition=on` authorization set by the accepted
 `groundloop_m5_authorize_checked_transition(epoch_id,expected_revision)` only
-after its tier locks and CAS validation; the D25 deferred validators also bind
-every changed row to that authorized epoch/resulting revision. Activation DML
-requires a new checked
+after its tier locks and CAS validation. That Boolean alone is insufficient:
+migration 017 MUST also install
+`groundloop_m5_authorize_persisted_matching_transition(
+epoch_id bigint, expected_runtime_revision bigint, resulting_revision bigint,
+source_kind text, source_id text)` and
+`groundloop_m5_authorize_persisted_matching_seal(
+epoch_id bigint, expected_revision bigint, sealed_revision bigint)`.
+Each companion helper first requires the accepted Boolean authorization and
+rechecks the already-held epoch/runtime rows. The transition helper validates
+the Section-4.7 source/revision law plus the structural-open exception below;
+the seal helper validates the frozen seal point. They then set transaction-
+local D25 context fields with exact mode `transition | seal`, epoch ID,
+expected-runtime/resulting revision, and, for a transition, source kind/ID.
+
+For `structural_open`, the base and typed runtime rows for the new epoch have
+already been inserted and locked at revision 1. The caller MUST invoke the
+accepted authorization as `(epoch_id, 1)` and the D25 transition helper as
+`(epoch_id, 1, 1, structural_open, structural_event_id)`. This runtime-
+authorization point does not alter the patch: its before point remains the
+sealed predecessor and its resulting point remains `(epoch_id, 1)`. For every
+later transition from runtime revision `N`, both helpers receive expected
+runtime revision `N` and the D25 helper receives resulting revision `N+1`.
+Revision-zero authorization and using the predecessor revision as the new
+epoch's expected runtime revision are forbidden.
+
+Activation DML requires the new checked
 `groundloop_m5_authorize_persisted_matching_activation(
-expected_m4_head_epoch_id bigint, expected_m4_head_revision bigint,
+expected_m4_head_epoch_id bigint, expected_head_epoch_revision bigint,
 decision_policy_version text)` helper installed by 017. That helper locks and
 validates mode, the M4 head and referenced epoch revision, M5-head/activation
 absence, the exact 017 ledger, policy and zero-live-epoch preconditions before
-setting the same transaction-local authorization. First-install DDL/backfill creates
-and validates its rows before enabling these guards, then installs every guard
-before the ledger insert and commit. No ordinary application path may set the
-authorization flag directly or disable a guard. This is a database-correctness
-boundary for trusted GroundLoop credentials, not a security claim against a
-malicious schema owner.
+setting the accepted Boolean plus D25 context mode `activation`, installed
+epoch/revision and policy.
+
+Every guard requires both the accepted Boolean and one complete D25 context.
+Transition mode admits only the named epoch/source/revision's working image,
+working physical rows, patch, contribution and accumulator operations. Seal
+mode admits only the named promotion's current-image/current-row operations,
+with exact installed epoch/revision. Activation mode admits only bootstrap
+current-image/current-row operations at its checked head/policy. A wrong mode,
+epoch, expected/resulting revision, source, relation family or operation is
+rejected before DML; deferred validators still enforce the complete
+transition/promotion bijection. First-install DDL/backfill creates and
+validates its rows before enabling these guards, then installs every guard
+before the ledger insert and commit. No ordinary application path may set any
+authorization context directly or disable a guard. This is a database-
+correctness boundary for trusted GroundLoop credentials, not a security claim
+against a malicious schema owner.
 
 ## 6. Localized transition validators
 
@@ -1106,11 +1140,15 @@ observation ID; edge `(requirement_version_id,text_hash)`; mask
 `(group_version_id,text_hash)`; and Hall group ID. Duplicate outer keys are an
 invalid audit. Edge group ID and requirement ordinal remain validated
 `AUDIT_EDGE` payload, never sort/pair coordinates. A decodable key with a
-malformed or different payload produces one keyed mismatch. An outer key that
-cannot decode as the typed `AUDIT_KEY` is a typed invalid-audit failure for
-which no audit digest may be reported; it is never serialized through an
-invented key. This audit order is separate from and does not change the
-Section-4.7 patch-change order. Hall arrays retain numeric subset order.
+fully decodable but different payload produces one ordinary keyed mismatch. A
+row whose unique outer key decodes but whose complete `AUDIT_ROW` payload
+cannot decode and canonically re-encode produces the exact keyed
+`malformed_payload` mismatch defined below and makes the whole actual-
+projection digest absent. An outer key that cannot decode as the typed
+`AUDIT_KEY`, or a duplicate outer key, is a typed invalid-audit failure for
+which no audit artifact or digest may be reported; it is never serialized
+through an invented key. This audit order is separate from and does not change
+the Section-4.7 patch-change order. Hall arrays retain numeric subset order.
 
 The exact typed outer audit keys are:
 
@@ -1139,13 +1177,30 @@ semantic_projection_digest = stable_m5_digest(
   *HASH(family_digest[mask]), *HASH(family_digest[hall]))
 ```
 
+`family_digest` and `semantic_projection_digest` exist only when every row on
+that side has one complete canonical `AUDIT_ROW` encoding. The Python and SQL
+expected readers MUST always satisfy that condition or the audit is invalid
+with no artifact. A keyed malformed actual payload follows the optional failed-
+artifact branch below instead of inventing a family-row encoding.
+
 The Python and SQL expected projections MUST be byte-identical before either
 is compared with the actual projection. The actual adapter MUST first require
 one current-image header whose epoch equals both locked publication-head epoch
 IDs, whose revision equals the M5 head's `sealed_revision` and sealed epoch
 revision, and whose policy equals the strict current policy. It projects every
 current row, not a sample. A missing, extra, duplicated, reordered, malformed,
-or different row changes a family digest and fails the audit.
+or different validly encoded row changes a family digest and fails the audit.
+A keyed malformed row follows the exact absent-actual-projection branch below;
+an invalid/duplicate outer key is the no-artifact invalid audit above.
+
+The keyed-malformed-current branch has precedence over provenance replay. In
+that exact branch the comparator completes all canonically keyed physical
+mismatches but MUST NOT pass the malformed current row to `CURRENT_PROVENANCE`
+or run the provenance pass. The retained failed artifact has exactly
+`provenance_ok=false`, `provenance_replay_digest=None`, all four working-image/
+accumulator expected/actual provenance digests `None`, and
+`provenance_mismatches=()`. This is not a provenance PASS or an omitted success;
+the typed `actual_error=malformed_payload` is the controlling failure.
 
 Physical-only installed coordinates, retained working history, working-image
 headers, and matching-work accumulators are checked by a separate provenance
@@ -1238,7 +1293,10 @@ produce the different current-layer encoding. Every retained working row names
 the patch that produced its exact working bytes. The same contribution row
 reached through its source key and resulting-revision key is one
 `PATCH_PROVENANCE` record, not two. A failed decode returns a typed audit
-failure rather than hashing a partially trusted row set.
+failure rather than hashing a partially trusted row set. This sentence applies
+to the ordinary fully encoded semantic-projection path; the earlier keyed-
+malformed-current branch takes precedence and skips provenance exactly as
+specified there.
 
 The four pairwise digests use these exact calls:
 
@@ -1285,7 +1343,8 @@ M5PersistedMatchingPhysicalAudit(
   decision_policy_version,
   python_expected_projection_digest,
   sql_expected_projection_digest,
-  actual_projection_digest,
+  actual_projection_digest?,
+  actual_error?,
   provenance_ok,
   provenance_replay_digest?,
   working_image_expected_provenance_digest?,
@@ -1302,7 +1361,7 @@ Each mismatch is:
 
 ```text
 M5PersistedMatchingPhysicalMismatch(
-  family, key, expected_row_digest?, actual_row_digest?
+  family, key, expected_row_digest?, actual_row_digest?, actual_error?
 )
 
 row_digest = stable_m5_digest(
@@ -1312,7 +1371,8 @@ row_digest = stable_m5_digest(
 physical_mismatch_preimage =
   SEQ((ENUM(family), AUDIT_KEY(family),
        OPTION(HASH(expected_row_digest)),
-       OPTION(HASH(actual_row_digest))))
+       OPTION(HASH(actual_row_digest)),
+       OPTION(ENUM(actual_error))))
 
 M5PersistedMatchingProvenanceMismatch(
   kind, epoch_id, expected_row_digest?, actual_row_digest?
@@ -1328,9 +1388,30 @@ provenance_mismatch_preimage =
 family order. Its `key` is the typed `AUDIT_KEY(family)` value, never an
 opaque byte string. `provenance_mismatches` admits exact kind values
 `working_image | accumulator`, with rank `working_image=0` and
-`accumulator=1`, then sorts by epoch ID. An absent or undecodable side is
-`OPTION(None)`. Raw `bytea`, JSON, `repr`, or an untyped preimage is forbidden
-in either mismatch digest. The audit digest is:
+`accumulator=1`, then sorts by epoch ID. A genuinely absent physical row uses
+`OPTION(None)` for that side's row digest. The only admitted physical-mismatch
+`actual_error` enum value is literal `malformed_payload`. A genuinely absent
+actual row has
+`actual_row_digest=None, actual_error=None`; a keyed malformed actual row has
+`actual_row_digest=None, actual_error=malformed_payload`; and a canonically
+encoded actual row has a present digest and no error. Every other combination
+is invalid. A malformed expected row, or a present provenance row that cannot
+decode completely, makes the audit a typed no-artifact invalid audit; neither
+is represented as an absent row. Raw `bytea`, JSON, `repr`, or an untyped
+preimage is forbidden in either mismatch digest.
+
+At artifact level exactly one actual-projection shape is valid:
+
+1. every actual row is canonically encoded, so
+   `actual_projection_digest=Some(...)` and `actual_error=None`; or
+2. at least one uniquely keyed actual row has an undecodable/noncanonical
+   payload, so `actual_projection_digest=None` and
+   `actual_error=Some(malformed_payload)`, with one keyed malformed mismatch
+   for every such row, plus the exact skipped-provenance values frozen above.
+
+Missing/extra but otherwise canonical rows use shape 1. Invalid/duplicate
+outer keys and current-image-header precondition failures remain typed invalid
+audits with no artifact. The audit digest is:
 
 ```text
 audit_digest = stable_m5_digest(
@@ -1339,7 +1420,8 @@ audit_digest = stable_m5_digest(
   *TEXT(decision_policy_version),
   *HASH(python_expected_projection_digest),
   *HASH(sql_expected_projection_digest),
-  *HASH(actual_projection_digest), *BOOL(provenance_ok),
+  *OPTION(HASH(actual_projection_digest)),
+  *OPTION(ENUM(actual_error)), *BOOL(provenance_ok),
   *OPTION(HASH(provenance_replay_digest)),
   *OPTION(HASH(working_image_expected_provenance_digest)),
   *OPTION(HASH(working_image_actual_provenance_digest)),
@@ -1349,7 +1431,8 @@ audit_digest = stable_m5_digest(
   *SEQ(provenance_mismatch_preimage in the frozen order))
 ```
 
-`PASS` requires all three projection digests equal, an empty mismatch tuple,
+`PASS` requires a present actual projection digest, no actual error, all three
+projection digests equal, an empty mismatch tuple,
 `provenance_ok=true`, a present provenance digest, both present expected/actual
 working-image digests equal, both present expected/actual accumulator digests
 equal, and an empty provenance-mismatch tuple. The artifact is evaluation
@@ -1445,7 +1528,7 @@ representative_effective_hashes(
 ) -> tuple[str, ...]
 
 derive_matching_transition_intent(
-  cursor, epoch_id, expected_revision, resulting_revision,
+  cursor, epoch_id, expected_runtime_revision, resulting_revision,
   source_kind, source_id,
   expected_source_identity_hash: SHA256 | None = None
 ) -> M5PersistedMatchingTransitionIntent
@@ -1579,10 +1662,13 @@ and never becomes persisted authority. An optional expected work value has the
 same compare-only status. The store, not an external worker or application
 caller, derives every persisted `M5OverlayWork` field.
 
-`resulting_revision` MUST equal `expected_revision+1` except structural-open
-revision 1, whose before point is the predecessor head rather than a runtime
-revision-zero row. `current_matching_work` is cursor-local here; the public
-read store may wrap it in a separate read-only transaction.
+For a later transition, `resulting_revision` MUST equal
+`expected_runtime_revision+1`, and the patch before point is
+`(epoch_id, expected_runtime_revision)`. For structural-open, both runtime
+arguments are 1 under the exact authorization sequence above, while the patch
+before point is the sealed predecessor; no runtime revision-zero row or lock
+is invented. `current_matching_work` is cursor-local here; the public read
+store may wrap it in a separate read-only transaction.
 
 None of these cursor-local methods may commit, roll back, increment the epoch
 independently, open a nested transaction, perform an external/model call, or
@@ -2224,6 +2310,11 @@ failed test remains non-PASS.
     base/policy/status/revision, installed-coordinate, observation, refcount,
     mask, Hall, patch, contribution, retained-working, or accumulator
     corruption. Missing/extra rows and every accumulator field are covered;
+    a valid unique outer key with a malformed/noncanonical payload returns the
+    exact no-actual-projection `malformed_payload` artifact with the frozen
+    false/absent/empty skipped-provenance fields, while an
+    undecodable/duplicate outer key or invalid current-image header returns a
+    typed no-artifact invalid audit;
     consistently re-digesting a corrupted accumulator still fails the
     independent contribution sum and pairwise provenance digest comparison;
     ordinary three-oracle semantic equality independently detects seeded
@@ -2245,11 +2336,16 @@ failed test remains non-PASS.
     patch, contribution, and accumulator relation, an unauthorized raw
     `INSERT`, `UPDATE`, and `DELETE` each fail before a row changes. Checked
     runtime authorization succeeds only after the exact epoch/revision CAS;
+    structural open authorizes the already-inserted new epoch at runtime point
+    `(epoch_id,1)` while retaining the sealed predecessor as patch before-
+    point, and later transitions authorize `N -> N+1`;
     checked activation authorization succeeds only after the exact ledger/
     head/policy/no-live-epoch checks; first-install backfill commits with all
-    guards enabled; direct flag setting and guard disabling are absent from
-    every ordinary application path. Rollback and reconnect show no partial
-    physical, logical, ledger, or authorization state.
+    guards enabled. Boolean-only and wrong mode/epoch/expected revision/
+    resulting revision/source/relation/operation contexts are rejected; direct
+    context setting and guard disabling are absent from every ordinary
+    application path. Rollback and reconnect show no partial physical,
+    logical, ledger, or authorization state.
 
 ## 14. Claim boundary
 

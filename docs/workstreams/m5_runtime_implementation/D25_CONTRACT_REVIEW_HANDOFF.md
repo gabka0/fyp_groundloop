@@ -291,3 +291,69 @@ mandatory_falsifiers = 40
 Any prior verdict is invalid for these bytes. The complete no-database gates
 must rerun, this two-path remediation must commit, and both independent reviews
 must restart from the resulting exact commit/SHA before any authority freeze.
+
+## 11. Third exact-byte HOLD and malformed-row closure
+
+Both decisive reviews examined exact commit `7925999` and exact candidate SHA
+`5d140abf10bb9b89509f6e7e269a407817b4930a1c84aac78b3ac10068fce201`.
+Each returned `HOLD` with zero P0 and the same one P1: a uniquely keyed actual
+row whose payload could not produce a complete typed `AUDIT_ROW` was required
+to yield a mismatch, while the enclosing actual projection digest was still
+mandatory. The semantic review also retained one P2 asking that Boolean write
+authorization be explicitly bound to the exact D25 epoch/revisions.
+
+The final closure makes `actual_projection_digest` optional only in the exact
+`actual_error=malformed_payload` branch, gives each malformed uniquely keyed
+row a canonical keyed mismatch/error encoding, and makes PASS require a
+present actual projection with no error. Undecodable/duplicate outer keys and
+invalid current-image headers remain typed no-artifact invalid audits. It also
+freezes exact transition/seal/activation D25 authorization contexts and rejects
+every wrong mode, epoch, revision, source, relation or operation before DML;
+the activation parameter correctly names the referenced head epoch revision,
+not a nonexistent M4-head revision.
+
+Fourth pre-audit byte pin:
+
+```text
+candidate_sha256 = e47516802b916395c545e6cc63e58c9a44c05e6bae1be6068980394cd3e180c6
+candidate_lines = 2374
+candidate_bytes = 113054
+mandatory_falsifiers = 40
+```
+
+All earlier verdicts are invalid for this SHA. The no-database gates and two
+independent same-byte reviews must run again after the two owned paths commit.
+
+## 12. Fourth pre-commit HOLD and precedence/revision closure
+
+A fresh pre-commit review examined candidate SHA
+`e47516802b916395c545e6cc63e58c9a44c05e6bae1be6068980394cd3e180c6`
+and returned `HOLD` with zero P0 and two P1 contradictions:
+
+1. the retained keyed-malformed-current artifact also fed the same malformed
+   row to strict provenance decoding, simultaneously requiring an artifact and
+   a no-artifact invalid audit; and
+2. structural-open authorization did not distinguish the already-inserted new
+   runtime epoch's revision 1 from the patch's sealed-predecessor before point.
+
+The closure gives the keyed-malformed-current branch precedence, skips
+provenance only there, and freezes its false/absent/empty provenance fields.
+On the ordinary fully encoded path, malformed provenance remains a typed no-
+artifact invalid audit. It also defines structural open as accepted runtime
+authorization `(epoch_id,1)` plus D25 context `(epoch_id,1,1,
+structural_open,structural_event_id)`, while the patch before point remains the
+sealed predecessor. Later runtime transitions use `N -> N+1`; revision-zero
+authorization is forbidden.
+
+Fifth pre-audit byte pin:
+
+```text
+candidate_sha256 = bac12ab5e74632c04f1bd70d0ef0d00522ba9d268eb8b73d11845bbf3b873aae
+candidate_lines = 2404
+candidate_bytes = 115141
+mandatory_falsifiers = 40
+```
+
+All earlier verdicts, including the pre-commit review, are invalid for this
+SHA. The exact no-database gates and both independent reviews must restart
+from the resulting two-path commit before any authority freeze.
