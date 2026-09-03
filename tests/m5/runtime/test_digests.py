@@ -1317,7 +1317,7 @@ def test_d25_empty_logical_output_is_frozen_71_byte_image() -> None:
 def test_d25_logical_output_enforces_nine_block_order() -> None:
     from groundloop.m5.incremental_overlay import _logical_output_image
 
-    records = (("requirement_state", "r", None), ("status_delta", "s", None))
+    records = (("requirement_state", "r", None), ("group_state", "g", None))
     assert digests.logical_output_preimage(records) == _logical_output_image(records)
     with pytest.raises(ValidationError):
         digests.logical_output_preimage(tuple(reversed(records)))
@@ -1325,6 +1325,10 @@ def test_d25_logical_output_enforces_nine_block_order() -> None:
         digests.logical_output_preimage((("requirement-state", "r", None),))
     with pytest.raises(ValidationError):
         digests.logical_output_preimage(list(records))  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        digests.logical_output_preimage((("status_delta", "s", None),))
+    with pytest.raises(ValidationError):
+        digests.logical_output_preimage((("group_binding", "g", None),))
 
     class StringAlias(str):
         pass

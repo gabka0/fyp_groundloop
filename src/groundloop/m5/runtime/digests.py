@@ -89,6 +89,23 @@ MatchingWorkValues = tuple[int, ...]
 AuditKeyValues = tuple[str, ...]
 
 
+def stable_m5_preimage(domain_tag: str, *values: tuple[str, ...]) -> bytes:
+    """Return the exact framed bytes consumed by ``stable_m5_digest``."""
+    if type(domain_tag) is not str or not domain_tag:
+        raise ValidationError("digest domain tags must be nonempty strings")
+    fields = [domain_tag]
+    for value in values:
+        if type(value) is not tuple or not all(type(field) is str for field in value):
+            raise ValidationError("digest values must be exact typed field tuples")
+        fields.extend(value)
+    return b"".join(len(v.encode()).to_bytes(8, "big") + v.encode() for v in fields)
+
+
+def verify_digest_preimage(digest: str, preimage: bytes) -> None:
+    if type(preimage) is not bytes or hashlib.sha256(preimage).hexdigest() != digest:
+        raise ValidationError("digest/preimage identity mismatch")
+
+
 def _seq(values: Iterable[tuple[str, ...]]) -> tuple[str, ...]:
     return sequence_field(values)
 
@@ -105,6 +122,27 @@ def matching_group_shape_set_digest(
     shapes: Sequence[tuple[str, int, Sequence[tuple[int, str]]]],
 ) -> str:
     return stable_m5_digest(
+        "m5-persisted-matching-group-shape-set-v1",
+        _seq(
+            _seq(
+                (
+                    text_field(group_id),
+                    int_field(requirement_count),
+                    _seq(
+                        _seq((int_field(ordinal), text_field(requirement_id)))
+                        for ordinal, requirement_id in requirements
+                    ),
+                )
+            )
+            for group_id, requirement_count, requirements in shapes
+        ),
+    )
+
+
+def matching_group_shape_set_preimage(
+    shapes: Sequence[tuple[str, int, Sequence[tuple[int, str]]]],
+) -> bytes:
+    return stable_m5_preimage(
         "m5-persisted-matching-group-shape-set-v1",
         _seq(
             _seq(
@@ -296,6 +334,22 @@ def matching_change_digest(
     )
 
 
+def matching_change_preimage(
+    domain: str,
+    outer_fields: Sequence[tuple[str, ...]],
+    before: object | None,
+    after: object | None,
+) -> bytes:
+    if before is None and after is None:
+        raise ValidationError("a matching change requires a before or after point")
+    return stable_m5_preimage(
+        domain,
+        *outer_fields,
+        option_field(None if before is None else matching_point_fields(before)),
+        option_field(None if after is None else matching_point_fields(after)),
+    )
+
+
 def logical_overlay_patch_digest(
     changes: Sequence[tuple[str | Enum, str, str | None, str | None]],
     binding_row_digests: Sequence[str],
@@ -303,6 +357,31 @@ def logical_overlay_patch_digest(
     output_bytes: int,
 ) -> str:
     return stable_m5_digest(
+        "m5-persisted-logical-overlay-patch-v1",
+        _seq(
+            _seq(
+                (
+                    enum_field(kind),
+                    text_field(object_id),
+                    option_field(None if before is None else hash_field(before)),
+                    option_field(None if after is None else hash_field(after)),
+                )
+            )
+            for kind, object_id, before, after in changes
+        ),
+        _seq(hash_field(v) for v in binding_row_digests),
+        hash_field(logical_output_digest),
+        int_field(output_bytes),
+    )
+
+
+def logical_overlay_patch_preimage(
+    changes: Sequence[tuple[str | Enum, str, str | None, str | None]],
+    binding_row_digests: Sequence[str],
+    logical_output_digest: str,
+    output_bytes: int,
+) -> bytes:
+    return stable_m5_preimage(
         "m5-persisted-logical-overlay-patch-v1",
         _seq(
             _seq(
@@ -377,6 +456,30 @@ def persisted_matching_patch_digest(
         _seq(hash_field(v) for v in hall_change_digests),
         hash_field(logical_overlay_patch_digest_value),
         hash_field(matching_work_digest_value),
+    )
+
+
+def persisted_matching_patch_preimage(
+    **values: Any,
+) -> bytes:
+    """Exact preimage companion for :func:`persisted_matching_patch_digest`."""
+    return stable_m5_preimage(
+        "m5-persisted-matching-patch-v1",
+        enum_field(values["source_kind"]),
+        text_field(values["source_id"]),
+        hash_field(values["source_identity_hash"]),
+        int_field(values["before_epoch_id"]),
+        int_field(values["before_revision"]),
+        int_field(values["resulting_epoch_id"]),
+        int_field(values["resulting_revision"]),
+        text_field(values["decision_policy_version"]),
+        hash_field(values["group_shape_set_digest"]),
+        _seq(hash_field(v) for v in values["observation_change_digests"]),
+        _seq(hash_field(v) for v in values["edge_change_digests"]),
+        _seq(hash_field(v) for v in values["mask_change_digests"]),
+        _seq(hash_field(v) for v in values["hall_change_digests"]),
+        hash_field(values["logical_overlay_patch_digest_value"]),
+        hash_field(values["matching_work_digest_value"]),
     )
 
 
@@ -1028,11 +1131,42 @@ def logical_output_preimage(records: Sequence[tuple[str, str, object]]) -> bytes
     ranks = {value: rank for rank, value in enumerate(kinds)}
     if type(records) is not tuple:
         raise ValidationError("logical-output records must be an exact tuple")
+    from groundloop.domain import StatusDelta
+    from groundloop.m5.claim_certificates import WorkingClaimCertificateBinding
+    from groundloop.m5.domain import (
+        ClaimCertificateArtifact,
+        CombinedAnswerState,
+        CombinedClaimState,
+        GroupMatchingCertificateArtifact,
+        GroupState,
+        RequirementState,
+    )
+    from groundloop.m5.matching import WorkingGroupCertificateBinding
+
+    value_laws: dict[str, tuple[type[object], str, bool]] = {
+        "requirement_state": (RequirementState, "requirement_version_id", True),
+        "group_state": (GroupState, "group_version_id", True),
+        "claim_state": (CombinedClaimState, "claim_id", True),
+        "answer_state": (CombinedAnswerState, "answer_version_id", True),
+        "group_certificate": (
+            GroupMatchingCertificateArtifact,
+            "group_version_id",
+            True,
+        ),
+        "claim_certificate": (ClaimCertificateArtifact, "claim_id", True),
+        "group_binding": (
+            WorkingGroupCertificateBinding,
+            "group_version_id",
+            False,
+        ),
+        "claim_binding": (WorkingClaimCertificateBinding, "claim_id", False),
+        "status_delta": (StatusDelta, "object_id", False),
+    }
     previous = -1
     for record in records:
         if type(record) is not tuple or len(record) != 3:
             raise ValidationError("logical-output records must be exact 3-tuples")
-        kind, object_id, _ = record
+        kind, object_id, after = record
         if (
             type(kind) is not str
             or type(object_id) is not str
@@ -1041,6 +1175,15 @@ def logical_output_preimage(records: Sequence[tuple[str, str, object]]) -> bytes
             or ranks[kind] < previous
         ):
             raise ValidationError("invalid logical-output relation order")
+        value_type, key_field, nullable = value_laws[kind]
+        if after is None:
+            if not nullable:
+                raise ValidationError(f"{kind} logical output cannot be absent")
+        elif type(after) is not value_type or getattr(after, key_field) != object_id:
+            raise ValidationError(f"{kind} logical output has wrong value/key")
+        if kind == "status_delta" and after is not None:
+            if after.object_type not in {"claim", "answer"}:
+                raise ValidationError("status delta has invalid object type")
         previous = ranks[kind]
     return _logical_value_bytes(("m5-overlay-logical-output-v2", tuple(records)))
 

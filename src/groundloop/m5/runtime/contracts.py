@@ -7451,6 +7451,432 @@ class M5PersistedMatchingPatch:
 
 
 @dataclass(frozen=True, slots=True)
+class M5PersistedLogicalOverlayPatch:
+    """Lossless logical patch whose hashes derive from retained bytes."""
+
+    resulting_revision: int
+    changes: tuple[M5PersistedLogicalChange, ...]
+    binding_rows: tuple[M5PersistedCertificateBindingRow, ...]
+    output_records: tuple[tuple[str, str, object], ...]
+    logical_output_preimage: bytes
+    logical_output_digest: str
+    output_bytes: int
+    patch_preimage: bytes
+    patch_digest: str
+
+    def __post_init__(self) -> None:
+        _require_int("resulting_revision", self.resulting_revision, positive=True)
+        for name in ("changes", "binding_rows", "output_records"):
+            _require_tuple(name, getattr(self, name))
+        if any(type(v) is not M5PersistedLogicalChange for v in self.changes):
+            raise ValidationError("logical changes require exact DTOs")
+        keys = tuple((v.kind.value, v.object_id) for v in self.changes)
+        if keys != tuple(sorted(keys)) or len(set(keys)) != len(keys):
+            raise ValidationError("logical changes must be sorted and unique")
+        if any(
+            type(v) is not M5PersistedCertificateBindingRow for v in self.binding_rows
+        ):
+            raise ValidationError("binding rows require exact DTOs")
+        seen: set[tuple[M5PersistedBindingKind, str, bool]] = set()
+        for row in self.binding_rows:
+            marker = (row.kind, row.object_id, row.valid_to_revision is None)
+            if marker in seen:
+                raise ValidationError("at most one close and open binding per object")
+            seen.add(marker)
+            if row.valid_to_revision is None:
+                if row.valid_from_revision != self.resulting_revision:
+                    raise ValidationError(
+                        "open binding must start at resulting revision"
+                    )
+            elif row.valid_to_revision != self.resulting_revision:
+                raise ValidationError("closed binding must end at resulting revision")
+        for index, row in enumerate(self.binding_rows):
+            if row.valid_to_revision is not None and (
+                index + 1 < len(self.binding_rows)
+                and self.binding_rows[index + 1].kind is row.kind
+                and self.binding_rows[index + 1].object_id == row.object_id
+            ):
+                following = self.binding_rows[index + 1]
+                if following.valid_to_revision is not None:
+                    raise ValidationError("binding close must immediately precede open")
+            if row.valid_to_revision is None:
+                matching_close = any(
+                    prior.kind is row.kind
+                    and prior.object_id == row.object_id
+                    and prior.valid_to_revision is not None
+                    for prior in self.binding_rows
+                )
+                if matching_close and (
+                    index == 0
+                    or self.binding_rows[index - 1].kind is not row.kind
+                    or self.binding_rows[index - 1].object_id != row.object_id
+                    or self.binding_rows[index - 1].valid_to_revision is None
+                ):
+                    raise ValidationError("binding close/open rows must be adjacent")
+        state_records = tuple(
+            (kind, object_id)
+            for kind, object_id, _ in self.output_records
+            if kind
+            in {
+                "requirement_state",
+                "group_state",
+                "claim_state",
+                "answer_state",
+                "group_certificate",
+                "claim_certificate",
+            }
+        )
+        change_records = tuple((v.kind.value, v.object_id) for v in self.changes)
+        if sorted(state_records) != sorted(change_records):
+            raise ValidationError("logical changes and output records disagree")
+        binding_records = tuple(
+            (kind, object_id, value)
+            for kind, object_id, value in self.output_records
+            if kind in {"group_binding", "claim_binding"}
+        )
+        if len(binding_records) != len(self.binding_rows):
+            raise ValidationError("binding rows and output block disagree")
+        for record, row in zip(binding_records, self.binding_rows, strict=True):
+            kind, object_id, value = record
+            expected_kind = (
+                "group_binding"
+                if row.kind is M5PersistedBindingKind.GROUP
+                else "claim_binding"
+            )
+            if (
+                kind != expected_kind
+                or object_id != row.object_id
+                or value.epoch_id != row.epoch_id  # type: ignore[attr-defined]
+                or value.valid_from_revision != row.valid_from_revision  # type: ignore[attr-defined]
+                or value.valid_to_revision != row.valid_to_revision  # type: ignore[attr-defined]
+                or value.certificate_digest != row.certificate_digest  # type: ignore[attr-defined]
+            ):
+                raise ValidationError("binding output does not match retained row")
+        expected_output = digests.logical_output_preimage(self.output_records)
+        if self.logical_output_preimage != expected_output:
+            raise ValidationError("logical output preimage mismatch")
+        _require_identity(
+            "logical_output_digest",
+            self.logical_output_digest,
+            __import__("hashlib").sha256(expected_output).hexdigest(),
+        )
+        if self.output_bytes != len(expected_output):
+            raise ValidationError("logical output byte count mismatch")
+        expected = digests.logical_overlay_patch_digest(
+            tuple(
+                (v.kind, v.object_id, v.before_hash, v.after_hash) for v in self.changes
+            ),
+            tuple(v.binding_row_digest for v in self.binding_rows),
+            self.logical_output_digest,
+            self.output_bytes,
+        )
+        _require_identity("patch_digest", self.patch_digest, expected)
+        expected_patch_preimage = digests.logical_overlay_patch_preimage(
+            tuple(
+                (v.kind, v.object_id, v.before_hash, v.after_hash) for v in self.changes
+            ),
+            tuple(v.binding_row_digest for v in self.binding_rows),
+            self.logical_output_digest,
+            self.output_bytes,
+        )
+        if self.patch_preimage != expected_patch_preimage:
+            raise ValidationError("logical patch preimage mismatch")
+        digests.verify_digest_preimage(self.patch_digest, self.patch_preimage)
+
+
+@dataclass(frozen=True, slots=True)
+class M5PersistedMatchingPatchArtifact:
+    """Complete immutable physical/logical patch evidence used by installers."""
+
+    patch: M5PersistedMatchingPatch
+    group_shapes: tuple[M5MatchingGroupShape, ...]
+    group_shape_set_preimage: bytes
+    observation_changes: tuple[M5MatchingObservationChange, ...]
+    observation_change_preimages: tuple[bytes, ...]
+    edge_changes: tuple[M5MatchingEdgeChange, ...]
+    edge_change_preimages: tuple[bytes, ...]
+    mask_changes: tuple[M5MatchingMaskChange, ...]
+    mask_change_preimages: tuple[bytes, ...]
+    hall_changes: tuple[M5MatchingHallChange, ...]
+    hall_change_preimages: tuple[bytes, ...]
+    logical_patch: M5PersistedLogicalOverlayPatch
+    work: M5OverlayWork
+    patch_preimage: bytes
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.patch) is not M5PersistedMatchingPatch
+            or type(self.logical_patch) is not M5PersistedLogicalOverlayPatch
+        ):
+            raise ValidationError("aggregate patch requires exact patch DTOs")
+        if type(self.group_shapes) is not tuple or any(
+            type(v) is not M5MatchingGroupShape for v in self.group_shapes
+        ):
+            raise ValidationError("group shapes require exact DTO tuples")
+        shape_keys = tuple(v.group_version_id for v in self.group_shapes)
+        if shape_keys != tuple(sorted(shape_keys)) or len(set(shape_keys)) != len(
+            shape_keys
+        ):
+            raise ValidationError("group shapes must be sorted and unique")
+        families = (
+            (
+                self.observation_changes,
+                self.observation_change_preimages,
+                self.patch.observation_change_digests,
+            ),
+            (
+                self.edge_changes,
+                self.edge_change_preimages,
+                self.patch.edge_change_digests,
+            ),
+            (
+                self.mask_changes,
+                self.mask_change_preimages,
+                self.patch.mask_change_digests,
+            ),
+            (
+                self.hall_changes,
+                self.hall_change_preimages,
+                self.patch.hall_change_digests,
+            ),
+        )
+        allowed_types = (
+            M5MatchingObservationChange,
+            M5MatchingEdgeChange,
+            M5MatchingMaskChange,
+            M5MatchingHallChange,
+        )
+        for family_index, (rows, preimages, declared) in enumerate(families):
+            _require_tuple("change rows", rows)
+            _require_tuple("change preimages", preimages)
+            if any(type(v) is not allowed_types[family_index] for v in rows):
+                raise ValidationError("physical changes require exact DTOs")
+            keys = tuple(self._physical_key(v) for v in rows)
+            if keys != tuple(sorted(keys)) or len(set(keys)) != len(keys):
+                raise ValidationError("physical changes must be sorted and unique")
+            actual = tuple(getattr(v, "change_digest") for v in rows)  # noqa: B009
+            if actual != declared or len(preimages) != len(rows):
+                raise ValidationError("physical change sequence mismatch")
+            for row, digest, preimage in zip(rows, actual, preimages, strict=True):
+                expected_preimage = self._change_preimage(row)
+                if preimage != expected_preimage:
+                    raise ValidationError("physical change preimage mismatch")
+                digests.verify_digest_preimage(digest, preimage)
+        shape_rows = tuple(v.digest_row for v in self.group_shapes)
+        expected_shape = digests.matching_group_shape_set_digest(shape_rows)
+        _require_identity(
+            "group_shape_set_digest", self.patch.group_shape_set_digest, expected_shape
+        )
+        expected_shape_preimage = digests.matching_group_shape_set_preimage(shape_rows)
+        if self.group_shape_set_preimage != expected_shape_preimage:
+            raise ValidationError("group-shape preimage mismatch")
+        named_groups = {
+            self._physical_key(v)[0]
+            for family in (self.edge_changes, self.mask_changes, self.hall_changes)
+            for v in family
+        }
+        named_groups.update(
+            point.group_version_id
+            for change in self.observation_changes
+            for point in (change.before, change.after)
+            if point is not None
+        )
+        named_groups.update(
+            v.object_id
+            for v in self.logical_patch.changes
+            if v.kind
+            in {
+                M5PersistedLogicalChangeKind.GROUP_STATE,
+                M5PersistedLogicalChangeKind.GROUP_CERTIFICATE,
+            }
+        )
+        if not named_groups.issubset(set(shape_keys)):
+            raise ValidationError("group-shape set omits a changed group")
+        _require_identity(
+            "logical_overlay_patch_digest",
+            self.patch.logical_overlay_patch_digest,
+            self.logical_patch.patch_digest,
+        )
+        if self.logical_patch.resulting_revision != self.patch.resulting_revision:
+            raise ValidationError("logical and outer patch revisions disagree")
+        change_by_key = {
+            (v.kind.value, v.object_id): v for v in self.logical_patch.changes
+        }
+        certificate_after = {
+            (kind, object_id): (
+                None if value is None else value.certificate_digest  # type: ignore[attr-defined]
+            )
+            for kind, object_id, value in self.logical_patch.output_records
+            if kind in {"group_certificate", "claim_certificate"}
+        }
+        for kind, object_id, value in self.logical_patch.output_records:
+            logical_change = change_by_key.get((kind, object_id))
+            if logical_change is None:
+                continue
+            expected_after = self._logical_after_hash(
+                kind, object_id, value, certificate_after
+            )
+            if logical_change.after_hash != expected_after:
+                raise ValidationError("logical after hash disagrees with output value")
+        for rows, _, _ in families:
+            for physical_change in rows:
+                self._validate_change_point(physical_change)
+        work_digest = digests.matching_work_digest(m5_overlay_work_values(self.work))
+        _require_identity(
+            "matching_work_digest", self.patch.matching_work_digest, work_digest
+        )
+        if self.work.matching.output_bytes != self.logical_patch.output_bytes:
+            raise ValidationError("work/output byte counts disagree")
+        expected_patch_preimage = digests.persisted_matching_patch_preimage(
+            source_kind=self.patch.source_kind,
+            source_id=self.patch.source_id,
+            source_identity_hash=self.patch.source_identity_hash,
+            before_epoch_id=self.patch.before_epoch_id,
+            before_revision=self.patch.before_revision,
+            resulting_epoch_id=self.patch.resulting_epoch_id,
+            resulting_revision=self.patch.resulting_revision,
+            decision_policy_version=self.patch.decision_policy_version,
+            group_shape_set_digest=self.patch.group_shape_set_digest,
+            observation_change_digests=self.patch.observation_change_digests,
+            edge_change_digests=self.patch.edge_change_digests,
+            mask_change_digests=self.patch.mask_change_digests,
+            hall_change_digests=self.patch.hall_change_digests,
+            logical_overlay_patch_digest_value=self.patch.logical_overlay_patch_digest,
+            matching_work_digest_value=self.patch.matching_work_digest,
+        )
+        if self.patch_preimage != expected_patch_preimage:
+            raise ValidationError("outer patch preimage mismatch")
+        digests.verify_digest_preimage(self.patch.patch_digest, self.patch_preimage)
+
+    def _validate_change_point(self, change: object) -> None:
+        for position, point in (("before", change.before), ("after", change.after)):  # type: ignore[attr-defined]
+            if point is None:
+                continue
+            if point.layer is M5MatchingLayer.WORKING:
+                revision_ok = (
+                    point.updated_revision == self.patch.resulting_revision
+                    if position == "after"
+                    else point.updated_revision <= self.patch.before_revision
+                )
+                if point.epoch_id != self.patch.resulting_epoch_id or not revision_ok:
+                    raise ValidationError("working point disagrees with patch point")
+            elif position != "before":
+                raise ValidationError("an after point must be working")
+
+    def _logical_after_hash(
+        self,
+        kind: str,
+        object_id: str,
+        value: object | None,
+        certificates: dict[tuple[str, str], str | None],
+    ) -> str | None:
+        if value is None:
+            return None
+        if kind == "requirement_state":
+            return digests.requirement_state_artifact_digest(
+                requirement_version_id=object_id,
+                witness_hashes=value.witness_hashes,  # type: ignore[attr-defined]
+                supporting_observation_ids=value.supporting_observation_ids,  # type: ignore[attr-defined]
+                witness_count=value.witness_count,  # type: ignore[attr-defined]
+                satisfied=value.satisfied,  # type: ignore[attr-defined]
+                decision_policy_version=self.patch.decision_policy_version,
+            )
+        if kind == "group_state":
+            certificate = certificates.get(("group_certificate", object_id))
+            return digests.group_state_artifact_digest(
+                group_version_id=object_id,
+                requirement_count=value.requirement_count,  # type: ignore[attr-defined]
+                satisfied_count=value.satisfied_count,  # type: ignore[attr-defined]
+                matching_size=value.matching_size,  # type: ignore[attr-defined]
+                complete=value.complete,  # type: ignore[attr-defined]
+                decision_policy_version=self.patch.decision_policy_version,
+                certificate_digest=certificate,
+            )
+        if kind == "claim_state":
+            certificate = certificates.get(("claim_certificate", object_id))
+            if certificate is None:
+                raise ValidationError("claim state requires its certificate output")
+            return digests.claim_state_artifact_digest(
+                claim_id=object_id,
+                support_count=value.support_count,  # type: ignore[attr-defined]
+                refute_count=value.refute_count,  # type: ignore[attr-defined]
+                best_support_score=value.best_support_score,  # type: ignore[attr-defined]
+                best_refute_score=value.best_refute_score,  # type: ignore[attr-defined]
+                supporting_observation_ids=value.supporting_observation_ids,  # type: ignore[attr-defined]
+                refuting_observation_ids=value.refuting_observation_ids,  # type: ignore[attr-defined]
+                complete_group_count=value.complete_group_count,  # type: ignore[attr-defined]
+                complete_group_ids=value.complete_group_ids,  # type: ignore[attr-defined]
+                status=value.status,  # type: ignore[attr-defined]
+                decision_policy_version=self.patch.decision_policy_version,
+                certificate_digest=certificate,
+            )
+        if kind == "answer_state":
+            return digests.answer_state_artifact_digest(
+                answer_version_id=object_id,
+                required_claim_count=value.required_claim_count,  # type: ignore[attr-defined]
+                supported_count=value.supported_count,  # type: ignore[attr-defined]
+                unsupported_count=value.unsupported_count,  # type: ignore[attr-defined]
+                refuted_count=value.refuted_count,  # type: ignore[attr-defined]
+                conflicted_count=value.conflicted_count,  # type: ignore[attr-defined]
+                status=value.status,  # type: ignore[attr-defined]
+            )
+        certificate_digest: str = value.certificate_digest  # type: ignore[attr-defined]
+        return certificate_digest
+
+    @staticmethod
+    def _physical_key(change: object) -> tuple[object, ...]:
+        if type(change) is M5MatchingObservationChange:
+            return (change.observation_id,)
+        if type(change) is M5MatchingEdgeChange:
+            point = change.after if change.after is not None else change.before
+            assert point is not None
+            return (
+                point.group_version_id,
+                point.requirement_ordinal,
+                change.text_hash,
+                change.requirement_version_id,
+            )
+        if type(change) is M5MatchingMaskChange:
+            return (change.group_version_id, change.text_hash)
+        assert type(change) is M5MatchingHallChange
+        return (change.group_version_id,)
+
+    @staticmethod
+    def _change_preimage(change: object) -> bytes:
+        if type(change) is M5MatchingObservationChange:
+            return digests.matching_change_preimage(
+                "m5-persisted-matching-observation-change-v1",
+                (text_field(change.observation_id),),
+                change.before,
+                change.after,
+            )
+        if type(change) is M5MatchingEdgeChange:
+            return digests.matching_change_preimage(
+                "m5-persisted-matching-edge-change-v1",
+                (
+                    text_field(change.requirement_version_id),
+                    hash_field(change.text_hash),
+                ),
+                change.before,
+                change.after,
+            )
+        if type(change) is M5MatchingMaskChange:
+            return digests.matching_change_preimage(
+                "m5-persisted-matching-mask-change-v1",
+                (text_field(change.group_version_id), hash_field(change.text_hash)),
+                change.before,
+                change.after,
+            )
+        assert type(change) is M5MatchingHallChange
+        return digests.matching_change_preimage(
+            "m5-persisted-matching-hall-change-v1",
+            (text_field(change.group_version_id),),
+            change.before,
+            change.after,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class M5PersistedMatchingPatchReceipt:
     patch: M5PersistedMatchingPatch
     contribution_digest: str
@@ -7491,6 +7917,18 @@ class M5PersistedMatchingContribution:
         _require_int("before_epoch_id", self.before_epoch_id, positive=True)
         _require_int("before_revision", self.before_revision)
         _require_int("resulting_revision", self.resulting_revision, positive=True)
+        if self.source_kind is M5PersistedMatchingSourceKind.STRUCTURAL_OPEN:
+            if self.resulting_revision != 1:
+                raise ValidationError(
+                    "structural-open contribution must result at revision 1"
+                )
+        elif (
+            self.before_epoch_id != self.epoch_id
+            or self.resulting_revision != self.before_revision + 1
+        ):
+            raise ValidationError(
+                "later contribution must advance one same-epoch revision"
+            )
         _require_hash("patch_digest", self.patch_digest)
         work_digest = digests.matching_work_digest(m5_overlay_work_values(self.work))
         expected = digests.matching_work_contribution_digest(
@@ -7821,9 +8259,11 @@ __all__ = [
     "M5PersistedBindingKind",
     "M5PersistedCertificateBindingRow",
     "M5PersistedLogicalChange",
+    "M5PersistedLogicalOverlayPatch",
     "M5PersistedMatchingContribution",
     "M5PersistedLogicalChangeKind",
     "M5PersistedMatchingPatch",
+    "M5PersistedMatchingPatchArtifact",
     "M5PersistedMatchingPatchReceipt",
     "M5PersistedMatchingPhysicalAudit",
     "M5PersistedMatchingPhysicalMismatch",

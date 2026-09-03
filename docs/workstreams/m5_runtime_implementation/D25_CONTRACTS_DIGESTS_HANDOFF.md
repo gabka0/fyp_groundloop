@@ -26,6 +26,9 @@ It changed only the five Lane A paths authorized by
 - exact physical changes, image point, group shape, transition intent,
   persisted patch, contribution, receipt, logical change and certificate
   binding contracts;
+- complete immutable aggregate physical/logical patch artifacts retaining and
+  recomputing child, logical-output, logical-overlay, 37-counter work and outer
+  patch identities from their exact canonical preimages;
 - explicitly named 37-field persisted work vector and an exact flattening of
   the accepted `M5OverlayWork` receipt/contribution type;
 - exact D25 schema, group-shape, point/change, logical patch, binding, patch,
@@ -42,7 +45,7 @@ database, deployment, or runtime mode was touched.
 
 ## Executed gates
 
-- focused owned tests: **127 passed**;
+- focused owned tests: **129 passed**;
 - complete pure M5 runtime directory: **407 passed**;
 - M4 public API plus legacy compatibility: **14 passed**;
 - Ruff over both owned source and test files: passed;
