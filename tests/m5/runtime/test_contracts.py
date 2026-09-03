@@ -3805,6 +3805,12 @@ def test_d25_intent_enforces_canonical_keys_revision_and_digest() -> None:
     with pytest.raises(ValidationError):
         replace(intent, source_id="changed")
     with pytest.raises(ValidationError):
+        replace(
+            intent,
+            source_kind=M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
+            resulting_revision=1,
+        )
+    with pytest.raises(ValidationError):
         M5MatchingGroupShape("empty", 0, ())
 
 
@@ -3874,6 +3880,8 @@ def test_d25_contribution_and_binding_identities_reject_mutation() -> None:
     )
     with pytest.raises(ValidationError):
         replace(opened, resulting_revision=2)
+    with pytest.raises(ValidationError):
+        replace(opened, before_epoch_id=3)
     binding_hash = runtime_digests.certificate_binding_row_digest(
         M5PersistedBindingKind.GROUP, 2, "group", 1, 4, "3" * 64
     )
@@ -3952,6 +3960,28 @@ def test_d25_logical_patch_rejects_unlinked_change() -> None:
             output_bytes,
             patch_preimage,
             patch_digest,
+        )
+
+
+def test_d25_logical_patch_malformed_binding_is_validation_error() -> None:
+    from groundloop.m5.runtime.contracts import M5PersistedLogicalOverlayPatch
+
+    class BindingImpostor:
+        valid_from_revision = 1
+        valid_to_revision = None
+        certificate_digest = H1
+
+    with pytest.raises(ValidationError):
+        M5PersistedLogicalOverlayPatch(
+            1,
+            (),
+            (),
+            (("group_binding", "g", BindingImpostor()),),
+            b"bad",
+            H1,
+            3,
+            b"bad",
+            H2,
         )
 
 
@@ -4045,6 +4075,386 @@ def test_d25_complete_empty_aggregate_recomputes_every_outer_identity() -> None:
     assert artifact.patch.patch_digest == patch_digest
     with pytest.raises(ValidationError):
         replace(artifact, patch_preimage=artifact.patch_preimage + b"x")
+    with pytest.raises(ValidationError):
+        replace(
+            patch,
+            source_kind=M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
+            resulting_revision=1,
+        )
+
+
+def test_d25_aggregate_enforces_source_specific_observation_points() -> None:
+    from groundloop.m5.digests import text_field
+    from groundloop.m5.incremental_overlay import M5OverlayWork
+    from groundloop.m5.matching import MatchingWorkCounters
+    from groundloop.m5.runtime import digests as runtime_digests
+    from groundloop.m5.runtime.contracts import (
+        M5MatchingGroupShape,
+        M5MatchingLayer,
+        M5MatchingObservationChange,
+        M5MatchingObservationCurrent,
+        M5MatchingObservationWorking,
+        M5PersistedLogicalOverlayPatch,
+        M5PersistedMatchingPatch,
+        M5PersistedMatchingPatchArtifact,
+        M5PersistedMatchingSourceKind,
+        m5_overlay_work_values,
+    )
+
+    def build(before: object | None, after: object | None, *, structural: bool = False):
+        source = (
+            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN
+            if structural
+            else M5PersistedMatchingSourceKind.DIRECT_TRANSITION
+        )
+        before_epoch, before_revision = (1, 9) if structural else (2, 3)
+        result_epoch, result_revision = (2, 1) if structural else (2, 4)
+        change_digest = runtime_digests.matching_change_digest(
+            "m5-persisted-matching-observation-change-v1",
+            (text_field("o"),),
+            before,
+            after,
+        )
+        change = M5MatchingObservationChange("o", before, after, change_digest)
+        change_preimage = runtime_digests.matching_change_preimage(
+            "m5-persisted-matching-observation-change-v1",
+            (text_field("o"),),
+            before,
+            after,
+        )
+        output_digest, output_bytes, output_preimage = (
+            runtime_digests.logical_output_digest(())
+        )
+        logical_digest = runtime_digests.logical_overlay_patch_digest(
+            (), (), output_digest, output_bytes
+        )
+        logical = M5PersistedLogicalOverlayPatch(
+            result_revision,
+            (),
+            (),
+            (),
+            output_preimage,
+            output_digest,
+            output_bytes,
+            runtime_digests.logical_overlay_patch_preimage(
+                (), (), output_digest, output_bytes
+            ),
+            logical_digest,
+        )
+        work = M5OverlayWork(matching=MatchingWorkCounters(output_bytes=output_bytes))
+        work_digest = runtime_digests.matching_work_digest(m5_overlay_work_values(work))
+        shape = M5MatchingGroupShape("g", 1, ((0, "r"),))
+        shape_digest = runtime_digests.matching_group_shape_set_digest(
+            (shape.digest_row,)
+        )
+        values = dict(
+            source_kind=source,
+            source_id="source",
+            source_identity_hash=H1,
+            before_epoch_id=before_epoch,
+            before_revision=before_revision,
+            resulting_epoch_id=result_epoch,
+            resulting_revision=result_revision,
+            decision_policy_version="policy",
+            group_shape_set_digest=shape_digest,
+            observation_change_digests=(change_digest,),
+            edge_change_digests=(),
+            mask_change_digests=(),
+            hall_change_digests=(),
+            logical_overlay_patch_digest_value=logical_digest,
+            matching_work_digest_value=work_digest,
+        )
+        patch_digest = runtime_digests.persisted_matching_patch_digest(**values)
+        patch = M5PersistedMatchingPatch(
+            source,
+            "source",
+            H1,
+            before_epoch,
+            before_revision,
+            result_epoch,
+            result_revision,
+            "policy",
+            shape_digest,
+            (change_digest,),
+            (),
+            (),
+            (),
+            logical_digest,
+            work_digest,
+            patch_digest,
+        )
+        return M5PersistedMatchingPatchArtifact(
+            patch,
+            (shape,),
+            runtime_digests.matching_group_shape_set_preimage((shape.digest_row,)),
+            (change,),
+            (change_preimage,),
+            (),
+            (),
+            (),
+            (),
+            (),
+            (),
+            logical,
+            work,
+            runtime_digests.persisted_matching_patch_preimage(**values),
+        )
+
+    old_current = M5MatchingObservationCurrent(
+        M5MatchingLayer.CURRENT, "o", "r", "g", 0, H2, 1, 0
+    )
+    later_after = M5MatchingObservationWorking(
+        M5MatchingLayer.WORKING, 2, "o", "r", "g", 0, H2, True, 4
+    )
+    assert build(old_current, later_after).patch.resulting_revision == 4
+    with pytest.raises(ValidationError):
+        build(old_current, None)
+    structural_working = replace(later_after, updated_revision=1)
+    structural_after = replace(later_after, updated_revision=1)
+    with pytest.raises(ValidationError):
+        build(structural_working, structural_after, structural=True)
+    with pytest.raises(ValidationError):
+        build(replace(later_after, epoch_id=3, updated_revision=2), later_after)
+    with pytest.raises(ValidationError):
+        build(replace(later_after, updated_revision=5), later_after)
+
+
+def test_d25_aggregate_state_only_and_binding_epoch_falsifiers() -> None:
+    from groundloop.m5.domain import (
+        AnswerStatus,
+        ClaimCertificateArtifact,
+        ClaimStatus,
+        ClaimSupportKind,
+        CombinedAnswerState,
+        CombinedClaimState,
+        GroupCertificateRow,
+        GroupMatchingCertificateArtifact,
+        GroupState,
+        RequirementState,
+    )
+    from groundloop.m5.incremental_overlay import M5OverlayWork
+    from groundloop.m5.matching import MatchingWorkCounters
+    from groundloop.m5.runtime import digests as runtime_digests
+    from groundloop.m5.runtime.contracts import (
+        M5MatchingGroupShape,
+        M5PersistedBindingKind,
+        M5PersistedCertificateBindingRow,
+        M5PersistedLogicalChange,
+        M5PersistedLogicalChangeKind,
+        M5PersistedLogicalOverlayPatch,
+        M5PersistedMatchingPatch,
+        M5PersistedMatchingPatchArtifact,
+        M5PersistedMatchingSourceKind,
+        m5_overlay_work_values,
+    )
+
+    def build(records, changes, rows=()):
+        output_digest, output_bytes, output_preimage = (
+            runtime_digests.logical_output_digest(records)
+        )
+        logical_values = tuple(
+            (v.kind, v.object_id, v.before_hash, v.after_hash) for v in changes
+        )
+        row_digests = tuple(v.binding_row_digest for v in rows)
+        logical_digest = runtime_digests.logical_overlay_patch_digest(
+            logical_values, row_digests, output_digest, output_bytes
+        )
+        logical = M5PersistedLogicalOverlayPatch(
+            4,
+            changes,
+            rows,
+            records,
+            output_preimage,
+            output_digest,
+            output_bytes,
+            runtime_digests.logical_overlay_patch_preimage(
+                logical_values, row_digests, output_digest, output_bytes
+            ),
+            logical_digest,
+        )
+        work = M5OverlayWork(matching=MatchingWorkCounters(output_bytes=output_bytes))
+        work_digest = runtime_digests.matching_work_digest(m5_overlay_work_values(work))
+        shapes = (
+            (M5MatchingGroupShape("g", 1, ((0, "r"),)),)
+            if any(
+                v.kind
+                in {
+                    M5PersistedLogicalChangeKind.GROUP_STATE,
+                    M5PersistedLogicalChangeKind.GROUP_CERTIFICATE,
+                }
+                for v in changes
+            )
+            else ()
+        )
+        shape_rows = tuple(v.digest_row for v in shapes)
+        shape_digest = runtime_digests.matching_group_shape_set_digest(shape_rows)
+        values = dict(
+            source_kind=M5PersistedMatchingSourceKind.DIRECT_TRANSITION,
+            source_id="source",
+            source_identity_hash=H1,
+            before_epoch_id=2,
+            before_revision=3,
+            resulting_epoch_id=2,
+            resulting_revision=4,
+            decision_policy_version="policy",
+            group_shape_set_digest=shape_digest,
+            observation_change_digests=(),
+            edge_change_digests=(),
+            mask_change_digests=(),
+            hall_change_digests=(),
+            logical_overlay_patch_digest_value=logical_digest,
+            matching_work_digest_value=work_digest,
+        )
+        patch_digest = runtime_digests.persisted_matching_patch_digest(**values)
+        patch = M5PersistedMatchingPatch(
+            values["source_kind"],
+            "source",
+            H1,
+            2,
+            3,
+            2,
+            4,
+            "policy",
+            shape_digest,
+            (),
+            (),
+            (),
+            (),
+            logical_digest,
+            work_digest,
+            patch_digest,
+        )
+        return M5PersistedMatchingPatchArtifact(
+            patch,
+            shapes,
+            runtime_digests.matching_group_shape_set_preimage(shape_rows),
+            (),
+            (),
+            (),
+            (),
+            (),
+            (),
+            (),
+            (),
+            logical,
+            work,
+            runtime_digests.persisted_matching_patch_preimage(**values),
+        )
+
+    group = GroupState("g", 1, 1, 1, True)
+    claim = CombinedClaimState(
+        "c", 0, 0, None, None, (), (), 0, (), ClaimStatus.SUPPORTED
+    )
+    changes = (
+        M5PersistedLogicalChange(M5PersistedLogicalChangeKind.CLAIM_STATE, "c", H2, H3),
+        M5PersistedLogicalChange(M5PersistedLogicalChangeKind.GROUP_STATE, "g", H2, H3),
+    )
+    assert build((("group_state", "g", group), ("claim_state", "c", claim)), changes)
+    with pytest.raises(ValidationError):
+        build(
+            (("group_state", "g", group),),
+            (
+                M5PersistedLogicalChange(
+                    M5PersistedLogicalChangeKind.GROUP_STATE, "g", H2, None
+                ),
+            ),
+        )
+
+    row_digest = runtime_digests.certificate_binding_row_digest(
+        M5PersistedBindingKind.GROUP, 3, "g", 4, None, H1
+    )
+    row = M5PersistedCertificateBindingRow(
+        M5PersistedBindingKind.GROUP, 3, "g", 4, None, H1, row_digest
+    )
+    from groundloop.m5.matching import WorkingGroupCertificateBinding
+
+    binding = WorkingGroupCertificateBinding(3, "g", 4, None, H1)
+    with pytest.raises(ValidationError):
+        build((("group_binding", "g", binding),), (), (row,))
+    close_digest = runtime_digests.certificate_binding_row_digest(
+        M5PersistedBindingKind.GROUP, 3, "g", 1, 4, H2
+    )
+    close_row = M5PersistedCertificateBindingRow(
+        M5PersistedBindingKind.GROUP, 3, "g", 1, 4, H2, close_digest
+    )
+    closed = WorkingGroupCertificateBinding(3, "g", 1, 4, H2)
+    with pytest.raises(ValidationError):
+        build(
+            (("group_binding", "g", closed), ("group_binding", "g", binding)),
+            (),
+            (close_row, row),
+        )
+    requirement = RequirementState("r", (H1,), ("o",), 1, True)
+    requirement_hash = runtime_digests.requirement_state_artifact_digest(
+        requirement_version_id="r",
+        witness_hashes=(H1,),
+        supporting_observation_ids=("o",),
+        witness_count=1,
+        satisfied=True,
+        decision_policy_version="policy",
+    )
+    requirement_change = M5PersistedLogicalChange(
+        M5PersistedLogicalChangeKind.REQUIREMENT_STATE,
+        "r",
+        H2,
+        requirement_hash,
+    )
+    assert build((("requirement_state", "r", requirement),), (requirement_change,))
+    with pytest.raises(ValidationError):
+        build(
+            (("requirement_state", "r", requirement),),
+            (replace(requirement_change, after_hash=H3),),
+        )
+    certificate = GroupMatchingCertificateArtifact(
+        "policy", "g", (GroupCertificateRow(0, "r", H1, "o"),)
+    )
+    certificate_change = M5PersistedLogicalChange(
+        M5PersistedLogicalChangeKind.GROUP_CERTIFICATE,
+        "g",
+        None,
+        certificate.certificate_digest,
+    )
+    assert build((("group_certificate", "g", certificate),), (certificate_change,))
+    with pytest.raises(ValidationError):
+        build(
+            (("group_certificate", "g", certificate),),
+            (replace(certificate_change, after_hash=H3),),
+        )
+    answer = CombinedAnswerState("a", 1, 1, 0, 0, 0, AnswerStatus.VALID)
+    answer_hash = runtime_digests.answer_state_artifact_digest(
+        answer_version_id="a",
+        required_claim_count=1,
+        supported_count=1,
+        unsupported_count=0,
+        refuted_count=0,
+        conflicted_count=0,
+        status=AnswerStatus.VALID,
+    )
+    answer_change = M5PersistedLogicalChange(
+        M5PersistedLogicalChangeKind.ANSWER_STATE, "a", H2, answer_hash
+    )
+    assert build((("answer_state", "a", answer),), (answer_change,))
+    with pytest.raises(ValidationError):
+        build(
+            (("answer_state", "a", answer),),
+            (replace(answer_change, after_hash=H3),),
+        )
+    claim_certificate = ClaimCertificateArtifact("c", "policy", ClaimSupportKind.NONE)
+    claim_certificate_change = M5PersistedLogicalChange(
+        M5PersistedLogicalChangeKind.CLAIM_CERTIFICATE,
+        "c",
+        None,
+        claim_certificate.certificate_digest,
+    )
+    assert build(
+        (("claim_certificate", "c", claim_certificate),),
+        (claim_certificate_change,),
+    )
+    with pytest.raises(ValidationError):
+        build(
+            (("claim_certificate", "c", claim_certificate),),
+            (replace(claim_certificate_change, after_hash=H3),),
+        )
 
 
 def test_d25_points_and_audit_accept_frozen_revision_zero() -> None:

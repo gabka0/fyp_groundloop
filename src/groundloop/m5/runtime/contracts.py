@@ -7735,6 +7735,8 @@ class M5PersistedMatchingPatchArtifact:
             logical_change = change_by_key.get((kind, object_id))
             if logical_change is None:
                 continue
+            if (value is None) != (logical_change.after_hash is None):
+                raise ValidationError("logical output presence and after hash disagree")
             if kind in {"group_state", "claim_state"}:
                 continue
             expected_after = self._logical_after_hash(kind, object_id, value)
