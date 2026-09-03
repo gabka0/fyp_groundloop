@@ -1,12 +1,14 @@
 # GroundLoop M5 Implementation Status
 
-Status date: 2026-09-02
+Status date: 2026-09-03
 
-Milestone status: **M5.0 contract through accepted C7 and M5.1--M5.3 are
+Milestone status: **M5.0 contract through accepted M5-D25 and M5.1--M5.3 are
 complete; M5.4 is partially complete.**
 M5.4-01 through M5.4-04 pass. M5.4-05 through M5.4-09 and every M5.5--M5.6
 implementation/evaluation closure remain pending. M5-D24-C1 through M5-D24-C7
-are accepted. M5.0-24 is contract-`PASS` / implementation-`PENDING`.
+are accepted. M5.0-24 and M5.0-25 are each contract-`PASS` /
+implementation-`PENDING`. M5-D25's accepted candidate SHA-256 is
+`bac12ab5e74632c04f1bd70d0ef0d00522ba9d268eb8b73d11845bbf3b873aae`.
 C7's accepted reviewed-candidate SHA-256 is
 `633f4fa8cb789b7a0245cb87e7f602d3946457a7448692dc1bc6ae88c1ff4441`.
 C6's accepted reviewed-candidate SHA-256 remains
@@ -162,7 +164,7 @@ m5_multiagent_execution_plan faffae5f839623efd9e387f63e951881cf1f46c5b66f37c3db6
 ```
 
 Those hashes identify the initial audited M5.0 semantic candidate. Later
-accepted amendments M5-D21 through M5-D24-C7 extend or correct that contract
+accepted amendments M5-D21 through M5-D25 extend or correct that contract
 and are identified by their own decision and audit records below. Final
 implementation artifact hashes and the decision-row cross-stage mapping will
 be recorded at M5.6.
@@ -171,7 +173,7 @@ be recorded at M5.6.
 
 The accepted governing documents are:
 
-- `docs/m5_design_freeze.md` -- decisions M5-D1 through M5-D24 and theorems
+- `docs/m5_design_freeze.md` -- decisions M5-D1 through M5-D25 and theorems
   M5-T1/M5-T2;
 - `docs/workstreams/m5_runtime_contract/RECOVERY_WORK_AMENDMENT.md` -- exact
   M5-D24 lease, dispatch/evidence, work/timing, late-return, and migration-016
@@ -197,6 +199,9 @@ The accepted governing documents are:
   combined-failure cutoff provenance, exact held-open production failure,
   target-optional private activated-M5 M4 failure closure, serialized loser
   provenance, and exact WIP stops;
+- `docs/workstreams/m5_runtime_contract/PERSISTED_MATCHING_AMENDMENT.md` --
+  accepted M5-D25 current/working matching-image, patch/contribution/work,
+  migration-017, seal, replay, and physical/provenance-audit contract;
 - `docs/m5_implementation_plan.md` -- stages M5.1 through M5.6;
 - `docs/m5_multiagent_execution_plan.md` -- path-exclusive ownership and
   integration order; and
@@ -270,10 +275,11 @@ The composed migration/failure/bundle-race gate passed 67/67 tests.
 M5.4-01 passes through the integrated byte-total contract, digest, direction,
 shape, nullability, F64, ordering, and pure-frontier suite. M5-D22 closes the
 previously undefined inner state-artifact identity without changing M4-v1 or
-M5 semantic state. Runtime-addendum revision 5 and M5-D23 now freeze the
-previously missing retry-error, cancellation-plan, direct-payload, direct-
-acquisition, and read-only hydration contracts; their implementation evidence
-remains pending. Public activation is implemented and passes 8/8 live tests,
+M5 semantic state. Runtime-addendum revision 6, M5-D23 through M5-D25, and
+their authoritative amendments now freeze retry/cancellation, recoverable
+dispatch/accounting, and persisted-matching/reconnect contracts; their complete
+implementation evidence remains pending. Public activation is implemented and
+passes 8/8 live tests,
 including all six bootstrap reference kinds, cross-language SQL/Python hashes,
 no synthetic epoch, read-only replay, conflicts, and six failure-atomic
 injection points. Activation alone does not close M5.4-05.
@@ -315,9 +321,11 @@ application outcome at `c892cc8`. The scoped R2e PostgreSQL typed-direct pre-
 seal bridge then integrated at `2c2aed9`. Production seal/publication and
 lifecycle-head advancement, deployed production provider adapters/runtime
 enablement, and the remaining end-to-end D24 gates remain implementation-
-PENDING. The proposed M5-D25 persisted-matching draft remains
-non-authoritative and has unresolved adversarial blockers; migration-016
-acceptance alone does not authorize it.
+PENDING. M5-D25's persisted-matching contract is now authoritative at exact
+SHA-256
+`bac12ab5e74632c04f1bd70d0ef0d00522ba9d268eb8b73d11845bbf3b873aae`,
+but its implementation remains `PENDING`; migration 017 and technical paths
+require a separate activation.
 
 During R1-P execution, the cancellation-first half of the required
 already-expired-output race proved that immediate preterminal archival cannot
@@ -552,15 +560,34 @@ mode changed. Runtime remains `v1_only` outside isolated fixtures. M5.0-24's
 implementation half, M5.4-05 through M5.4-09, and all M5.5/M5.6 gates remain
 pending.
 
+### 4.2 Accepted M5-D25 persisted-matching contract
+
+The separately reviewed D25 candidate at commit `002dcac`, SHA-256
+`bac12ab5e74632c04f1bd70d0ef0d00522ba9d268eb8b73d11845bbf3b873aae`,
+is accepted as the authoritative persisted-matching contract. Two independent
+same-byte audits returned `GO` with no unresolved P0/P1/P2 after independently
+checking its migration-016 prerequisites, 41-relation installation lock set,
+point/digest/output/counter recipes, transition/seal/activation authorization,
+crash/replay boundary, physical/provenance audit, and 40 falsifiers. Focused
+non-database gates passed 112/112 and 14/14.
+
+This closes only the D25 contract gate and advances the runtime addendum to
+revision 6. M5.0-25 is contract-`PASS` / implementation-`PENDING`. No
+migration-017 object, store, runtime composition, live PostgreSQL falsifier,
+provider, deployment, or runtime activation is implemented. Migration 017 is
+the next separately activated barrier. M5.0-24 remains implementation-
+`PENDING`; M5.4-05 through M5.4-09 and every M5.5/M5.6 gate remain `PENDING`;
+runtime remains `v1_only` outside isolated fixtures.
+
 ## 5. Remaining closure boundary
 
 M5 completes only after M5.1--M5.6 pass. Closure still requires M5.4-05 through
 M5.4-09, including the remaining production dynamic paths and provider/runtime
 enablement, sparse publication, lifecycle-head advancement and production
-seal, and the complete end-to-end crash/reconnect matrix; the separately
-blocked M5-D25/migration-017 persisted-matching boundary; a real maintained-
-runtime M5.5 controlled WiCE execution; and M5.6 reproduction, artifact,
-documentation, and final acceptance audits.
+seal, and the complete end-to-end crash/reconnect matrix; the accepted but
+unimplemented M5-D25/migration-017 persisted-matching boundary; a real
+maintained-runtime M5.5 controlled WiCE execution; and M5.6 reproduction,
+artifact, documentation, and final acceptance audits.
 
 M5 is not complete. Even after technical closure, without a fresh blinded,
 independently adjudicated cohort the strongest permitted semantic conclusion

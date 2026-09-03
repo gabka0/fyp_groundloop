@@ -1,13 +1,14 @@
 # GroundLoop M5.4 Byte-Total Runtime Contract Addendum
 
-Status: frozen runtime contract revision 5; M5-D24 implementation
-authorization **GO**; full M5.4 remains blocked on accepted persisted-matching
-and executable runtime evidence
+Status: frozen runtime contract revision 6; M5-D25 contract **GO** /
+implementation **PENDING**; full M5.4 remains blocked on migration-017 and
+executable runtime evidence
 
-Date: 2026-08-03; revision 5 / M5-D21 through M5-D24 amendments 2026-08-06
+Date: 2026-08-03; revision 5 / M5-D21 through M5-D24 amendments 2026-08-06;
+revision 6 / M5-D25 amendment 2026-09-03
 
 Authority: this addendum specializes `docs/m5_design_freeze.md` M5-D1 through
-M5-D24 and M5-T1/M5-T2. It does not change those decisions. The M5 design
+M5-D25 and M5-T1/M5-T2. It does not change those decisions. The M5 design
 freeze remains authoritative for semantic truth; this addendum is authoritative
 for M5.4 runtime DTOs, identities, transition boundaries, persistence
 ownership, replay, and acceptance tests.
@@ -19,7 +20,7 @@ start only after migration 014 and its SQL oracle bundle have passed the M5.3
 fresh-install, populated-upgrade, compatibility, and three-oracle gates.
 
 This addendum MUST NOT authorize a change to an M5.0 semantic decision. An
-implementation conflict with this addendum and M5-D1 through M5-D24 MUST stop
+implementation conflict with this addendum and M5-D1 through M5-D25 MUST stop
 M5.4 as **NO-GO**. The exact amendment procedure MUST be a new numbered M5
 decision in `docs/m5_design_freeze.md`, a matching acceptance-matrix row, and a
 new runtime-addendum revision before code resumes. The migration-014 M4-open
@@ -32,10 +33,13 @@ only by M5-D23 and Sections 8.3, 14.2, 14.4, 16, and 17. The later lease-
 recovery, dispatch/evidence, work, timing, and late-return omissions are
 resolved only by M5-D24 and
 `docs/workstreams/m5_runtime_contract/RECOVERY_WORK_AMENDMENT.md`, which
-supersedes this addendum wherever those operational surfaces differ. There is
-no unresolved blocker to implementing M5-D24. Full M5.4 completion remains
-blocked until the separately proposed persisted-matching amendment is accepted
-after migration 016; its current draft is not authority.
+supersedes this addendum wherever those operational surfaces differ. The
+accepted M5-D25 contract at `PERSISTED_MATCHING_AMENDMENT.md` supersedes this
+addendum for persisted matching, migration 017, matching-work ownership, and
+physical/provenance audit surfaces. There is no unresolved D25 contract
+blocker, but acceptance implements nothing: migration 017 and source/test work
+still require a separate path-exclusive activation. Full M5.4 completion
+remains blocked on that implementation and its executable evidence.
 
 Normative wire values in backticks MUST be exact lowercase UTF-8. Every DTO in
 this document MUST be immutable. Every tuple MUST use the order stated here.
@@ -2175,13 +2179,26 @@ late returns, direct terminal observations, or migration 015 as the last route
 barrier, that text is superseded by M5-D24. Unchanged semantic, M4-v1,
 structural, publication, and evaluation clauses remain in force.
 
-## 22. Final decision
+## 22. M5-D25 amendment precedence
 
-**Decision: GO for M5-D24 implementation. Confidence: high.**
+The complete byte-total D25 contract is maintained separately at
+`PERSISTED_MATCHING_AMENDMENT.md`. Its independently accepted pre-freeze
+content SHA-256 is
+`bac12ab5e74632c04f1bd70d0ef0d00522ba9d268eb8b73d11845bbf3b873aae`.
+Where revision 5 left matching persistence, reconnectable Hall state,
+migration 017, matching-work attribution, or physical corruption audit
+unspecified, M5-D25 now governs. Unchanged semantic, D24 recovery/accounting,
+M4-v1, provider, publication, and evaluation clauses remain in force.
 
-Revision 5 authorizes only the path-exclusive D24 contract and migration-016
-lanes. It does not declare M5.4 complete. Full production runtime and measured
-history remain **NO-GO** until persisted matching has a separately numbered,
-literal-prerequisite amendment and the executable M5.4 gates pass. This
-sequencing boundary is an honest implementation dependency, not evidence of a
-semantic result or performance claim.
+## 23. Final decision
+
+**Decision: GO for the M5-D25 contract. Confidence: high.**
+
+Revision 6 freezes the reviewed M5-D25 bytes and leaves both M5-D24 and M5-D25
+implementation evidence `PENDING`. It does not directly authorize migration
+017 or source/test edits and does not declare M5.4 complete. Full production
+runtime and measured history remain **NO-GO** until migration 017, persisted
+matching, and the executable M5.4 gates pass under later explicit manifests.
+Runtime remains `v1_only` outside isolated fixtures. This sequencing boundary
+is an honest implementation dependency, not evidence of a semantic result,
+model-quality improvement, or performance claim.

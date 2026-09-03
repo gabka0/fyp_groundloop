@@ -134,3 +134,44 @@ groundloop_fyp_professor_feedback_v2.pdf = 59a13cd8d4bbb017e712c0f39e70f2eba1365
 render_groundloop_fyp_professor_deck.py = c12929c349a5c0be9793159143b09da40ea2a0b27df37b92d61d9ed6483d8c2a
 PERSISTED_MATCHING_AMENDMENT_DRAFT.md = 167d1e7df5a720041fe0ff51879d08357f0dfbe3a7781ffaa08c0d958a47aa94
 ```
+
+## 8. Executed authority-freeze checkpoint
+
+The exact candidate remained unchanged at SHA-256
+`bac12ab5e74632c04f1bd70d0ef0d00522ba9d268eb8b73d11845bbf3b873aae`.
+The nine other authority paths now consistently record M5-D25/M5.0-25
+contract `PASS` / implementation `PENDING`, runtime-addendum revision 6,
+migration 017 as the next separately activated barrier, runtime `v1_only`,
+M5.0-24 implementation `PENDING`, and M5.4-05 through M5.6 `PENDING`.
+
+Pre-commit authority SHA ledger:
+
+```text
+AGENTS.md = 1faca0b46860c0b96a224fe4cde89b3f6a99958f2af79d13ffa5f703c80acf29
+docs/m5_design_freeze.md = 1ed0f6fdf9036665ac12c3a1e94a09ecea3405a96028a68dfd9a0b37d906f9b1
+docs/workstreams/m5_runtime_contract/CANDIDATE_RUNTIME_ADDENDUM.md = 14577b4f193518b73798a9c7f51df2642268a7447280db4a767f31b728204389
+docs/m5_acceptance_matrix.md = 5946ac551014a47be7f78ea3568e4fb8b81190e9d69751a4baeca91af958558a
+docs/m5_implementation_plan.md = 83bd929f721fbf332079654932a7dae7f9a663cb9c80cbf231b37e858bfc819b
+docs/m5_multiagent_execution_plan.md = 5f1870d3a162e40387fcb3019e215abd2a40d01662b7647b1be622161dc68361
+docs/decision_log.md = 09a07688cbf454b9e5e4220b928c167b6181164fd0209cfd618fe3438eb10267
+docs/m5_implementation_status.md = ba3aa905999453636ce65510c3958f2c9630038ca553e528f8a378425089e3f9
+docs/roadmap.md = 72d7558e262ecc93f14ee3f2cedaa485b83860a0736f5ea621592b84a9e804a4
+```
+
+Pre-commit gates on these bytes:
+
+- exact ten-path ownership comparison: pass;
+- `git diff --check`: pass;
+- stale/non-authoritative D25 status scan: zero hits;
+- M5.0 decision rows: 25 unique rows ending at M5.0-25;
+- one M5-D25 design heading and one frozen-decision row: pass;
+- migration 017 absent: pass; and
+- migration/source/test/database/provider/deployment/runtime-mode changes:
+  none.
+
+The final pre-commit rerun passed 112/112 runtime contract/digest tests and
+14/14 M4/legacy tests. The exact ten-path/static/status checks passed, the
+candidate remained byte-identical, and all five protected-main hashes matched
+the activation ledger. No database or network operation ran. After commit, two
+independent reviewers must audit the exact commit/tree and the SHA ledger
+above. No implementation is authorized by this checkpoint.

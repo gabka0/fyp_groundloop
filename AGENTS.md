@@ -49,6 +49,10 @@ order:
 39. `docs/m5_implementation_status.md` (current M5 evidence boundary)
 40. `docs/workstreams/m5_runtime_contract/RECOVERY_WORK_AMENDMENT.md`
     (authoritative M5-D24 recovery, accounting, and migration-016 contract)
+41. `docs/workstreams/m5_runtime_contract/PERSISTED_MATCHING_AMENDMENT.md`
+    (authoritative M5-D25 persisted-matching and migration-017 contract)
+42. `docs/workstreams/m5_runtime_implementation/D25_CONTRACT_FREEZE_HANDOFF.md`
+    (accepted D25 bytes, review evidence, and next implementation boundary)
 
 `docs/initial_technical_design.md` (v0.1) is superseded and retained for audit
 only. The M0.5 design freeze and M1.1 amendments are complete; frozen decisions
@@ -156,10 +160,14 @@ oracles, typed v2 runtime identities, and a controlled WiCE mapping. Do not
 implement from the older technical-design pseudocode where it conflicts with
 `docs/m5_design_freeze.md`. M5-D24 is frozen and authorizes migration 016 plus
 recoverable dispatch and durable work/timing accounting; its implementation
-evidence remains pending. M5-D25 persisted matching remains a non-authoritative
-draft until migration 016 is accepted and all five prerequisite ledger values
-are pinned. M5 is not complete until every remaining M5.4--M5.6 executable
-gate is recorded.
+evidence remains pending. M5-D25 persisted matching is now a frozen contract at
+`docs/workstreams/m5_runtime_contract/PERSISTED_MATCHING_AMENDMENT.md`, exact
+accepted SHA-256
+`bac12ab5e74632c04f1bd70d0ef0d00522ba9d268eb8b73d11845bbf3b873aae`.
+Its contract gate is `PASS` and its implementation evidence is `PENDING`;
+migration 017 and every source/test change require a new path-exclusive
+activation. Runtime remains `v1_only` outside isolated fixtures. M5 is not
+complete until every remaining M5.4--M5.6 executable gate is recorded.
 
 A larger, independently adjudicated natural-history evaluation remains
 mandatory before dissertation-level selective-maintenance or end-to-end

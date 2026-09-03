@@ -1,16 +1,21 @@
 # GroundLoop M5 Implementation Plan
 
-Status: M5.0 contract accepted through M5-D24-C7 and M5.1--M5.3 complete;
-M5.0-24 is contract-`PASS` / implementation-`PENDING`; M5.4-01 through
-M5.4-04 are `PASS`, M5.4-05 through M5.4-09 remain `PENDING`, and all
+Status: M5.0 contract accepted through M5-D25 and M5.1--M5.3 complete;
+M5.0-24 and M5.0-25 are contract-`PASS` / implementation-`PENDING`; M5.4-01
+through M5.4-04 are `PASS`, M5.4-05 through M5.4-09 remain `PENDING`, and all
 completed runtime grants are historical with no current edit ownership
 
 Date: 2026-08-02; M5-D24 execution and R2e integration current through
-2026-08-19; M5.4-02/-03/-04 evidence integration current through 2026-09-02
+2026-08-19; M5.4-02/-03/-04 evidence integration current through 2026-09-02;
+M5-D25 contract acceptance current through 2026-09-03
 
 Authority: `docs/m5_design_freeze.md` governs. M5-D24 recovery/accounting work
 also obeys
 `docs/workstreams/m5_runtime_contract/RECOVERY_WORK_AMENDMENT.md`.
+Persisted matching and migration 017 also obey
+`docs/workstreams/m5_runtime_contract/PERSISTED_MATCHING_AMENDMENT.md` at
+accepted SHA-256
+`bac12ab5e74632c04f1bd70d0ef0d00522ba9d268eb8b73d11845bbf3b873aae`.
 Implementation stops on any conflict with those contracts rather than silently
 choosing new semantics.
 
@@ -588,15 +593,16 @@ R2e checkpoint every M5.4 row remained unchanged and no implementation path was
 active. The R2b, R2c, R2d, and R2e activations, branches/worktrees, paths, and
 handoffs are historical evidence and own nothing after integration. Production
 seal and combined publication, lifecycle-head advancement, deployed discovery/
-verifier/measurement adapters, runtime enablement, M5-D25/migration 017, and
-the remaining end-to-end gates require later separate path-exclusive manifests.
+verifier/measurement adapters, runtime enablement, accepted M5-D25
+implementation/migration 017, and the remaining end-to-end gates require later
+separate path-exclusive manifests.
 No future lane may inherit any closed grant.
 
 The contracts and migration lanes may run in parallel only under the explicit
 path manifest in `docs/m5_multiagent_execution_plan.md`. Persistence/direct
 composition starts only after both are integrated. A green D24 lane does not
-close M5.4: durable persisted matching remains a separate numbered amendment
-and migration-017 barrier, currently non-authoritative.
+close M5.4: the separately accepted D25 contract still requires the
+unimplemented migration-017 barrier and executable evidence.
 
 ### 7.5 M5.4-02/-03/-04 evidence checkpoint
 
@@ -628,6 +634,25 @@ This checkpoint promotes only M5.4-02, M5.4-03, and M5.4-04. Runtime remains
 `v1_only`; the all-active verifier remains fail-closed behind M5-D25/migration
 017. M5.4-05 through M5.4-09, M5.0-24's implementation half, and every
 M5.5/M5.6 gate remain pending.
+
+### 7.6 M5-D25 contract checkpoint
+
+M5-D25 is accepted on exact reviewed candidate commit `002dcac`, content
+SHA-256
+`bac12ab5e74632c04f1bd70d0ef0d00522ba9d268eb8b73d11845bbf3b873aae`,
+after two independent exact-byte reviews returned `GO` with no unresolved
+P0/P1/P2. Runtime-addendum revision 6 and acceptance row M5.0-25 freeze the
+PostgreSQL current/working matching image, patch/contribution/accumulator,
+write-authorization, seal-promotion, physical/provenance-audit, and migration-
+017 contracts.
+
+This is contract `PASS` / implementation `PENDING`. It changes no production
+source, migration, test, database, provider, deployment, or runtime mode.
+Migration 017 is now the next implementation barrier, but work may start only
+under a separate committed path-exclusive activation and must satisfy all 40
+D25 falsifiers. M5.0-24 remains implementation-`PENDING`; M5.4-05 through
+M5.4-09 and every M5.5/M5.6 gate remain `PENDING`; runtime stays `v1_only`
+outside isolated fixtures.
 
 M5.4 exit gate: deterministic fake-port path passes first, then a bounded
 maintained PostgreSQL history and frozen-model diagnostic pass with complete

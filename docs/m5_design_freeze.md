@@ -1,21 +1,27 @@
 # GroundLoop M5 Bounded Evidence-Group Design Freeze
 
-Status: frozen M5.0 contract, amended through accepted M5-D24-C1;
-implementation evidence for M5-D24 and M5-D24-C1 remains pending
+Status: frozen M5.0 contract, amended through accepted M5-D25 and
+M5-D24-C1--C7; implementation evidence for M5-D24 and M5-D25 remains pending
 
-Date: 2026-08-02; M5-D21 through M5-D24-C1 amendments 2026-08-06
+Date: 2026-08-02; M5-D21 through M5-D24-C7 amendments 2026-08-06--2026-08-18;
+M5-D25 amendment 2026-09-03
 
 Authority: this document specializes `docs/technical_design.md` v0.2 for M5.
 It preserves original decisions D-1 through D-20 except where the earlier
 pseudocode is mathematically inconsistent with its own stated system-of-
-distinct-representatives semantics. Those corrections and the later runtime
-decisions M5-D21 through M5-D24-C1 are recorded in the decision log and frozen
-here. The byte-total M5-D24 specialization is authoritative at
+distinct-representatives semantics. Those corrections, the later runtime
+decisions M5-D21 through M5-D25, and accepted M5-D24-C1 through M5-D24-C7 are
+recorded in the decision log and frozen here. The byte-total M5-D24
+specialization is authoritative at
 `docs/workstreams/m5_runtime_contract/RECOVERY_WORK_AMENDMENT.md`.
 `docs/workstreams/m5_runtime_contract/EXECUTION_DISPOSITION_RECEIPT_CORRECTION.md`
 is its accepted execution-disposition and return-receipt correction; its
 independently accepted pre-freeze content SHA-256 is
 `741ce0de897099164eb877684bc12209f347eb920185be5ed4c3c3d5395bf25a`.
+The byte-total M5-D25 specialization is authoritative at
+`docs/workstreams/m5_runtime_contract/PERSISTED_MATCHING_AMENDMENT.md`; its
+independently accepted pre-freeze content SHA-256 is
+`bac12ab5e74632c04f1bd70d0ef0d00522ba9d268eb8b73d11845bbf3b873aae`.
 
 M5 implementation begins only after the M5.0 *contract* gate passes. Later
 implementation-evidence cells in the acceptance matrix remain `PENDING` until
@@ -1148,6 +1154,33 @@ reject an epoch having a typed runtime header before changing any row. Only
 cursor-local helpers invoked under the already-held typed transaction may
 mutate its direct subgraph; only the typed coordinator may fail or seal it.
 
+### M5-D25 -- recoverable persisted matching image
+
+The maintained bounded-Hall state may not depend on an in-process overlay for
+reconnect correctness. Migration 017 therefore has a separately frozen
+contract for PostgreSQL current and working matching images, immutable patch
+and contribution artifacts, durable 37-counter accumulators, checked
+transition/seal/activation write contexts, deterministic seal promotion, and
+an out-of-band physical/provenance audit whose expected Python and SQL readers
+remain independent of the D25 relations.
+
+The complete byte-total contract, relation/lock order, migration-016 literal
+prerequisite, migration-017 installation boundary, point/preimage/digest
+recipes, source-specific transition laws, and 40 mandatory falsifiers are
+authoritative in
+`docs/workstreams/m5_runtime_contract/PERSISTED_MATCHING_AMENDMENT.md` at
+accepted SHA-256
+`bac12ab5e74632c04f1bd70d0ef0d00522ba9d268eb8b73d11845bbf3b873aae`.
+It preserves M5-D1 through M5-D24-C7, the M4-v1 route and identities, semantic-
+oracle independence, and the distinction between stored model judgments and
+objective truth.
+
+M5-D25 is contract-`PASS` / implementation-`PENDING`. Acceptance freezes the
+contract only: migration 017, runtime/store composition, live PostgreSQL
+falsifiers, activation, and runtime-mode change require later separately
+committed path-exclusive grants. Runtime remains `v1_only` outside isolated
+fixtures.
+
 ## 11. Dynamic M4 integration contract
 
 ### M5-D14 -- typed v2 runtime identity
@@ -1774,11 +1807,13 @@ regression evidence.
 | M5-D23 | Runtime transition completeness | Retry errors have a distinct durable hash and exact receipt; cancellation has a byte-total plan; typed direct open/acquire receive the data and cursor-local transaction boundary needed to preserve M4-v1 behavior |
 | M5-D24 | Recoverable dispatch and durable accounting | Database-clock leases and total acquisition projections make lost work recoverable; immutable dispatch/execution/work/timing evidence separates confirmed calls from ambiguity; migration 016 and post-terminal sidecars preserve exact replay without changing semantic or M4-v1 identities |
 | M5-D24-C1 | Execution disposition and return receipts | Successful execution disposition is explicit; successful requirement/direct receipts separate immutable first-return outcome from current terminal projection and expose exactly one first-write outer timing anchor without changing M4-v1 bytes |
+| M5-D25 | Recoverable persisted matching image | PostgreSQL current/working Hall state, immutable patch/contribution history, durable work accumulators, scoped write authorization, seal promotion, and independent physical/provenance audit are byte-total; migration 017 is the separate implementation barrier |
 
 ## 15. Release gate
 
-This candidate becomes frozen only when the independent theory, schema/runtime,
-and data/evaluation audits agree that:
+The M5.0 contract and each later amendment become frozen only when the
+applicable independent theory, schema/runtime, and data/evaluation audits agree
+that:
 
 1. the Hall and matching-without-zero-crossing counterexamples are handled;
 2. no lifecycle or referential-integrity ambiguity remains;
@@ -1788,5 +1823,6 @@ and data/evaluation audits agree that:
 6. the acceptance matrix has a falsifying test for every M5-D decision,
    including the M5-D21 typed-bridge exception, M5-D22 state-artifact
    identity, M5-D23 transition completeness, M5-D24 recoverable dispatch and
-   durable accounting, and the M5-D24-C1 receipt correction; and
+   durable accounting, the M5-D24-C1--C7 corrections, and M5-D25 persisted
+   matching; and
 7. path ownership prevents shared-schema or shared-contract collisions.

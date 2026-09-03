@@ -9,15 +9,19 @@ at `0e0ff43`; R2d pure typed-direct application outcome integrated at
 `c892cc8`; R2e PostgreSQL typed-direct pre-seal composition integrated at
 `2c2aed9`; the later M5.4-02/-03/-04 late-result activity evidence and
 inventory-location repair are integrated at `290dbb3`; M5.0-24 is
-contract-`PASS` / implementation-`PENDING`, all implementation grants are
-closed, and no D24 implementation lane has current edit ownership
+contract-`PASS` / implementation-`PENDING`; M5-D25 and M5.0-25 are contract-
+`PASS` / implementation-`PENDING`; all implementation grants are closed, and
+no D24 or D25 implementation lane has current edit ownership
 
 Date: 2026-08-02; M5-D24 path amendments and integration records 2026-08-06
-through 2026-08-19; M5.4-02/-03/-04 integration record 2026-09-02
+through 2026-08-19; M5.4-02/-03/-04 integration record 2026-09-02; M5-D25
+contract freeze 2026-09-03
 
 Authority: `docs/m5_design_freeze.md` defines semantics and
 `docs/m5_implementation_plan.md` defines gates. This document defines only
 ownership, integration order, and evidence required from parallel lanes.
+M5-D25 implementation must additionally obey the exact accepted
+`docs/workstreams/m5_runtime_contract/PERSISTED_MATCHING_AMENDMENT.md`.
 
 The accepted C7 correction at
 `docs/workstreams/m5_runtime_contract/DIRECT_ACQUISITION_TERMINAL_CUTOFF_CORRECTION.md`
@@ -728,6 +732,23 @@ six-path commit, two same-byte audits and main fast-forward, this documentation
 grant closes; the containing reconciliation commit identity is reported
 externally rather than self-referenced here.
 
-No D24 wave owns the untracked persisted-matching draft. M5-D25 and migration
-017 remain blocked until migration 016 is accepted, all five 016 ledger values
-are literal, and a new independent GO plus path manifest is committed.
+### Wave R4 -- M5-D25 contract authority freeze
+
+The protected untracked persisted-matching draft remained user-owned and
+unchanged. A distinct tracked candidate was remediated on sole-parent ancestry
+from main and accepted at exact commit `002dcac`, content SHA-256
+`bac12ab5e74632c04f1bd70d0ef0d00522ba9d268eb8b73d11845bbf3b873aae`,
+after two independent exact-byte reviews returned `GO` with no unresolved
+P0/P1/P2. The authority-freeze tranche owns only the ten paths recorded in
+`docs/workstreams/m5_runtime_implementation/D25_CONTRACT_FREEZE_HANDOFF.md`.
+It may freeze D25, revision 6, and M5.0-25, but it owns no migration, source,
+test, database, provider, deployment, or runtime-mode path.
+
+M5-D25 is contract-`PASS` / implementation-`PENDING`. Migration 017 is the
+next barrier, but no D25 implementation lane is active. A later docs-only
+activation must name exact disjoint paths before technical work begins. It may
+parallelize only contract/digest and schema/installer paths that do not overlap;
+persisted-store, completion, seal, provider, evaluation, and runtime-mode work
+remain outside that first grant. M5.0-24 remains implementation-`PENDING`,
+M5.4-05 through M5.4-09 and all M5.5/M5.6 gates remain `PENDING`, and runtime
+stays `v1_only` outside isolated fixtures.

@@ -1,5 +1,42 @@
 # GroundLoop Decision Log
 
+## 2026-09-03 — M5-D25 Persisted-Matching Contract Accepted
+
+Decision status: **accepted authoritative contract amendment**. M5-D25 and
+acceptance row M5.0-25 are contract-`PASS` / implementation-`PENDING`, and the
+M5.4 runtime addendum advances to revision 6. The complete authoritative
+contract is
+`docs/workstreams/m5_runtime_contract/PERSISTED_MATCHING_AMENDMENT.md` at
+accepted content SHA-256
+`bac12ab5e74632c04f1bd70d0ef0d00522ba9d268eb8b73d11845bbf3b873aae`.
+
+The reviewed candidate has exact commit
+`002dcace2f89e71ef3a56955647b4d8077e9c91f`, 2,404 lines and 115,141 bytes,
+on sole-parent ancestry from integrated main `8b3c006`. Two independent
+same-byte reviews—semantic/digest/counter/oracle and PostgreSQL/migration/lock/
+replay—each returned `GO` with `P0=0`, `P1=0`, and `P2=0`. Both reproduced
+112/112 runtime contract/digest tests, 14/14 M4/legacy compatibility tests, the
+71-byte empty logical-output digest, all 37 counters, all 40 D25 falsifiers,
+and the five accepted migration-016 prerequisite values. The protected
+untracked draft remained byte-identical and was never staged.
+
+M5-D25 freezes reconnectable PostgreSQL current/working bounded-Hall images,
+immutable patch and contribution artifacts, durable work accumulators,
+store-derived transition authority, scoped transition/seal/activation DML,
+deterministic seal promotion, and a separate physical/provenance audit while
+preserving independent semantic oracles. It also freezes migration 017's exact
+literal prerequisite, relation/lock order, transaction/retry boundary, and
+falsifiers. It changes no M5-D1--D24-C7 semantics, M4-v1 identity, objective-
+truth boundary, or provider-execution claim.
+
+Acceptance implements nothing. Migration 017 is the next separately activated
+implementation barrier; no source, migration, test, database, provider,
+deployment, or runtime-mode change is part of this decision. M5.0-24 remains
+implementation-`PENDING`; M5.4-05 through M5.4-09 and every M5.5/M5.6 gate
+remain `PENDING`; runtime remains `v1_only` outside isolated fixtures. No M5.4
+or M5 completion, model-quality improvement, security, novelty, or named-
+system superiority follows from this contract result.
+
 ## 2026-09-02 — M5.4-02/-03/-04 Late-Result Activity Evidence Integrated
 
 Decision status: the separately activated M5.4-02/-03/-04 evidence tranche is
