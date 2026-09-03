@@ -3811,6 +3811,36 @@ def test_d25_contribution_and_binding_identities_reject_mutation() -> None:
     )
     with pytest.raises(ValidationError):
         replace(contribution, source_id="other")
+    with pytest.raises(ValidationError):
+        replace(contribution, before_epoch_id=1)
+    with pytest.raises(ValidationError):
+        replace(contribution, resulting_revision=5)
+    open_values = dict(
+        epoch_id=3,
+        source_kind=M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
+        source_id="open",
+        source_identity_hash="4" * 64,
+        before_epoch_id=2,
+        before_revision=9,
+        resulting_revision=1,
+        patch_digest="5" * 64,
+        matching_work_digest_value=runtime_digests.matching_work_digest((0,) * 37),
+    )
+    open_hash = runtime_digests.matching_work_contribution_digest(**open_values)
+    opened = M5PersistedMatchingContribution(
+        3,
+        M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
+        "open",
+        "4" * 64,
+        2,
+        9,
+        1,
+        "5" * 64,
+        work,
+        open_hash,
+    )
+    with pytest.raises(ValidationError):
+        replace(opened, resulting_revision=2)
     binding_hash = runtime_digests.certificate_binding_row_digest(
         M5PersistedBindingKind.GROUP, 2, "group", 1, 4, "3" * 64
     )
@@ -3819,6 +3849,77 @@ def test_d25_contribution_and_binding_identities_reject_mutation() -> None:
     )
     with pytest.raises(ValidationError):
         replace(binding, valid_to_revision=1)
+
+
+def test_d25_empty_logical_patch_retains_exact_preimages() -> None:
+    import hashlib
+
+    from groundloop.m5.runtime import digests as runtime_digests
+    from groundloop.m5.runtime.contracts import M5PersistedLogicalOverlayPatch
+
+    output_digest, output_bytes, output_preimage = (
+        runtime_digests.logical_output_digest(())
+    )
+    patch_digest = runtime_digests.logical_overlay_patch_digest(
+        (), (), output_digest, output_bytes
+    )
+    patch_preimage = runtime_digests.logical_overlay_patch_preimage(
+        (), (), output_digest, output_bytes
+    )
+    artifact = M5PersistedLogicalOverlayPatch(
+        1,
+        (),
+        (),
+        (),
+        output_preimage,
+        output_digest,
+        output_bytes,
+        patch_preimage,
+        patch_digest,
+    )
+    assert hashlib.sha256(artifact.patch_preimage).hexdigest() == patch_digest
+    with pytest.raises(ValidationError):
+        replace(artifact, patch_preimage=patch_preimage + b"x")
+
+
+def test_d25_logical_patch_rejects_unlinked_change() -> None:
+    from groundloop.m5.runtime import digests as runtime_digests
+    from groundloop.m5.runtime.contracts import (
+        M5PersistedLogicalChange,
+        M5PersistedLogicalChangeKind,
+        M5PersistedLogicalOverlayPatch,
+    )
+
+    change = M5PersistedLogicalChange(
+        M5PersistedLogicalChangeKind.GROUP_STATE, "group", None, "1" * 64
+    )
+    output_digest, output_bytes, output_preimage = (
+        runtime_digests.logical_output_digest(())
+    )
+    patch_digest = runtime_digests.logical_overlay_patch_digest(
+        ((change.kind, change.object_id, None, "1" * 64),),
+        (),
+        output_digest,
+        output_bytes,
+    )
+    patch_preimage = runtime_digests.logical_overlay_patch_preimage(
+        ((change.kind, change.object_id, None, "1" * 64),),
+        (),
+        output_digest,
+        output_bytes,
+    )
+    with pytest.raises(ValidationError):
+        M5PersistedLogicalOverlayPatch(
+            1,
+            (change,),
+            (),
+            (),
+            output_preimage,
+            output_digest,
+            output_bytes,
+            patch_preimage,
+            patch_digest,
+        )
 
 
 def test_d25_points_and_audit_accept_frozen_revision_zero() -> None:
