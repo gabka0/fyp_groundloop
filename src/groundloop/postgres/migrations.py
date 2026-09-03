@@ -14,7 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from psycopg import Connection
+from psycopg import Connection, IsolationLevel
+from psycopg.pq import TransactionStatus
 
 from groundloop.m5.digests import hash_field, stable_m5_digest, text_field
 
@@ -72,6 +73,72 @@ M5_RUNTIME_RECOVERY_BUNDLE_ID = "m5-runtime-recovery-schema-bundle-v1"
 M5_RUNTIME_RECOVERY_MIGRATION_LABEL = "migrations/016_m5_runtime_recovery.sql"
 M5_RUNTIME_RECOVERY_MIGRATION_PATH = ROOT / M5_RUNTIME_RECOVERY_MIGRATION_LABEL
 M5_RUNTIME_RECOVERY_ORACLE_SHA256 = hashlib.sha256(b"").hexdigest()
+
+# M5-D25 deliberately pins the accepted migration-016 ledger bytes.  These
+# literals are authority: never derive them from whichever 016 happens to be
+# present in the checkout.
+M5_ACCEPTED_RECOVERY_BUNDLE_ID = "m5-runtime-recovery-schema-bundle-v1"
+M5_ACCEPTED_RECOVERY_MIGRATION_SHA256 = (
+    "a63d2a878a5196e071e3e51c6e6737cf76552057ade65da4112e0f0bafb412d7"
+)
+M5_ACCEPTED_RECOVERY_BUNDLE_SHA256 = (
+    "28a31f37c13cdaa2b89676e6279740a1f366e1acd16502c4fa722c2e0be21565"
+)
+M5_ACCEPTED_RECOVERY_ORACLE_SHA256 = (
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+)
+M5_ACCEPTED_RECOVERY_PREREQUISITE_SHA256 = (
+    "b7b03574dc2ba62fd6ba7be22744e2fe6d9ec178ffb2b4b9b552c5ff6281dacd"
+)
+
+M5_PERSISTED_MATCHING_BUNDLE_ID = "m5-persisted-matching-schema-bundle-v1"
+M5_PERSISTED_MATCHING_MIGRATION_LABEL = "migrations/017_m5_persisted_matching.sql"
+M5_PERSISTED_MATCHING_MIGRATION_PATH = ROOT / M5_PERSISTED_MATCHING_MIGRATION_LABEL
+M5_PERSISTED_MATCHING_ORACLE_SHA256 = hashlib.sha256(b"").hexdigest()
+
+M5_PERSISTED_MATCHING_INSTALL_LOCK_RELATIONS = (
+    "groundloop_runtime_mode",
+    "groundloop_m4_publication_head",
+    "groundloop_m5_publication_head",
+    "groundloop_m5_activation",
+    "groundloop_epoch",
+    "groundloop_m5_runtime_epoch",
+    "groundloop_m5_update",
+    "groundloop_decision_policy",
+    "groundloop_document",
+    "groundloop_document_version",
+    "groundloop_chunk_version",
+    "groundloop_answer_version",
+    "groundloop_claim",
+    "groundloop_m5_group_family",
+    "groundloop_m5_group_version",
+    "groundloop_m5_requirement_version",
+    "groundloop_m5_group_validity",
+    "groundloop_m5_group_deactivation",
+    "groundloop_m5_group_family_retirement",
+    "groundloop_semantic_subject",
+    "groundloop_semantic_observation",
+    "groundloop_observation_currency",
+    "groundloop_published_observation_currency",
+    "groundloop_claim_state_materialized",
+    "groundloop_answer_state_materialized",
+    "groundloop_claim_certificate",
+    "groundloop_published_claim_state",
+    "groundloop_published_answer_state",
+    "groundloop_m5_requirement_state_materialized",
+    "groundloop_m5_group_state_materialized",
+    "groundloop_m5_claim_state_materialized",
+    "groundloop_m5_answer_state_materialized",
+    "groundloop_m5_published_requirement_state",
+    "groundloop_m5_published_group_state",
+    "groundloop_m5_published_claim_state",
+    "groundloop_m5_published_answer_state",
+    "groundloop_m5_group_certificate_artifact",
+    "groundloop_m5_group_certificate_artifact_row",
+    "groundloop_m5_claim_certificate_artifact",
+    "groundloop_m5_published_group_certificate_binding",
+    "groundloop_m5_published_claim_certificate_binding",
+)
 
 _PREREQUISITE_RELATIONS = (
     "groundloop_epoch",
@@ -375,6 +442,10 @@ class M5RuntimeRecoveryBundleError(M5RuntimeBundleError):
     """Migration 016 cannot be installed or replayed safely."""
 
 
+class M5PersistedMatchingBundleError(M5RuntimeBundleError):
+    """Migration 017 cannot be installed or replayed safely."""
+
+
 @dataclass(frozen=True, slots=True)
 class M5BundleIdentity:
     bundle_id: str
@@ -417,6 +488,21 @@ class M5RuntimeRecoveryBundleIdentity:
 @dataclass(frozen=True, slots=True)
 class M5RuntimeRecoveryBundleInstallResult:
     identity: M5RuntimeRecoveryBundleIdentity
+    applied: bool
+
+
+@dataclass(frozen=True, slots=True)
+class M5PersistedMatchingBundleIdentity:
+    bundle_id: str
+    bundle_sha256: str
+    migration_sha256: str
+    oracle_sha256: str
+    prerequisite_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class M5PersistedMatchingBundleInstallResult:
+    identity: M5PersistedMatchingBundleIdentity
     applied: bool
 
 
@@ -531,6 +617,32 @@ def m5_runtime_recovery_bundle_identity(
         migration_sha256=migration_hash,
         oracle_sha256=M5_RUNTIME_RECOVERY_ORACLE_SHA256,
         prerequisite_sha256=M5_ACCEPTED_RUNTIME_BUNDLE_SHA256,
+    )
+
+
+def m5_persisted_matching_bundle_identity(
+    *, migration_bytes: bytes | None = None
+) -> M5PersistedMatchingBundleIdentity:
+    """Return migration 017's identity bound to the accepted migration 016."""
+
+    migration = (
+        M5_PERSISTED_MATCHING_MIGRATION_PATH.read_bytes()
+        if migration_bytes is None
+        else migration_bytes
+    )
+    migration_hash = _sha256(migration)
+    bundle_hash = stable_m5_digest(
+        M5_PERSISTED_MATCHING_BUNDLE_ID,
+        text_field(M5_PERSISTED_MATCHING_MIGRATION_LABEL),
+        hash_field(migration_hash),
+        hash_field(M5_ACCEPTED_RECOVERY_BUNDLE_SHA256),
+    )
+    return M5PersistedMatchingBundleIdentity(
+        bundle_id=M5_PERSISTED_MATCHING_BUNDLE_ID,
+        bundle_sha256=bundle_hash,
+        migration_sha256=migration_hash,
+        oracle_sha256=M5_PERSISTED_MATCHING_ORACLE_SHA256,
+        prerequisite_sha256=M5_ACCEPTED_RECOVERY_BUNDLE_SHA256,
     )
 
 
@@ -1275,6 +1387,280 @@ def install_m5_runtime_recovery_bundle(
         return M5RuntimeRecoveryBundleInstallResult(identity=identity, applied=True)
 
 
+def _verify_accepted_m5_recovery_bundle(connection: Connection[Any]) -> None:
+    row = connection.execute(
+        """
+        SELECT bundle_id, migration_sha256, bundle_sha256, oracle_sha256,
+               prerequisite_sha256
+        FROM groundloop_m5_schema_bundle WHERE bundle_id = %s
+        """,
+        (M5_ACCEPTED_RECOVERY_BUNDLE_ID,),
+    ).fetchone()
+    expected = (
+        M5_ACCEPTED_RECOVERY_BUNDLE_ID,
+        M5_ACCEPTED_RECOVERY_MIGRATION_SHA256,
+        M5_ACCEPTED_RECOVERY_BUNDLE_SHA256,
+        M5_ACCEPTED_RECOVERY_ORACLE_SHA256,
+        M5_ACCEPTED_RECOVERY_PREREQUISITE_SHA256,
+    )
+    actual = None if row is None else tuple(str(value).strip() for value in row)
+    if actual != expected:
+        raise M5PrerequisiteError(
+            "migration 017 requires the exact accepted five-field "
+            "migration-016 ledger row"
+        )
+
+
+def _acquire_m5_persisted_matching_install_locks(
+    connection: Connection[Any],
+) -> None:
+    for relation in M5_PERSISTED_MATCHING_INSTALL_LOCK_RELATIONS:
+        connection.execute(f"LOCK TABLE {relation} IN ACCESS EXCLUSIVE MODE NOWAIT")
+
+
+def _m5_persisted_matching_singletons(connection: Connection[Any]) -> str:
+    mode_row = connection.execute(
+        "SELECT mode FROM groundloop_runtime_mode WHERE singleton FOR UPDATE"
+    ).fetchone()
+    if mode_row is None or str(mode_row[0]) not in {"v1_only", "m5_active"}:
+        raise M5PersistedMatchingBundleError("migration-017 runtime mode is invalid")
+    connection.execute(
+        "SELECT epoch_id FROM groundloop_m4_publication_head WHERE singleton FOR UPDATE"
+    ).fetchone()
+    connection.execute(
+        "SELECT epoch_id, sealed_revision FROM groundloop_m5_publication_head "
+        "WHERE singleton FOR UPDATE"
+    ).fetchone()
+    connection.execute(
+        "SELECT activation_id FROM groundloop_m5_activation WHERE singleton FOR UPDATE"
+    ).fetchone()
+    return str(mode_row[0])
+
+
+def _m5_persisted_matching_first_install_guard(
+    connection: Connection[Any], mode: str
+) -> None:
+    if connection.execute(
+        "SELECT EXISTS (SELECT 1 FROM groundloop_m5_runtime_epoch)"
+    ).fetchone() != (False,) or connection.execute(
+        "SELECT EXISTS (SELECT 1 FROM groundloop_m5_update)"
+    ).fetchone() != (False,):
+        raise M5PersistedMatchingBundleError(
+            "migration 017 forbids pre-D25 typed runtime history"
+        )
+    if mode == "m5_active":
+        shape = connection.execute(
+            """
+            SELECT count(*) FILTER (WHERE activation.singleton),
+                   count(*) FILTER (WHERE m5_head.singleton),
+                   min(m4_head.epoch_id), min(m5_head.epoch_id),
+                   min(m5_head.sealed_revision), min(epoch.revision),
+                   bool_and(epoch.semantic_status = 'sealed')
+            FROM groundloop_runtime_mode mode
+            LEFT JOIN groundloop_m5_activation activation ON activation.singleton
+            LEFT JOIN groundloop_m4_publication_head m4_head ON m4_head.singleton
+            LEFT JOIN groundloop_m5_publication_head m5_head ON m5_head.singleton
+            LEFT JOIN groundloop_epoch epoch ON epoch.epoch_id=m5_head.epoch_id
+            WHERE mode.singleton
+            """
+        ).fetchone()
+        if (
+            shape is None
+            or shape[0] != 1
+            or shape[1] != 1
+            or shape[2] != shape[3]
+            or shape[4] != shape[5]
+            or shape[6] is not True
+        ):
+            raise M5PersistedMatchingBundleError(
+                "migration-017 activated no-history heads are inconsistent"
+            )
+        mismatches = connection.execute(
+            "SELECT * FROM groundloop_m5_oracle_mismatch_counts"
+        ).fetchone()
+        if mismatches is None or any(int(value) != 0 for value in mismatches):
+            raise M5PersistedMatchingBundleError(
+                "migration-017 activated no-history semantic snapshot is inconsistent"
+            )
+
+
+def _m5_persisted_matching_backfill(connection: Connection[Any], mode: str) -> None:
+    if mode == "v1_only":
+        return
+    connection.execute(
+        "SELECT set_config('groundloop.m5_checked_transition','on',true)"
+    )
+    connection.execute(
+        "SELECT set_config('groundloop.m5_matching_mode','migration',true)"
+    )
+    connection.execute(
+        """  # noqa: E501
+        INSERT INTO groundloop_m5_matching_image_current
+        SELECT true, snapshot.policy_version, head.epoch_id, head.sealed_revision
+        FROM groundloop_m5_oracle_snapshot snapshot
+        JOIN groundloop_m5_publication_head head ON head.singleton
+        """  # noqa: E501
+    )
+    connection.execute(
+        """
+        INSERT INTO groundloop_m5_matching_observation_current
+        SELECT observation_id, edge.requirement_version_id, edge.group_version_id,
+               edge.requirement_ordinal, edge.text_hash, head.epoch_id,
+               head.sealed_revision
+        FROM groundloop_m5_active_requirement_edge_oracle edge
+        CROSS JOIN LATERAL unnest(edge.active_observation_ids) observation_id
+        JOIN groundloop_m5_publication_head head ON head.singleton
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO groundloop_m5_matching_edge_current
+        SELECT requirement_version_id, text_hash, group_version_id,
+               requirement_ordinal, cardinality(active_observation_ids),
+               head.epoch_id, head.sealed_revision
+        FROM groundloop_m5_active_requirement_edge_oracle
+        JOIN groundloop_m5_publication_head head ON head.singleton
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO groundloop_m5_matching_hash_mask_current
+        SELECT edge.group_version_id, edge.text_hash,
+               sum(1 << edge.requirement_ordinal)::integer,
+               head.epoch_id, head.sealed_revision
+        FROM groundloop_m5_active_requirement_edge_oracle edge
+        JOIN groundloop_m5_publication_head head ON head.singleton
+        GROUP BY edge.group_version_id, edge.text_hash, head.epoch_id,
+                 head.sealed_revision
+        """
+    )
+    connection.execute(
+        """  # noqa: E501
+        WITH groups AS (
+          SELECT group_version_id, max(requirement_count) requirement_count
+          FROM groundloop_m5_group_subset_hall_oracle GROUP BY group_version_id
+        ), arrays AS (
+          SELECT g.group_version_id, g.requirement_count,
+            ARRAY[0::bigint] || ARRAY(
+              SELECT count(*)::bigint
+              FROM generate_series(1,(1<<g.requirement_count)-1) mask
+              LEFT JOIN groundloop_m5_matching_hash_mask_current h
+                ON h.group_version_id=g.group_version_id AND h.mask=mask
+              GROUP BY mask ORDER BY mask
+            ) histogram,
+            ARRAY[0::bigint] || ARRAY(
+              SELECT neighbor_count::bigint
+              FROM groundloop_m5_group_subset_hall_oracle h
+              WHERE h.group_version_id=g.group_version_id ORDER BY subset_mask
+            ) neighbors,
+            ARRAY[0::bigint] || ARRAY(
+              SELECT deficiency::bigint
+              FROM groundloop_m5_group_subset_hall_oracle h
+              WHERE h.group_version_id=g.group_version_id ORDER BY subset_mask
+            ) deficiencies
+          FROM groups g)
+        INSERT INTO groundloop_m5_matching_hall_current
+        SELECT a.group_version_id, a.requirement_count, a.histogram, a.neighbors,
+          a.deficiencies,
+          greatest(0,(SELECT max(v) FROM unnest(a.deficiencies) v))::integer,
+          a.requirement_count - greatest(
+            0,(SELECT max(v) FROM unnest(a.deficiencies) v)
+          )::integer,
+          (SELECT sum(v) FROM unnest(a.histogram) v), head.epoch_id,
+          head.sealed_revision
+        FROM arrays a JOIN groundloop_m5_publication_head head ON head.singleton
+        """
+    )
+
+
+def install_m5_persisted_matching_bundle(
+    connection: Connection[Any],
+    *,
+    failure_injector: Callable[[str], None] | None = None,
+    migration_bytes: bytes | None = None,
+) -> M5PersistedMatchingBundleInstallResult:
+    """Atomically install or ledger-first replay frozen migration 017."""
+
+    if connection.info.transaction_status != TransactionStatus.IDLE:
+        raise M5PersistedMatchingBundleError(
+            "migration 017 requires an idle connection and owns its "
+            "top-level transaction"
+        )
+    if connection.read_only is True or connection.isolation_level not in (
+        None,
+        IsolationLevel.READ_COMMITTED,
+    ):
+        raise M5PersistedMatchingBundleError(
+            "migration 017 requires a read-write READ COMMITTED connection"
+        )
+    identity = m5_persisted_matching_bundle_identity(migration_bytes=migration_bytes)
+    migration = (
+        M5_PERSISTED_MATCHING_MIGRATION_PATH.read_bytes()
+        if migration_bytes is None
+        else migration_bytes
+    )
+    with connection.transaction():
+        connection.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED READ WRITE")
+        ledger = _read_ledger(connection, identity.bundle_id)
+        expected = (
+            identity.bundle_sha256,
+            identity.migration_sha256,
+            identity.oracle_sha256,
+            identity.prerequisite_sha256,
+        )
+        if ledger is not None:
+            if ledger != expected:
+                raise M5BundleHashConflictError(
+                    f"bundle {identity.bundle_id} is already ledgered with "
+                    "different content"
+                )
+            return M5PersistedMatchingBundleInstallResult(identity, False)
+        if failure_injector is not None:
+            failure_injector("after_initial_ledger")
+        _verify_accepted_m5_recovery_bundle(connection)
+        _acquire_m5_persisted_matching_install_locks(connection)
+        if failure_injector is not None:
+            failure_injector("after_install_locks")
+        ledger = _read_ledger(connection, identity.bundle_id)
+        if ledger is not None:
+            if ledger != expected:
+                raise M5BundleHashConflictError(
+                    f"bundle {identity.bundle_id} is already ledgered with "
+                    "different content"
+                )
+            return M5PersistedMatchingBundleInstallResult(identity, False)
+        mode = _m5_persisted_matching_singletons(connection)
+        _m5_persisted_matching_first_install_guard(connection, mode)
+        for name, sql_source in _m5_runtime_recovery_migration_groups(
+            migration.replace(
+                b"groundloop:m5-persisted-matching-group:",
+                b"groundloop:m5-runtime-recovery-group:",
+            )
+        ):
+            connection.execute(sql_source)
+            if failure_injector is not None:
+                failure_injector(f"after_{name}")
+        _m5_persisted_matching_backfill(connection, mode)
+        connection.execute("SET CONSTRAINTS ALL IMMEDIATE")
+        if failure_injector is not None:
+            failure_injector("before_ledger")
+        connection.execute(
+            """INSERT INTO groundloop_m5_schema_bundle
+               (bundle_id,bundle_sha256,migration_sha256,oracle_sha256,
+                prerequisite_sha256,applied_at) VALUES (%s,%s,%s,%s,%s,now())""",
+            (
+                identity.bundle_id,
+                identity.bundle_sha256,
+                identity.migration_sha256,
+                identity.oracle_sha256,
+                identity.prerequisite_sha256,
+            ),
+        )
+        if failure_injector is not None:
+            failure_injector("after_ledger")
+        return M5PersistedMatchingBundleInstallResult(identity, True)
+
+
 __all__ = [
     "LEGACY_MIGRATION_NAMES",
     "LEGACY_MIGRATION_PATHS",
@@ -1287,6 +1673,16 @@ __all__ = [
     "M5_ACCEPTED_RUNTIME_MIGRATION_SHA256",
     "M5_ACCEPTED_RUNTIME_ORACLE_SHA256",
     "M5_ACCEPTED_RUNTIME_PREREQUISITE_SHA256",
+    "M5_ACCEPTED_RECOVERY_BUNDLE_ID",
+    "M5_ACCEPTED_RECOVERY_BUNDLE_SHA256",
+    "M5_ACCEPTED_RECOVERY_MIGRATION_SHA256",
+    "M5_ACCEPTED_RECOVERY_ORACLE_SHA256",
+    "M5_ACCEPTED_RECOVERY_PREREQUISITE_SHA256",
+    "M5_PERSISTED_MATCHING_BUNDLE_ID",
+    "M5_PERSISTED_MATCHING_INSTALL_LOCK_RELATIONS",
+    "M5_PERSISTED_MATCHING_MIGRATION_LABEL",
+    "M5_PERSISTED_MATCHING_MIGRATION_PATH",
+    "M5_PERSISTED_MATCHING_ORACLE_SHA256",
     "M5_RUNTIME_INSTALL_LOCK_RELATIONS",
     "M5_RUNTIME_MIGRATION_LABEL",
     "M5_RUNTIME_MIGRATION_PATH",
@@ -1307,12 +1703,17 @@ __all__ = [
     "M5RuntimeRecoveryBundleError",
     "M5RuntimeRecoveryBundleIdentity",
     "M5RuntimeRecoveryBundleInstallResult",
+    "M5PersistedMatchingBundleError",
+    "M5PersistedMatchingBundleIdentity",
+    "M5PersistedMatchingBundleInstallResult",
     "apply_legacy_migrations",
     "install_m5_core_bundle",
     "install_m5_runtime_bundle",
     "install_m5_runtime_recovery_bundle",
+    "install_m5_persisted_matching_bundle",
     "legacy_prerequisite_source_sha256",
     "m5_bundle_identity",
     "m5_runtime_bundle_identity",
     "m5_runtime_recovery_bundle_identity",
+    "m5_persisted_matching_bundle_identity",
 ]
