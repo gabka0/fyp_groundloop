@@ -7,8 +7,12 @@ runtime addendum and delegates framing to :mod:`groundloop.m5.digests`.
 
 from __future__ import annotations
 
+import hashlib
+import math
+import struct
 from collections.abc import Iterable, Sequence
 from enum import Enum
+from typing import Any
 
 from groundloop.domain import StatusDelta, SubjectKind
 from groundloop.errors import ValidationError
@@ -80,6 +84,972 @@ TypedDirectVerificationExecutionValues = tuple[
     str,
     str | None,
 ]
+
+MatchingWorkValues = tuple[int, ...]
+AuditKeyValues = tuple[str, ...]
+
+
+def _seq(values: Iterable[tuple[str, ...]]) -> tuple[str, ...]:
+    return sequence_field(values)
+
+
+def matching_work_digest(counters: Sequence[int]) -> str:
+    """Hash the exact 37-value D25 matching/overlay work vector."""
+
+    if len(counters) != 37:
+        raise ValidationError("matching work requires exactly 37 counters")
+    return stable_m5_digest("m5-matching-work-v1", *(int_field(v) for v in counters))
+
+
+def matching_group_shape_set_digest(
+    shapes: Sequence[tuple[str, int, Sequence[tuple[int, str]]]],
+) -> str:
+    return stable_m5_digest(
+        "m5-persisted-matching-group-shape-set-v1",
+        _seq(
+            _seq(
+                (
+                    text_field(group_id),
+                    int_field(requirement_count),
+                    _seq(
+                        _seq((int_field(ordinal), text_field(requirement_id)))
+                        for ordinal, requirement_id in requirements
+                    ),
+                )
+            )
+            for group_id, requirement_count, requirements in shapes
+        ),
+    )
+
+
+def matching_point_fields(point: Any) -> tuple[str, ...]:
+    """Encode one explicitly allowlisted D25 current/working point."""
+
+    from groundloop.m5.runtime import contracts as contract_types
+
+    name = type(point).__name__
+    allowed = {
+        contract_types.M5MatchingObservationCurrent,
+        contract_types.M5MatchingObservationWorking,
+        contract_types.M5MatchingEdgeCurrent,
+        contract_types.M5MatchingEdgeWorking,
+        contract_types.M5MatchingMaskCurrent,
+        contract_types.M5MatchingMaskWorking,
+        contract_types.M5MatchingHallCurrent,
+        contract_types.M5MatchingHallWorking,
+    }
+    if type(point) not in allowed:
+        raise ValidationError("unsupported D25 matching point")
+    enum = enum_field(point.layer)
+    if name == "M5MatchingObservationCurrent":
+        return _seq(
+            (
+                enum,
+                text_field(point.observation_id),
+                text_field(point.requirement_version_id),
+                text_field(point.group_version_id),
+                int_field(point.requirement_ordinal),
+                hash_field(point.text_hash),
+                int_field(point.installed_epoch_id),
+                int_field(point.installed_revision),
+            )
+        )
+    if name == "M5MatchingObservationWorking":
+        return _seq(
+            (
+                enum,
+                int_field(point.epoch_id),
+                text_field(point.observation_id),
+                text_field(point.requirement_version_id),
+                text_field(point.group_version_id),
+                int_field(point.requirement_ordinal),
+                hash_field(point.text_hash),
+                bool_field(point.present),
+                int_field(point.updated_revision),
+            )
+        )
+    if name == "M5MatchingEdgeCurrent":
+        return _seq(
+            (
+                enum,
+                text_field(point.requirement_version_id),
+                hash_field(point.text_hash),
+                text_field(point.group_version_id),
+                int_field(point.requirement_ordinal),
+                int_field(point.refcount),
+                int_field(point.installed_epoch_id),
+                int_field(point.installed_revision),
+            )
+        )
+    if name == "M5MatchingEdgeWorking":
+        return _seq(
+            (
+                enum,
+                int_field(point.epoch_id),
+                text_field(point.requirement_version_id),
+                hash_field(point.text_hash),
+                text_field(point.group_version_id),
+                int_field(point.requirement_ordinal),
+                int_field(point.refcount),
+                int_field(point.updated_revision),
+            )
+        )
+    if name == "M5MatchingMaskCurrent":
+        return _seq(
+            (
+                enum,
+                text_field(point.group_version_id),
+                hash_field(point.text_hash),
+                int_field(point.mask),
+                int_field(point.installed_epoch_id),
+                int_field(point.installed_revision),
+            )
+        )
+    if name == "M5MatchingMaskWorking":
+        return _seq(
+            (
+                enum,
+                int_field(point.epoch_id),
+                text_field(point.group_version_id),
+                hash_field(point.text_hash),
+                int_field(point.mask),
+                int_field(point.updated_revision),
+            )
+        )
+    if name in {"M5MatchingHallCurrent", "M5MatchingHallWorking"}:
+        if name.endswith("Current"):
+            return _seq(
+                (
+                    enum,
+                    text_field(point.group_version_id),
+                    int_field(point.requirement_count),
+                    _seq(int_field(v) for v in point.mask_histogram),
+                    _seq(int_field(v) for v in point.neighbor_counts),
+                    _seq(int_field(v) for v in point.deficiencies),
+                    int_field(point.maximum_deficiency),
+                    int_field(point.matching_size),
+                    int_field(point.distinct_hash_count),
+                    int_field(point.installed_epoch_id),
+                    int_field(point.installed_revision),
+                )
+            )
+        return _seq(
+            (
+                enum,
+                int_field(point.epoch_id),
+                text_field(point.group_version_id),
+                bool_field(point.present),
+                option_field(
+                    None
+                    if point.requirement_count is None
+                    else int_field(point.requirement_count)
+                ),
+                option_field(
+                    None
+                    if point.mask_histogram is None
+                    else _seq(int_field(v) for v in point.mask_histogram)
+                ),
+                option_field(
+                    None
+                    if point.neighbor_counts is None
+                    else _seq(int_field(v) for v in point.neighbor_counts)
+                ),
+                option_field(
+                    None
+                    if point.deficiencies is None
+                    else _seq(int_field(v) for v in point.deficiencies)
+                ),
+                option_field(
+                    None
+                    if point.maximum_deficiency is None
+                    else int_field(point.maximum_deficiency)
+                ),
+                option_field(
+                    None
+                    if point.matching_size is None
+                    else int_field(point.matching_size)
+                ),
+                option_field(
+                    None
+                    if point.distinct_hash_count is None
+                    else int_field(point.distinct_hash_count)
+                ),
+                int_field(point.updated_revision),
+            )
+        )
+    raise ValidationError("unsupported D25 matching point")
+
+
+def matching_change_digest(
+    domain: str,
+    outer_fields: Sequence[tuple[str, ...]],
+    before: object | None,
+    after: object | None,
+) -> str:
+    if before is None and after is None:
+        raise ValidationError("a matching change requires a before or after point")
+    return stable_m5_digest(
+        domain,
+        *outer_fields,
+        option_field(None if before is None else matching_point_fields(before)),
+        option_field(None if after is None else matching_point_fields(after)),
+    )
+
+
+def logical_overlay_patch_digest(
+    changes: Sequence[tuple[str | Enum, str, str | None, str | None]],
+    binding_row_digests: Sequence[str],
+    logical_output_digest: str,
+    output_bytes: int,
+) -> str:
+    return stable_m5_digest(
+        "m5-persisted-logical-overlay-patch-v1",
+        _seq(
+            _seq(
+                (
+                    enum_field(kind),
+                    text_field(object_id),
+                    option_field(None if before is None else hash_field(before)),
+                    option_field(None if after is None else hash_field(after)),
+                )
+            )
+            for kind, object_id, before, after in changes
+        ),
+        _seq(hash_field(v) for v in binding_row_digests),
+        hash_field(logical_output_digest),
+        int_field(output_bytes),
+    )
+
+
+def certificate_binding_row_digest(
+    kind: str | Enum,
+    epoch_id: int,
+    object_id: str,
+    valid_from_revision: int,
+    valid_to_revision: int | None,
+    certificate_digest: str,
+) -> str:
+    return stable_m5_digest(
+        "m5-persisted-certificate-binding-row-v1",
+        enum_field(kind),
+        int_field(epoch_id),
+        text_field(object_id),
+        int_field(valid_from_revision),
+        option_field(
+            None if valid_to_revision is None else int_field(valid_to_revision)
+        ),
+        hash_field(certificate_digest),
+    )
+
+
+def persisted_matching_patch_digest(
+    *,
+    source_kind: str | Enum,
+    source_id: str,
+    source_identity_hash: str,
+    before_epoch_id: int,
+    before_revision: int,
+    resulting_epoch_id: int,
+    resulting_revision: int,
+    decision_policy_version: str,
+    group_shape_set_digest: str,
+    observation_change_digests: Sequence[str],
+    edge_change_digests: Sequence[str],
+    mask_change_digests: Sequence[str],
+    hall_change_digests: Sequence[str],
+    logical_overlay_patch_digest_value: str,
+    matching_work_digest_value: str,
+) -> str:
+    return stable_m5_digest(
+        "m5-persisted-matching-patch-v1",
+        enum_field(source_kind),
+        text_field(source_id),
+        hash_field(source_identity_hash),
+        int_field(before_epoch_id),
+        int_field(before_revision),
+        int_field(resulting_epoch_id),
+        int_field(resulting_revision),
+        text_field(decision_policy_version),
+        hash_field(group_shape_set_digest),
+        _seq(hash_field(v) for v in observation_change_digests),
+        _seq(hash_field(v) for v in edge_change_digests),
+        _seq(hash_field(v) for v in mask_change_digests),
+        _seq(hash_field(v) for v in hall_change_digests),
+        hash_field(logical_overlay_patch_digest_value),
+        hash_field(matching_work_digest_value),
+    )
+
+
+def matching_work_contribution_digest(
+    *,
+    epoch_id: int,
+    source_kind: str | Enum,
+    source_id: str,
+    source_identity_hash: str,
+    before_epoch_id: int,
+    before_revision: int,
+    resulting_revision: int,
+    patch_digest: str,
+    matching_work_digest_value: str,
+) -> str:
+    return stable_m5_digest(
+        "m5-matching-work-contribution-v1",
+        int_field(epoch_id),
+        enum_field(source_kind),
+        text_field(source_id),
+        hash_field(source_identity_hash),
+        int_field(before_epoch_id),
+        int_field(before_revision),
+        int_field(resulting_revision),
+        hash_field(patch_digest),
+        hash_field(matching_work_digest_value),
+    )
+
+
+def persisted_matching_transition_intent_digest(
+    *,
+    source_kind: str | Enum,
+    source_id: str,
+    source_identity_hash: str,
+    before_epoch_id: int,
+    before_revision: int,
+    resulting_epoch_id: int,
+    resulting_revision: int,
+    decision_policy_version: str,
+    group_shapes: Sequence[tuple[str, int, Sequence[tuple[int, str]]]],
+    observation_ids: Sequence[str],
+    edge_keys: Sequence[tuple[str, int, str, str]],
+    mask_keys: Sequence[tuple[str, str]],
+    hall_group_ids: Sequence[str],
+    requirement_state_ids: Sequence[str],
+    group_state_ids: Sequence[str],
+    claim_state_ids: Sequence[str],
+    answer_state_ids: Sequence[str],
+    group_certificate_ids: Sequence[str],
+    claim_certificate_ids: Sequence[str],
+) -> str:
+    return stable_m5_digest(
+        "m5-persisted-matching-transition-intent-v1",
+        enum_field(source_kind),
+        text_field(source_id),
+        hash_field(source_identity_hash),
+        int_field(before_epoch_id),
+        int_field(before_revision),
+        int_field(resulting_epoch_id),
+        int_field(resulting_revision),
+        text_field(decision_policy_version),
+        _seq(
+            _seq(
+                (
+                    text_field(g),
+                    int_field(c),
+                    _seq(_seq((int_field(o), text_field(r))) for o, r in rs),
+                )
+            )
+            for g, c, rs in group_shapes
+        ),
+        _seq(text_field(v) for v in observation_ids),
+        _seq(
+            _seq((text_field(g), int_field(o), hash_field(h), text_field(r)))
+            for g, o, h, r in edge_keys
+        ),
+        _seq(_seq((text_field(g), hash_field(h))) for g, h in mask_keys),
+        *(
+            _seq(text_field(v) for v in values)
+            for values in (
+                hall_group_ids,
+                requirement_state_ids,
+                group_state_ids,
+                claim_state_ids,
+                answer_state_ids,
+                group_certificate_ids,
+                claim_certificate_ids,
+            )
+        ),
+    )
+
+
+def audit_key_fields(family: str | Enum, key: Sequence[str]) -> tuple[str, ...]:
+    wire = _enum_wire(family)
+    if wire not in {"observation", "edge", "mask", "hall"}:
+        raise ValidationError("invalid D25 audit family")
+    expected = 2 if wire in {"edge", "mask"} else 1
+    if len(key) != expected:
+        raise ValidationError("invalid D25 audit key arity")
+    return (
+        _seq((text_field(key[0]), hash_field(key[1])))
+        if expected == 2
+        else _seq((text_field(key[0]),))
+    )
+
+
+def physical_mismatch_fields(
+    family: str | Enum,
+    key: Sequence[str],
+    expected: str | None,
+    actual: str | None,
+    error: str | Enum | None,
+) -> tuple[str, ...]:
+    return _seq(
+        (
+            enum_field(family),
+            audit_key_fields(family, key),
+            option_field(None if expected is None else hash_field(expected)),
+            option_field(None if actual is None else hash_field(actual)),
+            option_field(None if error is None else enum_field(error)),
+        )
+    )
+
+
+def provenance_mismatch_fields(
+    kind: str | Enum, epoch_id: int, expected: str | None, actual: str | None
+) -> tuple[str, ...]:
+    return _seq(
+        (
+            enum_field(kind),
+            int_field(epoch_id),
+            option_field(None if expected is None else hash_field(expected)),
+            option_field(None if actual is None else hash_field(actual)),
+        )
+    )
+
+
+def physical_audit_digest(
+    *,
+    head_epoch_id: int,
+    head_revision: int,
+    decision_policy_version: str,
+    python_expected_projection_digest: str,
+    sql_expected_projection_digest: str,
+    actual_projection_digest: str | None,
+    actual_error: str | Enum | None,
+    provenance_ok: bool,
+    provenance_replay_digest: str | None,
+    working_image_expected_provenance_digest: str | None,
+    working_image_actual_provenance_digest: str | None,
+    accumulator_expected_provenance_digest: str | None,
+    accumulator_actual_provenance_digest: str | None,
+    mismatches: Sequence[
+        tuple[str | Enum, Sequence[str], str | None, str | None, str | Enum | None]
+    ],
+    provenance_mismatches: Sequence[tuple[str | Enum, int, str | None, str | None]],
+) -> str:
+    return stable_m5_digest(
+        "m5-persisted-matching-physical-audit-v1",
+        int_field(head_epoch_id),
+        int_field(head_revision),
+        text_field(decision_policy_version),
+        hash_field(python_expected_projection_digest),
+        hash_field(sql_expected_projection_digest),
+        option_field(
+            None
+            if actual_projection_digest is None
+            else hash_field(actual_projection_digest)
+        ),
+        option_field(None if actual_error is None else enum_field(actual_error)),
+        bool_field(provenance_ok),
+        option_field(
+            None
+            if provenance_replay_digest is None
+            else hash_field(provenance_replay_digest)
+        ),
+        option_field(
+            None
+            if working_image_expected_provenance_digest is None
+            else hash_field(working_image_expected_provenance_digest)
+        ),
+        option_field(
+            None
+            if working_image_actual_provenance_digest is None
+            else hash_field(working_image_actual_provenance_digest)
+        ),
+        option_field(
+            None
+            if accumulator_expected_provenance_digest is None
+            else hash_field(accumulator_expected_provenance_digest)
+        ),
+        option_field(
+            None
+            if accumulator_actual_provenance_digest is None
+            else hash_field(accumulator_actual_provenance_digest)
+        ),
+        _seq(physical_mismatch_fields(*v) for v in mismatches),
+        _seq(provenance_mismatch_fields(*v) for v in provenance_mismatches),
+    )
+
+
+def persisted_matching_schema_bundle_digest(
+    migration_017_sha256: str, accepted_016_bundle_sha256: str
+) -> str:
+    return stable_m5_digest(
+        "m5-persisted-matching-schema-bundle-v1",
+        text_field("migrations/017_m5_persisted_matching.sql"),
+        hash_field(migration_017_sha256),
+        hash_field(accepted_016_bundle_sha256),
+    )
+
+
+def physical_audit_family_digest(
+    family: str | Enum, rows: Sequence[tuple[str, ...]]
+) -> str:
+    return stable_m5_digest(
+        "m5-persisted-matching-physical-audit-family-v1",
+        enum_field(family),
+        int_field(len(rows)),
+        _seq(rows),
+    )
+
+
+def audit_observation_fields(
+    observation_id: str,
+    requirement_version_id: str,
+    group_version_id: str,
+    requirement_ordinal: int,
+    text_hash: str,
+) -> tuple[str, ...]:
+    return _seq(
+        (
+            text_field(observation_id),
+            text_field(requirement_version_id),
+            text_field(group_version_id),
+            int_field(requirement_ordinal),
+            hash_field(text_hash),
+        )
+    )
+
+
+def audit_edge_fields(
+    requirement_version_id: str,
+    text_hash: str,
+    group_version_id: str,
+    requirement_ordinal: int,
+    refcount: int,
+) -> tuple[str, ...]:
+    return _seq(
+        (
+            text_field(requirement_version_id),
+            hash_field(text_hash),
+            text_field(group_version_id),
+            int_field(requirement_ordinal),
+            int_field(refcount),
+        )
+    )
+
+
+def audit_mask_fields(
+    group_version_id: str, text_hash: str, mask: int
+) -> tuple[str, ...]:
+    return _seq((text_field(group_version_id), hash_field(text_hash), int_field(mask)))
+
+
+def audit_hall_fields(
+    group_version_id: str,
+    requirement_count: int,
+    mask_histogram: Sequence[int],
+    neighbor_counts: Sequence[int],
+    deficiencies: Sequence[int],
+    maximum_deficiency: int,
+    matching_size: int,
+    distinct_hash_count: int,
+) -> tuple[str, ...]:
+    return _seq(
+        (
+            text_field(group_version_id),
+            int_field(requirement_count),
+            _seq(int_field(v) for v in mask_histogram),
+            _seq(int_field(v) for v in neighbor_counts),
+            _seq(int_field(v) for v in deficiencies),
+            int_field(maximum_deficiency),
+            int_field(matching_size),
+            int_field(distinct_hash_count),
+        )
+    )
+
+
+def patch_provenance_fields(
+    epoch_id: int,
+    resulting_revision: int,
+    source_kind: str | Enum,
+    source_id: str,
+    status: str | Enum,
+    patch_digest: str,
+    contribution_digest: str,
+) -> tuple[str, ...]:
+    return _seq(
+        (
+            int_field(epoch_id),
+            int_field(resulting_revision),
+            enum_field(source_kind),
+            text_field(source_id),
+            enum_field(status),
+            hash_field(patch_digest),
+            hash_field(contribution_digest),
+        )
+    )
+
+
+def working_image_provenance_fields(
+    epoch_id: int,
+    status: str | Enum,
+    terminal_revision: int | None,
+    base_epoch_id: int,
+    base_revision: int,
+    decision_policy_version: str,
+    updated_revision: int,
+    last_patch_digest: str,
+) -> tuple[str, ...]:
+    return _seq(
+        (
+            int_field(epoch_id),
+            enum_field(status),
+            option_field(
+                None if terminal_revision is None else int_field(terminal_revision)
+            ),
+            int_field(base_epoch_id),
+            int_field(base_revision),
+            text_field(decision_policy_version),
+            int_field(updated_revision),
+            hash_field(last_patch_digest),
+        )
+    )
+
+
+def accumulator_provenance_fields(
+    epoch_id: int,
+    status: str | Enum,
+    counters: Sequence[int],
+    matching_work_digest_value: str,
+    updated_revision: int,
+) -> tuple[str, ...]:
+    if len(counters) != 37:
+        raise ValidationError("accumulator provenance requires 37 counters")
+    return _seq(
+        (
+            int_field(epoch_id),
+            enum_field(status),
+            *(int_field(v) for v in counters),
+            hash_field(matching_work_digest_value),
+            int_field(updated_revision),
+        )
+    )
+
+
+def working_image_provenance_row_digest(row: tuple[str, ...]) -> str:
+    if row[:3] != ("sequence", "int", "8"):
+        raise ValidationError("working-image provenance row has invalid framing")
+    return stable_m5_digest(
+        "m5-persisted-matching-working-image-provenance-row-v1", row[3:]
+    )
+
+
+def accumulator_provenance_row_digest(row: tuple[str, ...]) -> str:
+    if row[:3] != ("sequence", "int", "41"):
+        raise ValidationError("accumulator provenance row has invalid framing")
+    return stable_m5_digest(
+        "m5-persisted-matching-accumulator-provenance-row-v1", row[3:]
+    )
+
+
+def current_provenance_fields(
+    family: str | Enum,
+    key: Sequence[str],
+    point: Any,
+    last_touch_patch_digest: str | None,
+) -> tuple[str, ...]:
+    point_fields = matching_point_fields(point)
+    if point.layer.value != "current":
+        raise ValidationError("current provenance requires a current point")
+    if type(point).__name__ != f"M5Matching{_enum_wire(family).title()}Current":
+        raise ValidationError("current provenance family and point disagree")
+    return _seq(
+        (
+            enum_field(family),
+            audit_key_fields(family, key),
+            point_fields,
+            option_field(
+                None
+                if last_touch_patch_digest is None
+                else hash_field(last_touch_patch_digest)
+            ),
+        )
+    )
+
+
+def working_provenance_fields(
+    family: str | Enum,
+    key: Sequence[str],
+    point: Any,
+    last_touch_patch_digest: str,
+) -> tuple[str, ...]:
+    point_fields = matching_point_fields(point)
+    if point.layer.value != "working":
+        raise ValidationError("working provenance requires a working point")
+    if type(point).__name__ != f"M5Matching{_enum_wire(family).title()}Working":
+        raise ValidationError("working provenance family and point disagree")
+    return _seq(
+        (
+            enum_field(family),
+            audit_key_fields(family, key),
+            point_fields,
+            hash_field(last_touch_patch_digest),
+        )
+    )
+
+
+def physical_audit_projection_digest(
+    head_epoch_id: int,
+    head_revision: int,
+    decision_policy_version: str,
+    observation_family_digest: str,
+    edge_family_digest: str,
+    mask_family_digest: str,
+    hall_family_digest: str,
+) -> str:
+    return stable_m5_digest(
+        "m5-persisted-matching-physical-audit-projection-v1",
+        int_field(head_epoch_id),
+        int_field(head_revision),
+        text_field(decision_policy_version),
+        hash_field(observation_family_digest),
+        hash_field(edge_family_digest),
+        hash_field(mask_family_digest),
+        hash_field(hall_family_digest),
+    )
+
+
+def physical_audit_row_digest(family: str | Enum, row: tuple[str, ...]) -> str:
+    return stable_m5_digest(
+        "m5-persisted-matching-physical-audit-row-v1",
+        enum_field(family),
+        row,
+    )
+
+
+def working_image_provenance_digest(rows: Sequence[tuple[str, ...]]) -> str:
+    return stable_m5_digest(
+        "m5-persisted-matching-working-image-provenance-v1", _seq(rows)
+    )
+
+
+def accumulator_provenance_digest(rows: Sequence[tuple[str, ...]]) -> str:
+    return stable_m5_digest(
+        "m5-persisted-matching-accumulator-provenance-v1", _seq(rows)
+    )
+
+
+def provenance_replay_digest(
+    head_epoch_id: int,
+    head_revision: int,
+    patches: Sequence[tuple[str, ...]],
+    working_images: Sequence[tuple[str, ...]],
+    accumulators: Sequence[tuple[str, ...]],
+    current_rows: Sequence[tuple[str, ...]],
+    working_rows: Sequence[tuple[str, ...]],
+) -> str:
+    return stable_m5_digest(
+        "m5-persisted-matching-provenance-replay-v1",
+        int_field(head_epoch_id),
+        int_field(head_revision),
+        _seq(patches),
+        _seq(working_images),
+        _seq(accumulators),
+        _seq(current_rows),
+        _seq(working_rows),
+    )
+
+
+_LOGICAL_WIRE_FIELDS = {
+    "RequirementState": (
+        "requirement_version_id",
+        "witness_hashes",
+        "supporting_observation_ids",
+        "witness_count",
+        "satisfied",
+    ),
+    "GroupState": (
+        "group_version_id",
+        "requirement_count",
+        "satisfied_count",
+        "matching_size",
+        "complete",
+    ),
+    "CombinedClaimState": (
+        "claim_id",
+        "support_count",
+        "refute_count",
+        "best_support_score",
+        "best_refute_score",
+        "supporting_observation_ids",
+        "refuting_observation_ids",
+        "complete_group_count",
+        "complete_group_ids",
+        "status",
+    ),
+    "CombinedAnswerState": (
+        "answer_version_id",
+        "required_claim_count",
+        "supported_count",
+        "unsupported_count",
+        "refuted_count",
+        "conflicted_count",
+        "status",
+    ),
+    "GroupCertificateRow": (
+        "requirement_ordinal",
+        "requirement_version_id",
+        "text_hash",
+        "selected_observation_id",
+    ),
+    "GroupMatchingCertificateArtifact": (
+        "decision_policy_version",
+        "group_version_id",
+        "rows",
+        "certificate_version",
+        "certificate_digest",
+    ),
+    "ClaimCertificateArtifact": (
+        "claim_id",
+        "decision_policy_version",
+        "support_kind",
+        "direct_support_observation_id",
+        "group_version_id",
+        "group_certificate_digest",
+        "direct_refute_observation_id",
+        "certificate_version",
+        "certificate_digest",
+    ),
+    "WorkingGroupCertificateBinding": (
+        "epoch_id",
+        "group_version_id",
+        "valid_from_revision",
+        "valid_to_revision",
+        "certificate_digest",
+    ),
+    "WorkingClaimCertificateBinding": (
+        "epoch_id",
+        "claim_id",
+        "valid_from_revision",
+        "valid_to_revision",
+        "certificate_digest",
+    ),
+    "StatusDelta": (
+        "event_id",
+        "object_type",
+        "object_id",
+        "old_status",
+        "new_status",
+        "reason",
+    ),
+}
+
+
+def _frame_bytes(value: bytes) -> bytes:
+    return len(value).to_bytes(8, "big") + value
+
+
+def _logical_value_bytes(value: object) -> bytes:
+    if value is None:
+        return b"n"
+    if type(value) is bool:
+        return b"b\x01" if value else b"b\x00"
+    if isinstance(value, Enum):
+        if type(value.value) is not str or not value.value:
+            raise ValidationError("logical enums require nonempty string values")
+        return b"e" + _frame_bytes(value.value.encode())
+    if type(value) is str:
+        return b"s" + _frame_bytes(value.encode())
+    if type(value) is int:
+        return b"i" + _frame_bytes(str(value).encode("ascii"))
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise ValidationError("logical F64 values must be finite")
+        return b"f" + struct.pack(">d", value)
+    if type(value) is tuple:
+        return (
+            b"q"
+            + len(value).to_bytes(8, "big")
+            + b"".join(_frame_bytes(_logical_value_bytes(item)) for item in value)
+        )
+    name = type(value).__name__
+    names = _LOGICAL_WIRE_FIELDS.get(name)
+    if names is None:
+        raise ValidationError("unsupported logical-output value")
+    from groundloop.domain import StatusDelta
+    from groundloop.m5.claim_certificates import WorkingClaimCertificateBinding
+    from groundloop.m5.domain import (
+        ClaimCertificateArtifact,
+        CombinedAnswerState,
+        CombinedClaimState,
+        GroupCertificateRow,
+        GroupMatchingCertificateArtifact,
+        GroupState,
+        RequirementState,
+    )
+    from groundloop.m5.matching import WorkingGroupCertificateBinding
+
+    allowed = {
+        RequirementState,
+        GroupState,
+        CombinedClaimState,
+        CombinedAnswerState,
+        GroupCertificateRow,
+        GroupMatchingCertificateArtifact,
+        ClaimCertificateArtifact,
+        WorkingGroupCertificateBinding,
+        WorkingClaimCertificateBinding,
+        StatusDelta,
+    }
+    if type(value) not in allowed:
+        raise ValidationError("unsupported logical-output value")
+    return (
+        b"d"
+        + _frame_bytes(name.encode())
+        + len(names).to_bytes(8, "big")
+        + b"".join(
+            _frame_bytes(field_name.encode())
+            + _frame_bytes(_logical_value_bytes(getattr(value, field_name)))
+            for field_name in names
+        )
+    )
+
+
+def logical_output_preimage(records: Sequence[tuple[str, str, object]]) -> bytes:
+    kinds = (
+        "requirement_state",
+        "group_state",
+        "claim_state",
+        "answer_state",
+        "group_certificate",
+        "claim_certificate",
+        "group_binding",
+        "claim_binding",
+        "status_delta",
+    )
+    ranks = {value: rank for rank, value in enumerate(kinds)}
+    if type(records) is not tuple:
+        raise ValidationError("logical-output records must be an exact tuple")
+    previous = -1
+    for record in records:
+        if type(record) is not tuple or len(record) != 3:
+            raise ValidationError("logical-output records must be exact 3-tuples")
+        kind, object_id, _ = record
+        if (
+            type(kind) is not str
+            or type(object_id) is not str
+            or kind not in ranks
+            or not object_id
+            or ranks[kind] < previous
+        ):
+            raise ValidationError("invalid logical-output relation order")
+        previous = ranks[kind]
+    return _logical_value_bytes(("m5-overlay-logical-output-v2", tuple(records)))
+
+
+def logical_output_digest(
+    records: Sequence[tuple[str, str, object]],
+) -> tuple[str, int, bytes]:
+    preimage = logical_output_preimage(records)
+    return hashlib.sha256(preimage).hexdigest(), len(preimage), preimage
 
 
 def _enum_wire(value: str | Enum) -> str:
@@ -1665,12 +2635,21 @@ def runtime_schema_bundle_digest(
 
 
 __all__ = [
+    "AuditKeyValues",
+    "MatchingWorkValues",
     "TypedDirectAdmittedPairValues",
     "TypedDirectChannelHitValues",
     "TypedDirectVerificationExecutionValues",
     "active_chunk_snapshot_digest",
     "activation_receipt_digest",
     "activation_request_digest",
+    "accumulator_provenance_digest",
+    "accumulator_provenance_fields",
+    "accumulator_provenance_row_digest",
+    "audit_edge_fields",
+    "audit_hall_fields",
+    "audit_mask_fields",
+    "audit_observation_fields",
     "answer_state_artifact_digest",
     "attempt_output_digest",
     "attempt_result_artifact_digest",
@@ -1683,6 +2662,7 @@ __all__ = [
     "changed_state_set_digest",
     "child_set_digest",
     "combined_status_delta_set_digest",
+    "current_provenance_fields",
     "discovery_scope_closure_digest",
     "discovery_scope_contract_digest",
     "dispatch_record_digest",
@@ -1695,8 +2675,27 @@ __all__ = [
     "job_completion_digest",
     "job_payload_digest",
     "logical_job_id",
+    "logical_output_digest",
+    "logical_output_preimage",
+    "logical_overlay_patch_digest",
+    "matching_change_digest",
+    "matching_group_shape_set_digest",
+    "matching_point_fields",
+    "matching_work_contribution_digest",
+    "matching_work_digest",
     "open_event_receipt_binding_digest",
     "publication_receipt_binding_digest",
+    "persisted_matching_patch_digest",
+    "persisted_matching_schema_bundle_digest",
+    "persisted_matching_transition_intent_digest",
+    "physical_audit_digest",
+    "physical_audit_family_digest",
+    "physical_audit_projection_digest",
+    "physical_audit_row_digest",
+    "physical_mismatch_fields",
+    "patch_provenance_fields",
+    "provenance_mismatch_fields",
+    "provenance_replay_digest",
     "claim_state_artifact_digest",
     "requirement_admitted_pair_digest",
     "requirement_state_artifact_digest",
@@ -1733,5 +2732,10 @@ __all__ = [
     "typed_direct_late_scope_binding_digest",
     "typed_direct_late_verifier_binding_digest",
     "typed_direct_terminal_projection_digest",
+    "working_image_provenance_digest",
+    "working_image_provenance_fields",
+    "working_image_provenance_row_digest",
+    "working_provenance_fields",
+    "certificate_binding_row_digest",
     "lease_terminal_projection_digest",
 ]

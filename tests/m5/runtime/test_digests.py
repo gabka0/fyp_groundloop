@@ -1303,3 +1303,87 @@ def test_invalid_hash_bool_int_and_nonfinite_runtime_inputs_are_rejected() -> No
             changed_state_set_hash="not-a-hash",
             failure_reason=M5RunFailureReason.INVALID_ARTIFACT,
         )
+
+
+def test_d25_empty_logical_output_is_frozen_71_byte_image() -> None:
+    from groundloop.m5.incremental_overlay import _logical_output_image
+
+    digest, size, preimage = digests.logical_output_digest(())
+    assert size == len(preimage) == 71
+    assert preimage == _logical_output_image(())
+    assert digest == "b4e641b66a06cb7d204377c37cfe031d958ce6d959832620fc2e9441339581c3"
+
+
+def test_d25_logical_output_enforces_nine_block_order() -> None:
+    from groundloop.m5.incremental_overlay import _logical_output_image
+
+    records = (("requirement_state", "r", None), ("status_delta", "s", None))
+    assert digests.logical_output_preimage(records) == _logical_output_image(records)
+    with pytest.raises(ValidationError):
+        digests.logical_output_preimage(tuple(reversed(records)))
+    with pytest.raises(ValidationError):
+        digests.logical_output_preimage((("requirement-state", "r", None),))
+    with pytest.raises(ValidationError):
+        digests.logical_output_preimage(list(records))  # type: ignore[arg-type]
+
+    class StringAlias(str):
+        pass
+
+    with pytest.raises(ValidationError):
+        digests.logical_output_preimage(
+            (("requirement_state", "r", StringAlias("value")),)
+        )
+
+
+def test_d25_matching_work_is_exactly_37_ordered_ints() -> None:
+    zero = digests.matching_work_digest((0,) * 37)
+    changed = digests.matching_work_digest((1,) + (0,) * 36)
+    assert zero == "1a1d36b3bb19c2c30cc27b6c4b5967a9f59a86169108b23732e65e4fd382bb89"
+    assert changed != zero
+    with pytest.raises(ValidationError):
+        digests.matching_work_digest((0,) * 36)
+
+
+def test_d25_point_encoder_rejects_same_named_impostor() -> None:
+    impostor = type(
+        "M5MatchingMaskWorking",
+        (),
+        {
+            "layer": "working",
+            "epoch_id": 1,
+            "group_version_id": "g",
+            "text_hash": H1,
+            "mask": 0,
+            "updated_revision": 1,
+        },
+    )()
+    with pytest.raises(ValidationError):
+        digests.matching_point_fields(impostor)
+    logical_impostor = type(
+        "RequirementState",
+        (),
+        {
+            "requirement_version_id": "r",
+            "witness_hashes": (),
+            "supporting_observation_ids": (),
+            "witness_count": 0,
+            "satisfied": False,
+        },
+    )()
+    with pytest.raises(ValidationError):
+        digests.logical_output_preimage((("requirement_state", "r", logical_impostor),))
+
+
+def test_d25_schema_bundle_binds_017_path_and_016_bundle() -> None:
+    assert digests.persisted_matching_schema_bundle_digest(H1, H2) == (
+        "5b194ed6f2a8580f76fbe41d8ce96c24cf2018d60f016165a799905f7f49d42c"
+    )
+
+
+def test_d25_logical_dataclass_allowlist_matches_accepted_encoder() -> None:
+    from groundloop.m5.domain import RequirementState
+    from groundloop.m5.incremental_overlay import _logical_output_image
+
+    state = RequirementState("requirement", (H1,), ("observation",), 1, True)
+    records = (("requirement_state", "requirement", state),)
+    assert digests.logical_output_preimage(records) == _logical_output_image(records)

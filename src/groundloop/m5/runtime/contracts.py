@@ -11,7 +11,7 @@ import math
 from dataclasses import dataclass, fields, replace
 from datetime import datetime
 from enum import StrEnum
-from typing import Protocol
+from typing import Any, Protocol
 
 from groundloop.domain import (
     DecisionPolicy,
@@ -75,8 +75,10 @@ from groundloop.m4.contracts import (
     stable_m4_digest,
 )
 from groundloop.m5.digests import (
+    hash_field,
     normalize_text_v1,
     normalized_text_hash_v1,
+    text_field,
     whitespace_codepoints_v1,
 )
 from groundloop.m5.events import (
@@ -88,6 +90,7 @@ from groundloop.m5.events import (
     legacy_event_payload_digest,
     m5_event_payload_digest,
 )
+from groundloop.m5.incremental_overlay import M5OverlayWork
 from groundloop.m5.runtime import digests
 from groundloop.policy import decide
 
@@ -6577,6 +6580,1173 @@ class M5TypedEventPlan:
                 raise ValidationError("direct plan disagrees with typed envelope")
 
 
+class M5MatchingLayer(StrEnum):
+    CURRENT = "current"
+    WORKING = "working"
+
+
+class M5PersistedMatchingSourceKind(StrEnum):
+    STRUCTURAL_OPEN = "structural_open"
+    REQUIREMENT_COMPLETION = "requirement_completion"
+    DIRECT_TRANSITION = "direct_transition"
+
+
+class M5PersistedLogicalChangeKind(StrEnum):
+    REQUIREMENT_STATE = "requirement_state"
+    GROUP_STATE = "group_state"
+    CLAIM_STATE = "claim_state"
+    ANSWER_STATE = "answer_state"
+    GROUP_CERTIFICATE = "group_certificate"
+    CLAIM_CERTIFICATE = "claim_certificate"
+
+
+class M5PersistedBindingKind(StrEnum):
+    GROUP = "group"
+    CLAIM = "claim"
+
+
+class M5MatchingAuditFamily(StrEnum):
+    OBSERVATION = "observation"
+    EDGE = "edge"
+    MASK = "mask"
+    HALL = "hall"
+
+
+class M5MatchingAuditError(StrEnum):
+    MALFORMED_PAYLOAD = "malformed_payload"
+
+
+class M5MatchingProvenanceKind(StrEnum):
+    WORKING_IMAGE = "working_image"
+    ACCUMULATOR = "accumulator"
+
+
+class M5MatchingEpochStatus(StrEnum):
+    NONTERMINAL = "nonterminal"
+    FAILED = "failed"
+    SEALED = "sealed"
+
+
+@dataclass(frozen=True, slots=True)
+class M5MatchingObservationCurrent:
+    layer: M5MatchingLayer
+    observation_id: str
+    requirement_version_id: str
+    group_version_id: str
+    requirement_ordinal: int
+    text_hash: str
+    installed_epoch_id: int
+    installed_revision: int
+
+    def __post_init__(self) -> None:
+        if self.layer is not M5MatchingLayer.CURRENT:
+            raise ValidationError("current observation requires current layer")
+        for name in ("observation_id", "requirement_version_id", "group_version_id"):
+            _require_text(name, getattr(self, name))
+        _require_int("requirement_ordinal", self.requirement_ordinal)
+        _require_hash("text_hash", self.text_hash)
+        _require_int("installed_epoch_id", self.installed_epoch_id, positive=True)
+        _require_int("installed_revision", self.installed_revision)
+
+
+@dataclass(frozen=True, slots=True)
+class M5MatchingObservationWorking:
+    layer: M5MatchingLayer
+    epoch_id: int
+    observation_id: str
+    requirement_version_id: str
+    group_version_id: str
+    requirement_ordinal: int
+    text_hash: str
+    present: bool
+    updated_revision: int
+
+    def __post_init__(self) -> None:
+        if self.layer is not M5MatchingLayer.WORKING:
+            raise ValidationError("working observation requires working layer")
+        _require_int("epoch_id", self.epoch_id, positive=True)
+        for name in ("observation_id", "requirement_version_id", "group_version_id"):
+            _require_text(name, getattr(self, name))
+        _require_int("requirement_ordinal", self.requirement_ordinal)
+        _require_hash("text_hash", self.text_hash)
+        _require_bool("present", self.present)
+        _require_int("updated_revision", self.updated_revision, positive=True)
+
+
+@dataclass(frozen=True, slots=True)
+class M5MatchingEdgeCurrent:
+    layer: M5MatchingLayer
+    requirement_version_id: str
+    text_hash: str
+    group_version_id: str
+    requirement_ordinal: int
+    refcount: int
+    installed_epoch_id: int
+    installed_revision: int
+
+    def __post_init__(self) -> None:
+        if self.layer is not M5MatchingLayer.CURRENT:
+            raise ValidationError("current edge requires current layer")
+        _require_text("requirement_version_id", self.requirement_version_id)
+        _require_hash("text_hash", self.text_hash)
+        _require_text("group_version_id", self.group_version_id)
+        _require_int("requirement_ordinal", self.requirement_ordinal)
+        _require_int("refcount", self.refcount, positive=True)
+        _require_int("installed_epoch_id", self.installed_epoch_id, positive=True)
+        _require_int("installed_revision", self.installed_revision)
+
+
+@dataclass(frozen=True, slots=True)
+class M5MatchingEdgeWorking:
+    layer: M5MatchingLayer
+    epoch_id: int
+    requirement_version_id: str
+    text_hash: str
+    group_version_id: str
+    requirement_ordinal: int
+    refcount: int
+    updated_revision: int
+
+    def __post_init__(self) -> None:
+        if self.layer is not M5MatchingLayer.WORKING:
+            raise ValidationError("working edge requires working layer")
+        _require_int("epoch_id", self.epoch_id, positive=True)
+        _require_text("requirement_version_id", self.requirement_version_id)
+        _require_hash("text_hash", self.text_hash)
+        _require_text("group_version_id", self.group_version_id)
+        _require_int("requirement_ordinal", self.requirement_ordinal)
+        _require_int("refcount", self.refcount)
+        _require_int("updated_revision", self.updated_revision, positive=True)
+
+
+@dataclass(frozen=True, slots=True)
+class M5MatchingMaskCurrent:
+    layer: M5MatchingLayer
+    group_version_id: str
+    text_hash: str
+    mask: int
+    installed_epoch_id: int
+    installed_revision: int
+
+    def __post_init__(self) -> None:
+        if self.layer is not M5MatchingLayer.CURRENT:
+            raise ValidationError("current mask requires current layer")
+        _require_text("group_version_id", self.group_version_id)
+        _require_hash("text_hash", self.text_hash)
+        _require_int("mask", self.mask, positive=True)
+        _require_int("installed_epoch_id", self.installed_epoch_id, positive=True)
+        _require_int("installed_revision", self.installed_revision)
+
+
+@dataclass(frozen=True, slots=True)
+class M5MatchingMaskWorking:
+    layer: M5MatchingLayer
+    epoch_id: int
+    group_version_id: str
+    text_hash: str
+    mask: int
+    updated_revision: int
+
+    def __post_init__(self) -> None:
+        if self.layer is not M5MatchingLayer.WORKING:
+            raise ValidationError("working mask requires working layer")
+        _require_int("epoch_id", self.epoch_id, positive=True)
+        _require_text("group_version_id", self.group_version_id)
+        _require_hash("text_hash", self.text_hash)
+        _require_int("mask", self.mask)
+        _require_int("updated_revision", self.updated_revision, positive=True)
+
+
+def _validate_hall_values(point: Any, *, optional: bool) -> None:
+    present = True if not optional else point.present
+    values = (
+        point.requirement_count,
+        point.mask_histogram,
+        point.neighbor_counts,
+        point.deficiencies,
+        point.maximum_deficiency,
+        point.matching_size,
+        point.distinct_hash_count,
+    )
+    if optional:
+        all_present = all(value is not None for value in values)
+        all_absent = all(value is None for value in values)
+        if (present and not all_present) or (not present and not all_absent):
+            raise ValidationError(
+                "working Hall payload options must be all present or all absent"
+            )
+    if not present:
+        return
+    count = point.requirement_count
+    assert count is not None
+    _require_int("requirement_count", count, positive=True)
+    if count > 8:
+        raise ValidationError("requirement_count exceeds the frozen bound")
+    size = 1 << count
+    for name in ("mask_histogram", "neighbor_counts", "deficiencies"):
+        sequence = getattr(point, name)
+        if not isinstance(sequence, tuple) or len(sequence) != size:
+            raise ValidationError(f"{name} must have 2^requirement_count entries")
+        for value in sequence:
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValidationError(f"{name} entries must be integers")
+            if name != "deficiencies" and value < 0:
+                raise ValidationError(f"{name} entries must be nonnegative")
+    if point.mask_histogram[0] != 0:
+        raise ValidationError("mask_histogram[0] must be zero")
+    if point.neighbor_counts[0] != 0 or point.deficiencies[0] != 0:
+        raise ValidationError("empty-subset Hall entries must be zero")
+    for subset in range(1, size):
+        expected_neighbours = sum(
+            point.mask_histogram[mask] for mask in range(1, size) if mask & subset
+        )
+        if point.neighbor_counts[subset] != expected_neighbours:
+            raise ValidationError("Hall neighbour counts are inconsistent")
+        if point.deficiencies[subset] != subset.bit_count() - expected_neighbours:
+            raise ValidationError("Hall deficiencies are inconsistent")
+    for name in ("maximum_deficiency", "matching_size", "distinct_hash_count"):
+        _require_int(name, getattr(point, name))
+    maximum = max(0, max(point.deficiencies[1:]))
+    if point.maximum_deficiency != maximum:
+        raise ValidationError("maximum deficiency is inconsistent")
+    if point.matching_size != count - maximum:
+        raise ValidationError("matching size is inconsistent")
+    if point.distinct_hash_count != sum(point.mask_histogram):
+        raise ValidationError("distinct hash count is inconsistent")
+
+
+@dataclass(frozen=True, slots=True)
+class M5MatchingHallCurrent:
+    layer: M5MatchingLayer
+    group_version_id: str
+    requirement_count: int
+    mask_histogram: tuple[int, ...]
+    neighbor_counts: tuple[int, ...]
+    deficiencies: tuple[int, ...]
+    maximum_deficiency: int
+    matching_size: int
+    distinct_hash_count: int
+    installed_epoch_id: int
+    installed_revision: int
+
+    def __post_init__(self) -> None:
+        if self.layer is not M5MatchingLayer.CURRENT:
+            raise ValidationError("current Hall state requires current layer")
+        _require_text("group_version_id", self.group_version_id)
+        _validate_hall_values(self, optional=False)
+        _require_int("installed_epoch_id", self.installed_epoch_id, positive=True)
+        _require_int("installed_revision", self.installed_revision)
+
+
+@dataclass(frozen=True, slots=True)
+class M5MatchingHallWorking:
+    layer: M5MatchingLayer
+    epoch_id: int
+    group_version_id: str
+    present: bool
+    requirement_count: int | None
+    mask_histogram: tuple[int, ...] | None
+    neighbor_counts: tuple[int, ...] | None
+    deficiencies: tuple[int, ...] | None
+    maximum_deficiency: int | None
+    matching_size: int | None
+    distinct_hash_count: int | None
+    updated_revision: int
+
+    def __post_init__(self) -> None:
+        if self.layer is not M5MatchingLayer.WORKING:
+            raise ValidationError("working Hall state requires working layer")
+        _require_int("epoch_id", self.epoch_id, positive=True)
+        _require_text("group_version_id", self.group_version_id)
+        _require_bool("present", self.present)
+        _validate_hall_values(self, optional=True)
+        _require_int("updated_revision", self.updated_revision, positive=True)
+
+
+M5MatchingObservationPoint = M5MatchingObservationCurrent | M5MatchingObservationWorking
+M5MatchingEdgePoint = M5MatchingEdgeCurrent | M5MatchingEdgeWorking
+M5MatchingMaskPoint = M5MatchingMaskCurrent | M5MatchingMaskWorking
+M5MatchingHallPoint = M5MatchingHallCurrent | M5MatchingHallWorking
+
+
+def _require_exact_point(
+    name: str, point: object | None, allowed: tuple[type, ...]
+) -> None:
+    if point is not None and type(point) not in allowed:
+        raise ValidationError(f"{name} has an invalid matching-point type")
+
+
+@dataclass(frozen=True, slots=True)
+class M5MatchingObservationChange:
+    observation_id: str
+    before: M5MatchingObservationPoint | None
+    after: M5MatchingObservationPoint | None
+    change_digest: str
+
+    def __post_init__(self) -> None:
+        _require_text("observation_id", self.observation_id)
+        allowed = (M5MatchingObservationCurrent, M5MatchingObservationWorking)
+        _require_exact_point("before", self.before, allowed)
+        _require_exact_point("after", self.after, allowed)
+        for point in (self.before, self.after):
+            if point is not None and point.observation_id != self.observation_id:
+                raise ValidationError("observation change repeats a different key")
+        expected = digests.matching_change_digest(
+            "m5-persisted-matching-observation-change-v1",
+            (text_field(self.observation_id),),
+            self.before,
+            self.after,
+        )
+        _require_identity("change_digest", self.change_digest, expected)
+
+
+@dataclass(frozen=True, slots=True)
+class M5MatchingEdgeChange:
+    requirement_version_id: str
+    text_hash: str
+    before: M5MatchingEdgePoint | None
+    after: M5MatchingEdgePoint | None
+    change_digest: str
+
+    def __post_init__(self) -> None:
+        _require_text("requirement_version_id", self.requirement_version_id)
+        _require_hash("text_hash", self.text_hash)
+        allowed = (M5MatchingEdgeCurrent, M5MatchingEdgeWorking)
+        _require_exact_point("before", self.before, allowed)
+        _require_exact_point("after", self.after, allowed)
+        for point in (self.before, self.after):
+            if point is not None and (
+                point.requirement_version_id != self.requirement_version_id
+                or point.text_hash != self.text_hash
+            ):
+                raise ValidationError("edge change repeats different coordinates")
+        expected = digests.matching_change_digest(
+            "m5-persisted-matching-edge-change-v1",
+            (
+                text_field(self.requirement_version_id),
+                hash_field(self.text_hash),
+            ),
+            self.before,
+            self.after,
+        )
+        _require_identity("change_digest", self.change_digest, expected)
+
+
+@dataclass(frozen=True, slots=True)
+class M5MatchingMaskChange:
+    group_version_id: str
+    text_hash: str
+    before: M5MatchingMaskPoint | None
+    after: M5MatchingMaskPoint | None
+    change_digest: str
+
+    def __post_init__(self) -> None:
+        _require_text("group_version_id", self.group_version_id)
+        _require_hash("text_hash", self.text_hash)
+        allowed = (M5MatchingMaskCurrent, M5MatchingMaskWorking)
+        _require_exact_point("before", self.before, allowed)
+        _require_exact_point("after", self.after, allowed)
+        for point in (self.before, self.after):
+            if point is not None and (
+                point.group_version_id != self.group_version_id
+                or point.text_hash != self.text_hash
+            ):
+                raise ValidationError("mask change repeats different coordinates")
+        expected = digests.matching_change_digest(
+            "m5-persisted-matching-mask-change-v1",
+            (
+                text_field(self.group_version_id),
+                hash_field(self.text_hash),
+            ),
+            self.before,
+            self.after,
+        )
+        _require_identity("change_digest", self.change_digest, expected)
+
+
+@dataclass(frozen=True, slots=True)
+class M5MatchingHallChange:
+    group_version_id: str
+    before: M5MatchingHallPoint | None
+    after: M5MatchingHallPoint | None
+    change_digest: str
+
+    def __post_init__(self) -> None:
+        _require_text("group_version_id", self.group_version_id)
+        allowed = (M5MatchingHallCurrent, M5MatchingHallWorking)
+        _require_exact_point("before", self.before, allowed)
+        _require_exact_point("after", self.after, allowed)
+        for point in (self.before, self.after):
+            if point is not None and point.group_version_id != self.group_version_id:
+                raise ValidationError("Hall change repeats a different group key")
+        expected = digests.matching_change_digest(
+            "m5-persisted-matching-hall-change-v1",
+            (text_field(self.group_version_id),),
+            self.before,
+            self.after,
+        )
+        _require_identity("change_digest", self.change_digest, expected)
+
+
+@dataclass(frozen=True, slots=True)
+class M5PersistedLogicalChange:
+    kind: M5PersistedLogicalChangeKind
+    object_id: str
+    before_hash: str | None
+    after_hash: str | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, M5PersistedLogicalChangeKind):
+            raise ValidationError("kind must be a D25 logical-change enum")
+        _require_text("object_id", self.object_id)
+        _validate_optional_hash("before_hash", self.before_hash)
+        _validate_optional_hash("after_hash", self.after_hash)
+        if self.before_hash is None and self.after_hash is None:
+            raise ValidationError("logical change requires a before or after hash")
+
+
+@dataclass(frozen=True, slots=True)
+class M5PersistedCertificateBindingRow:
+    kind: M5PersistedBindingKind
+    epoch_id: int
+    object_id: str
+    valid_from_revision: int
+    valid_to_revision: int | None
+    certificate_digest: str
+    binding_row_digest: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, M5PersistedBindingKind):
+            raise ValidationError("kind must be a D25 binding enum")
+        _require_int("epoch_id", self.epoch_id, positive=True)
+        _require_text("object_id", self.object_id)
+        _require_int("valid_from_revision", self.valid_from_revision, positive=True)
+        if self.valid_to_revision is not None:
+            _require_int("valid_to_revision", self.valid_to_revision, positive=True)
+            if self.valid_to_revision <= self.valid_from_revision:
+                raise ValidationError("binding close revision must follow its open")
+        _require_hash("certificate_digest", self.certificate_digest)
+        expected = digests.certificate_binding_row_digest(
+            self.kind,
+            self.epoch_id,
+            self.object_id,
+            self.valid_from_revision,
+            self.valid_to_revision,
+            self.certificate_digest,
+        )
+        _require_identity("binding_row_digest", self.binding_row_digest, expected)
+
+
+@dataclass(frozen=True, slots=True)
+class M5MatchingImagePoint:
+    current_decision_policy_version: str
+    current_installed_epoch_id: int
+    current_installed_revision: int
+    working_epoch_id: int
+    working_base_epoch_id: int
+    working_base_revision: int
+    working_decision_policy_version: str
+    working_updated_revision: int
+
+    def __post_init__(self) -> None:
+        _require_text(
+            "current_decision_policy_version", self.current_decision_policy_version
+        )
+        _require_text(
+            "working_decision_policy_version", self.working_decision_policy_version
+        )
+        for name in (
+            "current_installed_epoch_id",
+            "working_epoch_id",
+            "working_base_epoch_id",
+            "working_updated_revision",
+        ):
+            _require_int(name, getattr(self, name), positive=True)
+        _require_int("current_installed_revision", self.current_installed_revision)
+        _require_int("working_base_revision", self.working_base_revision)
+
+
+MATCHING_WORK_COUNTER_NAMES = (
+    "contribution_additions",
+    "contribution_removals",
+    "requirement_observation_changes_processed",
+    "policy_candidate_observations",
+    "ordered_policy_range_probes",
+    "ordered_index_operations",
+    "canonical_sort_items",
+    "edge_refcount_keys_updated",
+    "distinct_edge_crossings",
+    "hash_mask_transitions",
+    "hash_masks_initialized",
+    "hall_zeta_additions",
+    "hall_subset_entries_examined",
+    "hall_neighbor_entries_changed",
+    "hall_deficiency_entries_examined",
+    "certificate_repairs",
+    "certificate_reconstructions",
+    "policy_rebindings",
+    "representative_hashes_read",
+    "representative_observations_read",
+    "augmenting_searches",
+    "augmenting_requirement_visits",
+    "augmenting_edge_visits",
+    "certificate_digest_input_bytes",
+    "group_local_state_operations",
+    "groups_touched",
+    "claims_touched",
+    "answers_touched",
+    "claim_status_changes",
+    "answer_status_changes",
+    "output_bytes",
+    "requirement_state_only_changes",
+    "group_state_only_changes",
+    "claim_state_only_changes",
+    "group_certificate_only_changes",
+    "claim_certificate_only_changes",
+    "public_status_deltas",
+)
+
+
+def m5_overlay_work_values(work: M5OverlayWork) -> tuple[int, ...]:
+    """Flatten accepted overlay work in the exact D25 37-counter order."""
+
+    if type(work) is not M5OverlayWork:
+        raise ValidationError("matching work must be an exact M5OverlayWork")
+    matching = work.matching
+    return (
+        matching.contribution_additions,
+        matching.contribution_removals,
+        matching.requirement_observation_changes_processed,
+        matching.policy_candidate_observations,
+        matching.ordered_policy_range_probes,
+        matching.ordered_index_operations,
+        matching.canonical_sort_items,
+        matching.edge_refcount_keys_updated,
+        matching.distinct_edge_crossings,
+        matching.hash_mask_transitions,
+        matching.hash_masks_initialized,
+        matching.hall_zeta_additions,
+        matching.hall_subset_entries_examined,
+        matching.hall_neighbor_entries_changed,
+        matching.hall_deficiency_entries_examined,
+        matching.certificate_repairs,
+        matching.certificate_reconstructions,
+        matching.policy_rebindings,
+        matching.representative_hashes_read,
+        matching.representative_observations_read,
+        matching.augmenting_searches,
+        matching.augmenting_requirement_visits,
+        matching.augmenting_edge_visits,
+        matching.certificate_digest_input_bytes,
+        matching.group_local_state_operations,
+        matching.groups_touched,
+        matching.claims_touched,
+        matching.answers_touched,
+        matching.claim_status_changes,
+        matching.answer_status_changes,
+        matching.output_bytes,
+        work.requirement_state_only_changes,
+        work.group_state_only_changes,
+        work.claim_state_only_changes,
+        work.group_certificate_only_changes,
+        work.claim_certificate_only_changes,
+        work.public_status_deltas,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class M5PersistedMatchingWork:
+    contribution_additions: int = 0
+    contribution_removals: int = 0
+    requirement_observation_changes_processed: int = 0
+    policy_candidate_observations: int = 0
+    ordered_policy_range_probes: int = 0
+    ordered_index_operations: int = 0
+    canonical_sort_items: int = 0
+    edge_refcount_keys_updated: int = 0
+    distinct_edge_crossings: int = 0
+    hash_mask_transitions: int = 0
+    hash_masks_initialized: int = 0
+    hall_zeta_additions: int = 0
+    hall_subset_entries_examined: int = 0
+    hall_neighbor_entries_changed: int = 0
+    hall_deficiency_entries_examined: int = 0
+    certificate_repairs: int = 0
+    certificate_reconstructions: int = 0
+    policy_rebindings: int = 0
+    representative_hashes_read: int = 0
+    representative_observations_read: int = 0
+    augmenting_searches: int = 0
+    augmenting_requirement_visits: int = 0
+    augmenting_edge_visits: int = 0
+    certificate_digest_input_bytes: int = 0
+    group_local_state_operations: int = 0
+    groups_touched: int = 0
+    claims_touched: int = 0
+    answers_touched: int = 0
+    claim_status_changes: int = 0
+    answer_status_changes: int = 0
+    output_bytes: int = 0
+    requirement_state_only_changes: int = 0
+    group_state_only_changes: int = 0
+    claim_state_only_changes: int = 0
+    group_certificate_only_changes: int = 0
+    claim_certificate_only_changes: int = 0
+    public_status_deltas: int = 0
+    matching_work_digest: str = ""
+
+    def __post_init__(self) -> None:
+        for name, value in zip(
+            MATCHING_WORK_COUNTER_NAMES, self.counter_values, strict=True
+        ):
+            _require_int(name, value)
+        expected = digests.matching_work_digest(self.counter_values)
+        if self.matching_work_digest:
+            _require_identity(
+                "matching_work_digest", self.matching_work_digest, expected
+            )
+        else:
+            object.__setattr__(self, "matching_work_digest", expected)
+
+    @property
+    def counter_values(self) -> tuple[int, ...]:
+        return (
+            self.contribution_additions,
+            self.contribution_removals,
+            self.requirement_observation_changes_processed,
+            self.policy_candidate_observations,
+            self.ordered_policy_range_probes,
+            self.ordered_index_operations,
+            self.canonical_sort_items,
+            self.edge_refcount_keys_updated,
+            self.distinct_edge_crossings,
+            self.hash_mask_transitions,
+            self.hash_masks_initialized,
+            self.hall_zeta_additions,
+            self.hall_subset_entries_examined,
+            self.hall_neighbor_entries_changed,
+            self.hall_deficiency_entries_examined,
+            self.certificate_repairs,
+            self.certificate_reconstructions,
+            self.policy_rebindings,
+            self.representative_hashes_read,
+            self.representative_observations_read,
+            self.augmenting_searches,
+            self.augmenting_requirement_visits,
+            self.augmenting_edge_visits,
+            self.certificate_digest_input_bytes,
+            self.group_local_state_operations,
+            self.groups_touched,
+            self.claims_touched,
+            self.answers_touched,
+            self.claim_status_changes,
+            self.answer_status_changes,
+            self.output_bytes,
+            self.requirement_state_only_changes,
+            self.group_state_only_changes,
+            self.claim_state_only_changes,
+            self.group_certificate_only_changes,
+            self.claim_certificate_only_changes,
+            self.public_status_deltas,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class M5MatchingGroupShape:
+    group_version_id: str
+    requirement_count: int
+    requirements: tuple[tuple[int, str], ...]
+
+    def __post_init__(self) -> None:
+        _require_text("group_version_id", self.group_version_id)
+        _require_int("requirement_count", self.requirement_count, positive=True)
+        _require_tuple("requirements", self.requirements)
+        if (
+            self.requirement_count > 8
+            or len(self.requirements) != self.requirement_count
+        ):
+            raise ValidationError(
+                "group shape must contain at most eight dense requirements"
+            )
+        if tuple(o for o, _ in self.requirements) != tuple(
+            range(self.requirement_count)
+        ):
+            raise ValidationError("group-shape ordinals must be dense")
+        for _, requirement_id in self.requirements:
+            _require_text("requirement_version_id", requirement_id)
+
+    @property
+    def digest_row(self) -> tuple[str, int, tuple[tuple[int, str], ...]]:
+        return (self.group_version_id, self.requirement_count, self.requirements)
+
+
+@dataclass(frozen=True, slots=True)
+class M5PersistedMatchingTransitionIntent:
+    source_kind: M5PersistedMatchingSourceKind
+    source_id: str
+    source_identity_hash: str
+    before_epoch_id: int
+    before_revision: int
+    resulting_epoch_id: int
+    resulting_revision: int
+    decision_policy_version: str
+    group_shapes: tuple[M5MatchingGroupShape, ...]
+    observation_ids: tuple[str, ...]
+    edge_keys: tuple[tuple[str, int, str, str], ...]
+    mask_keys: tuple[tuple[str, str], ...]
+    hall_group_ids: tuple[str, ...]
+    requirement_state_ids: tuple[str, ...]
+    group_state_ids: tuple[str, ...]
+    claim_state_ids: tuple[str, ...]
+    answer_state_ids: tuple[str, ...]
+    group_certificate_ids: tuple[str, ...]
+    claim_certificate_ids: tuple[str, ...]
+    intent_digest: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source_kind, M5PersistedMatchingSourceKind):
+            raise ValidationError("source_kind must be a D25 source enum")
+        _require_text("source_id", self.source_id)
+        _require_hash("source_identity_hash", self.source_identity_hash)
+        for name in ("before_epoch_id", "resulting_epoch_id"):
+            _require_int(name, getattr(self, name), positive=True)
+        for name in ("before_revision", "resulting_revision"):
+            _require_int(name, getattr(self, name))
+        if self.source_kind is M5PersistedMatchingSourceKind.STRUCTURAL_OPEN:
+            if self.resulting_revision != 1:
+                raise ValidationError(
+                    "structural-open intent must result at revision 1"
+                )
+        elif (
+            self.before_epoch_id != self.resulting_epoch_id
+            or self.resulting_revision != self.before_revision + 1
+        ):
+            raise ValidationError("later intent must advance one same-epoch revision")
+        _require_text("decision_policy_version", self.decision_policy_version)
+        for name in ("group_shapes", "edge_keys", "mask_keys"):
+            _require_tuple(name, getattr(self, name))
+        if self.group_shapes != tuple(
+            sorted(self.group_shapes, key=lambda v: v.group_version_id)
+        ) or len({v.group_version_id for v in self.group_shapes}) != len(
+            self.group_shapes
+        ):
+            raise ValidationError("group_shapes must be group-ID sorted and unique")
+        for name in (
+            "observation_ids",
+            "hall_group_ids",
+            "requirement_state_ids",
+            "group_state_ids",
+            "claim_state_ids",
+            "answer_state_ids",
+            "group_certificate_ids",
+            "claim_certificate_ids",
+        ):
+            _require_sorted_unique_text(name, getattr(self, name))
+        for group_id, ordinal, text_hash, requirement_id in self.edge_keys:
+            _require_text("group_version_id", group_id)
+            _require_int("requirement_ordinal", ordinal)
+            _require_hash("text_hash", text_hash)
+            _require_text("requirement_version_id", requirement_id)
+        for group_id, text_hash in self.mask_keys:
+            _require_text("group_version_id", group_id)
+            _require_hash("text_hash", text_hash)
+        if self.edge_keys != tuple(
+            sorted(set(self.edge_keys))
+        ) or self.mask_keys != tuple(sorted(set(self.mask_keys))):
+            raise ValidationError("matching intent keys must be sorted and unique")
+        expected = digests.persisted_matching_transition_intent_digest(
+            source_kind=self.source_kind,
+            source_id=self.source_id,
+            source_identity_hash=self.source_identity_hash,
+            before_epoch_id=self.before_epoch_id,
+            before_revision=self.before_revision,
+            resulting_epoch_id=self.resulting_epoch_id,
+            resulting_revision=self.resulting_revision,
+            decision_policy_version=self.decision_policy_version,
+            group_shapes=tuple(v.digest_row for v in self.group_shapes),
+            observation_ids=self.observation_ids,
+            edge_keys=self.edge_keys,
+            mask_keys=self.mask_keys,
+            hall_group_ids=self.hall_group_ids,
+            requirement_state_ids=self.requirement_state_ids,
+            group_state_ids=self.group_state_ids,
+            claim_state_ids=self.claim_state_ids,
+            answer_state_ids=self.answer_state_ids,
+            group_certificate_ids=self.group_certificate_ids,
+            claim_certificate_ids=self.claim_certificate_ids,
+        )
+        _require_identity("intent_digest", self.intent_digest, expected)
+
+
+@dataclass(frozen=True, slots=True)
+class M5PersistedMatchingPatch:
+    source_kind: M5PersistedMatchingSourceKind
+    source_id: str
+    source_identity_hash: str
+    before_epoch_id: int
+    before_revision: int
+    resulting_epoch_id: int
+    resulting_revision: int
+    decision_policy_version: str
+    group_shape_set_digest: str
+    observation_change_digests: tuple[str, ...]
+    edge_change_digests: tuple[str, ...]
+    mask_change_digests: tuple[str, ...]
+    hall_change_digests: tuple[str, ...]
+    logical_overlay_patch_digest: str
+    matching_work_digest: str
+    patch_digest: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source_kind, M5PersistedMatchingSourceKind):
+            raise ValidationError("source_kind must be a D25 source enum")
+        _require_text("source_id", self.source_id)
+        _require_text("decision_policy_version", self.decision_policy_version)
+        _require_hash("source_identity_hash", self.source_identity_hash)
+        for name in ("before_epoch_id", "resulting_epoch_id"):
+            _require_int(name, getattr(self, name), positive=True)
+        for name in ("before_revision", "resulting_revision"):
+            _require_int(name, getattr(self, name))
+        if self.source_kind is M5PersistedMatchingSourceKind.STRUCTURAL_OPEN:
+            if self.resulting_revision != 1:
+                raise ValidationError("structural-open patch must result at revision 1")
+        elif (
+            self.before_epoch_id != self.resulting_epoch_id
+            or self.resulting_revision != self.before_revision + 1
+        ):
+            raise ValidationError("later patch must advance one same-epoch revision")
+        for name in (
+            "group_shape_set_digest",
+            "logical_overlay_patch_digest",
+            "matching_work_digest",
+        ):
+            _require_hash(name, getattr(self, name))
+        for name in (
+            "observation_change_digests",
+            "edge_change_digests",
+            "mask_change_digests",
+            "hall_change_digests",
+        ):
+            _require_tuple(name, getattr(self, name))
+            for value in getattr(self, name):
+                _require_hash(name, value)
+        expected = digests.persisted_matching_patch_digest(
+            source_kind=self.source_kind,
+            source_id=self.source_id,
+            source_identity_hash=self.source_identity_hash,
+            before_epoch_id=self.before_epoch_id,
+            before_revision=self.before_revision,
+            resulting_epoch_id=self.resulting_epoch_id,
+            resulting_revision=self.resulting_revision,
+            decision_policy_version=self.decision_policy_version,
+            group_shape_set_digest=self.group_shape_set_digest,
+            observation_change_digests=self.observation_change_digests,
+            edge_change_digests=self.edge_change_digests,
+            mask_change_digests=self.mask_change_digests,
+            hall_change_digests=self.hall_change_digests,
+            logical_overlay_patch_digest_value=self.logical_overlay_patch_digest,
+            matching_work_digest_value=self.matching_work_digest,
+        )
+        _require_identity("patch_digest", self.patch_digest, expected)
+
+
+@dataclass(frozen=True, slots=True)
+class M5PersistedMatchingPatchReceipt:
+    patch: M5PersistedMatchingPatch
+    contribution_digest: str
+    accumulated_work: M5OverlayWork
+    resulting_revision: int
+    exact_replay: bool
+
+    def __post_init__(self) -> None:
+        if type(self.patch) is not M5PersistedMatchingPatch:
+            raise ValidationError("receipt patch has an invalid concrete type")
+        _require_hash("contribution_digest", self.contribution_digest)
+        _require_int("resulting_revision", self.resulting_revision)
+        _require_bool("exact_replay", self.exact_replay)
+        m5_overlay_work_values(self.accumulated_work)
+        if self.resulting_revision != self.patch.resulting_revision:
+            raise ValidationError("receipt and patch revisions disagree")
+
+
+@dataclass(frozen=True, slots=True)
+class M5PersistedMatchingContribution:
+    epoch_id: int
+    source_kind: M5PersistedMatchingSourceKind
+    source_id: str
+    source_identity_hash: str
+    before_epoch_id: int
+    before_revision: int
+    resulting_revision: int
+    patch_digest: str
+    work: M5OverlayWork
+    contribution_digest: str
+
+    def __post_init__(self) -> None:
+        _require_int("epoch_id", self.epoch_id, positive=True)
+        if not isinstance(self.source_kind, M5PersistedMatchingSourceKind):
+            raise ValidationError("source_kind must be a D25 source enum")
+        _require_text("source_id", self.source_id)
+        _require_hash("source_identity_hash", self.source_identity_hash)
+        _require_int("before_epoch_id", self.before_epoch_id, positive=True)
+        _require_int("before_revision", self.before_revision)
+        _require_int("resulting_revision", self.resulting_revision, positive=True)
+        _require_hash("patch_digest", self.patch_digest)
+        work_digest = digests.matching_work_digest(m5_overlay_work_values(self.work))
+        expected = digests.matching_work_contribution_digest(
+            epoch_id=self.epoch_id,
+            source_kind=self.source_kind,
+            source_id=self.source_id,
+            source_identity_hash=self.source_identity_hash,
+            before_epoch_id=self.before_epoch_id,
+            before_revision=self.before_revision,
+            resulting_revision=self.resulting_revision,
+            patch_digest=self.patch_digest,
+            matching_work_digest_value=work_digest,
+        )
+        _require_identity("contribution_digest", self.contribution_digest, expected)
+
+
+@dataclass(frozen=True, slots=True)
+class M5PersistedMatchingPhysicalMismatch:
+    family: M5MatchingAuditFamily
+    key: tuple[str, ...]
+    expected_row_digest: str | None
+    actual_row_digest: str | None
+    actual_error: M5MatchingAuditError | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.family, M5MatchingAuditFamily):
+            raise ValidationError("family must be a D25 audit-family enum")
+        expected_arity = (
+            2
+            if self.family in {M5MatchingAuditFamily.EDGE, M5MatchingAuditFamily.MASK}
+            else 1
+        )
+        _require_tuple("key", self.key)
+        if len(self.key) != expected_arity:
+            raise ValidationError("physical mismatch key has wrong arity")
+        _require_text("audit key", self.key[0])
+        if expected_arity == 2:
+            _require_hash("audit key hash", self.key[1])
+        _validate_optional_hash("expected_row_digest", self.expected_row_digest)
+        _validate_optional_hash("actual_row_digest", self.actual_row_digest)
+        if (
+            self.expected_row_digest is None
+            and self.actual_row_digest is None
+            and self.actual_error is None
+        ):
+            raise ValidationError("a mismatch cannot have both rows absent")
+        if (
+            self.actual_error is None
+            and self.expected_row_digest is not None
+            and self.expected_row_digest == self.actual_row_digest
+        ):
+            raise ValidationError("equal physical rows are not a mismatch")
+        if self.actual_error is not None and not isinstance(
+            self.actual_error, M5MatchingAuditError
+        ):
+            raise ValidationError("actual_error must be a D25 audit-error enum")
+        if self.actual_error is not None and (
+            self.actual_error is not M5MatchingAuditError.MALFORMED_PAYLOAD
+            or self.actual_row_digest is not None
+        ):
+            raise ValidationError("malformed payload must have no actual row digest")
+
+
+@dataclass(frozen=True, slots=True)
+class M5PersistedMatchingProvenanceMismatch:
+    kind: M5MatchingProvenanceKind
+    epoch_id: int
+    expected_row_digest: str | None
+    actual_row_digest: str | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, M5MatchingProvenanceKind):
+            raise ValidationError("kind must be a D25 provenance-kind enum")
+        _require_int("epoch_id", self.epoch_id, positive=True)
+        _validate_optional_hash("expected_row_digest", self.expected_row_digest)
+        _validate_optional_hash("actual_row_digest", self.actual_row_digest)
+        if self.expected_row_digest is None and self.actual_row_digest is None:
+            raise ValidationError("a provenance mismatch cannot have both rows absent")
+        if (
+            self.expected_row_digest is not None
+            and self.expected_row_digest == self.actual_row_digest
+        ):
+            raise ValidationError("equal provenance rows are not a mismatch")
+
+
+@dataclass(frozen=True, slots=True)
+class M5PersistedMatchingPhysicalAudit:
+    head_epoch_id: int
+    head_revision: int
+    decision_policy_version: str
+    python_expected_projection_digest: str
+    sql_expected_projection_digest: str
+    actual_projection_digest: str | None
+    actual_error: M5MatchingAuditError | None
+    provenance_ok: bool
+    provenance_replay_digest: str | None
+    working_image_expected_provenance_digest: str | None
+    working_image_actual_provenance_digest: str | None
+    accumulator_expected_provenance_digest: str | None
+    accumulator_actual_provenance_digest: str | None
+    mismatches: tuple[M5PersistedMatchingPhysicalMismatch, ...]
+    provenance_mismatches: tuple[M5PersistedMatchingProvenanceMismatch, ...]
+    audit_digest: str
+
+    def __post_init__(self) -> None:
+        _require_int("head_epoch_id", self.head_epoch_id, positive=True)
+        _require_int("head_revision", self.head_revision)
+        _require_text("decision_policy_version", self.decision_policy_version)
+        _require_bool("provenance_ok", self.provenance_ok)
+        if self.actual_error is not None and not isinstance(
+            self.actual_error, M5MatchingAuditError
+        ):
+            raise ValidationError("actual_error must be a D25 audit-error enum")
+        _require_tuple("mismatches", self.mismatches)
+        _require_tuple("provenance_mismatches", self.provenance_mismatches)
+        for name in (
+            "python_expected_projection_digest",
+            "sql_expected_projection_digest",
+        ):
+            _require_hash(name, getattr(self, name))
+        if (
+            self.python_expected_projection_digest
+            != self.sql_expected_projection_digest
+        ):
+            raise ValidationError("independent expected projections must agree")
+        for name in (
+            "actual_projection_digest",
+            "provenance_replay_digest",
+            "working_image_expected_provenance_digest",
+            "working_image_actual_provenance_digest",
+            "accumulator_expected_provenance_digest",
+            "accumulator_actual_provenance_digest",
+        ):
+            _validate_optional_hash(name, getattr(self, name))
+        malformed = self.actual_error is M5MatchingAuditError.MALFORMED_PAYLOAD
+        has_malformed_mismatch = any(
+            m.actual_error is M5MatchingAuditError.MALFORMED_PAYLOAD
+            for m in self.mismatches
+        )
+        if has_malformed_mismatch != malformed:
+            raise ValidationError(
+                "keyed malformed mismatch and artifact error must agree"
+            )
+        if malformed:
+            if (
+                self.actual_projection_digest is not None
+                or self.provenance_ok
+                or self.provenance_replay_digest is not None
+                or any(
+                    (
+                        self.working_image_expected_provenance_digest,
+                        self.working_image_actual_provenance_digest,
+                        self.accumulator_expected_provenance_digest,
+                        self.accumulator_actual_provenance_digest,
+                    )
+                )
+                or self.provenance_mismatches
+            ):
+                raise ValidationError(
+                    "malformed-current audit must use skipped provenance shape"
+                )
+        elif self.actual_projection_digest is None:
+            raise ValidationError(
+                "canonical audit requires an actual projection digest"
+            )
+        elif any(
+            value is None
+            for value in (
+                self.provenance_replay_digest,
+                self.working_image_expected_provenance_digest,
+                self.working_image_actual_provenance_digest,
+                self.accumulator_expected_provenance_digest,
+                self.accumulator_actual_provenance_digest,
+            )
+        ):
+            raise ValidationError(
+                "canonical audit requires complete provenance digests"
+            )
+        rank = {
+            M5MatchingAuditFamily.OBSERVATION: 0,
+            M5MatchingAuditFamily.EDGE: 1,
+            M5MatchingAuditFamily.MASK: 2,
+            M5MatchingAuditFamily.HALL: 3,
+        }
+        if self.mismatches != tuple(
+            sorted(self.mismatches, key=lambda m: (rank[m.family], m.key))
+        ):
+            raise ValidationError("physical mismatches are not canonically sorted")
+        physical_keys = tuple((m.family, m.key) for m in self.mismatches)
+        if len(set(physical_keys)) != len(physical_keys):
+            raise ValidationError("physical mismatches repeat an outer key")
+        pr = {
+            M5MatchingProvenanceKind.WORKING_IMAGE: 0,
+            M5MatchingProvenanceKind.ACCUMULATOR: 1,
+        }
+        if self.provenance_mismatches != tuple(
+            sorted(self.provenance_mismatches, key=lambda m: (pr[m.kind], m.epoch_id))
+        ):
+            raise ValidationError("provenance mismatches are not canonically sorted")
+        provenance_keys = tuple(
+            (m.kind, m.epoch_id) for m in self.provenance_mismatches
+        )
+        if len(set(provenance_keys)) != len(provenance_keys):
+            raise ValidationError("provenance mismatches repeat a key")
+        expected = digests.physical_audit_digest(
+            head_epoch_id=self.head_epoch_id,
+            head_revision=self.head_revision,
+            decision_policy_version=self.decision_policy_version,
+            python_expected_projection_digest=self.python_expected_projection_digest,
+            sql_expected_projection_digest=self.sql_expected_projection_digest,
+            actual_projection_digest=self.actual_projection_digest,
+            actual_error=self.actual_error,
+            provenance_ok=self.provenance_ok,
+            provenance_replay_digest=self.provenance_replay_digest,
+            working_image_expected_provenance_digest=self.working_image_expected_provenance_digest,
+            working_image_actual_provenance_digest=self.working_image_actual_provenance_digest,
+            accumulator_expected_provenance_digest=self.accumulator_expected_provenance_digest,
+            accumulator_actual_provenance_digest=self.accumulator_actual_provenance_digest,
+            mismatches=tuple(
+                (
+                    m.family,
+                    m.key,
+                    m.expected_row_digest,
+                    m.actual_row_digest,
+                    m.actual_error,
+                )
+                for m in self.mismatches
+            ),
+            provenance_mismatches=tuple(
+                (m.kind, m.epoch_id, m.expected_row_digest, m.actual_row_digest)
+                for m in self.provenance_mismatches
+            ),
+        )
+        _require_identity("audit_digest", self.audit_digest, expected)
+
+    @property
+    def passed(self) -> bool:
+        return (
+            self.actual_error is None
+            and self.actual_projection_digest is not None
+            and self.python_expected_projection_digest
+            == self.sql_expected_projection_digest
+            == self.actual_projection_digest
+            and not self.mismatches
+            and self.provenance_ok
+            and self.provenance_replay_digest is not None
+            and self.working_image_expected_provenance_digest
+            == self.working_image_actual_provenance_digest
+            is not None
+            and self.accumulator_expected_provenance_digest
+            == self.accumulator_actual_provenance_digest
+            is not None
+            and not self.provenance_mismatches
+        )
+
+
 class M5ActivationPort(Protocol):
     def activate(self, request: M5ActivationRequest) -> M5ActivationReceipt: ...
 
@@ -6588,6 +7758,7 @@ class M5TypedApplication(Protocol):
 __all__ = [
     "ActiveChunkSnapshot",
     "ActiveChunkSnapshotEntry",
+    "MATCHING_WORK_COUNTER_NAMES",
     "M5ActivationPort",
     "M5ActivationReceipt",
     "M5ActivationRequest",
@@ -6621,9 +7792,45 @@ __all__ = [
     "M5JobKind",
     "M5JobLease",
     "M5JobState",
+    "M5MatchingAuditError",
+    "M5MatchingAuditFamily",
+    "M5MatchingEdgeChange",
+    "M5MatchingEdgeCurrent",
+    "M5MatchingEdgePoint",
+    "M5MatchingEdgeWorking",
+    "M5MatchingEpochStatus",
+    "M5MatchingGroupShape",
+    "M5MatchingHallChange",
+    "M5MatchingHallCurrent",
+    "M5MatchingHallPoint",
+    "M5MatchingHallWorking",
+    "M5MatchingImagePoint",
+    "M5MatchingLayer",
+    "M5MatchingMaskChange",
+    "M5MatchingMaskCurrent",
+    "M5MatchingMaskPoint",
+    "M5MatchingMaskWorking",
+    "M5MatchingObservationCurrent",
+    "M5MatchingObservationChange",
+    "M5MatchingObservationPoint",
+    "M5MatchingObservationWorking",
+    "M5MatchingProvenanceKind",
     "M5LeaseTerminalProjection",
     "M5LogicalJobSpec",
     "M5OwnerPendingCounter",
+    "M5PersistedBindingKind",
+    "M5PersistedCertificateBindingRow",
+    "M5PersistedLogicalChange",
+    "M5PersistedMatchingContribution",
+    "M5PersistedLogicalChangeKind",
+    "M5PersistedMatchingPatch",
+    "M5PersistedMatchingPatchReceipt",
+    "M5PersistedMatchingPhysicalAudit",
+    "M5PersistedMatchingPhysicalMismatch",
+    "M5PersistedMatchingProvenanceMismatch",
+    "M5PersistedMatchingSourceKind",
+    "M5PersistedMatchingTransitionIntent",
+    "M5PersistedMatchingWork",
     "M5RequirementAdmissionChannel",
     "M5RequirementAdmittedPair",
     "M5RequirementAdmittedPairSource",
@@ -6676,4 +7883,5 @@ __all__ = [
     "validate_combined_deltas",
     "validate_requirement_channel_hits",
     "validate_requirement_scope_selections",
+    "m5_overlay_work_values",
 ]
