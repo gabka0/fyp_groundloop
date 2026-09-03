@@ -3733,6 +3733,39 @@ def test_d25_mask_change_binds_outer_key_and_point_bytes() -> None:
         )
 
 
+def test_d25_physical_changes_reject_empty_and_edge_coordinate_mutation() -> None:
+    from groundloop.m5.runtime.contracts import (
+        M5MatchingEdgeChange,
+        M5MatchingEdgeWorking,
+        M5MatchingHallChange,
+        M5MatchingLayer,
+        M5MatchingMaskChange,
+        M5MatchingObservationChange,
+    )
+
+    constructors = (
+        lambda: M5MatchingObservationChange("o", None, None, H1),
+        lambda: M5MatchingEdgeChange("r", H1, None, None, H2),
+        lambda: M5MatchingMaskChange("g", H1, None, None, H2),
+        lambda: M5MatchingHallChange("g", None, None, H2),
+    )
+    for constructor in constructors:
+        with pytest.raises(ValidationError):
+            constructor()
+    before = M5MatchingEdgeWorking(M5MatchingLayer.WORKING, 2, "r", H1, "g", 0, 1, 1)
+    after = replace(before, group_version_id="other", updated_revision=2)
+    with pytest.raises(ValidationError):
+        M5MatchingEdgeChange("r", H1, before, after, H2)
+    with pytest.raises(ValidationError):
+        M5MatchingEdgeChange(
+            "r",
+            H1,
+            before,
+            replace(after, group_version_id="g", requirement_ordinal=1),
+            H2,
+        )
+
+
 def test_d25_intent_enforces_canonical_keys_revision_and_digest() -> None:
     from groundloop.m5.runtime import digests as runtime_digests
     from groundloop.m5.runtime.contracts import (
@@ -3920,6 +3953,98 @@ def test_d25_logical_patch_rejects_unlinked_change() -> None:
             patch_preimage,
             patch_digest,
         )
+
+
+def test_d25_complete_empty_aggregate_recomputes_every_outer_identity() -> None:
+    from groundloop.m5.incremental_overlay import M5OverlayWork
+    from groundloop.m5.matching import MatchingWorkCounters
+    from groundloop.m5.runtime import digests as runtime_digests
+    from groundloop.m5.runtime.contracts import (
+        M5PersistedLogicalOverlayPatch,
+        M5PersistedMatchingPatch,
+        M5PersistedMatchingPatchArtifact,
+        M5PersistedMatchingSourceKind,
+        m5_overlay_work_values,
+    )
+
+    output_digest, output_bytes, output_preimage = (
+        runtime_digests.logical_output_digest(())
+    )
+    logical_digest = runtime_digests.logical_overlay_patch_digest(
+        (), (), output_digest, output_bytes
+    )
+    logical_preimage = runtime_digests.logical_overlay_patch_preimage(
+        (), (), output_digest, output_bytes
+    )
+    logical = M5PersistedLogicalOverlayPatch(
+        4,
+        (),
+        (),
+        (),
+        output_preimage,
+        output_digest,
+        output_bytes,
+        logical_preimage,
+        logical_digest,
+    )
+    work = M5OverlayWork(matching=MatchingWorkCounters(output_bytes=output_bytes))
+    work_digest = runtime_digests.matching_work_digest(m5_overlay_work_values(work))
+    shape_digest = runtime_digests.matching_group_shape_set_digest(())
+    values = dict(
+        source_kind=M5PersistedMatchingSourceKind.DIRECT_TRANSITION,
+        source_id="source",
+        source_identity_hash=H1,
+        before_epoch_id=2,
+        before_revision=3,
+        resulting_epoch_id=2,
+        resulting_revision=4,
+        decision_policy_version="policy",
+        group_shape_set_digest=shape_digest,
+        observation_change_digests=(),
+        edge_change_digests=(),
+        mask_change_digests=(),
+        hall_change_digests=(),
+        logical_overlay_patch_digest_value=logical_digest,
+        matching_work_digest_value=work_digest,
+    )
+    patch_digest = runtime_digests.persisted_matching_patch_digest(**values)
+    patch = M5PersistedMatchingPatch(
+        values["source_kind"],
+        "source",
+        H1,
+        2,
+        3,
+        2,
+        4,
+        "policy",
+        shape_digest,
+        (),
+        (),
+        (),
+        (),
+        logical_digest,
+        work_digest,
+        patch_digest,
+    )
+    artifact = M5PersistedMatchingPatchArtifact(
+        patch,
+        (),
+        runtime_digests.matching_group_shape_set_preimage(()),
+        (),
+        (),
+        (),
+        (),
+        (),
+        (),
+        (),
+        (),
+        logical,
+        work,
+        runtime_digests.persisted_matching_patch_preimage(**values),
+    )
+    assert artifact.patch.patch_digest == patch_digest
+    with pytest.raises(ValidationError):
+        replace(artifact, patch_preimage=artifact.patch_preimage + b"x")
 
 
 def test_d25_points_and_audit_accept_frozen_revision_zero() -> None:

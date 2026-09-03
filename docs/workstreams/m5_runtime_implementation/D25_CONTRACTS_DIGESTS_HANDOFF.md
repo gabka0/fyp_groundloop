@@ -28,7 +28,11 @@ It changed only the five Lane A paths authorized by
   binding contracts;
 - complete immutable aggregate physical/logical patch artifacts retaining and
   recomputing child, logical-output, logical-overlay, 37-counter work and outer
-  patch identities from their exact canonical preimages;
+  patch identities from their exact canonical preimages, including source-kind
+  point admissibility, explicit after images, binding-epoch equality and
+  derivable D22 after-hash checks (unchanged group/claim certificate inputs are
+  intentionally deferred to locked store composition because migration 017
+  does not retain them);
 - explicitly named 37-field persisted work vector and an exact flattening of
   the accepted `M5OverlayWork` receipt/contribution type;
 - exact D25 schema, group-shape, point/change, logical patch, binding, patch,
@@ -45,7 +49,7 @@ database, deployment, or runtime mode was touched.
 
 ## Executed gates
 
-- focused owned tests: **129 passed**;
+- focused owned tests: **131 passed**;
 - complete pure M5 runtime directory: **407 passed**;
 - M4 public API plus legacy compatibility: **14 passed**;
 - Ruff over both owned source and test files: passed;
