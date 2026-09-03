@@ -6884,6 +6884,8 @@ class M5MatchingObservationChange:
     change_digest: str
 
     def __post_init__(self) -> None:
+        if self.before is None and self.after is None:
+            raise ValidationError("observation change requires before or after")
         _require_text("observation_id", self.observation_id)
         allowed = (M5MatchingObservationCurrent, M5MatchingObservationWorking)
         _require_exact_point("before", self.before, allowed)
@@ -6909,6 +6911,8 @@ class M5MatchingEdgeChange:
     change_digest: str
 
     def __post_init__(self) -> None:
+        if self.before is None and self.after is None:
+            raise ValidationError("edge change requires before or after")
         _require_text("requirement_version_id", self.requirement_version_id)
         _require_hash("text_hash", self.text_hash)
         allowed = (M5MatchingEdgeCurrent, M5MatchingEdgeWorking)
@@ -6920,6 +6924,14 @@ class M5MatchingEdgeChange:
                 or point.text_hash != self.text_hash
             ):
                 raise ValidationError("edge change repeats different coordinates")
+        points = tuple(
+            point for point in (self.before, self.after) if point is not None
+        )
+        if len(points) == 2 and (
+            points[0].group_version_id != points[1].group_version_id
+            or points[0].requirement_ordinal != points[1].requirement_ordinal
+        ):
+            raise ValidationError("edge change mutates immutable group coordinates")
         expected = digests.matching_change_digest(
             "m5-persisted-matching-edge-change-v1",
             (
@@ -6941,6 +6953,8 @@ class M5MatchingMaskChange:
     change_digest: str
 
     def __post_init__(self) -> None:
+        if self.before is None and self.after is None:
+            raise ValidationError("mask change requires before or after")
         _require_text("group_version_id", self.group_version_id)
         _require_hash("text_hash", self.text_hash)
         allowed = (M5MatchingMaskCurrent, M5MatchingMaskWorking)
@@ -6972,6 +6986,8 @@ class M5MatchingHallChange:
     change_digest: str
 
     def __post_init__(self) -> None:
+        if self.before is None and self.after is None:
+            raise ValidationError("Hall change requires before or after")
         _require_text("group_version_id", self.group_version_id)
         allowed = (M5MatchingHallCurrent, M5MatchingHallWorking)
         _require_exact_point("before", self.before, allowed)
@@ -7313,9 +7329,12 @@ class M5PersistedMatchingTransitionIntent:
         for name in ("before_revision", "resulting_revision"):
             _require_int(name, getattr(self, name))
         if self.source_kind is M5PersistedMatchingSourceKind.STRUCTURAL_OPEN:
-            if self.resulting_revision != 1:
+            if (
+                self.resulting_revision != 1
+                or self.before_epoch_id == self.resulting_epoch_id
+            ):
                 raise ValidationError(
-                    "structural-open intent must result at revision 1"
+                    "structural-open intent must create a new epoch at revision 1"
                 )
         elif (
             self.before_epoch_id != self.resulting_epoch_id
@@ -7408,8 +7427,13 @@ class M5PersistedMatchingPatch:
         for name in ("before_revision", "resulting_revision"):
             _require_int(name, getattr(self, name))
         if self.source_kind is M5PersistedMatchingSourceKind.STRUCTURAL_OPEN:
-            if self.resulting_revision != 1:
-                raise ValidationError("structural-open patch must result at revision 1")
+            if (
+                self.resulting_revision != 1
+                or self.before_epoch_id == self.resulting_epoch_id
+            ):
+                raise ValidationError(
+                    "structural-open patch must create a new epoch at revision 1"
+                )
         elif (
             self.before_epoch_id != self.resulting_epoch_id
             or self.resulting_revision != self.before_revision + 1
@@ -7477,6 +7501,9 @@ class M5PersistedLogicalOverlayPatch:
             type(v) is not M5PersistedCertificateBindingRow for v in self.binding_rows
         ):
             raise ValidationError("binding rows require exact DTOs")
+        expected_output = digests.logical_output_preimage(self.output_records)
+        if self.logical_output_preimage != expected_output:
+            raise ValidationError("logical output preimage mismatch")
         seen: set[tuple[M5PersistedBindingKind, str, bool]] = set()
         for row in self.binding_rows:
             marker = (row.kind, row.object_id, row.valid_to_revision is None)
@@ -7552,9 +7579,6 @@ class M5PersistedLogicalOverlayPatch:
                 or value.certificate_digest != row.certificate_digest  # type: ignore[attr-defined]
             ):
                 raise ValidationError("binding output does not match retained row")
-        expected_output = digests.logical_output_preimage(self.output_records)
-        if self.logical_output_preimage != expected_output:
-            raise ValidationError("logical output preimage mismatch")
         _require_identity(
             "logical_output_digest",
             self.logical_output_digest,
@@ -7699,23 +7723,21 @@ class M5PersistedMatchingPatchArtifact:
         )
         if self.logical_patch.resulting_revision != self.patch.resulting_revision:
             raise ValidationError("logical and outer patch revisions disagree")
+        if any(
+            row.epoch_id != self.patch.resulting_epoch_id
+            for row in self.logical_patch.binding_rows
+        ):
+            raise ValidationError("binding epoch and outer patch epoch disagree")
         change_by_key = {
             (v.kind.value, v.object_id): v for v in self.logical_patch.changes
-        }
-        certificate_after = {
-            (kind, object_id): (
-                None if value is None else value.certificate_digest  # type: ignore[attr-defined]
-            )
-            for kind, object_id, value in self.logical_patch.output_records
-            if kind in {"group_certificate", "claim_certificate"}
         }
         for kind, object_id, value in self.logical_patch.output_records:
             logical_change = change_by_key.get((kind, object_id))
             if logical_change is None:
                 continue
-            expected_after = self._logical_after_hash(
-                kind, object_id, value, certificate_after
-            )
+            if kind in {"group_state", "claim_state"}:
+                continue
+            expected_after = self._logical_after_hash(kind, object_id, value)
             if logical_change.after_hash != expected_after:
                 raise ValidationError("logical after hash disagrees with output value")
         for rows, _, _ in families:
@@ -7749,9 +7771,18 @@ class M5PersistedMatchingPatchArtifact:
         digests.verify_digest_preimage(self.patch.patch_digest, self.patch_preimage)
 
     def _validate_change_point(self, change: object) -> None:
+        if change.after is None:  # type: ignore[attr-defined]
+            raise ValidationError("persisted physical change requires an after point")
         for position, point in (("before", change.before), ("after", change.after)):  # type: ignore[attr-defined]
             if point is None:
                 continue
+            if (
+                position == "before"
+                and self.patch.source_kind
+                is M5PersistedMatchingSourceKind.STRUCTURAL_OPEN
+                and point.layer is not M5MatchingLayer.CURRENT
+            ):
+                raise ValidationError("structural-open before point must be current")
             if point.layer is M5MatchingLayer.WORKING:
                 revision_ok = (
                     point.updated_revision == self.patch.resulting_revision
@@ -7762,13 +7793,16 @@ class M5PersistedMatchingPatchArtifact:
                     raise ValidationError("working point disagrees with patch point")
             elif position != "before":
                 raise ValidationError("an after point must be working")
+            elif (
+                self.patch.source_kind is M5PersistedMatchingSourceKind.STRUCTURAL_OPEN
+            ):
+                continue
 
     def _logical_after_hash(
         self,
         kind: str,
         object_id: str,
         value: object | None,
-        certificates: dict[tuple[str, str], str | None],
     ) -> str | None:
         if value is None:
             return None
@@ -7780,35 +7814,6 @@ class M5PersistedMatchingPatchArtifact:
                 witness_count=value.witness_count,  # type: ignore[attr-defined]
                 satisfied=value.satisfied,  # type: ignore[attr-defined]
                 decision_policy_version=self.patch.decision_policy_version,
-            )
-        if kind == "group_state":
-            certificate = certificates.get(("group_certificate", object_id))
-            return digests.group_state_artifact_digest(
-                group_version_id=object_id,
-                requirement_count=value.requirement_count,  # type: ignore[attr-defined]
-                satisfied_count=value.satisfied_count,  # type: ignore[attr-defined]
-                matching_size=value.matching_size,  # type: ignore[attr-defined]
-                complete=value.complete,  # type: ignore[attr-defined]
-                decision_policy_version=self.patch.decision_policy_version,
-                certificate_digest=certificate,
-            )
-        if kind == "claim_state":
-            certificate = certificates.get(("claim_certificate", object_id))
-            if certificate is None:
-                raise ValidationError("claim state requires its certificate output")
-            return digests.claim_state_artifact_digest(
-                claim_id=object_id,
-                support_count=value.support_count,  # type: ignore[attr-defined]
-                refute_count=value.refute_count,  # type: ignore[attr-defined]
-                best_support_score=value.best_support_score,  # type: ignore[attr-defined]
-                best_refute_score=value.best_refute_score,  # type: ignore[attr-defined]
-                supporting_observation_ids=value.supporting_observation_ids,  # type: ignore[attr-defined]
-                refuting_observation_ids=value.refuting_observation_ids,  # type: ignore[attr-defined]
-                complete_group_count=value.complete_group_count,  # type: ignore[attr-defined]
-                complete_group_ids=value.complete_group_ids,  # type: ignore[attr-defined]
-                status=value.status,  # type: ignore[attr-defined]
-                decision_policy_version=self.patch.decision_policy_version,
-                certificate_digest=certificate,
             )
         if kind == "answer_state":
             return digests.answer_state_artifact_digest(
@@ -7918,9 +7923,9 @@ class M5PersistedMatchingContribution:
         _require_int("before_revision", self.before_revision)
         _require_int("resulting_revision", self.resulting_revision, positive=True)
         if self.source_kind is M5PersistedMatchingSourceKind.STRUCTURAL_OPEN:
-            if self.resulting_revision != 1:
+            if self.resulting_revision != 1 or self.before_epoch_id == self.epoch_id:
                 raise ValidationError(
-                    "structural-open contribution must result at revision 1"
+                    "structural-open contribution must create a new epoch at revision 1"
                 )
         elif (
             self.before_epoch_id != self.epoch_id
