@@ -8,6 +8,7 @@ import re
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +26,12 @@ from groundloop.m5.digests import (
     stable_m5_digest,
     text_field,
 )
-from groundloop.m5.domain import ClaimCertificateArtifact, ClaimSupportKind
+from groundloop.m5.domain import (
+    ClaimCertificateArtifact,
+    ClaimSupportKind,
+    GroupCertificateRow,
+    GroupMatchingCertificateArtifact,
+)
 from groundloop.postgres.migrations import (
     M5_ACCEPTED_RECOVERY_BUNDLE_ID,
     M5_ACCEPTED_RECOVERY_BUNDLE_SHA256,
@@ -105,6 +111,25 @@ D25_RELATIONS = (
     "groundloop_m5_matching_patch_artifact",
     "groundloop_m5_matching_work_contribution",
     "groundloop_m5_matching_work_accumulator",
+)
+
+_B3_D24_ANCHOR_RELATIONS = (
+    "groundloop_m5_runtime_operational_config",
+    "groundloop_m5_requirement_root_provenance",
+    "groundloop_m5_dispatch_record",
+    "groundloop_m5_direct_terminal_projection",
+    "groundloop_m5_attempt_execution_evidence",
+    "groundloop_m5_runtime_work_contribution",
+    "groundloop_m5_runtime_work_accumulator",
+    "groundloop_m5_runtime_timing_contribution",
+    "groundloop_m5_transition_call_timing",
+    "groundloop_m5_runtime_timing_accumulator",
+    "groundloop_m5_expired_attempt_return",
+    "groundloop_m5_typed_direct_late_return_envelope",
+    "groundloop_m5_post_terminal_attempt_timing",
+    "groundloop_m5_post_terminal_attempt_audit",
+    "groundloop_m5_postcommit_invocation_telemetry",
+    "groundloop_m5_event_timing_coverage",
 )
 
 EMPTY_REQUIREMENT_SNAPSHOT_DIGEST = stable_m5_digest(
@@ -381,6 +406,7 @@ def _open_b2_runtime_epoch(
     policy: str,
     *,
     direct_bridge: bool = False,
+    update_kind: str | None = None,
 ) -> tuple[int, str, str]:
     payload = hashlib.sha256(f"{prefix}-payload".encode()).hexdigest()
     event = f"{prefix}-event"
@@ -396,7 +422,12 @@ def _open_b2_runtime_epoch(
     epoch = int(epoch_row[0])
     connection.execute(
         "INSERT INTO groundloop_m5_update VALUES (%s,%s,%s,%s,'{}'::jsonb,DEFAULT)",
-        (epoch, "document_insert" if direct_bridge else "policy_change", base, policy),
+        (
+            epoch,
+            update_kind or ("document_insert" if direct_bridge else "policy_change"),
+            base,
+            policy,
+        ),
     )
     manifest_row = connection.execute(
         "SELECT candidate_policy_id FROM groundloop_m5_candidate_policy"
@@ -494,6 +525,172 @@ def _seed_b2_hall_group(
     return group, requirement
 
 
+def _seed_b2_absent_transition_state(
+    connection: Connection[Any], prefix: str, base: int, policy: str
+) -> tuple[str, str, str, str]:
+    from groundloop.m5.runtime import digests as runtime_digests
+
+    group, requirement = _seed_b2_hall_group(connection, prefix, base)
+    connection.execute(
+        "INSERT INTO groundloop_m5_group_validity "
+        "(group_version_id,group_family_id,claim_id,semantic_structure_hash,"
+        "supersedes_group_version_id,valid_from_epoch,valid_to_epoch) "
+        "VALUES (%s,(SELECT group_family_id FROM groundloop_m5_group_version "
+        "WHERE group_version_id=%s),(SELECT family.claim_id FROM "
+        "groundloop_m5_group_version version JOIN groundloop_m5_group_family family "
+        "USING(group_family_id) WHERE version.group_version_id=%s),"
+        "(SELECT semantic_structure_hash FROM groundloop_m5_group_version "
+        "WHERE group_version_id=%s),NULL,%s,NULL)",
+        (group, group, group, group, base),
+    )
+    connection.execute(
+        "INSERT INTO groundloop_m5_published_requirement_state "
+        "VALUES (%s,%s,NULL,0,ARRAY[]::text[],ARRAY[]::text[],0,false,%s)",
+        (requirement, base, policy),
+    )
+    connection.execute(
+        "INSERT INTO groundloop_m5_published_group_state "
+        "VALUES (%s,%s,NULL,0,1,0,0,false,%s,NULL)",
+        (group, base, policy),
+    )
+    connection.commit()
+    requirement_digest = runtime_digests.requirement_state_artifact_digest(
+        requirement_version_id=requirement,
+        witness_hashes=(),
+        supporting_observation_ids=(),
+        witness_count=0,
+        satisfied=False,
+        decision_policy_version=policy,
+    )
+    group_digest = runtime_digests.group_state_artifact_digest(
+        group_version_id=group,
+        requirement_count=1,
+        satisfied_count=0,
+        matching_size=0,
+        complete=False,
+        decision_policy_version=policy,
+        certificate_digest=None,
+    )
+    return group, requirement, group_digest, requirement_digest
+
+
+def _stage_b2_group_deactivation(
+    connection: Connection[Any],
+    *,
+    epoch: int,
+    event: str,
+    group: str,
+    action: str,
+    mutation: str | None = None,
+) -> None:
+    deactivation_epoch = epoch
+    deactivation_event = event
+    if mutation == "wrong_epoch":
+        update = connection.execute(
+            "SELECT previous_published_epoch_id,decision_policy_version "
+            "FROM groundloop_m5_update WHERE epoch_id=%s",
+            (epoch,),
+        ).fetchone()
+        assert update is not None
+        deactivation_event = f"{event}-decoy"
+        row = connection.execute(
+            "INSERT INTO groundloop_epoch "
+            "(event_id,payload_hash,revision,structural_status,semantic_status,"
+            "evaluation_state,publication_mode,sealed_at) VALUES (%s,%s,1,'committed',"
+            "'failed','failed','provisional',NULL) RETURNING epoch_id",
+            (
+                deactivation_event,
+                hashlib.sha256(deactivation_event.encode()).hexdigest(),
+            ),
+        ).fetchone()
+        assert row is not None
+        deactivation_epoch = int(row[0])
+        connection.execute(
+            "INSERT INTO groundloop_m5_update VALUES "
+            "(%s,'retire_group',%s,%s,'{}'::jsonb,DEFAULT)",
+            (deactivation_epoch, int(update[0]), str(update[1])),
+        )
+    elif mutation == "wrong_event":
+        row = connection.execute(
+            "SELECT event_id FROM groundloop_epoch WHERE epoch_id<>%s "
+            "ORDER BY epoch_id LIMIT 1",
+            (epoch,),
+        ).fetchone()
+        assert row is not None
+        deactivation_event = str(row[0])
+    if mutation != "missing_deactivation":
+        successor: str | None = None
+        selected_action = action
+        if mutation == "wrong_deactivation":
+            selected_action = "RETIRE"
+        if selected_action == "REPLACE" or mutation == "wrong_deactivation":
+            from groundloop.m5.domain import (
+                EvidenceGroupVersion,
+                EvidenceRequirementVersion,
+            )
+
+            successor = f"{group}-successor"
+            family_row = connection.execute(
+                "SELECT version.group_family_id,family.claim_id FROM "
+                "groundloop_m5_group_version version "
+                "JOIN groundloop_m5_group_family family USING(group_family_id) "
+                "WHERE version.group_version_id=%s",
+                (group,),
+            ).fetchone()
+            assert family_row is not None
+            successor_requirement = EvidenceRequirementVersion(
+                requirement_version_id=f"{successor}-requirement",
+                group_version_id=successor,
+                ordinal=0,
+                requirement_text="successor requirement",
+            )
+            successor_group = EvidenceGroupVersion(
+                group_version_id=successor,
+                group_family_id=str(family_row[0]),
+                owner_claim_id=str(family_row[1]),
+                requirements=(successor_requirement,),
+                construction_source_id=f"{event}-source",
+                supersedes_group_version_id=group,
+            )
+            connection.execute(
+                "INSERT INTO groundloop_m5_group_version VALUES "
+                "(%s,%s,%s,'STAGED','support_conjunction','controlled',%s,"
+                "NULL,NULL,NULL,%s,%s,%s)",
+                (
+                    successor,
+                    str(family_row[0]),
+                    epoch,
+                    f"{event}-source",
+                    group,
+                    successor_group.semantic_structure_hash,
+                    successor_group.record_payload_hash,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO groundloop_m5_requirement_version VALUES "
+                "(%s,%s,%s,'STAGED',0,%s,%s,NULL,NULL,NULL,NULL)",
+                (
+                    successor_requirement.requirement_version_id,
+                    successor,
+                    epoch,
+                    successor_requirement.requirement_text,
+                    successor_requirement.requirement_text_hash,
+                ),
+            )
+        deactivated_group = successor if mutation == "wrong_deactivation" else group
+        replacement = successor if selected_action == "REPLACE" else None
+        connection.execute(
+            "INSERT INTO groundloop_m5_group_deactivation VALUES (%s,%s,%s,%s,%s)",
+            (
+                deactivation_epoch,
+                deactivated_group,
+                selected_action,
+                replacement,
+                deactivation_event,
+            ),
+        )
+
+
 def _apply_empty_b2_structural(
     connection: Connection[Any],
     *,
@@ -505,20 +702,68 @@ def _apply_empty_b2_structural(
     mutate: str | None = None,
     source_kind: str = "structural_open",
     hall_group: tuple[str, str] | None = None,
+    absent_states: tuple[tuple[str, str, str], ...] = (),
+    forge_absent_working: str | None = None,
+    encoded_source_kind: str | None = None,
 ) -> None:
     is_structural = source_kind == "structural_open"
+    artifact_source_kind = encoded_source_kind or source_kind
     before_epoch = base if is_structural else epoch
     before_revision = 0 if is_structural else 1
     resulting_revision = 1 if is_structural else 2
-    output = bytes.fromhex(
-        "710000000000000002000000000000002573000000000000001c"
-        "6d352d6f7665726c61792d6c6f676963616c2d6f75747075742d7632"
-        "0000000000000009710000000000000000"
-    )
+    if absent_states:
+        from groundloop.m5.incremental_overlay import _logical_output_image
+
+        output_order = {
+            "requirement_state": 0,
+            "group_state": 1,
+            "claim_state": 2,
+            "answer_state": 3,
+        }
+        output = _logical_output_image(
+            tuple(
+                (kind, object_id, None)
+                for kind, object_id, _ in sorted(
+                    absent_states, key=lambda row: output_order[row[0]]
+                )
+            )
+        )
+    else:
+        output = bytes.fromhex(
+            "710000000000000002000000000000002573000000000000001c"
+            "6d352d6f7665726c61792d6c6f676963616c2d6f75747075742d7632"
+            "0000000000000009710000000000000000"
+        )
     hall_preimage: bytes | None = None
-    if hall_group is None:
+    absent_group = next(
+        (object_id for kind, object_id, _ in absent_states if kind == "group_state"),
+        None,
+    )
+    absent_requirement = next(
+        (
+            object_id
+            for kind, object_id, _ in absent_states
+            if kind == "requirement_state"
+        ),
+        None,
+    )
+    if hall_group is None and absent_group is None:
         shapes = _framed_preimage(
             "m5-persisted-matching-group-shape-set-v1", *_sequence()
+        )
+    elif hall_group is None:
+        assert absent_requirement is not None
+        shapes = _framed_preimage(
+            "m5-persisted-matching-group-shape-set-v1",
+            *_sequence(
+                _sequence(
+                    _typed("text", absent_group),
+                    _typed("int", 1),
+                    _sequence(
+                        _sequence(_typed("int", 0), _typed("text", absent_requirement))
+                    ),
+                )
+            ),
         )
     else:
         group_id, requirement_id = hall_group
@@ -554,9 +799,20 @@ def _apply_empty_b2_structural(
             ("null",),
             hall_after,
         )
+    logical_changes = _sequence(
+        *(
+            _sequence(
+                _typed("enum", kind),
+                _typed("text", object_id),
+                _typed("sha256", before_digest),
+                ("null",),
+            )
+            for kind, object_id, before_digest in sorted(absent_states)
+        )
+    )
     logical = _framed_preimage(
         "m5-persisted-logical-overlay-patch-v1",
-        *_sequence(),
+        *logical_changes,
         *_sequence(),
         *_typed("sha256", hashlib.sha256(output).hexdigest()),
         *_typed("int", len(output)),
@@ -567,6 +823,7 @@ def _apply_empty_b2_structural(
         work[12] = 1
         work[14] = 1
     work[30] = len(output)
+    work[25] = sum(kind == "group_state" for kind, _, _ in absent_states)
     if mutate == "output_bytes":
         work[30] += 1
     work_preimage = _framed_preimage(
@@ -576,7 +833,7 @@ def _apply_empty_b2_structural(
     work_digest = hashlib.sha256(work_preimage).hexdigest()
     patch_preimage = _framed_preimage(
         "m5-persisted-matching-patch-v1",
-        *_typed("enum", source_kind),
+        *_typed("enum", artifact_source_kind),
         *_typed("text", event),
         *_typed("sha256", payload),
         *_typed("int", before_epoch),
@@ -602,7 +859,7 @@ def _apply_empty_b2_structural(
     contribution_preimage = _framed_preimage(
         "m5-matching-work-contribution-v1",
         *_typed("int", epoch),
-        *_typed("enum", source_kind),
+        *_typed("enum", artifact_source_kind),
         *_typed("text", event),
         *_typed("sha256", payload),
         *_typed("int", before_epoch),
@@ -667,6 +924,22 @@ def _apply_empty_b2_structural(
                 ARRAY[0,1]::bigint[],1,0,0,1)""",
             (epoch, hall_group[0]),
         )
+    if forge_absent_working:
+        for kind, object_id, _ in absent_states:
+            if kind != forge_absent_working:
+                continue
+            if kind == "requirement_state":
+                connection.execute(
+                    "INSERT INTO groundloop_m5_working_requirement_state "
+                    "VALUES (%s,%s,ARRAY[]::text[],ARRAY[]::text[],0,false,%s,1)",
+                    (epoch, object_id, policy),
+                )
+            elif kind == "group_state":
+                connection.execute(
+                    "INSERT INTO groundloop_m5_working_group_state "
+                    "VALUES (%s,%s,1,0,0,false,%s,NULL,1)",
+                    (epoch, object_id, policy),
+                )
     connection.execute(
         """INSERT INTO groundloop_m5_matching_patch_artifact VALUES
            (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
@@ -675,7 +948,7 @@ def _apply_empty_b2_structural(
             %s,%s,%s,%s,%s)""",
         (
             patch_digest,
-            source_kind,
+            artifact_source_kind,
             event,
             payload,
             before_epoch,
@@ -729,7 +1002,7 @@ def _apply_empty_b2_structural(
         insert,
         [
             epoch,
-            source_kind,
+            artifact_source_kind,
             event,
             payload,
             before_epoch,
@@ -825,6 +1098,1012 @@ def _seed_b2_direct_transition_authority(
         (epoch, transition_id, transition_hash),
     )
     return transition_id, transition_hash
+
+
+@dataclass(frozen=True, slots=True)
+class _B3ActivatedSnapshot:
+    epoch_id: int
+    revision: int
+    policy_version: str
+    answer_id: str
+    second_answer_id: str
+    claim_ids: tuple[str, ...]
+    complete_group_id: str
+    partial_group_id: str
+    zero_hash_group_id: str
+    complete_requirement_ids: tuple[str, ...]
+    partial_requirement_ids: tuple[str, ...]
+    zero_hash_requirement_id: str
+    requirement_observations: tuple[tuple[str, str, str, int, str], ...]
+    direct_support_observations: tuple[str, ...]
+    refuted_only_observation: str
+    conflicted_support_observation: str
+    conflicted_refute_observation: str
+    optional_support_observation: str
+    currency_alternate_observation: str
+    currency_extra_observation: str
+    complete_group_alternate_observation: str
+
+
+def _seed_b3_direct_m4_snapshot(
+    connection: Connection[Any], *, epoch_id: int, revision: int
+) -> None:
+    """Persist the independently derived direct-v1 image before M5 activation."""
+    from groundloop.m4.pipeline import bootstrap_m4_publication
+
+    connection.execute(
+        """INSERT INTO groundloop_claim_state_materialized (
+             claim_id,support_count,refute_count,best_support_score,
+             best_refute_score,supporting_observation_ids,
+             refuting_observation_ids,status,updated_epoch,updated_revision)
+           SELECT claim_id,support_count,refute_count,best_support_score,
+                  best_refute_score,supporting_observation_ids,
+                  refuting_observation_ids,
+                  CASE WHEN support_count>0 AND refute_count>0 THEN 'conflicted'
+                       WHEN support_count>0 THEN 'supported'
+                       WHEN refute_count>0 THEN 'refuted'
+                       ELSE 'unsupported'
+                   END::groundloop_claim_status,%s,%s
+             FROM groundloop_m5_direct_claim_state_oracle""",
+        (epoch_id, revision),
+    )
+    connection.execute(
+        """INSERT INTO groundloop_answer_state_materialized (
+             answer_version_id,required_claim_count,supported_count,
+             unsupported_count,refuted_count,conflicted_count,status,
+             updated_epoch,updated_revision)
+           WITH direct_claim AS (
+             SELECT claim_id,
+               CASE WHEN support_count>0 AND refute_count>0 THEN 'conflicted'
+                    WHEN support_count>0 THEN 'supported'
+                    WHEN refute_count>0 THEN 'refuted'
+                    ELSE 'unsupported' END status
+               FROM groundloop_m5_direct_claim_state_oracle),
+           aggregate AS (
+             SELECT answer.answer_version_id,
+               count(*) FILTER (WHERE claim.required)::integer
+                 required_claim_count,
+               count(*) FILTER (WHERE claim.required
+                                  AND state.status='supported')::integer
+                 supported_count,
+               count(*) FILTER (WHERE claim.required
+                                  AND state.status='unsupported')::integer
+                 unsupported_count,
+               count(*) FILTER (WHERE claim.required
+                                  AND state.status='refuted')::integer
+                 refuted_count,
+               count(*) FILTER (WHERE claim.required
+                                  AND state.status='conflicted')::integer
+                 conflicted_count
+               FROM groundloop_answer_version answer
+               JOIN groundloop_claim claim
+                 ON claim.answer_version_id=answer.answer_version_id
+               JOIN direct_claim state ON state.claim_id=claim.claim_id
+              GROUP BY answer.answer_version_id)
+           SELECT aggregate.*,
+             CASE WHEN refuted_count>0 THEN 'contradicted'
+                  WHEN conflicted_count>0 THEN 'conflicted'
+                  WHEN required_claim_count>0
+                   AND supported_count=required_claim_count THEN 'valid'
+                  WHEN supported_count>0 THEN 'partially_supported'
+                  ELSE 'unsupported'
+               END::groundloop_answer_status,%s,%s
+             FROM aggregate""",
+        (epoch_id, revision),
+    )
+    connection.execute(
+        """INSERT INTO groundloop_claim_certificate (
+             claim_id,support_observation_id,refute_observation_id,
+             repaired_epoch,repaired_revision)
+           SELECT claim_id,supporting_observation_ids[1],
+                  refuting_observation_ids[1],%s,%s
+             FROM groundloop_m5_direct_claim_state_oracle""",
+        (epoch_id, revision),
+    )
+    bootstrap_m4_publication(connection, sealed_epoch_id=epoch_id)
+
+
+def _seed_b3_activated_snapshot(
+    connection: Connection[Any],
+    prefix: str,
+    *,
+    inconsistent_activation_head: bool = False,
+) -> _B3ActivatedSnapshot:
+    from m5.postgres.helpers import (
+        force_deferred_checks,
+        insert_observation,
+        insert_published_group,
+        install_current_currency,
+        install_test_activation_barrier,
+        make_group,
+        seed_base,
+    )
+
+    revision = 7
+    chunk_texts = (
+        "direct-only alpha",
+        "direct-only beta",
+        "refuted-only",
+        "conflicted support",
+        "conflicted refute",
+        "optional direct",
+        "group shared",
+        "group shared",
+        "group beta",
+        "partial alpha",
+    )
+    base = seed_base(
+        connection,
+        prefix=prefix,
+        claim_count=6,
+        chunk_texts=chunk_texts,
+        epoch_revision=revision,
+    )
+    second_answer_id = f"{prefix}-second-answer"
+    connection.execute(
+        """INSERT INTO groundloop_answer_version (
+             answer_version_id,question_id,text,generator_model_id,
+             generator_model_version,prompt_version,created_epoch)
+           VALUES (%s,%s,'second fixture answer','generator','v1','p1',%s)""",
+        (second_answer_id, base.question_id, base.epoch_id),
+    )
+    connection.execute(
+        "UPDATE groundloop_claim SET answer_version_id=%s WHERE claim_id=%s",
+        (second_answer_id, base.claim_ids[5]),
+    )
+    # Answer A requires only the group-only claim, retaining the decisive v1
+    # UNSUPPORTED -> combined-M5 VALID contrast. Its other claims exercise
+    # direct-only, refuted-only, conflicted, and ignored optional-direct shapes.
+    # Answer B has one required unsupported claim with incomplete/empty groups.
+    connection.execute(
+        "UPDATE groundloop_claim SET required=false WHERE claim_id=ANY(%s)",
+        (list(base.claim_ids[1:5]),),
+    )
+    complete = make_group(
+        group_id=f"{prefix}-complete-group",
+        family_id=f"{prefix}-complete-family",
+        claim_id=base.claim_ids[0],
+        texts=("complete first", "complete second"),
+        source_id=f"{prefix}-complete-source",
+    )
+    partial = make_group(
+        group_id=f"{prefix}-partial-group",
+        family_id=f"{prefix}-partial-family",
+        claim_id=base.claim_ids[5],
+        texts=("partial first", "partial missing"),
+        source_id=f"{prefix}-partial-source",
+    )
+    zero_hash = make_group(
+        group_id=f"{prefix}-zero-hash-group",
+        family_id=f"{prefix}-zero-hash-family",
+        claim_id=base.claim_ids[5],
+        texts=("zero hash",),
+        source_id=f"{prefix}-zero-hash-source",
+    )
+    for group in (complete, partial, zero_hash):
+        insert_published_group(connection, group=group, epoch_id=base.epoch_id)
+
+    direct_support = (
+        f"{prefix}-direct-only-a-support",
+        f"{prefix}-direct-only-z-support",
+    )
+    refuted_only = f"{prefix}-refuted-only"
+    conflicted_support = f"{prefix}-conflicted-support"
+    conflicted_refute = f"{prefix}-conflicted-refute"
+    optional_support = f"{prefix}-optional-support"
+    for observation_id, claim_id, chunk_id, scores in (
+        (
+            direct_support[0],
+            base.claim_ids[1],
+            base.chunk_ids[0],
+            (0.95, 0.02, 0.03),
+        ),
+        (
+            direct_support[1],
+            base.claim_ids[1],
+            base.chunk_ids[1],
+            (0.91, 0.04, 0.05),
+        ),
+        (
+            refuted_only,
+            base.claim_ids[2],
+            base.chunk_ids[2],
+            (0.02, 0.95, 0.03),
+        ),
+        (
+            conflicted_support,
+            base.claim_ids[3],
+            base.chunk_ids[3],
+            (0.94, 0.03, 0.03),
+        ),
+        (
+            conflicted_refute,
+            base.claim_ids[3],
+            base.chunk_ids[4],
+            (0.03, 0.94, 0.03),
+        ),
+        (
+            optional_support,
+            base.claim_ids[4],
+            base.chunk_ids[5],
+            (0.93, 0.03, 0.04),
+        ),
+    ):
+        insert_observation(
+            connection,
+            observation_id=observation_id,
+            subject_kind="claim",
+            subject_id=claim_id,
+            chunk_id=chunk_id,
+            produced_epoch=base.epoch_id,
+            task_type="claim-verification-v1",
+            scores=scores,
+        )
+        install_current_currency(
+            connection,
+            observation_id=observation_id,
+            subject_kind="claim",
+            subject_id=claim_id,
+            chunk_id=chunk_id,
+            task_type="claim-verification-v1",
+            epoch_id=base.epoch_id,
+            revision=revision,
+        )
+
+    currency_alternate = f"{prefix}-currency-alternate"
+    insert_observation(
+        connection,
+        observation_id=currency_alternate,
+        subject_kind="claim",
+        subject_id=base.claim_ids[1],
+        chunk_id=base.chunk_ids[0],
+        produced_epoch=base.epoch_id,
+        task_type="claim-verification-v1",
+        scores=(0.95, 0.02, 0.03),
+    )
+    currency_extra = f"{prefix}-currency-extra"
+    insert_observation(
+        connection,
+        observation_id=currency_extra,
+        subject_kind="claim",
+        subject_id=base.claim_ids[5],
+        chunk_id=base.chunk_ids[0],
+        produced_epoch=base.epoch_id,
+        task_type="claim-verification-v1",
+        scores=(0.1, 0.1, 0.8),
+    )
+
+    requirement_specs = (
+        (
+            f"{prefix}-complete-a-observation",
+            complete.requirements[0].requirement_version_id,
+            base.chunk_ids[6],
+            complete.group_version_id,
+            0,
+            chunk_texts[6],
+        ),
+        (
+            f"{prefix}-complete-z-observation",
+            complete.requirements[0].requirement_version_id,
+            base.chunk_ids[7],
+            complete.group_version_id,
+            0,
+            chunk_texts[7],
+        ),
+        (
+            f"{prefix}-complete-second-observation",
+            complete.requirements[1].requirement_version_id,
+            base.chunk_ids[8],
+            complete.group_version_id,
+            1,
+            chunk_texts[8],
+        ),
+        (
+            f"{prefix}-partial-observation",
+            partial.requirements[0].requirement_version_id,
+            base.chunk_ids[9],
+            partial.group_version_id,
+            0,
+            chunk_texts[9],
+        ),
+    )
+    for observation_id, requirement_id, chunk_id, _, _, _ in requirement_specs:
+        insert_observation(
+            connection,
+            observation_id=observation_id,
+            subject_kind="requirement",
+            subject_id=requirement_id,
+            chunk_id=chunk_id,
+            produced_epoch=base.epoch_id,
+        )
+        install_current_currency(
+            connection,
+            observation_id=observation_id,
+            subject_kind="requirement",
+            subject_id=requirement_id,
+            chunk_id=chunk_id,
+            task_type="verify_requirement_v1",
+            epoch_id=base.epoch_id,
+            revision=revision,
+        )
+
+    force_deferred_checks(connection)
+    _seed_b3_direct_m4_snapshot(connection, epoch_id=base.epoch_id, revision=revision)
+    assert connection.execute(
+        """SELECT status::text FROM groundloop_answer_state_materialized
+            WHERE answer_version_id=%s""",
+        (base.answer_id,),
+    ).fetchone() == ("unsupported",)
+    if inconsistent_activation_head:
+        from groundloop.postgres.m5 import (
+            build_m5_bootstrap_projection,
+            write_m5_materialized_states,
+        )
+
+        projection = build_m5_bootstrap_projection(connection)
+        write_m5_materialized_states(
+            connection,
+            states=projection.states,
+            decision_policy_version=projection.decision_policy_version,
+            epoch_id=projection.epoch_id,
+            revision=projection.revision,
+            group_certificates=projection.group_certificates,
+            claim_certificates=projection.claim_certificates,
+            publish=True,
+        )
+        connection.execute(
+            """INSERT INTO groundloop_m5_publication_head
+               (singleton,epoch_id,sealed_revision,updated_at)
+               VALUES (true,%s,%s,now())""",
+            (projection.epoch_id, projection.revision),
+        )
+        inconsistent_base = _b3_future_epoch(
+            connection, f"{prefix}-inconsistent-activation-base"
+        )
+        connection.execute(
+            """INSERT INTO groundloop_m5_activation
+               (singleton,activation_id,payload_hash,base_m4_epoch_id,activated_at)
+               VALUES (true,%s,%s,%s,now())""",
+            (
+                f"{prefix}-activation",
+                hashlib.sha256(f"{prefix}-activation".encode()).hexdigest(),
+                inconsistent_base,
+            ),
+        )
+        changed = connection.execute(
+            """UPDATE groundloop_runtime_mode
+                  SET mode='m5_active',mode_revision=mode_revision+1,updated_at=now()
+                WHERE singleton AND mode='v1_only' AND mode_revision=0"""
+        ).rowcount
+        assert changed == 1
+        force_deferred_checks(connection)
+    else:
+        install_test_activation_barrier(
+            connection, base, activation_id=f"{prefix}-activation"
+        )
+    assert connection.execute(
+        """SELECT status::text FROM groundloop_m5_answer_state_materialized
+            WHERE answer_version_id=%s""",
+        (base.answer_id,),
+    ).fetchone() == ("valid",)
+    connection.commit()
+    return _B3ActivatedSnapshot(
+        epoch_id=base.epoch_id,
+        revision=revision,
+        policy_version=base.policy_version,
+        answer_id=base.answer_id,
+        second_answer_id=second_answer_id,
+        claim_ids=base.claim_ids,
+        complete_group_id=complete.group_version_id,
+        partial_group_id=partial.group_version_id,
+        zero_hash_group_id=zero_hash.group_version_id,
+        complete_requirement_ids=tuple(
+            value.requirement_version_id for value in complete.requirements
+        ),
+        partial_requirement_ids=tuple(
+            value.requirement_version_id for value in partial.requirements
+        ),
+        zero_hash_requirement_id=(zero_hash.requirements[0].requirement_version_id),
+        requirement_observations=tuple(
+            (
+                observation_id,
+                requirement_id,
+                group_id,
+                ordinal,
+                hashlib.sha256(text.encode()).hexdigest(),
+            )
+            for (
+                observation_id,
+                requirement_id,
+                _,
+                group_id,
+                ordinal,
+                text,
+            ) in requirement_specs
+        ),
+        direct_support_observations=direct_support,
+        refuted_only_observation=refuted_only,
+        conflicted_support_observation=conflicted_support,
+        conflicted_refute_observation=conflicted_refute,
+        optional_support_observation=optional_support,
+        currency_alternate_observation=currency_alternate,
+        currency_extra_observation=currency_extra,
+        complete_group_alternate_observation=requirement_specs[1][0],
+    )
+
+
+def _b3_future_epoch(connection: Connection[Any], name: str) -> int:
+    row = connection.execute(
+        """INSERT INTO groundloop_epoch (
+             event_id,payload_hash,revision,structural_status,semantic_status,
+             evaluation_state,publication_mode,sealed_at)
+           VALUES (%s,%s,0,'committed','sealed','complete','strict',now())
+           RETURNING epoch_id""",
+        (name, hashlib.sha256(name.encode()).hexdigest()),
+    ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def _b3_install_catalog_inventory(connection: Connection[Any]) -> tuple[Any, ...]:
+    relations = tuple(
+        connection.execute(
+            """SELECT c.relkind,c.relname
+                 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+                WHERE n.nspname=current_schema()
+                ORDER BY c.relkind,c.relname COLLATE \"C\""""
+        ).fetchall()
+    )
+    routines = tuple(
+        connection.execute(
+            """SELECT p.proname,pg_get_function_identity_arguments(p.oid)
+                 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+                WHERE n.nspname=current_schema()
+                ORDER BY p.proname COLLATE \"C\",
+                         pg_get_function_identity_arguments(p.oid) COLLATE \"C\""""
+        ).fetchall()
+    )
+    triggers = tuple(
+        connection.execute(
+            """SELECT c.relname,t.tgname
+                 FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+                 JOIN pg_namespace n ON n.oid=c.relnamespace
+                WHERE n.nspname=current_schema() AND NOT t.tgisinternal
+                ORDER BY c.relname COLLATE \"C\",t.tgname COLLATE \"C\""""
+        ).fetchall()
+    )
+    ledger = connection.execute(
+        "SELECT count(*) FROM groundloop_m5_schema_bundle WHERE bundle_id=%s",
+        (M5_PERSISTED_MATCHING_BUNDLE_ID,),
+    ).fetchone()
+    return relations, routines, triggers, ledger
+
+
+def _b3_relation_counts(
+    connection: Connection[Any], relations: tuple[str, ...]
+) -> tuple[tuple[str, int], ...]:
+    return tuple(
+        (
+            relation,
+            int(connection.execute(f"SELECT count(*) FROM {relation}").fetchone()[0]),
+        )
+        for relation in relations
+    )
+
+
+def _b3_close_current_rows(
+    connection: Connection[Any], *, name: str, tables: tuple[str, ...]
+) -> None:
+    future = _b3_future_epoch(connection, f"b3-close-{name}")
+    for table in tables:
+        connection.execute(
+            sql.SQL(
+                "UPDATE {} SET valid_to_epoch=%s WHERE valid_to_epoch IS NULL"
+            ).format(sql.Identifier(table)),
+            (future,),
+        )
+
+
+@contextmanager
+def _b3_user_triggers_disabled(
+    connection: Connection[Any], table: str
+) -> Iterator[None]:
+    connection.execute(
+        sql.SQL("ALTER TABLE {} DISABLE TRIGGER USER").format(sql.Identifier(table))
+    )
+    try:
+        yield
+    finally:
+        connection.execute(
+            sql.SQL("ALTER TABLE {} ENABLE TRIGGER USER").format(sql.Identifier(table))
+        )
+
+
+def _seed_b3_runtime_history(
+    connection: Connection[Any], snapshot: _B3ActivatedSnapshot
+) -> None:
+    from groundloop.m4.contracts import VectorIndexKind
+    from groundloop.m5.runtime.contracts import M5CandidatePolicyManifest
+    from groundloop.m5.runtime.persistence import PostgresM5RuntimeStore
+
+    model_id = f"{snapshot.policy_version}-runtime-model"
+    connection.execute(
+        """INSERT INTO groundloop_model_artifact (
+             model_artifact_id,task,provider,model_id,immutable_revision,
+             tokenizer_revision,license_id,config_hash)
+           VALUES (%s,'embedding','fixture','embedder','v1','v1','MIT',%s)""",
+        (model_id, hashlib.sha256(model_id.encode()).hexdigest()),
+    )
+    manifest = M5CandidatePolicyManifest.build(
+        embedding_model_artifact_id=model_id,
+        requirement_role_template_hash=hashlib.sha256(b"b3-role").hexdigest(),
+        chunk_role_template_hash=hashlib.sha256(b"b3-chunk-role").hexdigest(),
+        vector_method_version="b3-vector-v1",
+        vector_index_kind=VectorIndexKind.EXACT,
+        vector_index_build_config_hash=hashlib.sha256(b"b3-build").hexdigest(),
+        vector_search_config_hash=hashlib.sha256(b"b3-search").hexdigest(),
+        lexical_method_version="b3-lexical-v1",
+        lexical_config_hash=hashlib.sha256(b"b3-lexical").hexdigest(),
+        lexical_postgres_version="16.14",
+        lexical_regconfig_identity="simple",
+        fusion_version="rank-interleave-v1",
+        reverse_budget_per_inserted_chunk=2,
+        forward_budget_per_requirement=2,
+        verifier_execution_spec_hash=hashlib.sha256(b"b3-verifier").hexdigest(),
+        decision_policy_version=snapshot.policy_version,
+        lineage_safety_override=True,
+    )
+    PostgresM5RuntimeStore(connection).register_candidate_policy(manifest)
+    connection.execute(
+        """INSERT INTO groundloop_m5_requirement_registry_snapshot
+           VALUES (%s,0,%s,DEFAULT)""",
+        (EMPTY_REQUIREMENT_SNAPSHOT_DIGEST, snapshot.epoch_id),
+    )
+    connection.execute(
+        """INSERT INTO groundloop_m5_active_chunk_snapshot
+           VALUES (%s,0,%s,'m5-normalize-text-v1',%s,DEFAULT)""",
+        (
+            EMPTY_ACTIVE_CHUNK_SNAPSHOT_DIGEST,
+            snapshot.epoch_id,
+            "d91b94f256f79c6bc7b29fafa41c7a608b90c17bd479b29a64be00fa538c49fb",
+        ),
+    )
+    event_id = f"{snapshot.policy_version}-runtime-history"
+    history_epoch = connection.execute(
+        """INSERT INTO groundloop_epoch (
+             event_id,payload_hash,revision,structural_status,semantic_status,
+             evaluation_state,publication_mode,sealed_at)
+           VALUES (%s,%s,1,'committed','pending','pending','provisional',NULL)
+           RETURNING epoch_id""",
+        (event_id, hashlib.sha256(event_id.encode()).hexdigest()),
+    ).fetchone()
+    assert history_epoch is not None
+    epoch_id = int(history_epoch[0])
+    connection.execute(
+        """INSERT INTO groundloop_m5_update (
+             epoch_id,update_kind,previous_published_epoch_id,
+             decision_policy_version,manifest)
+           VALUES (%s,'policy_change',%s,%s,'{}'::jsonb)""",
+        (epoch_id, snapshot.epoch_id, snapshot.policy_version),
+    )
+    connection.execute(
+        """INSERT INTO groundloop_m5_runtime_epoch (
+             epoch_id,structural_event_id,candidate_policy_id,
+             candidate_policy_manifest_hash,requirement_registry_snapshot_digest,
+             active_chunk_snapshot_digest,expected_previous_published_epoch_id,
+             requirement_root_set_hash,runtime_state,revision,open_work_count,
+             open_scope_count,blocking_failure_count)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'structural_committed',1,0,0,0)""",
+        (
+            epoch_id,
+            event_id,
+            manifest.candidate_policy_id,
+            manifest.manifest_hash,
+            EMPTY_REQUIREMENT_SNAPSHOT_DIGEST,
+            EMPTY_ACTIVE_CHUNK_SNAPSHOT_DIGEST,
+            snapshot.epoch_id,
+            EMPTY_REQUIREMENT_ROOT_SET_HASH,
+        ),
+    )
+
+
+def _b3_alternate_group_certificate(
+    connection: Connection[Any], snapshot: _B3ActivatedSnapshot
+) -> str:
+    from groundloop.postgres.m5 import persist_group_certificate
+
+    current = connection.execute(
+        """SELECT artifact.certificate_digest::text
+             FROM groundloop_m5_group_certificate_artifact artifact
+             JOIN groundloop_m5_published_group_certificate_binding binding
+               USING (certificate_digest)
+            WHERE binding.group_version_id=%s AND binding.valid_to_epoch IS NULL""",
+        (snapshot.complete_group_id,),
+    ).fetchone()
+    assert current is not None
+    rows = tuple(
+        GroupCertificateRow(
+            requirement_ordinal=int(row[0]),
+            requirement_version_id=str(row[1]),
+            text_hash=str(row[2]),
+            selected_observation_id=(
+                snapshot.complete_group_alternate_observation
+                if int(row[0]) == 0
+                else str(row[3])
+            ),
+        )
+        for row in connection.execute(
+            """SELECT row.requirement_ordinal,row.requirement_version_id,
+                      row.text_hash::text,row.selected_observation_id
+                 FROM groundloop_m5_group_certificate_artifact_row row
+                 JOIN groundloop_m5_published_group_certificate_binding binding
+                   USING (certificate_digest)
+                WHERE binding.group_version_id=%s
+                  AND binding.valid_to_epoch IS NULL
+                ORDER BY row.requirement_ordinal""",
+            (snapshot.complete_group_id,),
+        ).fetchall()
+    )
+    alternate = GroupMatchingCertificateArtifact(
+        decision_policy_version=snapshot.policy_version,
+        group_version_id=snapshot.complete_group_id,
+        rows=rows,
+    )
+    assert alternate.certificate_digest != str(current[0])
+    persist_group_certificate(connection, alternate)
+    return alternate.certificate_digest
+
+
+def _b3_add_catalog_only_claim_binding(
+    connection: Connection[Any], snapshot: _B3ActivatedSnapshot
+) -> None:
+    """Reach an extra claim binding after explicitly isolating the sole FK drop."""
+    table = "groundloop_m5_published_claim_certificate_binding"
+    constraints_before = tuple(
+        connection.execute(
+            """SELECT conname,contype,pg_get_constraintdef(oid)
+                 FROM pg_constraint
+                WHERE conrelid=%s::regclass
+                ORDER BY conname COLLATE \"C\"""",
+            (table,),
+        ).fetchall()
+    )
+    claim_fkeys = tuple(
+        row
+        for row in constraints_before
+        if row[1] == "f" and "FOREIGN KEY (claim_id)" in str(row[2])
+    )
+    assert len(claim_fkeys) == 1
+    removed = claim_fkeys[0]
+    connection.execute(
+        sql.SQL("ALTER TABLE {} DROP CONSTRAINT {}").format(
+            sql.Identifier(table), sql.Identifier(str(removed[0]))
+        )
+    )
+    constraints_after = tuple(
+        connection.execute(
+            """SELECT conname,contype,pg_get_constraintdef(oid)
+                 FROM pg_constraint
+                WHERE conrelid=%s::regclass
+                ORDER BY conname COLLATE \"C\"""",
+            (table,),
+        ).fetchall()
+    )
+    assert constraints_after == tuple(
+        row for row in constraints_before if row != removed
+    )
+    connection.execute(
+        """INSERT INTO groundloop_m5_published_claim_certificate_binding
+           (claim_id,valid_from_epoch,valid_to_epoch,sealed_revision,
+            certificate_digest)
+           SELECT 'b3-catalog-only-extra-claim',valid_from_epoch,valid_to_epoch,
+                  sealed_revision,certificate_digest
+             FROM groundloop_m5_published_claim_certificate_binding
+            WHERE claim_id=%s AND valid_to_epoch IS NULL""",
+        (snapshot.claim_ids[1],),
+    )
+
+
+def _b3_reseed_published_group_semantic_mismatch(
+    connection: Connection[Any], snapshot: _B3ActivatedSnapshot
+) -> None:
+    connection.execute(
+        """CREATE TEMP TABLE b3_saved_published_group_state ON COMMIT DROP AS
+           TABLE groundloop_m5_published_group_state"""
+    )
+    connection.execute("TRUNCATE groundloop_m5_published_group_state")
+    connection.execute(
+        """INSERT INTO groundloop_m5_published_group_state (
+             group_version_id,valid_from_epoch,valid_to_epoch,sealed_revision,
+             requirement_count,satisfied_count,matching_size,complete,
+             decision_policy_version,certificate_digest)
+           SELECT group_version_id,valid_from_epoch,valid_to_epoch,sealed_revision,
+                  requirement_count,
+                  CASE WHEN group_version_id=%s THEN satisfied_count-1
+                       ELSE satisfied_count END,
+                  matching_size,complete,decision_policy_version,certificate_digest
+             FROM b3_saved_published_group_state""",
+        (snapshot.complete_group_id,),
+    )
+
+
+def _b3_reseed_published_claim_semantic_mismatch(
+    connection: Connection[Any], snapshot: _B3ActivatedSnapshot
+) -> None:
+    connection.execute(
+        """CREATE TEMP TABLE b3_saved_published_claim_state ON COMMIT DROP AS
+           TABLE groundloop_m5_published_claim_state"""
+    )
+    connection.execute("TRUNCATE groundloop_m5_published_claim_state")
+    connection.execute(
+        """INSERT INTO groundloop_m5_published_claim_state (
+             claim_id,valid_from_epoch,valid_to_epoch,sealed_revision,
+             support_count,refute_count,best_support_score,best_refute_score,
+             supporting_observation_ids,refuting_observation_ids,
+             complete_group_count,complete_group_ids,status,
+             decision_policy_version,certificate_digest)
+           SELECT claim_id,valid_from_epoch,valid_to_epoch,sealed_revision,
+                  support_count,refute_count,
+                  CASE WHEN claim_id=%s THEN 0.9 ELSE best_support_score END,
+                  best_refute_score,supporting_observation_ids,
+                  refuting_observation_ids,complete_group_count,complete_group_ids,
+                  status,decision_policy_version,certificate_digest
+             FROM b3_saved_published_claim_state""",
+        (snapshot.claim_ids[1],),
+    )
+
+
+_B3_M5_MATERIALIZED_MUTATIONS = {
+    "m5_requirement_materialized": "groundloop_m5_requirement_state_materialized",
+    "m5_group_materialized": "groundloop_m5_group_state_materialized",
+    "m5_claim_materialized": "groundloop_m5_claim_state_materialized",
+    "m5_answer_materialized": "groundloop_m5_answer_state_materialized",
+}
+
+_B3_M5_PUBLISHED_MUTATIONS = {
+    "m5_requirement_published": ("groundloop_m5_published_requirement_state",),
+    "m5_answer_published": ("groundloop_m5_published_answer_state",),
+}
+
+
+def _apply_b3_preddl_mutation(
+    connection: Connection[Any], snapshot: _B3ActivatedSnapshot, mutation: str
+) -> None:
+    if mutation == "epoch_structural":
+        connection.execute(
+            """UPDATE groundloop_epoch SET structural_status='received'
+                WHERE epoch_id=%s""",
+            (snapshot.epoch_id,),
+        )
+    elif mutation == "epoch_semantic":
+        connection.execute(
+            """UPDATE groundloop_epoch SET semantic_status='complete',sealed_at=NULL
+                WHERE epoch_id=%s""",
+            (snapshot.epoch_id,),
+        )
+    elif mutation == "epoch_evaluation":
+        connection.execute(
+            "UPDATE groundloop_epoch SET evaluation_state='pending' WHERE epoch_id=%s",
+            (snapshot.epoch_id,),
+        )
+    elif mutation == "epoch_publication_mode":
+        connection.execute(
+            """UPDATE groundloop_epoch SET publication_mode='provisional'
+                WHERE epoch_id=%s""",
+            (snapshot.epoch_id,),
+        )
+    elif mutation == "epoch_revision":
+        connection.execute(
+            "UPDATE groundloop_epoch SET revision=revision+1 WHERE epoch_id=%s",
+            (snapshot.epoch_id,),
+        )
+    elif mutation == "m4_head":
+        future = _b3_future_epoch(connection, "b3-m4-head")
+        connection.execute(
+            "UPDATE groundloop_m4_publication_head SET epoch_id=%s WHERE singleton",
+            (future,),
+        )
+    elif mutation == "m5_head":
+        connection.execute(
+            """UPDATE groundloop_m5_publication_head
+                  SET sealed_revision=sealed_revision+1""",
+        )
+    elif mutation == "overlapping_policy":
+        future = _b3_future_epoch(connection, "b3-overlapping-policy-end")
+        connection.execute(
+            """INSERT INTO groundloop_decision_policy (
+                 policy_version,support_threshold,refute_threshold,tie_rule_version,
+                 valid_from_epoch,valid_to_epoch)
+               VALUES ('b3-overlap',.8,.8,'v1',%s,%s)""",
+            (snapshot.epoch_id, future),
+        )
+    elif mutation == "currency_future_close":
+        _b3_close_current_rows(
+            connection,
+            name="currency",
+            tables=("groundloop_published_observation_currency",),
+        )
+    elif mutation == "m4_claim_materialized":
+        connection.execute(
+            """UPDATE groundloop_claim_state_materialized
+                  SET best_support_score=0.9 WHERE claim_id=%s""",
+            (snapshot.claim_ids[1],),
+        )
+    elif mutation == "m4_answer_materialized":
+        connection.execute(
+            """UPDATE groundloop_answer_state_materialized
+                  SET status='partially_supported' WHERE answer_version_id=%s""",
+            (snapshot.answer_id,),
+        )
+    elif mutation == "m4_claim_certificate":
+        connection.execute(
+            """UPDATE groundloop_claim_certificate
+                  SET support_observation_id=%s WHERE claim_id=%s""",
+            (snapshot.direct_support_observations[1], snapshot.claim_ids[1]),
+        )
+    elif mutation == "m4_claim_published":
+        connection.execute(
+            """UPDATE groundloop_published_claim_state SET certificate_digest=%s
+                WHERE claim_id=%s AND valid_to_epoch IS NULL""",
+            (
+                hashlib.sha256(b"b3-wrong-m4-certificate").hexdigest(),
+                snapshot.claim_ids[1],
+            ),
+        )
+    elif mutation == "m4_answer_published":
+        connection.execute(
+            """UPDATE groundloop_published_answer_state SET status='partially_supported'
+                WHERE answer_version_id=%s AND valid_to_epoch IS NULL""",
+            (snapshot.answer_id,),
+        )
+    elif mutation in _B3_M5_MATERIALIZED_MUTATIONS:
+        connection.execute(
+            sql.SQL("UPDATE {} SET updated_revision=updated_revision+1").format(
+                sql.Identifier(_B3_M5_MATERIALIZED_MUTATIONS[mutation])
+            )
+        )
+    elif mutation in _B3_M5_PUBLISHED_MUTATIONS:
+        _b3_close_current_rows(
+            connection,
+            name=mutation,
+            tables=_B3_M5_PUBLISHED_MUTATIONS[mutation],
+        )
+    elif mutation == "m5_group_published":
+        _b3_reseed_published_group_semantic_mismatch(connection, snapshot)
+    elif mutation == "m5_claim_published":
+        _b3_reseed_published_claim_semantic_mismatch(connection, snapshot)
+    elif mutation == "m5_group_binding_missing":
+        table = "groundloop_m5_published_group_certificate_binding"
+        with _b3_user_triggers_disabled(connection, table):
+            connection.execute(
+                """DELETE FROM groundloop_m5_published_group_certificate_binding
+                    WHERE group_version_id=%s AND valid_to_epoch IS NULL""",
+                (snapshot.complete_group_id,),
+            )
+    elif mutation == "m5_group_binding_extra":
+        table = "groundloop_m5_published_group_certificate_binding"
+        with _b3_user_triggers_disabled(connection, table):
+            connection.execute(
+                """INSERT INTO groundloop_m5_published_group_certificate_binding
+                   (group_version_id,valid_from_epoch,valid_to_epoch,sealed_revision,
+                    certificate_digest)
+                   SELECT %s,valid_from_epoch,valid_to_epoch,sealed_revision,
+                          certificate_digest
+                     FROM groundloop_m5_published_group_certificate_binding
+                    WHERE group_version_id=%s AND valid_to_epoch IS NULL""",
+                (snapshot.partial_group_id, snapshot.complete_group_id),
+            )
+    elif mutation == "m5_group_binding_wrong":
+        alternate_digest = _b3_alternate_group_certificate(connection, snapshot)
+        table = "groundloop_m5_published_group_certificate_binding"
+        with _b3_user_triggers_disabled(connection, table):
+            connection.execute(
+                """UPDATE groundloop_m5_published_group_certificate_binding
+                      SET certificate_digest=%s
+                    WHERE group_version_id=%s AND valid_to_epoch IS NULL""",
+                (alternate_digest, snapshot.complete_group_id),
+            )
+    elif mutation == "m5_claim_binding_missing":
+        table = "groundloop_m5_published_claim_certificate_binding"
+        with _b3_user_triggers_disabled(connection, table):
+            connection.execute(
+                """DELETE FROM groundloop_m5_published_claim_certificate_binding
+                    WHERE claim_id=%s AND valid_to_epoch IS NULL""",
+                (snapshot.claim_ids[2],),
+            )
+    elif mutation == "m5_claim_binding_wrong":
+        table = "groundloop_m5_published_claim_certificate_binding"
+        with _b3_user_triggers_disabled(connection, table):
+            connection.execute(
+                """UPDATE groundloop_m5_published_claim_certificate_binding target
+                      SET certificate_digest=source.certificate_digest
+                     FROM groundloop_m5_published_claim_certificate_binding source
+                    WHERE target.claim_id=%s AND target.valid_to_epoch IS NULL
+                      AND source.claim_id=%s AND source.valid_to_epoch IS NULL""",
+                (snapshot.claim_ids[1], snapshot.claim_ids[4]),
+            )
+    elif mutation == "m5_claim_binding_extra_catalog_corruption":
+        _b3_add_catalog_only_claim_binding(connection, snapshot)
+    elif mutation == "m5_group_artifact_header":
+        table = "groundloop_m5_group_certificate_artifact"
+        with _b3_user_triggers_disabled(connection, table):
+            connection.execute(
+                """UPDATE groundloop_m5_group_certificate_artifact artifact
+                      SET requirement_count=requirement_count-1
+                     FROM groundloop_m5_published_group_certificate_binding binding
+                    WHERE artifact.certificate_digest=binding.certificate_digest
+                      AND binding.group_version_id=%s""",
+                (snapshot.complete_group_id,),
+            )
+    elif mutation == "m5_group_artifact_row":
+        table = "groundloop_m5_group_certificate_artifact_row"
+        with _b3_user_triggers_disabled(connection, table):
+            connection.execute(
+                """UPDATE groundloop_m5_group_certificate_artifact_row row
+                      SET selected_observation_id=%s
+                     FROM groundloop_m5_published_group_certificate_binding binding
+                    WHERE row.certificate_digest=binding.certificate_digest
+                      AND binding.group_version_id=%s
+                      AND row.requirement_ordinal=0""",
+                (
+                    snapshot.complete_group_alternate_observation,
+                    snapshot.complete_group_id,
+                ),
+            )
+    elif mutation == "m5_claim_artifact":
+        table = "groundloop_m5_claim_certificate_artifact"
+        with _b3_user_triggers_disabled(connection, table):
+            connection.execute(
+                """UPDATE groundloop_m5_claim_certificate_artifact
+                      SET direct_support_observation_id=%s WHERE claim_id=%s""",
+                (snapshot.direct_support_observations[1], snapshot.claim_ids[1]),
+            )
+    elif mutation == "currency_missing_current":
+        connection.execute(
+            "DELETE FROM groundloop_observation_currency WHERE observation_id=%s",
+            (snapshot.direct_support_observations[0],),
+        )
+    elif mutation == "currency_current_extra":
+        connection.execute(
+            """INSERT INTO groundloop_observation_currency (
+                 subject_kind,subject_id,chunk_version_id,task_type,
+                 observation_id,installed_revision)
+               SELECT subject_kind,subject_id,chunk_version_id,task_type,
+                      observation_id,%s
+                 FROM groundloop_semantic_observation WHERE observation_id=%s""",
+            (snapshot.revision, snapshot.currency_extra_observation),
+        )
+    elif mutation == "currency_current_different":
+        connection.execute(
+            """UPDATE groundloop_observation_currency SET observation_id=%s
+                WHERE observation_id=%s""",
+            (
+                snapshot.currency_alternate_observation,
+                snapshot.direct_support_observations[0],
+            ),
+        )
+    elif mutation == "typed_update_history":
+        history_epoch = connection.execute(
+            """INSERT INTO groundloop_epoch (
+                 event_id,payload_hash,revision,structural_status,semantic_status,
+                 evaluation_state,publication_mode,sealed_at)
+               VALUES ('b3-history',%s,0,'committed','pending','pending',
+                       'provisional',NULL) RETURNING epoch_id""",
+            (hashlib.sha256(b"b3-history").hexdigest(),),
+        ).fetchone()
+        assert history_epoch is not None
+        connection.execute(
+            """INSERT INTO groundloop_m5_update (
+                 epoch_id,update_kind,previous_published_epoch_id,
+                 decision_policy_version,manifest)
+               VALUES (%s,'observe_requirement',%s,%s,'{}'::jsonb)""",
+            (int(history_epoch[0]), snapshot.epoch_id, snapshot.policy_version),
+        )
+    elif mutation == "runtime_epoch_history":
+        _seed_b3_runtime_history(connection, snapshot)
+    else:  # pragma: no cover - the parameter table is closed below.
+        raise AssertionError(f"unknown B3 mutation: {mutation}")
+    connection.commit()
 
 
 @pytest.fixture(scope="module")
@@ -1013,6 +2292,429 @@ def test_first_install_exact_rerun_and_empty_v1_image(
     installed.commit()
 
 
+def test_b3a_activated_no_history_backfills_rich_independent_snapshot() -> None:
+    with _pre017_schema() as (connection, _):
+        snapshot = _seed_b3_activated_snapshot(connection, "b3a-rich")
+        epoch_count_before = connection.execute(
+            "SELECT count(*) FROM groundloop_epoch"
+        ).fetchone()
+        d24_anchor_counts_before = _b3_relation_counts(
+            connection, _B3_D24_ANCHOR_RELATIONS
+        )
+        assert epoch_count_before == (1,)
+        assert d24_anchor_counts_before == tuple(
+            (relation, 0) for relation in _B3_D24_ANCHOR_RELATIONS
+        )
+        connection.commit()
+        assert install_m5_persisted_matching_bundle(connection).applied
+        connection.commit()
+        assert (
+            connection.execute("SELECT count(*) FROM groundloop_epoch").fetchone()
+            == epoch_count_before
+        )
+        assert (
+            _b3_relation_counts(connection, _B3_D24_ANCHOR_RELATIONS)
+            == d24_anchor_counts_before
+        )
+        assert connection.execute(
+            "SELECT decision_policy_version,installed_epoch_id,installed_revision "
+            "FROM groundloop_m5_matching_image_current WHERE singleton"
+        ).fetchone() == (
+            snapshot.policy_version,
+            snapshot.epoch_id,
+            snapshot.revision,
+        )
+
+        expected_observations = tuple(
+            sorted(
+                (
+                    observation_id,
+                    requirement_id,
+                    group_id,
+                    ordinal,
+                    text_hash,
+                    snapshot.epoch_id,
+                    snapshot.revision,
+                )
+                for (
+                    observation_id,
+                    requirement_id,
+                    group_id,
+                    ordinal,
+                    text_hash,
+                ) in snapshot.requirement_observations
+            )
+        )
+        assert (
+            tuple(
+                connection.execute(
+                    """SELECT observation_id,requirement_version_id,group_version_id,
+                          requirement_ordinal,text_hash::text,installed_epoch_id,
+                          installed_revision
+                     FROM groundloop_m5_matching_observation_current
+                    ORDER BY observation_id COLLATE \"C\""""
+                ).fetchall()
+            )
+            == expected_observations
+        )
+
+        observation_by_requirement_hash: dict[tuple[str, str, str, int], int] = {}
+        for (
+            _,
+            requirement_id,
+            group_id,
+            ordinal,
+            text_hash,
+        ) in snapshot.requirement_observations:
+            key = (requirement_id, text_hash, group_id, ordinal)
+            observation_by_requirement_hash[key] = (
+                observation_by_requirement_hash.get(key, 0) + 1
+            )
+        expected_edges = tuple(
+            sorted(
+                (
+                    requirement_id,
+                    text_hash,
+                    group_id,
+                    ordinal,
+                    refcount,
+                    snapshot.epoch_id,
+                    snapshot.revision,
+                )
+                for (
+                    requirement_id,
+                    text_hash,
+                    group_id,
+                    ordinal,
+                ), refcount in observation_by_requirement_hash.items()
+            )
+        )
+        assert (
+            tuple(
+                connection.execute(
+                    """SELECT requirement_version_id,text_hash::text,group_version_id,
+                          requirement_ordinal,refcount,
+                          installed_epoch_id,installed_revision
+                     FROM groundloop_m5_matching_edge_current
+                    ORDER BY requirement_version_id COLLATE \"C\",text_hash"""
+                ).fetchall()
+            )
+            == expected_edges
+        )
+
+        masks: dict[tuple[str, str], int] = {}
+        for _, _, group_id, ordinal, text_hash in snapshot.requirement_observations:
+            masks[(group_id, text_hash)] = masks.get((group_id, text_hash), 0) | (
+                1 << ordinal
+            )
+        expected_masks = tuple(
+            sorted(
+                (
+                    group_id,
+                    text_hash,
+                    mask,
+                    snapshot.epoch_id,
+                    snapshot.revision,
+                )
+                for (group_id, text_hash), mask in masks.items()
+            )
+        )
+        assert (
+            tuple(
+                connection.execute(
+                    """SELECT group_version_id,text_hash::text,mask,
+                          installed_epoch_id,installed_revision
+                     FROM groundloop_m5_matching_hash_mask_current
+                    ORDER BY group_version_id COLLATE \"C\",text_hash"""
+                ).fetchall()
+            )
+            == expected_masks
+        )
+
+        expected_hall = tuple(
+            sorted(
+                (
+                    (
+                        snapshot.complete_group_id,
+                        2,
+                        [0, 1, 1, 0],
+                        [0, 1, 1, 2],
+                        [0, 0, 0, 0],
+                        0,
+                        2,
+                        2,
+                        snapshot.epoch_id,
+                        snapshot.revision,
+                    ),
+                    (
+                        snapshot.partial_group_id,
+                        2,
+                        [0, 1, 0, 0],
+                        [0, 1, 0, 1],
+                        [0, 0, 1, 1],
+                        1,
+                        1,
+                        1,
+                        snapshot.epoch_id,
+                        snapshot.revision,
+                    ),
+                    (
+                        snapshot.zero_hash_group_id,
+                        1,
+                        [0, 0],
+                        [0, 0],
+                        [0, 1],
+                        1,
+                        0,
+                        0,
+                        snapshot.epoch_id,
+                        snapshot.revision,
+                    ),
+                )
+            )
+        )
+        assert (
+            tuple(
+                connection.execute(
+                    """SELECT group_version_id,requirement_count,mask_histogram,
+                          neighbor_counts,deficiencies,maximum_deficiency,
+                          matching_size,distinct_hash_count,installed_epoch_id,
+                          installed_revision
+                     FROM groundloop_m5_matching_hall_current
+                    ORDER BY group_version_id COLLATE \"C\""""
+                ).fetchall()
+            )
+            == expected_hall
+        )
+
+        assert tuple(
+            connection.execute(
+                """SELECT answer_version_id,status::text
+                     FROM groundloop_answer_state_materialized
+                    ORDER BY answer_version_id COLLATE \"C\""""
+            ).fetchall()
+        ) == (
+            (snapshot.answer_id, "unsupported"),
+            (snapshot.second_answer_id, "unsupported"),
+        )
+        assert tuple(
+            connection.execute(
+                """SELECT answer_version_id,status::text
+                     FROM groundloop_m5_answer_state_materialized
+                    ORDER BY answer_version_id COLLATE \"C\""""
+            ).fetchall()
+        ) == (
+            (snapshot.answer_id, "valid"),
+            (snapshot.second_answer_id, "unsupported"),
+        )
+        assert tuple(
+            connection.execute(
+                """SELECT claim_id,support_kind,direct_support_observation_id,
+                          group_version_id,direct_refute_observation_id
+                     FROM groundloop_m5_claim_certificate_artifact
+                    ORDER BY claim_id COLLATE \"C\""""
+            ).fetchall()
+        ) == (
+            (
+                snapshot.claim_ids[0],
+                "group",
+                None,
+                snapshot.complete_group_id,
+                None,
+            ),
+            (
+                snapshot.claim_ids[1],
+                "direct",
+                snapshot.direct_support_observations[0],
+                None,
+                None,
+            ),
+            (
+                snapshot.claim_ids[2],
+                "none",
+                None,
+                None,
+                snapshot.refuted_only_observation,
+            ),
+            (
+                snapshot.claim_ids[3],
+                "direct",
+                snapshot.conflicted_support_observation,
+                None,
+                snapshot.conflicted_refute_observation,
+            ),
+            (
+                snapshot.claim_ids[4],
+                "direct",
+                snapshot.optional_support_observation,
+                None,
+                None,
+            ),
+            (snapshot.claim_ids[5], "none", None, None, None),
+        )
+        assert tuple(
+            connection.execute(
+                """SELECT claim_id,support_observation_id,refute_observation_id
+                     FROM groundloop_claim_certificate
+                    ORDER BY claim_id COLLATE \"C\""""
+            ).fetchall()
+        ) == (
+            (snapshot.claim_ids[0], None, None),
+            (snapshot.claim_ids[1], snapshot.direct_support_observations[0], None),
+            (snapshot.claim_ids[2], None, snapshot.refuted_only_observation),
+            (
+                snapshot.claim_ids[3],
+                snapshot.conflicted_support_observation,
+                snapshot.conflicted_refute_observation,
+            ),
+            (snapshot.claim_ids[4], snapshot.optional_support_observation, None),
+            (snapshot.claim_ids[5], None, None),
+        )
+        assert connection.execute(
+            """SELECT selected_observation_id
+                 FROM groundloop_m5_group_certificate_artifact_row row
+                 JOIN groundloop_m5_published_group_certificate_binding binding
+                   USING (certificate_digest)
+                WHERE binding.group_version_id=%s AND row.requirement_ordinal=0""",
+            (snapshot.complete_group_id,),
+        ).fetchone() == (
+            min(
+                observation_id
+                for observation_id, requirement_id, _, _, _ in (
+                    snapshot.requirement_observations
+                )
+                if requirement_id == snapshot.complete_requirement_ids[0]
+            ),
+        )
+        for relation in (
+            "groundloop_m5_matching_image_working",
+            "groundloop_m5_matching_observation_working",
+            "groundloop_m5_matching_edge_working",
+            "groundloop_m5_matching_hash_mask_working",
+            "groundloop_m5_matching_hall_working",
+            "groundloop_m5_matching_patch_artifact",
+            "groundloop_m5_matching_work_contribution",
+            "groundloop_m5_matching_work_accumulator",
+            "groundloop_m5_runtime_epoch",
+            "groundloop_m5_update",
+        ):
+            assert connection.execute(
+                f"SELECT count(*) FROM {relation}"
+            ).fetchone() == (0,)
+        connection.commit()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "epoch_structural",
+        "epoch_semantic",
+        "epoch_evaluation",
+        "epoch_publication_mode",
+        "epoch_revision",
+        "activation_head",
+        "m4_head",
+        "m5_head",
+        "overlapping_policy",
+        "currency_future_close",
+        "m4_claim_materialized",
+        "m4_answer_materialized",
+        "m4_claim_certificate",
+        "m4_claim_published",
+        "m4_answer_published",
+        "m5_requirement_materialized",
+        "m5_group_materialized",
+        "m5_claim_materialized",
+        "m5_answer_materialized",
+        "m5_requirement_published",
+        "m5_group_published",
+        "m5_claim_published",
+        "m5_answer_published",
+        "m5_group_binding_missing",
+        "m5_group_binding_extra",
+        "m5_group_binding_wrong",
+        "m5_claim_binding_missing",
+        "m5_claim_binding_wrong",
+        "m5_claim_binding_extra_catalog_corruption",
+        "m5_group_artifact_header",
+        "m5_group_artifact_row",
+        "m5_claim_artifact",
+        "currency_missing_current",
+        "currency_current_extra",
+        "currency_current_different",
+        "typed_update_history",
+        "runtime_epoch_history",
+    ),
+)
+def test_b3a_preddl_mismatch_rolls_back_without_017_inventory(
+    mutation: str,
+) -> None:
+    with _pre017_schema() as (connection, _):
+        snapshot = _seed_b3_activated_snapshot(
+            connection,
+            f"b3a-{mutation}",
+            inconsistent_activation_head=mutation == "activation_head",
+        )
+        if mutation != "activation_head":
+            _apply_b3_preddl_mutation(connection, snapshot, mutation)
+        inventory_before = _b3_install_catalog_inventory(connection)
+        connection.commit()
+
+        with pytest.raises(M5PersistedMatchingBundleError):
+            install_m5_persisted_matching_bundle(connection)
+
+        assert _b3_install_catalog_inventory(connection) == inventory_before
+        assert connection.execute(
+            "SELECT to_regclass('groundloop_m5_matching_image_current')"
+        ).fetchone() == (None,)
+        connection.commit()
+
+
+@pytest.mark.parametrize(
+    "failure_point",
+    (
+        "after_helpers",
+        "after_image_schema",
+        "after_observation_schema",
+        "after_edge_mask_schema",
+        "after_hall_schema",
+        "after_artifact_schema",
+        "after_authorization",
+        "after_deferred_validation",
+        "after_backfill_image",
+        "after_backfill_observation",
+        "after_backfill_edge",
+        "after_backfill_mask",
+        "after_backfill_hall",
+        "after_backfill",
+        "before_ledger",
+    ),
+)
+def test_b3a_postwrite_failure_rolls_back_exact_pre017_inventory(
+    failure_point: str,
+) -> None:
+    with _pre017_schema() as (connection, _):
+        _seed_b3_activated_snapshot(connection, f"b3a-{failure_point}")
+        inventory_before = _b3_install_catalog_inventory(connection)
+        connection.commit()
+
+        def fail(point: str) -> None:
+            if point == failure_point:
+                raise RuntimeError(f"injected B3a failure at {point}")
+
+        with pytest.raises(RuntimeError, match=failure_point):
+            install_m5_persisted_matching_bundle(
+                connection,
+                failure_injector=fail,
+            )
+
+        assert _b3_install_catalog_inventory(connection) == inventory_before
+        assert connection.execute(
+            "SELECT to_regclass('groundloop_m5_matching_image_current')"
+        ).fetchone() == (None,)
+        connection.commit()
+
+
 def test_b2_structural_empty_transition_commits() -> None:
     with _pre017_schema() as (connection, _):
         assert install_m5_persisted_matching_bundle(connection).applied
@@ -1036,6 +2738,188 @@ def test_b2_structural_empty_transition_commits() -> None:
             (epoch,),
         ).fetchone() == (1,)
         connection.commit()
+
+
+@pytest.mark.parametrize("action", ("RETIRE", "REPLACE"))
+def test_b2_structural_after_none_group_scope_transition_commits(action: str) -> None:
+    with _pre017_schema() as (connection, _):
+        assert install_m5_persisted_matching_bundle(connection).applied
+        connection.commit()
+        prefix = f"b2-after-none-{action.lower()}"
+        base, policy = _seed_b2_runtime_base(connection, prefix)
+        group, requirement, group_digest, requirement_digest = (
+            _seed_b2_absent_transition_state(connection, prefix, base, policy)
+        )
+        epoch, event, payload = _open_b2_runtime_epoch(
+            connection,
+            f"{prefix}-open",
+            base,
+            policy,
+            update_kind="retire_group" if action == "RETIRE" else "replace_group",
+        )
+        _stage_b2_group_deactivation(
+            connection, epoch=epoch, event=event, group=group, action=action
+        )
+        _apply_empty_b2_structural(
+            connection,
+            epoch=epoch,
+            event=event,
+            payload=payload,
+            base=base,
+            policy=policy,
+            absent_states=(
+                ("group_state", group, group_digest),
+                ("requirement_state", requirement, requirement_digest),
+            ),
+        )
+        assert connection.execute(
+            "SELECT (SELECT count(*) FROM groundloop_m5_working_requirement_state "
+            "WHERE epoch_id=%s),(SELECT count(*) FROM "
+            "groundloop_m5_working_group_state WHERE epoch_id=%s),"
+            "(SELECT count(*) FROM groundloop_m5_matching_patch_artifact "
+            "WHERE resulting_epoch_id=%s),"
+            "(SELECT count(*) FROM groundloop_m5_matching_work_contribution "
+            "WHERE epoch_id=%s),"
+            "(SELECT count(*) FROM groundloop_m5_group_deactivation "
+            "WHERE epoch_id=%s AND group_version_id=%s AND action=%s "
+            "AND event_id=%s)",
+            (epoch, epoch, epoch, epoch, epoch, group, action, event),
+        ).fetchone() == (0, 0, 1, 1, 1)
+        assert connection.execute(
+            "SELECT validation_done FROM "
+            "pg_temp.groundloop_m5_matching_transition_context"
+        ).fetchone() == (True,)
+        connection.commit()
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        (
+            "claim_after_none",
+            "absent logical state contract mismatch|logical state removal is forbidden",
+        ),
+        (
+            "answer_after_none",
+            "absent logical state contract mismatch|logical state removal is forbidden",
+        ),
+        ("wrong_source_kind", "outer patch point law mismatch|check constraint"),
+        ("wrong_event", "lacks exact (structural )?deactivation"),
+        ("wrong_epoch", "lacks exact (structural )?deactivation"),
+        ("wrong_update_kind", "lacks exact (structural )?deactivation"),
+        ("missing_deactivation", "lacks exact (structural )?deactivation"),
+        ("wrong_deactivation", "lacks exact (structural )?deactivation"),
+        (
+            "wrong_before_hash",
+            "predecessor mismatch|removed state before digest mismatch",
+        ),
+        (
+            "effective_present",
+            "lacks exact (structural )?deactivation|remains effective",
+        ),
+        (
+            "forged_requirement_working",
+            "wrote forbidden working row|removed state emitted a working mutation",
+        ),
+        (
+            "forged_group_working",
+            "wrote forbidden working row|removed state emitted a working mutation",
+        ),
+    ),
+)
+def test_b2_structural_after_none_falsifiers(mutation: str, message: str) -> None:
+    with _pre017_schema() as (connection, _):
+        assert install_m5_persisted_matching_bundle(connection).applied
+        connection.commit()
+        prefix = f"b2-after-none-{mutation}"
+        base, policy = _seed_b2_runtime_base(connection, prefix)
+        group, requirement, group_digest, requirement_digest = (
+            _seed_b2_absent_transition_state(connection, prefix, base, policy)
+        )
+        epoch, event, payload = _open_b2_runtime_epoch(
+            connection,
+            prefix,
+            base,
+            policy,
+            update_kind=(
+                "policy_change" if mutation == "wrong_update_kind" else "retire_group"
+            ),
+        )
+        _stage_b2_group_deactivation(
+            connection,
+            epoch=epoch,
+            event=event,
+            group=group,
+            action="RETIRE",
+            mutation=mutation,
+        )
+        absent_states = (
+            ("group_state", group, group_digest),
+            ("requirement_state", requirement, requirement_digest),
+        )
+        if mutation == "claim_after_none":
+            claim = connection.execute(
+                "SELECT claim_id FROM groundloop_claim"
+            ).fetchone()
+            assert claim is not None
+            absent_states = (("claim_state", str(claim[0]), "f" * 64),)
+        elif mutation == "answer_after_none":
+            answer = connection.execute(
+                "SELECT answer_version_id FROM groundloop_answer_version"
+            ).fetchone()
+            assert answer is not None
+            absent_states = (("answer_state", str(answer[0]), "f" * 64),)
+        elif mutation == "wrong_before_hash":
+            absent_states = (
+                ("group_state", group, "f" * 64),
+                ("requirement_state", requirement, requirement_digest),
+            )
+        elif mutation == "effective_present":
+            absent_states = (("requirement_state", requirement, requirement_digest),)
+            connection.execute(
+                """CREATE OR REPLACE VIEW groundloop_m5_effective_requirement_version AS
+                   SELECT update_row.epoch_id,requirement.requirement_version_id,
+                          requirement.group_version_id,requirement.ordinal,
+                          requirement.requirement_text,
+                          requirement.requirement_text_hash,family.claim_id,
+                          false AS staged
+                     FROM groundloop_m5_update update_row
+                     JOIN groundloop_m5_group_validity validity
+                       ON validity.valid_from_epoch<=
+                          update_row.previous_published_epoch_id
+                      AND (validity.valid_to_epoch IS NULL OR
+                           update_row.previous_published_epoch_id<validity.valid_to_epoch)
+                     JOIN groundloop_m5_group_version group_row
+                       ON group_row.group_version_id=validity.group_version_id
+                     JOIN groundloop_m5_group_family family
+                       ON family.group_family_id=group_row.group_family_id
+                     JOIN groundloop_m5_requirement_version requirement
+                       ON requirement.group_version_id=group_row.group_version_id
+                      AND requirement.lifecycle_state='PUBLISHED'"""
+            )
+        with pytest.raises(psycopg.Error, match=message):
+            _apply_empty_b2_structural(
+                connection,
+                epoch=epoch,
+                event=event,
+                payload=payload,
+                base=base,
+                policy=policy,
+                absent_states=absent_states,
+                forge_absent_working=(
+                    "requirement_state"
+                    if mutation == "forged_requirement_working"
+                    else "group_state"
+                    if mutation == "forged_group_working"
+                    else None
+                ),
+                encoded_source_kind=(
+                    "requirement_completion"
+                    if mutation == "wrong_source_kind"
+                    else None
+                ),
+            )
+        connection.rollback()
 
 
 def test_b2_structural_nonempty_hall_transition_validates_and_commits() -> None:
@@ -3056,7 +4940,7 @@ def test_preledger_lane_a_full_nonempty_constructor_bytes(
         (
             "seal",
             "INSERT INTO groundloop_m5_matching_image_working VALUES (1,1,1,'x',1)",
-            "cannot mutate non-current",
+            "promotion context mismatch",
         ),
         (
             "transition",
