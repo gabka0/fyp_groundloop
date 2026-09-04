@@ -1631,6 +1631,10 @@ def install_m5_persisted_matching_bundle(
             return M5PersistedMatchingBundleInstallResult(identity, False)
         mode = _m5_persisted_matching_singletons(connection)
         _m5_persisted_matching_first_install_guard(connection, mode)
+        connection.execute(
+            "SELECT set_config('search_path', "
+            "quote_ident(current_schema()) || ', pg_catalog', true)"
+        )
         for name, sql_source in _m5_runtime_recovery_migration_groups(
             migration.replace(
                 b"groundloop:m5-persisted-matching-group:",

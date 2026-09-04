@@ -25,6 +25,23 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION groundloop_m5_matching_digest_text_fields(fields_to_hash text[])
+RETURNS char(64) LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE AS $$
+DECLARE field text;
+DECLARE encoded bytea;
+DECLARE payload bytea:=''::bytea;
+BEGIN
+  FOREACH field IN ARRAY fields_to_hash LOOP
+    IF field IS NULL THEN
+      RAISE EXCEPTION 'persisted matching digest fields cannot contain SQL NULL';
+    END IF;
+    encoded:=convert_to(field,'UTF8');
+    payload:=payload||int8send(octet_length(encoded)::bigint)||encoded;
+  END LOOP;
+  RETURN encode(public.digest(payload,'sha256'),'hex');
+END;
+$$;
+
 CREATE FUNCTION groundloop_m5_matching_decode_preimage(value bytea)
 RETURNS text[] LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE AS $$
 DECLARE
@@ -53,7 +70,7 @@ BEGIN
     IF offset_value <> total OR cardinality(fields)=0 THEN
         RAISE EXCEPTION 'invalid persisted-matching framed preimage';
     END IF;
-    IF groundloop_m5_digest_text_fields(fields) <>
+    IF groundloop_m5_matching_digest_text_fields(fields) <>
        encode(public.digest(value, 'sha256'), 'hex') THEN
         RAISE EXCEPTION 'persisted-matching preimage is not canonical framing';
     END IF;
@@ -63,7 +80,7 @@ $$;
 
 CREATE FUNCTION groundloop_m5_matching_hash_preimage(value bytea)
 RETURNS char(64) LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS $$
-  SELECT groundloop_m5_digest_text_fields(
+  SELECT groundloop_m5_matching_digest_text_fields(
     groundloop_m5_matching_decode_preimage(value)
   )
 $$;
@@ -358,7 +375,7 @@ BEGIN
         'text',row_node->'fields'->3->'value'->>'value'];
       row_index:=row_index+1;
     END LOOP;
-    expected_digest:=groundloop_m5_digest_text_fields(digest_fields);
+    expected_digest:=groundloop_m5_matching_digest_text_fields(digest_fields);
     IF values_array->4->'value'->>'value'<>expected_digest THEN RETURN false; END IF;
   ELSIF name_value='ClaimCertificateArtifact' THEN
     support_kind_value:=values_array->2->'value'->>'value';
@@ -376,7 +393,7 @@ BEGIN
       digest_fields:=digest_fields||CASE WHEN item->>'tag'='none' THEN ARRAY['null']
         ELSE ARRAY[CASE WHEN position=5 THEN 'sha256' ELSE 'text' END,item->>'value'] END;
     END LOOP;
-    expected_digest:=groundloop_m5_digest_text_fields(digest_fields);
+    expected_digest:=groundloop_m5_matching_digest_text_fields(digest_fields);
     IF values_array->8->'value'->>'value'<>expected_digest THEN RETURN false; END IF;
   END IF;
   RETURN true;
@@ -669,7 +686,8 @@ BEGIN
     CASE WHEN family='mask' THEN values_array->(CASE layer_value WHEN 'current' THEN 3 ELSE 4 END)->>'value' ELSE NULL END,
     'requirement_count',CASE WHEN family='hall' AND
       (layer_value='current' OR payload_present) THEN
-      values_array->(CASE layer_value WHEN 'current' THEN 2 ELSE 4 END)->>'value' ELSE NULL END);
+      values_array->(CASE layer_value WHEN 'current' THEN 2 ELSE 4 END)->>'value' ELSE NULL END,
+    'node',point_node);
 END;
 $$;
 
@@ -804,7 +822,7 @@ BEGIN
                (binding_kind,output_node->>'object_id'))
     THEN RAISE EXCEPTION 'binding close/open order mismatch'; END IF;
     IF binding_index>jsonb_array_length(binding_hashes) OR binding_hashes->(binding_index-1)->>'tag'<>'sha256' THEN RAISE EXCEPTION 'binding digest sequence mismatch'; END IF;
-    digest_value:=groundloop_m5_digest_text_fields(ARRAY[
+    digest_value:=groundloop_m5_matching_digest_text_fields(ARRAY[
       'm5-persisted-certificate-binding-row-v1','enum',binding_kind,
       'int',row_epoch::text,'text',output_node->>'object_id','int',valid_from::text]
       || CASE WHEN is_open THEN ARRAY['null'] ELSE ARRAY['int',valid_to::text] END
@@ -972,7 +990,7 @@ BEGIN
   FOREACH item IN ARRAY values_to_hash LOOP
     fields := fields || ARRAY['int',item::text];
   END LOOP;
-  RETURN groundloop_m5_digest_text_fields(fields);
+  RETURN groundloop_m5_matching_digest_text_fields(fields);
 END;
 $$;
 
@@ -1396,7 +1414,7 @@ BEGIN
   FOREACH child_digest IN ARRAY NEW.hall_change_digests LOOP expected_outer:=expected_outer||ARRAY['sha256',child_digest]; END LOOP;
   expected_outer := expected_outer || ARRAY['sha256',NEW.logical_overlay_patch_digest,'sha256',NEW.matching_work_digest];
   IF groundloop_m5_matching_decode_preimage(NEW.canonical_patch_preimage)<>
-       expected_outer OR groundloop_m5_digest_text_fields(expected_outer)<>NEW.patch_digest
+       expected_outer OR groundloop_m5_matching_digest_text_fields(expected_outer)<>NEW.patch_digest
   THEN RAISE EXCEPTION 'persisted matching canonical patch preimage mismatch'; END IF;
   PERFORM groundloop_m5_matching_parse_typed_preimage(
     NEW.canonical_patch_preimage,'m5-persisted-matching-patch-v1');
@@ -1415,7 +1433,7 @@ BEGIN
   IF groundloop_m5_matching_work_digest(values_to_hash)<>NEW.matching_work_digest
   THEN RAISE EXCEPTION 'persisted matching work digest mismatch'; END IF;
   IF TG_TABLE_NAME='groundloop_m5_matching_work_contribution' THEN
-    expected_contribution := groundloop_m5_digest_text_fields(ARRAY[
+    expected_contribution := groundloop_m5_matching_digest_text_fields(ARRAY[
       'm5-matching-work-contribution-v1','int',NEW.epoch_id::text,
       'enum',NEW.source_kind,'text',NEW.source_id,
       'sha256',NEW.source_identity_hash,'int',NEW.before_epoch_id::text,
@@ -1442,19 +1460,773 @@ BEFORE INSERT OR UPDATE ON groundloop_m5_matching_work_accumulator
 FOR EACH ROW EXECUTE FUNCTION groundloop_m5_matching_validate_work_row();
 
 -- groundloop:m5-persisted-matching-group:authorization
+CREATE FUNCTION groundloop_m5_matching_journal_key(
+    relation_value text, parts text[]
+) RETURNS bytea LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE AS $$
+DECLARE payload bytea := ''::bytea;
+DECLARE part text;
+BEGIN
+  FOREACH part IN ARRAY ARRAY[relation_value] || parts LOOP
+    payload := payload || int8send(octet_length(convert_to(part,'UTF8')))
+      || convert_to(part,'UTF8');
+  END LOOP;
+  RETURN payload;
+END;
+$$;
+
+CREATE FUNCTION groundloop_m5_matching_row_key(relation_value text,row_value jsonb)
+RETURNS bytea LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE AS $$
+DECLARE key_parts text[];
+BEGIN
+  key_parts:=CASE relation_value
+    WHEN 'groundloop_m5_matching_image_working' THEN ARRAY[row_value->>'epoch_id']
+    WHEN 'groundloop_m5_matching_observation_working' THEN ARRAY[row_value->>'epoch_id',row_value->>'observation_id']
+    WHEN 'groundloop_m5_matching_edge_working' THEN ARRAY[row_value->>'epoch_id',row_value->>'requirement_version_id',row_value->>'text_hash']
+    WHEN 'groundloop_m5_matching_hash_mask_working' THEN ARRAY[row_value->>'epoch_id',row_value->>'group_version_id',row_value->>'text_hash']
+    WHEN 'groundloop_m5_matching_hall_working' THEN ARRAY[row_value->>'epoch_id',row_value->>'group_version_id']
+    WHEN 'groundloop_m5_matching_patch_artifact' THEN ARRAY[row_value->>'patch_digest']
+    WHEN 'groundloop_m5_matching_work_contribution' THEN ARRAY[row_value->>'epoch_id',row_value->>'source_kind',row_value->>'source_id',row_value->>'resulting_revision']
+    WHEN 'groundloop_m5_matching_work_accumulator' THEN ARRAY[row_value->>'epoch_id']
+    WHEN 'groundloop_m5_working_requirement_state' THEN ARRAY[row_value->>'epoch_id',row_value->>'requirement_version_id']
+    WHEN 'groundloop_m5_working_group_state' THEN ARRAY[row_value->>'epoch_id',row_value->>'group_version_id']
+    WHEN 'groundloop_m5_working_claim_state' THEN ARRAY[row_value->>'epoch_id',row_value->>'claim_id']
+    WHEN 'groundloop_m5_working_answer_state' THEN ARRAY[row_value->>'epoch_id',row_value->>'answer_version_id']
+    WHEN 'groundloop_m5_group_certificate_artifact' THEN ARRAY[row_value->>'certificate_digest']
+    WHEN 'groundloop_m5_group_certificate_artifact_row' THEN ARRAY[row_value->>'certificate_digest',row_value->>'requirement_ordinal']
+    WHEN 'groundloop_m5_claim_certificate_artifact' THEN ARRAY[row_value->>'certificate_digest']
+    WHEN 'groundloop_m5_working_group_certificate_binding' THEN ARRAY[row_value->>'epoch_id',row_value->>'group_version_id',row_value->>'valid_from_revision']
+    WHEN 'groundloop_m5_working_claim_certificate_binding' THEN ARRAY[row_value->>'epoch_id',row_value->>'claim_id',row_value->>'valid_from_revision']
+    ELSE NULL END;
+  IF key_parts IS NULL OR array_position(key_parts,NULL) IS NOT NULL THEN
+    RAISE EXCEPTION 'unsupported or incomplete persisted matching journal key for %',relation_value;
+  END IF;
+  RETURN groundloop_m5_matching_journal_key(relation_value,key_parts);
+END;
+$$;
+
+CREATE FUNCTION groundloop_m5_matching_encode_fields(fields_value text[])
+RETURNS bytea LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE AS $$
+DECLARE result_value bytea:=''::bytea;
+DECLARE field_value text;
+DECLARE encoded_value bytea;
+BEGIN
+  FOREACH field_value IN ARRAY fields_value LOOP
+    IF field_value IS NULL THEN RAISE EXCEPTION 'canonical journal field is NULL'; END IF;
+    encoded_value:=convert_to(field_value,'UTF8');
+    result_value:=result_value||int8send(octet_length(encoded_value))||encoded_value;
+  END LOOP;
+  RETURN result_value;
+END;
+$$;
+
+CREATE FUNCTION groundloop_m5_matching_typed_fields(node jsonb)
+RETURNS text[] LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE AS $$
+DECLARE tag_value text:=node->>'tag';
+DECLARE result_value text[];
+DECLARE child_value jsonb;
+BEGIN
+  IF tag_value='null' THEN RETURN ARRAY['null']; END IF;
+  IF tag_value IN ('text','enum','sha256','int','bool','f64') THEN
+    RETURN ARRAY[tag_value,CASE WHEN tag_value='bool' THEN
+      CASE WHEN (node->>'value')::boolean THEN '1' ELSE '0' END
+      ELSE node->>'value' END];
+  END IF;
+  IF tag_value<>'sequence' THEN RAISE EXCEPTION 'unsupported typed journal node'; END IF;
+  result_value:=ARRAY['sequence','int',jsonb_array_length(node->'children')::text];
+  FOR child_value IN SELECT entry.value FROM jsonb_array_elements(node->'children') entry(value)
+  LOOP result_value:=result_value||groundloop_m5_matching_typed_fields(child_value); END LOOP;
+  RETURN result_value;
+END;
+$$;
+
+CREATE FUNCTION groundloop_m5_matching_logical_scalar(tag_value text,value_value text)
+RETURNS bytea LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$
+DECLARE payload bytea;
+BEGIN
+  IF tag_value='none' THEN RETURN convert_to('n','UTF8'); END IF;
+  IF tag_value='bool' THEN RETURN convert_to('b','UTF8')||decode(
+    CASE WHEN value_value='true' THEN '01' ELSE '00' END,'hex'); END IF;
+  IF tag_value='f64' THEN RETURN convert_to('f','UTF8')||decode(value_value,'hex'); END IF;
+  payload:=convert_to(value_value,'UTF8');
+  RETURN convert_to(CASE tag_value WHEN 'enum' THEN 'e' WHEN 'str' THEN 's' ELSE 'i' END,'UTF8')
+    ||int8send(octet_length(payload))||payload;
+END;
+$$;
+
+CREATE FUNCTION groundloop_m5_matching_logical_tuple(values_value bytea[])
+RETURNS bytea LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE AS $$
+DECLARE result_value bytea:=convert_to('q','UTF8')||int8send(cardinality(values_value));
+DECLARE value_value bytea;
+BEGIN
+  FOREACH value_value IN ARRAY values_value LOOP
+    result_value:=result_value||int8send(octet_length(value_value))||value_value;
+  END LOOP;
+  RETURN result_value;
+END;
+$$;
+
+CREATE FUNCTION groundloop_m5_matching_logical_dataclass(
+  name_value text,names_value text[],values_value bytea[]
+) RETURNS bytea LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE AS $$
+DECLARE name_bytes bytea:=convert_to(name_value,'UTF8');
+DECLARE field_bytes bytea;
+DECLARE result_value bytea:=convert_to('d','UTF8')||int8send(octet_length(name_bytes))
+  ||name_bytes||int8send(cardinality(names_value));
+DECLARE position_value integer;
+BEGIN
+  IF cardinality(names_value)<>cardinality(values_value) THEN
+    RAISE EXCEPTION 'logical journal dataclass arity mismatch'; END IF;
+  FOR position_value IN 1..cardinality(names_value) LOOP
+    name_bytes:=convert_to(names_value[position_value],'UTF8');
+    field_bytes:=values_value[position_value];
+    result_value:=result_value||int8send(octet_length(name_bytes))||name_bytes
+      ||int8send(octet_length(field_bytes))||field_bytes;
+  END LOOP;
+  RETURN result_value;
+END;
+$$;
+
+CREATE FUNCTION groundloop_m5_matching_logical_text_tuple(values_value jsonb)
+RETURNS bytea LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE AS $$
+DECLARE children bytea[]:=ARRAY[]::bytea[];
+DECLARE child_value jsonb;
+BEGIN
+  FOR child_value IN SELECT entry.value FROM jsonb_array_elements(values_value) entry(value)
+  LOOP children:=children||groundloop_m5_matching_logical_scalar('str',child_value#>>'{}'); END LOOP;
+  RETURN groundloop_m5_matching_logical_tuple(children);
+END;
+$$;
+
+CREATE FUNCTION groundloop_m5_matching_logical_row_preimage(
+  kind_value text,row_value jsonb
+) RETURNS bytea LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE AS $$
+DECLARE names_value text[];
+DECLARE values_value bytea[];
+DECLARE score_value text;
+BEGIN
+  IF kind_value='requirement_state' THEN
+    names_value:=ARRAY['requirement_version_id','witness_hashes','supporting_observation_ids','witness_count','satisfied'];
+    values_value:=ARRAY[
+      groundloop_m5_matching_logical_scalar('str',row_value->>'requirement_version_id'),
+      groundloop_m5_matching_logical_text_tuple(row_value->'witness_hashes'),
+      groundloop_m5_matching_logical_text_tuple(row_value->'supporting_observation_ids'),
+      groundloop_m5_matching_logical_scalar('int',row_value->>'witness_count'),
+      groundloop_m5_matching_logical_scalar('bool',row_value->>'satisfied')];
+    RETURN groundloop_m5_matching_logical_dataclass('RequirementState',names_value,values_value);
+  ELSIF kind_value='group_state' THEN
+    names_value:=ARRAY['group_version_id','requirement_count','satisfied_count','matching_size','complete'];
+    values_value:=ARRAY[
+      groundloop_m5_matching_logical_scalar('str',row_value->>'group_version_id'),
+      groundloop_m5_matching_logical_scalar('int',row_value->>'requirement_count'),
+      groundloop_m5_matching_logical_scalar('int',row_value->>'satisfied_count'),
+      groundloop_m5_matching_logical_scalar('int',row_value->>'matching_size'),
+      groundloop_m5_matching_logical_scalar('bool',row_value->>'complete')];
+    RETURN groundloop_m5_matching_logical_dataclass('GroupState',names_value,values_value);
+  ELSIF kind_value='claim_state' THEN
+    names_value:=ARRAY['claim_id','support_count','refute_count','best_support_score','best_refute_score','supporting_observation_ids','refuting_observation_ids','complete_group_count','complete_group_ids','status'];
+    values_value:=ARRAY[
+      groundloop_m5_matching_logical_scalar('str',row_value->>'claim_id'),
+      groundloop_m5_matching_logical_scalar('int',row_value->>'support_count'),
+      groundloop_m5_matching_logical_scalar('int',row_value->>'refute_count'),
+      CASE WHEN row_value->'best_support_score'='null'::jsonb THEN groundloop_m5_matching_logical_scalar('none',NULL)
+        ELSE groundloop_m5_matching_logical_scalar('f64',encode(float8send((row_value->>'best_support_score')::double precision),'hex')) END,
+      CASE WHEN row_value->'best_refute_score'='null'::jsonb THEN groundloop_m5_matching_logical_scalar('none',NULL)
+        ELSE groundloop_m5_matching_logical_scalar('f64',encode(float8send((row_value->>'best_refute_score')::double precision),'hex')) END,
+      groundloop_m5_matching_logical_text_tuple(row_value->'supporting_observation_ids'),
+      groundloop_m5_matching_logical_text_tuple(row_value->'refuting_observation_ids'),
+      groundloop_m5_matching_logical_scalar('int',row_value->>'complete_group_count'),
+      groundloop_m5_matching_logical_text_tuple(row_value->'complete_group_ids'),
+      groundloop_m5_matching_logical_scalar('enum',row_value->>'status')];
+    RETURN groundloop_m5_matching_logical_dataclass('CombinedClaimState',names_value,values_value);
+  ELSIF kind_value='answer_state' THEN
+    names_value:=ARRAY['answer_version_id','required_claim_count','supported_count','unsupported_count','refuted_count','conflicted_count','status'];
+    values_value:=ARRAY[
+      groundloop_m5_matching_logical_scalar('str',row_value->>'answer_version_id'),
+      groundloop_m5_matching_logical_scalar('int',row_value->>'required_claim_count'),
+      groundloop_m5_matching_logical_scalar('int',row_value->>'supported_count'),
+      groundloop_m5_matching_logical_scalar('int',row_value->>'unsupported_count'),
+      groundloop_m5_matching_logical_scalar('int',row_value->>'refuted_count'),
+      groundloop_m5_matching_logical_scalar('int',row_value->>'conflicted_count'),
+      groundloop_m5_matching_logical_scalar('enum',row_value->>'status')];
+    RETURN groundloop_m5_matching_logical_dataclass('CombinedAnswerState',names_value,values_value);
+  ELSIF kind_value IN ('group_binding','claim_binding') THEN
+    names_value:=CASE kind_value WHEN 'group_binding' THEN
+      ARRAY['epoch_id','group_version_id','valid_from_revision','valid_to_revision','certificate_digest']
+      ELSE ARRAY['epoch_id','claim_id','valid_from_revision','valid_to_revision','certificate_digest'] END;
+    values_value:=ARRAY[
+      groundloop_m5_matching_logical_scalar('int',row_value->>'epoch_id'),
+      groundloop_m5_matching_logical_scalar('str',CASE kind_value WHEN 'group_binding' THEN row_value->>'group_version_id' ELSE row_value->>'claim_id' END),
+      groundloop_m5_matching_logical_scalar('int',row_value->>'valid_from_revision'),
+      CASE WHEN row_value->'valid_to_revision'='null'::jsonb THEN groundloop_m5_matching_logical_scalar('none',NULL)
+        ELSE groundloop_m5_matching_logical_scalar('int',row_value->>'valid_to_revision') END,
+      groundloop_m5_matching_logical_scalar('str',row_value->>'certificate_digest')];
+    RETURN groundloop_m5_matching_logical_dataclass(
+      CASE kind_value WHEN 'group_binding' THEN 'WorkingGroupCertificateBinding' ELSE 'WorkingClaimCertificateBinding' END,
+      names_value,values_value);
+  END IF;
+  RAISE EXCEPTION 'unsupported logical journal row %',kind_value;
+END;
+$$;
+
+CREATE FUNCTION groundloop_m5_matching_raw_text_array(value jsonb)
+RETURNS text[] LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS $$
+  SELECT coalesce(array_agg(entry.value ORDER BY entry.ordinality),ARRAY[]::text[])
+  FROM jsonb_array_elements_text(value) WITH ORDINALITY entry(value,ordinality)
+$$;
+
+CREATE FUNCTION groundloop_m5_matching_state_digest(kind_value text,row_value jsonb)
+RETURNS char(64) LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE AS $$
+BEGIN
+  RETURN CASE kind_value
+    WHEN 'requirement_state' THEN groundloop_m5_runtime_requirement_state_artifact(
+      row_value->>'requirement_version_id',
+      groundloop_m5_matching_raw_text_array(row_value->'witness_hashes'),
+      groundloop_m5_matching_raw_text_array(row_value->'supporting_observation_ids'),
+      (row_value->>'witness_count')::integer,(row_value->>'satisfied')::boolean,
+      row_value->>'decision_policy_version')
+    WHEN 'group_state' THEN groundloop_m5_runtime_group_state_artifact(
+      row_value->>'group_version_id',(row_value->>'requirement_count')::integer,
+      (row_value->>'satisfied_count')::integer,(row_value->>'matching_size')::integer,
+      (row_value->>'complete')::boolean,row_value->>'decision_policy_version',
+      nullif(row_value->>'certificate_digest','')::char(64))
+    WHEN 'claim_state' THEN groundloop_m5_runtime_claim_state_artifact(
+      row_value->>'claim_id',(row_value->>'support_count')::integer,
+      (row_value->>'refute_count')::integer,
+      nullif(row_value->>'best_support_score','')::double precision,
+      nullif(row_value->>'best_refute_score','')::double precision,
+      groundloop_m5_matching_raw_text_array(row_value->'supporting_observation_ids'),
+      groundloop_m5_matching_raw_text_array(row_value->'refuting_observation_ids'),
+      (row_value->>'complete_group_count')::integer,
+      groundloop_m5_matching_raw_text_array(row_value->'complete_group_ids'),
+      row_value->>'status',row_value->>'decision_policy_version',
+      (row_value->>'certificate_digest')::char(64))
+    ELSE groundloop_m5_runtime_answer_state_artifact(
+      row_value->>'answer_version_id',(row_value->>'required_claim_count')::integer,
+      (row_value->>'supported_count')::integer,(row_value->>'unsupported_count')::integer,
+      (row_value->>'refuted_count')::integer,(row_value->>'conflicted_count')::integer,
+      row_value->>'status') END;
+END;
+$$;
+
+CREATE FUNCTION groundloop_m5_matching_certificate_preimage(
+  kind_value text,digest_value char(64)
+) RETURNS bytea LANGUAGE plpgsql STABLE STRICT PARALLEL SAFE AS $$
+DECLARE artifact_value record;
+DECLARE row_value record;
+DECLARE row_preimages bytea[]:=ARRAY[]::bytea[];
+DECLARE values_value bytea[];
+DECLARE names_value text[];
+BEGIN
+  IF kind_value='group_certificate' THEN
+    SELECT * INTO STRICT artifact_value FROM groundloop_m5_group_certificate_artifact
+      WHERE certificate_digest=digest_value;
+    FOR row_value IN SELECT * FROM groundloop_m5_group_certificate_artifact_row
+      WHERE certificate_digest=digest_value ORDER BY requirement_ordinal
+    LOOP
+      row_preimages:=row_preimages||groundloop_m5_matching_logical_dataclass(
+        'GroupCertificateRow',
+        ARRAY['requirement_ordinal','requirement_version_id','text_hash','selected_observation_id'],
+        ARRAY[
+          groundloop_m5_matching_logical_scalar('int',row_value.requirement_ordinal::text),
+          groundloop_m5_matching_logical_scalar('str',row_value.requirement_version_id),
+          groundloop_m5_matching_logical_scalar('str',row_value.text_hash::text),
+          groundloop_m5_matching_logical_scalar('str',row_value.selected_observation_id)]);
+    END LOOP;
+    names_value:=ARRAY['decision_policy_version','group_version_id','rows','certificate_version','certificate_digest'];
+    values_value:=ARRAY[
+      groundloop_m5_matching_logical_scalar('str',artifact_value.decision_policy_version),
+      groundloop_m5_matching_logical_scalar('str',artifact_value.group_version_id),
+      groundloop_m5_matching_logical_tuple(row_preimages),
+      groundloop_m5_matching_logical_scalar('str',artifact_value.certificate_version),
+      groundloop_m5_matching_logical_scalar('str',artifact_value.certificate_digest::text)];
+    RETURN groundloop_m5_matching_logical_dataclass(
+      'GroupMatchingCertificateArtifact',names_value,values_value);
+  ELSIF kind_value='claim_certificate' THEN
+    SELECT * INTO STRICT artifact_value FROM groundloop_m5_claim_certificate_artifact
+      WHERE certificate_digest=digest_value;
+    names_value:=ARRAY['claim_id','decision_policy_version','support_kind',
+      'direct_support_observation_id','group_version_id','group_certificate_digest',
+      'direct_refute_observation_id','certificate_version','certificate_digest'];
+    values_value:=ARRAY[
+      groundloop_m5_matching_logical_scalar('str',artifact_value.claim_id),
+      groundloop_m5_matching_logical_scalar('str',artifact_value.decision_policy_version),
+      groundloop_m5_matching_logical_scalar('enum',artifact_value.support_kind),
+      CASE WHEN artifact_value.direct_support_observation_id IS NULL THEN groundloop_m5_matching_logical_scalar('none',NULL)
+        ELSE groundloop_m5_matching_logical_scalar('str',artifact_value.direct_support_observation_id) END,
+      CASE WHEN artifact_value.group_version_id IS NULL THEN groundloop_m5_matching_logical_scalar('none',NULL)
+        ELSE groundloop_m5_matching_logical_scalar('str',artifact_value.group_version_id) END,
+      CASE WHEN artifact_value.group_certificate_digest IS NULL THEN groundloop_m5_matching_logical_scalar('none',NULL)
+        ELSE groundloop_m5_matching_logical_scalar('str',artifact_value.group_certificate_digest::text) END,
+      CASE WHEN artifact_value.direct_refute_observation_id IS NULL THEN groundloop_m5_matching_logical_scalar('none',NULL)
+        ELSE groundloop_m5_matching_logical_scalar('str',artifact_value.direct_refute_observation_id) END,
+      groundloop_m5_matching_logical_scalar('str',artifact_value.certificate_version),
+      groundloop_m5_matching_logical_scalar('str',artifact_value.certificate_digest::text)];
+    RETURN groundloop_m5_matching_logical_dataclass(
+      'ClaimCertificateArtifact',names_value,values_value);
+  END IF;
+  RAISE EXCEPTION 'unsupported certificate journal kind %',kind_value;
+END;
+$$;
+
+CREATE FUNCTION groundloop_m5_matching_working_point_preimage(
+  relation_value text,row_value jsonb
+) RETURNS bytea LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE AS $$
+DECLARE fields_value text[];
+DECLARE array_value jsonb;
+DECLARE child_value jsonb;
+BEGIN
+  fields_value:=CASE relation_value
+    WHEN 'groundloop_m5_matching_observation_working' THEN ARRAY[
+      'sequence','int','9','enum','working','int',row_value->>'epoch_id',
+      'text',row_value->>'observation_id','text',row_value->>'requirement_version_id',
+      'text',row_value->>'group_version_id','int',row_value->>'requirement_ordinal',
+      'sha256',row_value->>'text_hash','bool',CASE WHEN (row_value->>'present')::boolean THEN '1' ELSE '0' END,
+      'int',row_value->>'updated_revision']
+    WHEN 'groundloop_m5_matching_edge_working' THEN ARRAY[
+      'sequence','int','8','enum','working','int',row_value->>'epoch_id',
+      'text',row_value->>'requirement_version_id','sha256',row_value->>'text_hash',
+      'text',row_value->>'group_version_id','int',row_value->>'requirement_ordinal',
+      'int',row_value->>'refcount','int',row_value->>'updated_revision']
+    WHEN 'groundloop_m5_matching_hash_mask_working' THEN ARRAY[
+      'sequence','int','6','enum','working','int',row_value->>'epoch_id',
+      'text',row_value->>'group_version_id','sha256',row_value->>'text_hash',
+      'int',row_value->>'mask','int',row_value->>'updated_revision']
+    WHEN 'groundloop_m5_matching_hall_working' THEN ARRAY[
+      'sequence','int','12','enum','working','int',row_value->>'epoch_id',
+      'text',row_value->>'group_version_id','bool',CASE WHEN (row_value->>'present')::boolean THEN '1' ELSE '0' END]
+    ELSE NULL END;
+  IF fields_value IS NULL THEN RAISE EXCEPTION 'unsupported physical journal row'; END IF;
+  IF relation_value='groundloop_m5_matching_hall_working' THEN
+    IF (row_value->>'present')::boolean THEN
+      fields_value:=fields_value||ARRAY['int',row_value->>'requirement_count'];
+      FOREACH array_value IN ARRAY ARRAY[row_value->'mask_histogram',row_value->'neighbor_counts',row_value->'deficiencies'] LOOP
+        fields_value:=fields_value||ARRAY['sequence','int',jsonb_array_length(array_value)::text];
+        FOR child_value IN SELECT entry.value FROM jsonb_array_elements(array_value) entry(value)
+        LOOP fields_value:=fields_value||ARRAY['int',child_value::text]; END LOOP;
+      END LOOP;
+      fields_value:=fields_value||ARRAY['int',row_value->>'maximum_deficiency',
+        'int',row_value->>'matching_size','int',row_value->>'distinct_hash_count'];
+    ELSE
+      fields_value:=fields_value||ARRAY['null','null','null','null','null','null','null'];
+    END IF;
+    fields_value:=fields_value||ARRAY['int',row_value->>'updated_revision'];
+  END IF;
+  RETURN groundloop_m5_matching_encode_fields(fields_value);
+END;
+$$;
+
+CREATE FUNCTION groundloop_m5_matching_current_point_preimage(
+  working_relation_value text,row_value jsonb
+) RETURNS bytea LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE AS $$
+DECLARE fields_value text[];
+DECLARE array_value jsonb;
+DECLARE child_value jsonb;
+BEGIN
+  fields_value:=CASE working_relation_value
+    WHEN 'groundloop_m5_matching_observation_working' THEN ARRAY[
+      'sequence','int','8','enum','current','text',row_value->>'observation_id',
+      'text',row_value->>'requirement_version_id','text',row_value->>'group_version_id',
+      'int',row_value->>'requirement_ordinal','sha256',row_value->>'text_hash',
+      'int',row_value->>'installed_epoch_id','int',row_value->>'installed_revision']
+    WHEN 'groundloop_m5_matching_edge_working' THEN ARRAY[
+      'sequence','int','8','enum','current','text',row_value->>'requirement_version_id',
+      'sha256',row_value->>'text_hash','text',row_value->>'group_version_id',
+      'int',row_value->>'requirement_ordinal','int',row_value->>'refcount',
+      'int',row_value->>'installed_epoch_id','int',row_value->>'installed_revision']
+    WHEN 'groundloop_m5_matching_hash_mask_working' THEN ARRAY[
+      'sequence','int','6','enum','current','text',row_value->>'group_version_id',
+      'sha256',row_value->>'text_hash','int',row_value->>'mask',
+      'int',row_value->>'installed_epoch_id','int',row_value->>'installed_revision']
+    WHEN 'groundloop_m5_matching_hall_working' THEN ARRAY[
+      'sequence','int','11','enum','current','text',row_value->>'group_version_id',
+      'int',row_value->>'requirement_count']
+    ELSE NULL END;
+  IF fields_value IS NULL THEN RAISE EXCEPTION 'unsupported current physical journal row'; END IF;
+  IF working_relation_value='groundloop_m5_matching_hall_working' THEN
+    FOREACH array_value IN ARRAY ARRAY[row_value->'mask_histogram',row_value->'neighbor_counts',row_value->'deficiencies'] LOOP
+      fields_value:=fields_value||ARRAY['sequence','int',jsonb_array_length(array_value)::text];
+      FOR child_value IN SELECT entry.value FROM jsonb_array_elements(array_value) entry(value)
+      LOOP fields_value:=fields_value||ARRAY['int',child_value::text]; END LOOP;
+    END LOOP;
+    fields_value:=fields_value||ARRAY['int',row_value->>'maximum_deficiency',
+      'int',row_value->>'matching_size','int',row_value->>'distinct_hash_count',
+      'int',row_value->>'installed_epoch_id','int',row_value->>'installed_revision'];
+  END IF;
+  RETURN groundloop_m5_matching_encode_fields(fields_value);
+END;
+$$;
+
+CREATE FUNCTION groundloop_m5_matching_working_row_matches_point(
+    relation_value text, row_value jsonb, decoded_change jsonb,
+    expected_epoch bigint, expected_revision bigint,
+    point_name text DEFAULT 'after'
+) RETURNS boolean LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$
+DECLARE point_value jsonb:=decoded_change->point_name;
+DECLARE fields_value jsonb:=point_value->'node'->'children';
+BEGIN
+  IF row_value IS NULL OR point_value='null'::jsonb
+     OR point_value->>'layer'<>'working'
+     OR (row_value->>'epoch_id')::bigint<>expected_epoch
+     OR (row_value->>'updated_revision')::bigint<>expected_revision
+  THEN RETURN false; END IF;
+  RETURN CASE relation_value
+    WHEN 'groundloop_m5_matching_observation_working' THEN
+      row_value->>'observation_id'=decoded_change->>'outer_one'
+      AND row_value->>'requirement_version_id'=fields_value->3->>'value'
+      AND row_value->>'group_version_id'=fields_value->4->>'value'
+      AND (row_value->>'requirement_ordinal')::integer=(fields_value->5->>'value')::integer
+      AND row_value->>'text_hash'=fields_value->6->>'value'
+      AND (row_value->>'present')::boolean=(fields_value->7->>'value')::boolean
+    WHEN 'groundloop_m5_matching_edge_working' THEN
+      row_value->>'requirement_version_id'=decoded_change->>'outer_one'
+      AND row_value->>'text_hash'=decoded_change->>'outer_two'
+      AND row_value->>'group_version_id'=fields_value->4->>'value'
+      AND (row_value->>'requirement_ordinal')::integer=(fields_value->5->>'value')::integer
+      AND (row_value->>'refcount')::bigint=(fields_value->6->>'value')::bigint
+    WHEN 'groundloop_m5_matching_hash_mask_working' THEN
+      row_value->>'group_version_id'=decoded_change->>'outer_one'
+      AND row_value->>'text_hash'=decoded_change->>'outer_two'
+      AND (row_value->>'mask')::integer=(fields_value->4->>'value')::integer
+    WHEN 'groundloop_m5_matching_hall_working' THEN
+      row_value->>'group_version_id'=decoded_change->>'outer_one'
+      AND (row_value->>'present')::boolean=(fields_value->3->>'value')::boolean
+      AND CASE WHEN (fields_value->3->>'value')::boolean THEN
+        (row_value->>'requirement_count')::integer=(fields_value->4->>'value')::integer
+        AND row_value->'mask_histogram'=to_jsonb(groundloop_m5_matching_json_int_array(fields_value->5))
+        AND row_value->'neighbor_counts'=to_jsonb(groundloop_m5_matching_json_int_array(fields_value->6))
+        AND row_value->'deficiencies'=to_jsonb(groundloop_m5_matching_json_int_array(fields_value->7))
+        AND (row_value->>'maximum_deficiency')::integer=(fields_value->8->>'value')::integer
+        AND (row_value->>'matching_size')::integer=(fields_value->9->>'value')::integer
+        AND (row_value->>'distinct_hash_count')::bigint=(fields_value->10->>'value')::bigint
+      ELSE row_value->'requirement_count'='null'::jsonb
+        AND row_value->'mask_histogram'='null'::jsonb
+        AND row_value->'neighbor_counts'='null'::jsonb
+        AND row_value->'deficiencies'='null'::jsonb
+        AND row_value->'maximum_deficiency'='null'::jsonb
+        AND row_value->'matching_size'='null'::jsonb
+        AND row_value->'distinct_hash_count'='null'::jsonb END
+    ELSE false END;
+END;
+$$;
+
+CREATE FUNCTION groundloop_m5_matching_current_row_matches_point(
+    relation_value text, row_value jsonb, decoded_change jsonb
+) RETURNS boolean LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$
+DECLARE point_value jsonb:=decoded_change->'before';
+DECLARE fields_value jsonb:=point_value->'node'->'children';
+BEGIN
+  IF row_value IS NULL OR point_value='null'::jsonb
+     OR point_value->>'layer'<>'current' THEN RETURN false; END IF;
+  RETURN CASE relation_value
+    WHEN 'groundloop_m5_matching_observation_working' THEN
+      row_value->>'observation_id'=decoded_change->>'outer_one'
+      AND row_value->>'requirement_version_id'=fields_value->2->>'value'
+      AND row_value->>'group_version_id'=fields_value->3->>'value'
+      AND (row_value->>'requirement_ordinal')::integer=(fields_value->4->>'value')::integer
+      AND row_value->>'text_hash'=fields_value->5->>'value'
+      AND (row_value->>'installed_epoch_id')::bigint=(fields_value->6->>'value')::bigint
+      AND (row_value->>'installed_revision')::bigint=(fields_value->7->>'value')::bigint
+    WHEN 'groundloop_m5_matching_edge_working' THEN
+      row_value->>'requirement_version_id'=decoded_change->>'outer_one'
+      AND row_value->>'text_hash'=decoded_change->>'outer_two'
+      AND row_value->>'group_version_id'=fields_value->3->>'value'
+      AND (row_value->>'requirement_ordinal')::integer=(fields_value->4->>'value')::integer
+      AND (row_value->>'refcount')::bigint=(fields_value->5->>'value')::bigint
+      AND (row_value->>'installed_epoch_id')::bigint=(fields_value->6->>'value')::bigint
+      AND (row_value->>'installed_revision')::bigint=(fields_value->7->>'value')::bigint
+    WHEN 'groundloop_m5_matching_hash_mask_working' THEN
+      row_value->>'group_version_id'=decoded_change->>'outer_one'
+      AND row_value->>'text_hash'=decoded_change->>'outer_two'
+      AND (row_value->>'mask')::integer=(fields_value->3->>'value')::integer
+      AND (row_value->>'installed_epoch_id')::bigint=(fields_value->4->>'value')::bigint
+      AND (row_value->>'installed_revision')::bigint=(fields_value->5->>'value')::bigint
+    WHEN 'groundloop_m5_matching_hall_working' THEN
+      row_value->>'group_version_id'=decoded_change->>'outer_one'
+      AND (row_value->>'requirement_count')::integer=(fields_value->2->>'value')::integer
+      AND row_value->'mask_histogram'=to_jsonb(groundloop_m5_matching_json_int_array(fields_value->3))
+      AND row_value->'neighbor_counts'=to_jsonb(groundloop_m5_matching_json_int_array(fields_value->4))
+      AND row_value->'deficiencies'=to_jsonb(groundloop_m5_matching_json_int_array(fields_value->5))
+      AND (row_value->>'maximum_deficiency')::integer=(fields_value->6->>'value')::integer
+      AND (row_value->>'matching_size')::integer=(fields_value->7->>'value')::integer
+      AND (row_value->>'distinct_hash_count')::bigint=(fields_value->8->>'value')::bigint
+      AND (row_value->>'installed_epoch_id')::bigint=(fields_value->9->>'value')::bigint
+      AND (row_value->>'installed_revision')::bigint=(fields_value->10->>'value')::bigint
+    ELSE false END;
+END;
+$$;
+
+CREATE FUNCTION groundloop_m5_matching_logical_row_matches(
+    kind_value text, row_value jsonb, output_value jsonb,
+    expected_epoch bigint, expected_revision bigint,
+    expected_policy text
+) RETURNS boolean LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$
+DECLARE after_value jsonb:=output_value->'after';
+DECLARE fields_value jsonb:=after_value->'fields';
+DECLARE old_score jsonb;
+BEGIN
+  IF row_value IS NULL OR after_value->>'tag'<>'dataclass' THEN RETURN false; END IF;
+  RETURN CASE kind_value
+    WHEN 'requirement_state' THEN
+      (row_value->>'epoch_id')::bigint=expected_epoch
+      AND row_value->>'requirement_version_id'=output_value->>'object_id'
+      AND row_value->'witness_hashes'=to_jsonb(groundloop_m5_matching_json_text_array(fields_value->1->'value'))
+      AND row_value->'supporting_observation_ids'=to_jsonb(groundloop_m5_matching_json_text_array(fields_value->2->'value'))
+      AND (row_value->>'witness_count')::integer=(fields_value->3->'value'->>'value')::integer
+      AND (row_value->>'satisfied')::boolean=(fields_value->4->'value'->>'value')::boolean
+      AND row_value->>'decision_policy_version'=expected_policy
+      AND (row_value->>'updated_revision')::bigint=expected_revision
+    WHEN 'group_state' THEN
+      (row_value->>'epoch_id')::bigint=expected_epoch
+      AND row_value->>'group_version_id'=output_value->>'object_id'
+      AND (row_value->>'requirement_count')::integer=(fields_value->1->'value'->>'value')::integer
+      AND (row_value->>'satisfied_count')::integer=(fields_value->2->'value'->>'value')::integer
+      AND (row_value->>'matching_size')::integer=(fields_value->3->'value'->>'value')::integer
+      AND (row_value->>'complete')::boolean=(fields_value->4->'value'->>'value')::boolean
+      AND row_value->>'decision_policy_version'=expected_policy
+      AND (row_value->>'updated_revision')::bigint=expected_revision
+    WHEN 'claim_state' THEN
+      (row_value->>'epoch_id')::bigint=expected_epoch
+      AND row_value->>'claim_id'=output_value->>'object_id'
+      AND (row_value->>'support_count')::integer=(fields_value->1->'value'->>'value')::integer
+      AND (row_value->>'refute_count')::integer=(fields_value->2->'value'->>'value')::integer
+      AND CASE WHEN fields_value->3->'value'->>'tag'='none'
+        THEN row_value->'best_support_score'='null'::jsonb
+        ELSE encode(float8send((row_value->>'best_support_score')::double precision),'hex')=
+             fields_value->3->'value'->>'value' END
+      AND CASE WHEN fields_value->4->'value'->>'tag'='none'
+        THEN row_value->'best_refute_score'='null'::jsonb
+        ELSE encode(float8send((row_value->>'best_refute_score')::double precision),'hex')=
+             fields_value->4->'value'->>'value' END
+      AND row_value->'supporting_observation_ids'=to_jsonb(groundloop_m5_matching_json_text_array(fields_value->5->'value'))
+      AND row_value->'refuting_observation_ids'=to_jsonb(groundloop_m5_matching_json_text_array(fields_value->6->'value'))
+      AND (row_value->>'complete_group_count')::integer=(fields_value->7->'value'->>'value')::integer
+      AND row_value->'complete_group_ids'=to_jsonb(groundloop_m5_matching_json_text_array(fields_value->8->'value'))
+      AND row_value->>'status'=fields_value->9->'value'->>'value'
+      AND row_value->>'decision_policy_version'=expected_policy
+      AND (row_value->>'updated_revision')::bigint=expected_revision
+    WHEN 'answer_state' THEN
+      (row_value->>'epoch_id')::bigint=expected_epoch
+      AND row_value->>'answer_version_id'=output_value->>'object_id'
+      AND (row_value->>'required_claim_count')::integer=(fields_value->1->'value'->>'value')::integer
+      AND (row_value->>'supported_count')::integer=(fields_value->2->'value'->>'value')::integer
+      AND (row_value->>'unsupported_count')::integer=(fields_value->3->'value'->>'value')::integer
+      AND (row_value->>'refuted_count')::integer=(fields_value->4->'value'->>'value')::integer
+      AND (row_value->>'conflicted_count')::integer=(fields_value->5->'value'->>'value')::integer
+      AND row_value->>'status'=fields_value->6->'value'->>'value'
+      AND (row_value->>'updated_revision')::bigint=expected_revision
+    WHEN 'group_binding' THEN
+      (row_value->>'epoch_id')::bigint=expected_epoch
+      AND row_value->>'group_version_id'=output_value->>'object_id'
+      AND (row_value->>'valid_from_revision')::bigint=(fields_value->2->'value'->>'value')::bigint
+      AND CASE WHEN fields_value->3->'value'->>'tag'='none'
+        THEN row_value->'valid_to_revision'='null'::jsonb
+        ELSE (row_value->>'valid_to_revision')::bigint=(fields_value->3->'value'->>'value')::bigint END
+      AND row_value->>'certificate_digest'=fields_value->4->'value'->>'value'
+    WHEN 'claim_binding' THEN
+      (row_value->>'epoch_id')::bigint=expected_epoch
+      AND row_value->>'claim_id'=output_value->>'object_id'
+      AND (row_value->>'valid_from_revision')::bigint=(fields_value->2->'value'->>'value')::bigint
+      AND CASE WHEN fields_value->3->'value'->>'tag'='none'
+        THEN row_value->'valid_to_revision'='null'::jsonb
+        ELSE (row_value->>'valid_to_revision')::bigint=(fields_value->3->'value'->>'value')::bigint END
+      AND row_value->>'certificate_digest'=fields_value->4->'value'->>'value'
+    ELSE false END;
+END;
+$$;
+
+CREATE FUNCTION groundloop_m5_matching_begin_transition_context(
+    selected_epoch_id bigint, expected_runtime_revision bigint,
+    resulting_revision bigint, selected_source_kind text, selected_source_id text
+) RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path FROM CURRENT AS $$
+BEGIN
+  IF to_regclass('pg_temp.groundloop_m5_matching_transition_context') IS NOT NULL
+     OR to_regclass('pg_temp.groundloop_m5_matching_change_journal') IS NOT NULL
+     OR to_regclass('pg_temp.groundloop_m5_matching_expected_changes') IS NOT NULL
+     OR nullif(current_setting('groundloop.m5_matching_mode',true),'') IS NOT NULL
+     OR nullif(current_setting('groundloop.m5_matching_context_oid',true),'') IS NOT NULL
+     OR nullif(current_setting('groundloop.m5_matching_journal_oid',true),'') IS NOT NULL
+     OR nullif(current_setting('groundloop.m5_matching_expected_oid',true),'') IS NOT NULL
+  THEN RAISE EXCEPTION 'persisted matching transition context already exists'; END IF;
+  EXECUTE 'CREATE TEMP TABLE pg_temp.groundloop_m5_matching_transition_context (
+    backend_pid integer NOT NULL, transaction_id bigint NOT NULL,
+    session_role text NOT NULL, epoch_id bigint NOT NULL,
+    expected_revision bigint NOT NULL, resulting_revision bigint NOT NULL,
+    source_kind text NOT NULL, source_id text NOT NULL,
+    anchor_count integer NOT NULL DEFAULT 0,
+    runtime_first_old jsonb, runtime_final_new jsonb,
+    runtime_saw_insert boolean NOT NULL DEFAULT false,
+    runtime_saw_update boolean NOT NULL DEFAULT false,
+    validation_started boolean NOT NULL DEFAULT false,
+    validation_done boolean NOT NULL DEFAULT false,
+    PRIMARY KEY (backend_pid,transaction_id,session_role)
+  ) ON COMMIT DROP';
+  EXECUTE 'CREATE TEMP TABLE pg_temp.groundloop_m5_matching_change_journal (
+    relation_name text NOT NULL, key_preimage bytea NOT NULL,
+    first_old jsonb, final_new jsonb, first_operation text NOT NULL,
+    last_operation text NOT NULL, mutation_count integer NOT NULL,
+    saw_insert boolean NOT NULL, saw_update boolean NOT NULL,
+    saw_delete boolean NOT NULL,
+    PRIMARY KEY(relation_name,key_preimage)
+  ) ON COMMIT DROP';
+  EXECUTE 'CREATE TEMP TABLE pg_temp.groundloop_m5_matching_expected_changes (
+    relation_name text NOT NULL, key_preimage bytea NOT NULL,
+    PRIMARY KEY(relation_name,key_preimage)
+  ) ON COMMIT DROP';
+  EXECUTE 'INSERT INTO pg_temp.groundloop_m5_matching_transition_context
+    (backend_pid,transaction_id,session_role,epoch_id,expected_revision,
+     resulting_revision,source_kind,source_id)
+    VALUES ($1,pg_current_xact_id()::text::bigint,session_user,$2,$3,$4,$5,$6)'
+    USING pg_backend_pid(),selected_epoch_id,expected_runtime_revision,
+          resulting_revision,selected_source_kind,selected_source_id;
+  PERFORM set_config('groundloop.m5_matching_context_oid',
+    to_regclass('pg_temp.groundloop_m5_matching_transition_context')::oid::text,true);
+  PERFORM set_config('groundloop.m5_matching_journal_oid',
+    to_regclass('pg_temp.groundloop_m5_matching_change_journal')::oid::text,true);
+  PERFORM set_config('groundloop.m5_matching_expected_oid',
+    to_regclass('pg_temp.groundloop_m5_matching_expected_changes')::oid::text,true);
+END;
+$$;
+
+CREATE FUNCTION groundloop_m5_matching_journal_change(
+    relation_value text, operation_value text, old_value jsonb, new_value jsonb
+) RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path FROM CURRENT AS $$
+DECLARE row_value jsonb:=coalesce(new_value,old_value);
+DECLARE key_value bytea;
+DECLARE context_epoch bigint;
+DECLARE context_result bigint;
+DECLARE context_started boolean;
+BEGIN
+  IF coalesce(current_setting('groundloop.m5_matching_mode',true),'')<>'transition' THEN
+    IF to_regclass('pg_temp.groundloop_m5_matching_transition_context') IS NOT NULL
+       OR nullif(current_setting('groundloop.m5_matching_context_oid',true),'') IS NOT NULL
+       OR nullif(current_setting('groundloop.m5_matching_journal_oid',true),'') IS NOT NULL
+       OR nullif(current_setting('groundloop.m5_matching_expected_oid',true),'') IS NOT NULL
+    THEN RAISE EXCEPTION 'persisted matching journal mode/context escape'; END IF;
+    RETURN;
+  END IF;
+  IF to_regclass('pg_temp.groundloop_m5_matching_transition_context') IS NULL
+     OR to_regclass('pg_temp.groundloop_m5_matching_change_journal') IS NULL
+  THEN RAISE EXCEPTION 'persisted matching transition lacks private context'; END IF;
+  EXECUTE 'SELECT epoch_id,resulting_revision,validation_started
+             FROM pg_temp.groundloop_m5_matching_transition_context
+            WHERE backend_pid=$1 AND transaction_id=pg_current_xact_id()::text::bigint
+              AND session_role=session_user'
+    INTO STRICT context_epoch,context_result,context_started USING pg_backend_pid();
+  IF context_started THEN RAISE EXCEPTION 'persisted matching DML after validation'; END IF;
+  IF coalesce((row_value->>'epoch_id')::bigint,context_epoch)<>context_epoch THEN
+    RAISE EXCEPTION 'persisted matching journal cross-epoch row'; END IF;
+  key_value:=groundloop_m5_matching_row_key(relation_value,row_value);
+  IF operation_value='UPDATE' AND
+     groundloop_m5_matching_row_key(relation_value,old_value)<>key_value THEN
+    RAISE EXCEPTION 'persisted matching journal key cannot mutate'; END IF;
+  EXECUTE 'INSERT INTO pg_temp.groundloop_m5_matching_change_journal AS journal
+      (relation_name,key_preimage,first_old,final_new,first_operation,last_operation,
+       mutation_count,saw_insert,saw_update,saw_delete)
+    VALUES ($1,$2,$3,$4,$5,$5,1,$5=''INSERT'',$5=''UPDATE'',$5=''DELETE'')
+    ON CONFLICT (relation_name,key_preimage) DO UPDATE SET
+      final_new=EXCLUDED.final_new,last_operation=EXCLUDED.last_operation,
+      mutation_count=journal.mutation_count+1,
+      saw_insert=journal.saw_insert OR EXCLUDED.saw_insert,
+      saw_update=journal.saw_update OR EXCLUDED.saw_update,
+      saw_delete=journal.saw_delete OR EXCLUDED.saw_delete'
+    USING relation_value,key_value,old_value,new_value,operation_value;
+END;
+$$;
+
+-- Preserve every migration-014 mutation check while extending its existing
+-- trigger surface with transaction-local D25 journaling. Currency retains the
+-- exact migration-014 behavior and is deliberately outside the D25 journal;
+-- no new trigger lock is introduced for working state or bindings.
+CREATE OR REPLACE FUNCTION groundloop_m5_validate_working_state_mutation()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path FROM CURRENT AS $$
+DECLARE current_revision bigint;
+BEGIN
+  IF TG_OP='DELETE' THEN RAISE EXCEPTION 'M5 working state cannot be deleted'; END IF;
+  PERFORM groundloop_m5_assert_writable_epoch(NEW.epoch_id);
+  SELECT revision INTO STRICT current_revision FROM groundloop_epoch
+    WHERE epoch_id=NEW.epoch_id;
+  IF NEW.updated_revision<>current_revision THEN
+    RAISE EXCEPTION 'M5 working state must name the current epoch revision'; END IF;
+  IF TG_OP='UPDATE' THEN
+    IF NEW.epoch_id<>OLD.epoch_id THEN
+      RAISE EXCEPTION 'M5 working-state epoch identity cannot change'; END IF;
+    IF NEW.updated_revision<=OLD.updated_revision THEN
+      RAISE EXCEPTION 'M5 working-state revision must increase'; END IF;
+  END IF;
+  PERFORM groundloop_m5_matching_journal_change(
+    TG_TABLE_NAME,TG_OP,CASE WHEN TG_OP='UPDATE' THEN to_jsonb(OLD) END,to_jsonb(NEW));
+  RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION groundloop_m5_validate_revision_interval_mutation()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path FROM CURRENT AS $$
+DECLARE current_revision bigint;
+BEGIN
+  IF TG_OP='DELETE' THEN RAISE EXCEPTION 'M5 revision history cannot be deleted'; END IF;
+  PERFORM groundloop_m5_assert_writable_epoch(NEW.epoch_id);
+  SELECT revision INTO STRICT current_revision FROM groundloop_epoch
+    WHERE epoch_id=NEW.epoch_id;
+  IF TG_OP='INSERT' AND NEW.valid_from_revision<>current_revision THEN
+    RAISE EXCEPTION 'M5 revision history must open at the current revision'; END IF;
+  IF TG_OP='UPDATE' THEN
+    IF (to_jsonb(NEW)-'valid_to_revision') IS DISTINCT FROM
+       (to_jsonb(OLD)-'valid_to_revision')
+       OR OLD.valid_to_revision IS NOT NULL OR NEW.valid_to_revision IS NULL
+       OR NEW.valid_to_revision<=OLD.valid_from_revision
+       OR NEW.valid_to_revision<>current_revision
+    THEN RAISE EXCEPTION 'M5 revision history may close exactly once'; END IF;
+  END IF;
+  IF TG_TABLE_NAME IN (
+    'groundloop_m5_working_group_certificate_binding',
+    'groundloop_m5_working_claim_certificate_binding') THEN
+    PERFORM groundloop_m5_matching_journal_change(
+      TG_TABLE_NAME,TG_OP,CASE WHEN TG_OP='UPDATE' THEN to_jsonb(OLD) END,to_jsonb(NEW));
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION groundloop_m5_matching_artifact_journal_guard()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path FROM CURRENT AS $$
+BEGIN
+  PERFORM groundloop_m5_matching_journal_change(TG_TABLE_NAME,TG_OP,NULL,to_jsonb(NEW));
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER groundloop_m5_group_certificate_artifact_d25_journal
+BEFORE INSERT ON groundloop_m5_group_certificate_artifact
+FOR EACH ROW EXECUTE FUNCTION groundloop_m5_matching_artifact_journal_guard();
+CREATE TRIGGER groundloop_m5_group_certificate_row_d25_journal
+BEFORE INSERT ON groundloop_m5_group_certificate_artifact_row
+FOR EACH ROW EXECUTE FUNCTION groundloop_m5_matching_artifact_journal_guard();
+CREATE TRIGGER groundloop_m5_claim_certificate_artifact_d25_journal
+BEFORE INSERT ON groundloop_m5_claim_certificate_artifact
+FOR EACH ROW EXECUTE FUNCTION groundloop_m5_matching_artifact_journal_guard();
+
 CREATE FUNCTION groundloop_m5_matching_authorized_guard()
-RETURNS trigger LANGUAGE plpgsql AS $$
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path FROM CURRENT AS $$
 DECLARE
     mode text := nullif(current_setting('groundloop.m5_matching_mode', true), '');
     row_value jsonb := CASE WHEN TG_OP='DELETE' THEN to_jsonb(OLD) ELSE to_jsonb(NEW) END;
     context_epoch bigint;
     context_result bigint;
 BEGIN
+    IF coalesce(mode,'')<>'transition' AND (
+       to_regclass('pg_temp.groundloop_m5_matching_transition_context') IS NOT NULL
+       OR nullif(current_setting('groundloop.m5_matching_context_oid',true),'') IS NOT NULL
+       OR nullif(current_setting('groundloop.m5_matching_journal_oid',true),'') IS NOT NULL
+       OR nullif(current_setting('groundloop.m5_matching_expected_oid',true),'') IS NOT NULL)
+    THEN RAISE EXCEPTION 'persisted matching DML mode/context escape'; END IF;
     IF coalesce(current_setting('groundloop.m5_checked_transition', true), '') <> 'on'
        OR coalesce(mode, '') NOT IN ('transition','seal','activation','migration')
     THEN RAISE EXCEPTION 'unauthorized persisted matching DML on %', TG_TABLE_NAME;
     END IF;
     IF mode='migration' THEN
+        IF EXISTS (SELECT 1 FROM groundloop_m5_schema_bundle
+          WHERE bundle_id='m5-persisted-matching-schema-bundle-v1') THEN
+          RAISE EXCEPTION 'persisted matching migration bypass is closed'; END IF;
         RETURN CASE WHEN TG_OP='DELETE' THEN OLD ELSE NEW END;
     END IF;
     context_epoch := nullif(current_setting('groundloop.m5_matching_epoch_id', true), '')::bigint;
@@ -1469,6 +2241,8 @@ BEGIN
         RAISE EXCEPTION 'persisted matching working rows cannot be deleted';
     END IF;
     IF mode='transition' THEN
+      IF to_regclass('pg_temp.groundloop_m5_matching_transition_context') IS NULL THEN
+        RAISE EXCEPTION 'persisted matching transition lacks private context'; END IF;
       IF TG_TABLE_NAME LIKE '%_current' THEN
         RAISE EXCEPTION 'transition cannot mutate current matching image';
       END IF;
@@ -1482,6 +2256,10 @@ BEGIN
          AND (row_value->>'source_kind' IS DISTINCT FROM current_setting('groundloop.m5_matching_source_kind')
               OR row_value->>'source_id' IS DISTINCT FROM current_setting('groundloop.m5_matching_source_id'))
       THEN RAISE EXCEPTION 'persisted matching transition source mismatch'; END IF;
+      PERFORM groundloop_m5_matching_journal_change(
+        TG_TABLE_NAME,TG_OP,
+        CASE WHEN TG_OP IN ('UPDATE','DELETE') THEN to_jsonb(OLD) END,
+        CASE WHEN TG_OP IN ('INSERT','UPDATE') THEN to_jsonb(NEW) END);
     ELSIF mode IN ('seal','activation') THEN
       IF TG_TABLE_NAME NOT LIKE '%_current' THEN
         RAISE EXCEPTION '% cannot mutate non-current matching relation', mode;
@@ -1496,20 +2274,23 @@ BEGIN
       IF mode='seal' AND TG_OP='DELETE' AND NOT (
         (TG_TABLE_NAME='groundloop_m5_matching_observation_current' AND EXISTS (
           SELECT 1 FROM groundloop_m5_matching_observation_working w
-          WHERE w.epoch_id=context_epoch AND w.observation_id=OLD.observation_id
+          WHERE w.epoch_id=context_epoch
+            AND w.observation_id=row_value->>'observation_id'
             AND NOT w.present))
         OR (TG_TABLE_NAME='groundloop_m5_matching_edge_current' AND EXISTS (
           SELECT 1 FROM groundloop_m5_matching_edge_working w
           WHERE w.epoch_id=context_epoch
-            AND w.requirement_version_id=OLD.requirement_version_id
-            AND w.text_hash=OLD.text_hash AND w.refcount=0))
+            AND w.requirement_version_id=row_value->>'requirement_version_id'
+            AND w.text_hash=row_value->>'text_hash' AND w.refcount=0))
         OR (TG_TABLE_NAME='groundloop_m5_matching_hash_mask_current' AND EXISTS (
           SELECT 1 FROM groundloop_m5_matching_hash_mask_working w
-          WHERE w.epoch_id=context_epoch AND w.group_version_id=OLD.group_version_id
-            AND w.text_hash=OLD.text_hash AND w.mask=0))
+          WHERE w.epoch_id=context_epoch
+            AND w.group_version_id=row_value->>'group_version_id'
+            AND w.text_hash=row_value->>'text_hash' AND w.mask=0))
         OR (TG_TABLE_NAME='groundloop_m5_matching_hall_current' AND EXISTS (
           SELECT 1 FROM groundloop_m5_matching_hall_working w
-          WHERE w.epoch_id=context_epoch AND w.group_version_id=OLD.group_version_id
+          WHERE w.epoch_id=context_epoch
+            AND w.group_version_id=row_value->>'group_version_id'
             AND NOT w.present))
       ) THEN RAISE EXCEPTION 'seal delete lacks its exact working tombstone'; END IF;
     END IF;
@@ -1520,16 +2301,28 @@ $$;
 CREATE FUNCTION groundloop_m5_authorize_persisted_matching_transition(
     selected_epoch_id bigint, expected_runtime_revision bigint,
     resulting_revision bigint, selected_source_kind text, selected_source_id text
-) RETURNS void LANGUAGE plpgsql AS $$
+) RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path FROM CURRENT AS $$
+DECLARE locked_epoch_revision bigint;
+DECLARE locked_runtime_revision bigint;
 BEGIN
     IF coalesce(current_setting('groundloop.m5_checked_transition', true), '') <> 'on'
        OR selected_source_kind NOT IN ('structural_open','requirement_completion','direct_transition')
        OR btrim(selected_source_id) = '' OR expected_runtime_revision < 1
        OR NOT ((selected_source_kind='structural_open' AND expected_runtime_revision=1 AND resulting_revision=1)
           OR (selected_source_kind<>'structural_open' AND resulting_revision=expected_runtime_revision+1))
-       OR NOT EXISTS (SELECT 1 FROM groundloop_m5_runtime_epoch
-          WHERE epoch_id=selected_epoch_id AND revision=expected_runtime_revision)
     THEN RAISE EXCEPTION 'invalid persisted matching transition authorization'; END IF;
+    SELECT epoch.revision,runtime.revision
+      INTO locked_epoch_revision,locked_runtime_revision
+      FROM groundloop_epoch epoch
+      JOIN groundloop_m5_runtime_epoch runtime USING(epoch_id)
+     WHERE epoch.epoch_id=selected_epoch_id
+     FOR UPDATE OF epoch,runtime;
+    IF NOT FOUND OR locked_epoch_revision<>expected_runtime_revision
+       OR locked_runtime_revision<>expected_runtime_revision
+    THEN RAISE EXCEPTION 'persisted matching transition CAS/revision mismatch'; END IF;
+    PERFORM groundloop_m5_matching_begin_transition_context(
+      selected_epoch_id,expected_runtime_revision,resulting_revision,
+      selected_source_kind,selected_source_id);
     PERFORM set_config('groundloop.m5_matching_mode','transition',true);
     PERFORM set_config('groundloop.m5_matching_epoch_id',selected_epoch_id::text,true);
     PERFORM set_config('groundloop.m5_matching_expected_revision',expected_runtime_revision::text,true);
@@ -1543,7 +2336,12 @@ CREATE FUNCTION groundloop_m5_authorize_persisted_matching_seal(
     selected_epoch_id bigint, expected_revision bigint, sealed_revision bigint
 ) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
-    IF current_setting('groundloop.m5_checked_transition', true) <> 'on'
+    IF to_regclass('pg_temp.groundloop_m5_matching_transition_context') IS NOT NULL
+       OR nullif(current_setting('groundloop.m5_matching_mode',true),'') IS NOT NULL
+       OR nullif(current_setting('groundloop.m5_matching_context_oid',true),'') IS NOT NULL
+       OR nullif(current_setting('groundloop.m5_matching_journal_oid',true),'') IS NOT NULL
+       OR nullif(current_setting('groundloop.m5_matching_expected_oid',true),'') IS NOT NULL
+       OR current_setting('groundloop.m5_checked_transition', true) <> 'on'
        OR expected_revision < 1 OR sealed_revision < 1
        OR NOT EXISTS (SELECT 1 FROM groundloop_m5_runtime_epoch
           WHERE epoch_id=selected_epoch_id AND revision=expected_revision)
@@ -1561,6 +2359,12 @@ CREATE FUNCTION groundloop_m5_authorize_persisted_matching_activation(
 ) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE actual_head bigint; actual_revision bigint;
 BEGIN
+    IF to_regclass('pg_temp.groundloop_m5_matching_transition_context') IS NOT NULL
+       OR nullif(current_setting('groundloop.m5_matching_mode',true),'') IS NOT NULL
+       OR nullif(current_setting('groundloop.m5_matching_context_oid',true),'') IS NOT NULL
+       OR nullif(current_setting('groundloop.m5_matching_journal_oid',true),'') IS NOT NULL
+       OR nullif(current_setting('groundloop.m5_matching_expected_oid',true),'') IS NOT NULL
+    THEN RAISE EXCEPTION 'persisted matching authorization mode already selected'; END IF;
     SELECT head.epoch_id, epoch.revision INTO STRICT actual_head, actual_revision
       FROM groundloop_runtime_mode mode
       JOIN groundloop_m4_publication_head head ON head.singleton
@@ -1595,9 +2399,39 @@ DO $$ DECLARE relation_name text; BEGIN
   END LOOP;
 END $$;
 
+REVOKE ALL ON FUNCTION groundloop_m5_matching_begin_transition_context(
+  bigint,bigint,bigint,text,text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION groundloop_m5_matching_journal_change(
+  text,text,jsonb,jsonb) FROM PUBLIC;
+
 -- groundloop:m5-persisted-matching-group:deferred_validation
+CREATE FUNCTION groundloop_m5_matching_capture_transition_anchor()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path FROM CURRENT AS $$
+DECLARE started boolean;
+BEGIN
+  IF coalesce(current_setting('groundloop.m5_matching_mode',true),'')<>'transition' THEN
+    RETURN NEW;
+  END IF;
+  IF to_regclass('pg_temp.groundloop_m5_matching_transition_context') IS NULL THEN
+    RAISE EXCEPTION 'persisted matching runtime anchor lacks private context'; END IF;
+  EXECUTE 'UPDATE pg_temp.groundloop_m5_matching_transition_context
+              SET anchor_count=anchor_count+1,
+                  runtime_first_old=CASE WHEN anchor_count=0 THEN $3 ELSE runtime_first_old END,
+                  runtime_final_new=$4,
+                  runtime_saw_insert=runtime_saw_insert OR $5=''INSERT'',
+                  runtime_saw_update=runtime_saw_update OR $5=''UPDATE''
+            WHERE backend_pid=$1 AND transaction_id=pg_current_xact_id()::text::bigint
+              AND session_role=session_user AND epoch_id=$2
+          RETURNING validation_started'
+    INTO STRICT started USING pg_backend_pid(),NEW.epoch_id,
+      CASE WHEN TG_OP='UPDATE' THEN to_jsonb(OLD) END,to_jsonb(NEW),TG_OP;
+  IF started THEN RAISE EXCEPTION 'persisted matching anchor after validation'; END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION groundloop_m5_matching_deferred_validate()
-RETURNS trigger LANGUAGE plpgsql AS $$
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path FROM CURRENT AS $$
 DECLARE selected_epoch bigint;
 DECLARE selected_result bigint;
 DECLARE contribution groundloop_m5_matching_work_contribution%ROWTYPE;
@@ -1607,12 +2441,167 @@ DECLARE counter_name text;
 DECLARE expected_counter bigint;
 DECLARE actual_counter bigint;
 DECLARE relation_name text;
+DECLARE anchor_count_value integer;
+DECLARE validation_started_value boolean;
+DECLARE validation_done_value boolean;
+DECLARE context_source_kind text;
+DECLARE journal_count bigint;
+DECLARE expected_count bigint;
+DECLARE child bytea;
+DECLARE decoded_change jsonb;
+DECLARE journal_row jsonb;
+DECLARE key_value bytea;
+DECLARE current_row_value jsonb;
+DECLARE before_point_value jsonb;
+DECLARE logical_outputs jsonb;
+DECLARE logical_output jsonb;
+DECLARE logical_kind text;
+DECLARE logical_relation text;
+DECLARE logical_fields jsonb;
+DECLARE logical_digest text;
+DECLARE logical_key_parts text[];
+DECLARE status_count bigint;
+DECLARE accumulator_journal jsonb;
+DECLARE prior_counter bigint;
+DECLARE contribution_counter bigint;
+DECLARE contribution_journal jsonb;
+DECLARE prior_status text;
+DECLARE logical_patch_parsed jsonb;
+DECLARE prior_digest text;
+DECLARE prior_d25_revision bigint;
+DECLARE prior_image_policy text;
+DECLARE context_backend integer;
+DECLARE context_xid bigint;
+DECLARE context_role text;
+DECLARE context_epoch_value bigint;
+DECLARE context_expected bigint;
+DECLARE context_result_value bigint;
+DECLARE context_source_id text;
+DECLARE runtime_first_old_value jsonb;
+DECLARE runtime_final_new_value jsonb;
+DECLARE runtime_saw_insert_value boolean;
+DECLARE runtime_saw_update_value boolean;
+DECLARE logical_change jsonb;
+DECLARE effective_old jsonb;
+DECLARE derived_additions bigint:=0;
+DECLARE derived_removals bigint:=0;
+DECLARE before_present boolean;
+DECLARE after_present boolean;
+DECLARE decoded_shapes jsonb;
+DECLARE derived_crossings bigint:=0;
+DECLARE derived_edge_keys bigint:=0;
+DECLARE derived_mask_transitions bigint:=0;
+DECLARE derived_masks_initialized bigint:=0;
+DECLARE derived_zeta bigint:=0;
+DECLARE derived_subset bigint:=0;
+DECLARE derived_neighbours bigint:=0;
+DECLARE derived_deficiency bigint:=0;
+DECLARE old_mask integer;
+DECLARE new_mask integer;
+DECLARE group_r integer;
+DECLARE subset_mask integer;
+DECLARE hall_initialization boolean;
+DECLARE old_refcount bigint;
+DECLARE new_refcount bigint;
+DECLARE derived_requirement_state_only bigint:=0;
+DECLARE derived_group_state_only bigint:=0;
+DECLARE derived_claim_state_only bigint:=0;
+DECLARE initialized_hall_groups text[]:=ARRAY[]::text[];
+DECLARE ordinary_mask_groups text[]:=ARRAY[]::text[];
 BEGIN
-  IF current_setting('groundloop.m5_matching_mode', true)<>'transition' THEN
+  IF coalesce(current_setting('groundloop.m5_matching_mode',true),'')<>'transition' THEN
+    IF to_regclass('pg_temp.groundloop_m5_matching_transition_context') IS NOT NULL
+       OR nullif(current_setting('groundloop.m5_matching_context_oid',true),'') IS NOT NULL
+       OR nullif(current_setting('groundloop.m5_matching_journal_oid',true),'') IS NOT NULL
+       OR nullif(current_setting('groundloop.m5_matching_expected_oid',true),'') IS NOT NULL
+    THEN RAISE EXCEPTION 'persisted matching transition mode/context escape'; END IF;
     RETURN NULL;
   END IF;
+  IF to_regclass('pg_temp.groundloop_m5_matching_transition_context') IS NULL
+     OR to_regclass('pg_temp.groundloop_m5_matching_change_journal') IS NULL
+  THEN RAISE EXCEPTION 'persisted matching deferred validation lacks private context'; END IF;
+  IF to_regclass('pg_temp.groundloop_m5_matching_transition_context')::oid::text<>
+       current_setting('groundloop.m5_matching_context_oid',true)
+     OR to_regclass('pg_temp.groundloop_m5_matching_change_journal')::oid::text<>
+       current_setting('groundloop.m5_matching_journal_oid',true)
+     OR to_regclass('pg_temp.groundloop_m5_matching_expected_changes')::oid::text<>
+       current_setting('groundloop.m5_matching_expected_oid',true)
+  THEN RAISE EXCEPTION 'persisted matching private context table was replaced'; END IF;
   selected_epoch := current_setting('groundloop.m5_matching_epoch_id')::bigint;
   selected_result := current_setting('groundloop.m5_matching_resulting_revision')::bigint;
+  EXECUTE 'SELECT backend_pid,transaction_id,session_role,epoch_id,
+                  expected_revision,resulting_revision,source_kind,source_id,
+                  anchor_count,validation_started,validation_done,
+                  runtime_first_old,runtime_final_new,
+                  runtime_saw_insert,runtime_saw_update
+             FROM pg_temp.groundloop_m5_matching_transition_context'
+    INTO STRICT context_backend,context_xid,context_role,context_epoch_value,
+      context_expected,context_result_value,context_source_kind,context_source_id,
+      anchor_count_value,validation_started_value,validation_done_value,
+      runtime_first_old_value,runtime_final_new_value,
+      runtime_saw_insert_value,runtime_saw_update_value;
+  EXECUTE 'SELECT count(*) FROM pg_temp.groundloop_m5_matching_transition_context'
+    INTO journal_count;
+  IF journal_count<>1 OR context_backend<>pg_backend_pid()
+     OR context_xid<>pg_current_xact_id()::text::bigint
+     OR context_role<>session_user OR context_epoch_value<>selected_epoch
+     OR context_expected<>current_setting('groundloop.m5_matching_expected_revision')::bigint
+     OR context_result_value<>selected_result
+     OR context_source_kind<>current_setting('groundloop.m5_matching_source_kind')
+     OR context_source_id<>current_setting('groundloop.m5_matching_source_id')
+     OR current_setting('groundloop.m5_matching_mode')<>'transition'
+  THEN RAISE EXCEPTION 'persisted matching private context/GUC mismatch'; END IF;
+  IF validation_done_value THEN RETURN NULL; END IF;
+  IF context_source_kind='structural_open' THEN
+    IF anchor_count_value<>0 OR NOT EXISTS (
+      SELECT 1 FROM groundloop_m5_runtime_epoch runtime
+       WHERE runtime.epoch_id=selected_epoch AND runtime.revision=1
+         AND runtime.structural_event_id=context_source_id
+         AND runtime.runtime_state IN (
+           'structural_committed','semantic_pending','semantic_complete')
+         AND runtime.terminal_at IS NULL
+         AND runtime.xmin=pg_current_xact_id()::xid)
+    THEN RAISE EXCEPTION 'persisted matching structural runtime INSERT mismatch'; END IF;
+  ELSE
+    IF anchor_count_value<>1 OR runtime_saw_insert_value
+       OR NOT runtime_saw_update_value OR runtime_first_old_value IS NULL
+       OR runtime_final_new_value IS NULL
+       OR (runtime_first_old_value->>'epoch_id')::bigint<>selected_epoch
+       OR (runtime_final_new_value->>'epoch_id')::bigint<>selected_epoch
+       OR (runtime_first_old_value->>'revision')::bigint<>context_expected
+       OR (runtime_final_new_value->>'revision')::bigint<>selected_result
+       OR runtime_first_old_value->>'structural_event_id'<>
+          runtime_final_new_value->>'structural_event_id'
+       OR runtime_first_old_value->>'candidate_policy_id'<>
+          runtime_final_new_value->>'candidate_policy_id'
+       OR runtime_first_old_value->>'candidate_policy_manifest_hash'<>
+          runtime_final_new_value->>'candidate_policy_manifest_hash'
+       OR runtime_first_old_value->>'requirement_registry_snapshot_digest'<>
+          runtime_final_new_value->>'requirement_registry_snapshot_digest'
+       OR runtime_first_old_value->>'active_chunk_snapshot_digest'<>
+          runtime_final_new_value->>'active_chunk_snapshot_digest'
+       OR runtime_first_old_value->>'expected_previous_published_epoch_id'<>
+          runtime_final_new_value->>'expected_previous_published_epoch_id'
+       OR runtime_first_old_value->>'requirement_root_set_hash'<>
+          runtime_final_new_value->>'requirement_root_set_hash'
+       OR runtime_first_old_value->>'runtime_state' IN ('sealed','failed')
+       OR runtime_final_new_value->>'runtime_state' IN ('sealed','failed')
+       OR runtime_first_old_value->'terminal_at'<>'null'::jsonb
+       OR runtime_final_new_value->'terminal_at'<>'null'::jsonb
+    THEN RAISE EXCEPTION 'persisted matching later runtime UPDATE mismatch'; END IF;
+  END IF;
+  IF validation_started_value THEN
+    RAISE EXCEPTION 'persisted matching transition requires exactly one deferred anchor'; END IF;
+  EXECUTE 'UPDATE pg_temp.groundloop_m5_matching_transition_context
+              SET validation_started=true
+            WHERE backend_pid=$1 AND transaction_id=pg_current_xact_id()::text::bigint
+              AND session_role=session_user'
+    USING pg_backend_pid();
+  EXECUTE 'SELECT count(*) FROM pg_temp.groundloop_m5_matching_change_journal
+            WHERE saw_delete OR (first_old IS NULL AND final_new IS NULL)'
+    INTO journal_count;
+  IF journal_count<>0 THEN
+    RAISE EXCEPTION 'persisted matching transition cannot delete or cycle a working row'; END IF;
   SELECT c.* INTO contribution
   FROM groundloop_m5_matching_work_contribution c
   WHERE c.epoch_id=selected_epoch AND c.resulting_revision=selected_result
@@ -1635,6 +2624,133 @@ BEGIN
          contribution.before_revision,contribution.epoch_id,
          contribution.resulting_revision,contribution.matching_work_digest)
   THEN RAISE EXCEPTION 'persisted matching patch/contribution identity mismatch'; END IF;
+  IF patch.source_kind='structural_open' THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM groundloop_epoch epoch
+      JOIN groundloop_m5_runtime_epoch runtime USING(epoch_id)
+      JOIN groundloop_m5_update typed_update USING(epoch_id)
+      JOIN groundloop_m5_candidate_policy typed_policy
+        ON typed_policy.candidate_policy_id=runtime.candidate_policy_id
+      JOIN groundloop_m4_publication_head m4_head ON m4_head.singleton
+      JOIN groundloop_m5_publication_head m5_head ON m5_head.singleton
+      JOIN groundloop_m5_matching_image_current current_image
+        ON current_image.singleton
+      JOIN groundloop_decision_policy current_policy
+        ON current_policy.policy_version=current_image.decision_policy_version
+      JOIN groundloop_epoch predecessor
+        ON predecessor.epoch_id=typed_update.previous_published_epoch_id
+      WHERE epoch.epoch_id=selected_epoch
+        AND epoch.event_id=patch.source_id
+        AND epoch.payload_hash=patch.source_identity_hash
+        AND runtime.structural_event_id=patch.source_id
+        AND runtime.revision=1
+        AND typed_update.previous_published_epoch_id=patch.before_epoch_id
+        AND typed_update.decision_policy_version=patch.decision_policy_version
+        AND typed_policy.decision_policy_version=patch.decision_policy_version
+        AND m4_head.epoch_id=patch.before_epoch_id
+        AND m5_head.epoch_id=patch.before_epoch_id
+        AND m5_head.sealed_revision=patch.before_revision
+        AND current_image.installed_epoch_id=patch.before_epoch_id
+        AND current_image.installed_revision=patch.before_revision
+        AND current_policy.valid_from_epoch<=patch.before_epoch_id
+        AND (current_policy.valid_to_epoch IS NULL
+             OR current_policy.valid_to_epoch>patch.before_epoch_id)
+        AND predecessor.revision=patch.before_revision
+        AND predecessor.structural_status='committed'
+        AND predecessor.semantic_status='sealed'
+        AND predecessor.evaluation_state='complete'
+        AND predecessor.sealed_at IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM groundloop_m4_update direct_update
+          JOIN groundloop_candidate_policy direct_policy
+            ON direct_policy.candidate_policy_id=direct_update.candidate_policy_id
+          WHERE direct_update.epoch_id=selected_epoch
+            AND direct_policy.decision_policy_version<>
+                patch.decision_policy_version))
+    THEN RAISE EXCEPTION 'persisted matching structural source authority mismatch'; END IF;
+  ELSIF patch.source_kind='requirement_completion' THEN
+    IF NOT EXISTS (
+      SELECT 1
+      FROM groundloop_m5_attempt_result_artifact artifact
+      JOIN groundloop_m5_job_attempt attempt
+        ON attempt.attempt_id=artifact.attempt_id
+       AND attempt.logical_job_id=artifact.logical_job_id
+      JOIN groundloop_m5_semantic_job job
+        ON job.logical_job_id=artifact.logical_job_id
+       AND job.epoch_id=artifact.job_epoch_id
+      JOIN groundloop_m5_requirement_verifier_execution execution
+        ON execution.logical_job_id=artifact.logical_job_id
+       AND execution.attempt_id=artifact.attempt_id
+       AND execution.artifact_id=artifact.result_artifact_id
+       AND execution.artifact_hash=artifact.result_artifact_hash
+      JOIN groundloop_m5_requirement_verifier_artifact verifier_artifact
+        ON verifier_artifact.artifact_id=execution.artifact_id
+       AND verifier_artifact.artifact_hash=execution.artifact_hash
+       AND verifier_artifact.semantic_pair_digest=job.semantic_pair_digest
+      WHERE artifact.attempt_id=patch.source_id
+        AND artifact.attempt_result_artifact_hash=patch.source_identity_hash
+        AND artifact.job_epoch_id=selected_epoch
+        AND artifact.disposition='verifier_completed_active'
+        AND job.job_kind='verify_requirement_pair'
+        AND attempt.attempt_state='completed'
+        AND attempt.attempt_output_digest=artifact.attempt_output_digest
+        AND attempt.execution_spec_hash=artifact.execution_spec_hash
+        AND job.payload_hash=artifact.payload_hash
+        AND job.execution_spec_hash=artifact.execution_spec_hash
+        AND job.job_state=artifact.job_state_after
+        AND job.result_artifact_id=artifact.result_artifact_id
+        AND job.result_artifact_hash=artifact.result_artifact_hash
+        AND job.completed_revision=selected_result
+        AND verifier_artifact.execution_spec_hash=job.execution_spec_hash
+        AND verifier_artifact.subject_kind=job.subject_kind
+        AND verifier_artifact.subject_id=job.subject_id
+        AND verifier_artifact.chunk_version_id=job.chunk_version_id
+        AND execution.pair_input_hash=verifier_artifact.pair_input_hash
+        AND execution.produced_epoch_id=selected_epoch)
+    THEN RAISE EXCEPTION 'persisted matching requirement source authority mismatch'; END IF;
+  ELSE
+    IF NOT EXISTS (
+      SELECT 1 FROM groundloop_m4_evaluation_counter_transition transition
+       WHERE transition.epoch_id=selected_epoch
+         AND transition.transition_id=patch.source_id
+         AND transition.payload_hash=patch.source_identity_hash
+         AND transition.transition_kind='delta'
+         AND transition.from_revision=patch.before_revision
+         AND transition.to_revision=selected_result)
+    THEN RAISE EXCEPTION 'persisted matching direct source authority mismatch'; END IF;
+  END IF;
+  key_value:=groundloop_m5_matching_journal_key(
+    'groundloop_m5_matching_patch_artifact',ARRAY[patch.patch_digest::text]);
+  EXECUTE 'INSERT INTO pg_temp.groundloop_m5_matching_expected_changes
+    (relation_name,key_preimage) VALUES ($1,$2)'
+    USING 'groundloop_m5_matching_patch_artifact',key_value;
+  EXECUTE 'SELECT to_jsonb(j) FROM pg_temp.groundloop_m5_matching_change_journal j
+            WHERE relation_name=''groundloop_m5_matching_patch_artifact''
+              AND key_preimage=$1' INTO journal_row USING key_value;
+  IF journal_row IS NULL OR journal_row->>'first_operation'<>'INSERT'
+     OR journal_row->>'last_operation'<>'INSERT'
+     OR (journal_row->>'mutation_count')::integer<>1
+     OR journal_row->'final_new'->>'patch_digest'<>patch.patch_digest
+     OR decode(substr(journal_row->'final_new'->>'canonical_patch_preimage',3),'hex')<>
+        patch.canonical_patch_preimage
+  THEN RAISE EXCEPTION 'persisted matching patch artifact journal mismatch'; END IF;
+  key_value:=groundloop_m5_matching_journal_key(
+    'groundloop_m5_matching_work_contribution',ARRAY[selected_epoch::text,
+      contribution.source_kind,contribution.source_id,selected_result::text]);
+  EXECUTE 'INSERT INTO pg_temp.groundloop_m5_matching_expected_changes
+    (relation_name,key_preimage) VALUES ($1,$2)'
+    USING 'groundloop_m5_matching_work_contribution',key_value;
+  EXECUTE 'SELECT to_jsonb(j) FROM pg_temp.groundloop_m5_matching_change_journal j
+            WHERE relation_name=''groundloop_m5_matching_work_contribution''
+              AND key_preimage=$1' INTO journal_row USING key_value;
+  IF journal_row IS NULL OR journal_row->>'first_operation'<>'INSERT'
+     OR journal_row->>'last_operation'<>'INSERT'
+     OR (journal_row->>'mutation_count')::integer<>1
+     OR journal_row->'final_new'->>'contribution_digest'<>contribution.contribution_digest
+     OR journal_row->'final_new'->>'patch_digest'<>contribution.patch_digest
+     OR journal_row->'final_new'->>'matching_work_digest'<>contribution.matching_work_digest
+  THEN RAISE EXCEPTION 'persisted matching contribution journal mismatch'; END IF;
+  contribution_journal:=journal_row;
   IF NOT EXISTS (
        SELECT 1 FROM groundloop_m5_matching_image_working image
        JOIN groundloop_m5_runtime_epoch runtime USING(epoch_id)
@@ -1642,8 +2758,98 @@ BEGIN
          AND image.updated_revision=selected_result
          AND runtime.revision=selected_result)
   THEN RAISE EXCEPTION 'persisted matching transition lacks exact final image/revision'; END IF;
+  key_value:=groundloop_m5_matching_journal_key(
+    'groundloop_m5_matching_image_working',ARRAY[selected_epoch::text]);
+  EXECUTE 'INSERT INTO pg_temp.groundloop_m5_matching_expected_changes
+    (relation_name,key_preimage) VALUES ($1,$2)'
+    USING 'groundloop_m5_matching_image_working',key_value;
+  EXECUTE 'SELECT to_jsonb(j) FROM pg_temp.groundloop_m5_matching_change_journal j
+            WHERE relation_name=''groundloop_m5_matching_image_working''
+              AND key_preimage=$1' INTO journal_row USING key_value;
+  IF journal_row IS NULL
+     OR (journal_row->'final_new'->>'epoch_id')::bigint<>selected_epoch
+     OR (journal_row->'final_new'->>'updated_revision')::bigint<>selected_result
+     OR journal_row->'final_new'->>'decision_policy_version'<>patch.decision_policy_version
+  THEN RAISE EXCEPTION 'persisted matching working image journal mismatch'; END IF;
+  IF patch.source_kind='structural_open' THEN
+    IF journal_row->>'first_operation'<>'INSERT'
+       OR journal_row->>'last_operation'<>'INSERT'
+       OR (journal_row->>'mutation_count')::integer<>1
+       OR journal_row->'first_old'<>'null'::jsonb
+       OR NOT (journal_row->>'saw_insert')::boolean
+       OR (journal_row->>'saw_update')::boolean
+       OR (journal_row->>'saw_delete')::boolean
+       OR (journal_row->'final_new'->>'base_epoch_id')::bigint<>patch.before_epoch_id
+       OR (journal_row->'final_new'->>'base_revision')::bigint<>patch.before_revision
+    THEN RAISE EXCEPTION 'persisted matching structural image requires one INSERT'; END IF;
+  ELSE
+    SELECT prior.resulting_revision,prior_patch.decision_policy_version
+      INTO STRICT prior_d25_revision,prior_image_policy
+      FROM groundloop_m5_matching_work_contribution prior
+      JOIN groundloop_m5_matching_patch_artifact prior_patch
+        ON prior_patch.patch_digest=prior.patch_digest
+     WHERE prior.epoch_id=selected_epoch
+       AND prior.resulting_revision=(SELECT max(earlier.resulting_revision)
+         FROM groundloop_m5_matching_work_contribution earlier
+         WHERE earlier.epoch_id=selected_epoch
+           AND earlier.resulting_revision<selected_result);
+    IF journal_row->>'first_operation'<>'UPDATE'
+       OR journal_row->>'last_operation'<>'UPDATE'
+       OR (journal_row->>'mutation_count')::integer<>1
+       OR (journal_row->>'saw_insert')::boolean
+       OR NOT (journal_row->>'saw_update')::boolean
+       OR (journal_row->>'saw_delete')::boolean
+       OR (journal_row->'first_old'->>'epoch_id')::bigint<>selected_epoch
+       OR journal_row->'final_new'->>'base_epoch_id'<>
+          journal_row->'first_old'->>'base_epoch_id'
+       OR journal_row->'final_new'->>'base_revision'<>
+          journal_row->'first_old'->>'base_revision'
+       OR journal_row->'final_new'->>'decision_policy_version'<>
+          journal_row->'first_old'->>'decision_policy_version'
+       OR journal_row->'first_old'->>'decision_policy_version'<>prior_image_policy
+       OR (journal_row->'first_old'->>'updated_revision')::bigint<>prior_d25_revision
+    THEN RAISE EXCEPTION 'persisted matching later image OLD/update mismatch'; END IF;
+  END IF;
   SELECT * INTO STRICT accumulator FROM groundloop_m5_matching_work_accumulator
   WHERE epoch_id=selected_epoch;
+  key_value:=groundloop_m5_matching_journal_key(
+    'groundloop_m5_matching_work_accumulator',ARRAY[selected_epoch::text]);
+  EXECUTE 'INSERT INTO pg_temp.groundloop_m5_matching_expected_changes
+    (relation_name,key_preimage) VALUES ($1,$2)'
+    USING 'groundloop_m5_matching_work_accumulator',key_value;
+  EXECUTE 'SELECT to_jsonb(j) FROM pg_temp.groundloop_m5_matching_change_journal j
+            WHERE relation_name=''groundloop_m5_matching_work_accumulator''
+              AND key_preimage=$1' INTO accumulator_journal USING key_value;
+  IF accumulator_journal IS NULL
+     OR (accumulator_journal->'final_new'->>'epoch_id')::bigint<>accumulator.epoch_id
+     OR accumulator_journal->'final_new'->>'matching_work_digest'<>accumulator.matching_work_digest
+     OR (accumulator_journal->'final_new'->>'updated_revision')::bigint<>accumulator.updated_revision THEN
+    RAISE EXCEPTION 'persisted matching accumulator journal/final row mismatch'; END IF;
+  IF patch.source_kind='structural_open' THEN
+    IF accumulator_journal->>'first_operation'<>'INSERT'
+       OR accumulator_journal->>'last_operation'<>'INSERT'
+       OR (accumulator_journal->>'mutation_count')::integer<>1
+       OR accumulator_journal->'first_old'<>'null'::jsonb
+       OR NOT (accumulator_journal->>'saw_insert')::boolean
+       OR (accumulator_journal->>'saw_update')::boolean
+       OR (accumulator_journal->>'saw_delete')::boolean
+    THEN RAISE EXCEPTION 'persisted matching structural accumulator requires one INSERT'; END IF;
+  ELSE
+    IF accumulator_journal->>'first_operation'<>'UPDATE'
+       OR accumulator_journal->>'last_operation'<>'UPDATE'
+       OR (accumulator_journal->>'mutation_count')::integer<>1
+       OR accumulator_journal->'first_old'='null'::jsonb
+       OR (accumulator_journal->'first_old'->>'epoch_id')::bigint<>selected_epoch
+       OR (accumulator_journal->'first_old'->>'updated_revision')::bigint<>
+          prior_d25_revision
+       OR accumulator_journal->'first_old'->>'matching_work_digest'<>
+          groundloop_m5_matching_work_digest(
+            groundloop_m5_matching_work_values(accumulator_journal->'first_old'))
+       OR (accumulator_journal->>'saw_insert')::boolean
+       OR NOT (accumulator_journal->>'saw_update')::boolean
+       OR (accumulator_journal->>'saw_delete')::boolean
+    THEN RAISE EXCEPTION 'persisted matching later accumulator requires one UPDATE'; END IF;
+  END IF;
   FOREACH counter_name IN ARRAY ARRAY[
     'contribution_additions','contribution_removals',
     'requirement_observation_changes_processed','policy_candidate_observations',
@@ -1667,28 +2873,654 @@ BEGIN
     IF actual_counter<>expected_counter THEN
       RAISE EXCEPTION 'persisted matching accumulator sum mismatch for %',counter_name;
     END IF;
+    prior_counter:=coalesce((accumulator_journal->'first_old'->>counter_name)::bigint,0);
+    contribution_counter:=(to_jsonb(contribution)->>counter_name)::bigint;
+    IF (contribution_journal->'final_new'->>counter_name)::bigint<>
+       contribution_counter THEN
+      RAISE EXCEPTION 'persisted matching contribution journal counter mismatch for %',counter_name;
+    END IF;
+    IF actual_counter<>prior_counter+contribution_counter THEN
+      RAISE EXCEPTION 'persisted matching accumulator OLD plus contribution mismatch for %',counter_name;
+    END IF;
   END LOOP;
   IF accumulator.updated_revision<>(
       SELECT max(resulting_revision) FROM groundloop_m5_matching_work_contribution
       WHERE epoch_id=selected_epoch)
   THEN RAISE EXCEPTION 'persisted matching accumulator revision mismatch'; END IF;
-  FOREACH relation_name IN ARRAY ARRAY[
-    'groundloop_m5_matching_image_working',
-    'groundloop_m5_matching_observation_working',
-    'groundloop_m5_matching_edge_working',
-    'groundloop_m5_matching_hash_mask_working',
-    'groundloop_m5_matching_hall_working'
-  ] LOOP
-    EXECUTE format(
-      'SELECT count(*) FROM %I WHERE xmin=pg_current_xact_id()::xid AND (epoch_id<>$1 OR updated_revision<>$2)',
-      relation_name) INTO expected_counter USING selected_epoch,selected_result;
-    IF expected_counter<>0 THEN
-      RAISE EXCEPTION 'persisted matching changed working row has wrong point';
+  logical_outputs:=groundloop_m5_matching_validate_logical_output(
+    patch.logical_output_preimage);
+  decoded_shapes:=groundloop_m5_matching_validate_group_shapes(
+    patch.group_shape_set_preimage);
+  logical_patch_parsed:=groundloop_m5_matching_parse_typed_preimage(
+    patch.logical_overlay_patch_preimage,'m5-persisted-logical-overlay-patch-v1');
+  FOR child IN SELECT unnest(patch.observation_change_preimages) LOOP
+    decoded_change:=groundloop_m5_matching_validate_change(child,'observation');
+    before_present:=CASE
+      WHEN decoded_change->'before'='null'::jsonb THEN false
+      WHEN decoded_change->'before'->>'layer'='current' THEN true
+      ELSE (decoded_change->'before'->>'present')::boolean END;
+    after_present:=(decoded_change->'after'->>'present')::boolean;
+    derived_additions:=derived_additions+
+      CASE WHEN NOT before_present AND after_present THEN 1 ELSE 0 END;
+    derived_removals:=derived_removals+
+      CASE WHEN before_present AND NOT after_present THEN 1 ELSE 0 END;
+  END LOOP;
+  FOR child IN SELECT unnest(patch.hall_change_preimages) LOOP
+    decoded_change:=groundloop_m5_matching_validate_change(child,'hall');
+    IF decoded_change->'before'='null'::jsonb
+       AND decoded_change->'after'->>'requirement_count' IS NOT NULL THEN
+      initialized_hall_groups:=array_append(
+        initialized_hall_groups,decoded_change->>'outer_one');
     END IF;
   END LOOP;
+  FOR child IN SELECT unnest(patch.mask_change_preimages) LOOP
+    decoded_change:=groundloop_m5_matching_validate_change(child,'mask');
+    old_mask:=CASE WHEN decoded_change->'before'='null'::jsonb THEN 0
+      ELSE (decoded_change->'before'->>'mask')::integer END;
+    new_mask:=(decoded_change->'after'->>'mask')::integer;
+    IF decoded_change->>'outer_one'=ANY(initialized_hall_groups) THEN
+      IF new_mask>0 THEN
+        derived_masks_initialized:=derived_masks_initialized+1;
+      END IF;
+    ELSIF old_mask<>new_mask THEN
+      derived_mask_transitions:=derived_mask_transitions+1;
+      ordinary_mask_groups:=array_append(
+        ordinary_mask_groups,decoded_change->>'outer_one');
+      derived_crossings:=derived_crossings+
+        bit_count((old_mask # new_mask)::bit(64));
+      SELECT (shape.value->>'requirement_count')::integer INTO STRICT group_r
+        FROM jsonb_array_elements(decoded_shapes) shape(value)
+       WHERE shape.value->>'group_id'=decoded_change->>'outer_one';
+      derived_subset:=derived_subset+((1::bigint<<group_r)-1);
+      derived_deficiency:=derived_deficiency+((1::bigint<<group_r)-1);
+      FOR subset_mask IN 1..((1<<group_r)-1) LOOP
+        IF ((old_mask & subset_mask)<>0)<>( (new_mask & subset_mask)<>0) THEN
+          derived_neighbours:=derived_neighbours+1;
+        END IF;
+      END LOOP;
+    END IF;
+  END LOOP;
+  FOR child IN SELECT unnest(patch.edge_change_preimages) LOOP
+    decoded_change:=groundloop_m5_matching_validate_change(child,'edge');
+    old_refcount:=CASE WHEN decoded_change->'before'='null'::jsonb THEN 0
+      WHEN decoded_change->'before'->>'layer'='current' THEN
+        (decoded_change->'before'->'node'->'children'->5->>'value')::bigint
+      ELSE (decoded_change->'before'->'node'->'children'->6->>'value')::bigint END;
+    new_refcount:=(decoded_change->'after'->'node'->'children'->6->>'value')::bigint;
+    IF old_refcount<>new_refcount THEN
+      derived_edge_keys:=derived_edge_keys+1;
+    END IF;
+  END LOOP;
+  FOR child IN SELECT unnest(patch.hall_change_preimages) LOOP
+    decoded_change:=groundloop_m5_matching_validate_change(child,'hall');
+    hall_initialization:=decoded_change->'before'='null'::jsonb
+      AND decoded_change->'after'->>'requirement_count' IS NOT NULL;
+    IF hall_initialization THEN
+      group_r:=(decoded_change->'after'->>'requirement_count')::integer;
+      derived_zeta:=derived_zeta+group_r*(1::bigint<<(group_r-1));
+      derived_subset:=derived_subset+((1::bigint<<group_r)-1);
+      derived_deficiency:=derived_deficiency+((1::bigint<<group_r)-1);
+      SELECT count(*) INTO expected_count
+        FROM unnest(patch.mask_change_preimages) mask_child
+       WHERE (groundloop_m5_matching_validate_change(mask_child,'mask')->>'outer_one')=
+             decoded_change->>'outer_one'
+         AND (groundloop_m5_matching_validate_change(mask_child,'mask')->'after'->>'mask')::integer>0;
+      IF expected_count<>(decoded_change->'after'->'node'->'children'->10->>'value')::bigint THEN
+        RAISE EXCEPTION 'persisted matching Hall initialization mask cardinality mismatch'; END IF;
+    END IF;
+  END LOOP;
+  IF contribution.output_bytes<>octet_length(patch.logical_output_preimage)
+     OR contribution.contribution_additions<>derived_additions
+     OR contribution.contribution_removals<>derived_removals
+     OR contribution.edge_refcount_keys_updated<>derived_edge_keys
+     OR contribution.hash_mask_transitions<>derived_mask_transitions
+     OR contribution.distinct_edge_crossings<>derived_crossings
+     OR contribution.hash_masks_initialized<>derived_masks_initialized
+     OR contribution.hall_zeta_additions<>derived_zeta
+     OR contribution.hall_subset_entries_examined<>derived_subset
+     OR contribution.hall_neighbor_entries_changed<>derived_neighbours
+     OR contribution.hall_deficiency_entries_examined<>derived_deficiency
+     OR contribution.public_status_deltas<>(SELECT count(*) FROM
+          jsonb_array_elements(logical_outputs) item(value)
+          WHERE item.value->>'kind'='status_delta')
+     OR contribution.claim_status_changes<>(SELECT count(*) FROM
+          jsonb_array_elements(logical_outputs) item(value)
+          WHERE item.value->>'kind'='status_delta'
+            AND item.value->'after'->'fields'->1->'value'->>'value'='claim')
+     OR contribution.answer_status_changes<>(SELECT count(*) FROM
+          jsonb_array_elements(logical_outputs) item(value)
+          WHERE item.value->>'kind'='status_delta'
+            AND item.value->'after'->'fields'->1->'value'->>'value'='answer')
+  THEN RAISE EXCEPTION 'persisted matching derivable work counter mismatch'; END IF;
+  FOR logical_output IN SELECT entry.value
+    FROM jsonb_array_elements(logical_outputs) entry(value)
+    WHERE entry.value->>'kind' IN (
+      'requirement_state','group_state','claim_state','answer_state',
+      'group_binding','claim_binding')
+  LOOP
+    logical_kind:=logical_output->>'kind';
+    logical_relation:=CASE logical_kind
+      WHEN 'requirement_state' THEN 'groundloop_m5_working_requirement_state'
+      WHEN 'group_state' THEN 'groundloop_m5_working_group_state'
+      WHEN 'claim_state' THEN 'groundloop_m5_working_claim_state'
+      WHEN 'answer_state' THEN 'groundloop_m5_working_answer_state'
+      WHEN 'group_binding' THEN 'groundloop_m5_working_group_certificate_binding'
+      ELSE 'groundloop_m5_working_claim_certificate_binding' END;
+    logical_fields:=logical_output->'after'->'fields';
+    logical_key_parts:=CASE logical_kind
+      WHEN 'group_binding' THEN ARRAY[selected_epoch::text,logical_output->>'object_id',
+        logical_fields->2->'value'->>'value']
+      WHEN 'claim_binding' THEN ARRAY[selected_epoch::text,logical_output->>'object_id',
+        logical_fields->2->'value'->>'value']
+      ELSE ARRAY[selected_epoch::text,logical_output->>'object_id'] END;
+    key_value:=groundloop_m5_matching_journal_key(logical_relation,logical_key_parts);
+    EXECUTE 'INSERT INTO pg_temp.groundloop_m5_matching_expected_changes
+      (relation_name,key_preimage) VALUES ($1,$2)' USING logical_relation,key_value;
+    EXECUTE 'SELECT to_jsonb(j) FROM pg_temp.groundloop_m5_matching_change_journal j
+              WHERE relation_name=$1 AND key_preimage=$2'
+      INTO journal_row USING logical_relation,key_value;
+    IF logical_kind IN ('requirement_state','group_state','claim_state','answer_state') THEN
+      SELECT change.value INTO STRICT logical_change FROM jsonb_array_elements(
+        logical_patch_parsed->'children'->0->'children') change(value)
+       WHERE change.value->'children'->0->>'value'=logical_kind
+         AND change.value->'children'->1->>'value'=logical_output->>'object_id';
+      effective_old:=journal_row->'first_old';
+      IF effective_old='null'::jsonb THEN
+        IF logical_kind='requirement_state' THEN
+          SELECT to_jsonb(state) INTO effective_old FROM groundloop_m5_published_requirement_state state
+           WHERE state.requirement_version_id=logical_output->>'object_id'
+             AND state.valid_from_epoch<=patch.before_epoch_id
+             AND (state.valid_to_epoch IS NULL OR state.valid_to_epoch>patch.before_epoch_id);
+        ELSIF logical_kind='group_state' THEN
+          SELECT to_jsonb(state) INTO effective_old FROM groundloop_m5_published_group_state state
+           WHERE state.group_version_id=logical_output->>'object_id'
+             AND state.valid_from_epoch<=patch.before_epoch_id
+             AND (state.valid_to_epoch IS NULL OR state.valid_to_epoch>patch.before_epoch_id);
+        ELSIF logical_kind='claim_state' THEN
+          SELECT to_jsonb(state) INTO effective_old FROM groundloop_m5_published_claim_state state
+           WHERE state.claim_id=logical_output->>'object_id'
+             AND state.valid_from_epoch<=patch.before_epoch_id
+             AND (state.valid_to_epoch IS NULL OR state.valid_to_epoch>patch.before_epoch_id);
+        ELSE
+          SELECT to_jsonb(state) INTO effective_old FROM groundloop_m5_published_answer_state state
+           WHERE state.answer_version_id=logical_output->>'object_id'
+             AND state.valid_from_epoch<=patch.before_epoch_id
+             AND (state.valid_to_epoch IS NULL OR state.valid_to_epoch>patch.before_epoch_id);
+        END IF;
+      END IF;
+      IF (logical_change->'children'->2->>'tag'='null')<>(effective_old IS NULL)
+         OR (effective_old IS NOT NULL AND
+           logical_change->'children'->2->>'value'<>
+             groundloop_m5_matching_state_digest(logical_kind,effective_old))
+         OR logical_change->'children'->3->>'value'<>
+           groundloop_m5_matching_state_digest(logical_kind,journal_row->'final_new')
+      THEN RAISE EXCEPTION 'persisted matching logical state before/after digest mismatch'; END IF;
+      IF logical_change->'children'->2->>'tag'='sha256'
+         AND logical_change->'children'->3->>'tag'='sha256' THEN
+        IF logical_kind='requirement_state'
+           AND (effective_old->>'satisfied')::boolean=
+               (journal_row->'final_new'->>'satisfied')::boolean THEN
+          derived_requirement_state_only:=derived_requirement_state_only+1;
+        ELSIF logical_kind='group_state'
+           AND (effective_old->>'complete')::boolean=
+               (journal_row->'final_new'->>'complete')::boolean THEN
+          derived_group_state_only:=derived_group_state_only+1;
+        ELSIF logical_kind='claim_state'
+           AND effective_old->>'status'=journal_row->'final_new'->>'status' THEN
+          derived_claim_state_only:=derived_claim_state_only+1;
+        END IF;
+      END IF;
+    END IF;
+    IF journal_row IS NULL OR NOT groundloop_m5_matching_logical_row_matches(
+      logical_kind,journal_row->'final_new',logical_output,selected_epoch,
+      selected_result,patch.decision_policy_version)
+      OR groundloop_m5_matching_logical_row_preimage(
+           logical_kind,journal_row->'final_new')<>
+         groundloop_m5_matching_reencode_logical(logical_output->'after')
+    THEN RAISE EXCEPTION 'persisted matching logical journal/output mismatch for %',logical_kind; END IF;
+    IF logical_kind IN ('group_binding','claim_binding') THEN
+      IF logical_fields->3->'value'->>'tag'='none' THEN
+        IF journal_row->>'first_operation'<>'INSERT'
+           OR journal_row->>'last_operation'<>'INSERT'
+           OR (journal_row->>'mutation_count')::integer<>1
+           OR NOT (journal_row->>'saw_insert')::boolean
+           OR (journal_row->>'saw_update')::boolean
+           OR (journal_row->>'saw_delete')::boolean
+        THEN RAISE EXCEPTION 'persisted matching binding open requires one INSERT'; END IF;
+      ELSE
+        IF journal_row->>'first_operation'<>'UPDATE'
+           OR journal_row->>'last_operation'<>'UPDATE'
+           OR (journal_row->>'mutation_count')::integer<>1
+           OR (journal_row->>'saw_insert')::boolean
+           OR NOT (journal_row->>'saw_update')::boolean
+           OR (journal_row->>'saw_delete')::boolean
+        THEN RAISE EXCEPTION 'persisted matching binding close requires one UPDATE'; END IF;
+      END IF;
+    ELSIF journal_row->'first_old'='null'::jsonb THEN
+      IF journal_row->>'first_operation'<>'INSERT'
+         OR journal_row->>'last_operation'<>'INSERT'
+         OR (journal_row->>'mutation_count')::integer<>1
+         OR NOT (journal_row->>'saw_insert')::boolean
+         OR (journal_row->>'saw_update')::boolean
+         OR (journal_row->>'saw_delete')::boolean
+      THEN RAISE EXCEPTION 'persisted matching logical state requires one INSERT'; END IF;
+    ELSE
+      IF journal_row->>'first_operation'<>'UPDATE'
+         OR journal_row->>'last_operation'<>'UPDATE'
+         OR (journal_row->>'mutation_count')::integer<>1
+         OR (journal_row->>'saw_insert')::boolean
+         OR NOT (journal_row->>'saw_update')::boolean
+         OR (journal_row->>'saw_delete')::boolean
+      THEN RAISE EXCEPTION 'persisted matching logical state requires one UPDATE'; END IF;
+    END IF;
+  END LOOP;
+  IF contribution.requirement_state_only_changes<>derived_requirement_state_only
+     OR contribution.group_state_only_changes<>derived_group_state_only
+     OR contribution.claim_state_only_changes<>derived_claim_state_only
+     OR contribution.groups_touched<>(SELECT count(DISTINCT entry.value->>'object_id')
+          FROM jsonb_array_elements(logical_outputs) entry(value)
+          WHERE entry.value->>'kind' IN (
+            'group_state','group_certificate','group_binding'))
+     OR contribution.claims_touched<>(SELECT count(DISTINCT entry.value->>'object_id')
+          FROM jsonb_array_elements(logical_outputs) entry(value)
+          WHERE entry.value->>'kind' IN (
+            'claim_state','claim_certificate','claim_binding'))
+     OR contribution.answers_touched<>(SELECT count(DISTINCT entry.value->>'object_id')
+          FROM jsonb_array_elements(logical_outputs) entry(value)
+          WHERE entry.value->>'kind'='answer_state')
+     OR contribution.group_local_state_operations<>
+          ((SELECT count(DISTINCT group_id) FROM unnest(ordinary_mask_groups) group_id)
+           +(SELECT count(DISTINCT entry.value->>'object_id')
+               FROM jsonb_array_elements(logical_outputs) entry(value)
+              WHERE entry.value->>'kind'='group_binding'))
+     OR contribution.group_certificate_only_changes<>(
+          SELECT count(DISTINCT certificate.value->>'object_id')
+          FROM jsonb_array_elements(logical_outputs) certificate(value)
+          WHERE certificate.value->>'kind' IN ('group_certificate','group_binding')
+            AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(logical_outputs) state(value)
+              WHERE state.value->>'kind'='group_state'
+                AND state.value->>'object_id'=certificate.value->>'object_id'))
+     OR contribution.claim_certificate_only_changes<>(
+          SELECT count(DISTINCT certificate.value->>'object_id')
+          FROM jsonb_array_elements(logical_outputs) certificate(value)
+          WHERE certificate.value->>'kind' IN ('claim_certificate','claim_binding')
+            AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(logical_outputs) state(value)
+              WHERE state.value->>'kind'='claim_state'
+                AND state.value->>'object_id'=certificate.value->>'object_id'))
+  THEN RAISE EXCEPTION 'persisted matching derived logical work counter mismatch'; END IF;
+  SELECT count(*) INTO expected_count FROM jsonb_array_elements(logical_outputs) entry(value)
+    WHERE entry.value->>'kind'='status_delta';
+  SELECT count(*) INTO status_count FROM groundloop_status_delta
+    WHERE epoch_id=selected_epoch AND revision=selected_result;
+  IF status_count<>expected_count THEN
+    RAISE EXCEPTION 'persisted matching status-delta cardinality mismatch'; END IF;
+  FOR logical_output IN SELECT entry.value FROM jsonb_array_elements(logical_outputs) entry(value)
+    WHERE entry.value->>'kind'='status_delta'
+  LOOP
+    logical_fields:=logical_output->'after'->'fields';
+    IF NOT EXISTS (SELECT 1 FROM groundloop_status_delta delta
+      WHERE delta.epoch_id=selected_epoch AND delta.revision=selected_result
+        AND delta.event_id=logical_fields->0->'value'->>'value'
+        AND delta.object_type=logical_fields->1->'value'->>'value'
+        AND delta.object_id=logical_fields->2->'value'->>'value'
+        AND delta.old_status=logical_fields->3->'value'->>'value'
+        AND delta.new_status=logical_fields->4->'value'->>'value'
+        AND delta.reason=logical_fields->5->'value'->>'value')
+    THEN RAISE EXCEPTION 'persisted matching status-delta row mismatch'; END IF;
+    logical_relation:=CASE logical_fields->1->'value'->>'value'
+      WHEN 'claim' THEN 'groundloop_m5_working_claim_state'
+      ELSE 'groundloop_m5_working_answer_state' END;
+    key_value:=groundloop_m5_matching_journal_key(logical_relation,
+      ARRAY[selected_epoch::text,logical_fields->2->'value'->>'value']);
+    EXECUTE 'SELECT to_jsonb(j) FROM pg_temp.groundloop_m5_matching_change_journal j
+              WHERE relation_name=$1 AND key_preimage=$2'
+      INTO journal_row USING logical_relation,key_value;
+    prior_status:=journal_row->'first_old'->>'status';
+    IF prior_status IS NULL AND logical_fields->1->'value'->>'value'='claim' THEN
+      SELECT state.status INTO prior_status FROM groundloop_m5_published_claim_state state
+       WHERE state.claim_id=logical_fields->2->'value'->>'value'
+         AND state.valid_from_epoch<=patch.before_epoch_id
+         AND (state.valid_to_epoch IS NULL OR state.valid_to_epoch>patch.before_epoch_id);
+    ELSIF prior_status IS NULL THEN
+      SELECT state.status INTO prior_status FROM groundloop_m5_published_answer_state state
+       WHERE state.answer_version_id=logical_fields->2->'value'->>'value'
+         AND state.valid_from_epoch<=patch.before_epoch_id
+         AND (state.valid_to_epoch IS NULL OR state.valid_to_epoch>patch.before_epoch_id);
+    END IF;
+    IF journal_row IS NULL
+       OR journal_row->'final_new'->>'status'<>logical_fields->4->'value'->>'value'
+       OR prior_status IS DISTINCT FROM logical_fields->3->'value'->>'value'
+    THEN RAISE EXCEPTION 'persisted matching status delta is not derived from state OLD/NEW'; END IF;
+  END LOOP;
+  FOR logical_output IN SELECT entry.value
+    FROM jsonb_array_elements(logical_outputs) entry(value)
+    WHERE entry.value->>'kind' IN ('group_certificate','claim_certificate')
+  LOOP
+    logical_kind:=logical_output->>'kind';
+    logical_fields:=logical_output->'after'->'fields';
+    IF logical_output->'after'->>'tag'='none' THEN
+      SELECT change.value->'children'->2->>'value' INTO prior_digest
+        FROM jsonb_array_elements(
+          logical_patch_parsed->'children'->0->'children') change(value)
+       WHERE change.value->'children'->0->>'value'=logical_kind
+         AND change.value->'children'->1->>'value'=logical_output->>'object_id';
+      IF prior_digest IS NULL OR
+         (logical_kind='group_certificate' AND
+           (groundloop_m5_expected_group_certificate(prior_digest::char(64))<>prior_digest
+            OR EXISTS (SELECT 1 FROM pg_temp.groundloop_m5_matching_change_journal
+              WHERE relation_name IN ('groundloop_m5_group_certificate_artifact',
+                'groundloop_m5_group_certificate_artifact_row')
+                AND (final_new->>'certificate_digest'=prior_digest
+                  OR first_old->>'certificate_digest'=prior_digest))))
+         OR (logical_kind='claim_certificate' AND
+           (groundloop_m5_expected_claim_certificate(prior_digest::char(64))<>prior_digest
+            OR EXISTS (SELECT 1 FROM pg_temp.groundloop_m5_matching_change_journal
+              WHERE relation_name='groundloop_m5_claim_certificate_artifact'
+                AND (final_new->>'certificate_digest'=prior_digest
+                  OR first_old->>'certificate_digest'=prior_digest))))
+      THEN RAISE EXCEPTION 'persisted matching absent certificate output mismatch'; END IF;
+      CONTINUE;
+    END IF;
+    logical_digest:=logical_fields->(CASE logical_kind WHEN 'group_certificate' THEN 4 ELSE 8 END)
+      ->'value'->>'value';
+    logical_relation:=CASE logical_kind WHEN 'group_certificate'
+      THEN 'groundloop_m5_group_certificate_artifact'
+      ELSE 'groundloop_m5_claim_certificate_artifact' END;
+    key_value:=groundloop_m5_matching_journal_key(logical_relation,ARRAY[logical_digest]);
+    EXECUTE 'INSERT INTO pg_temp.groundloop_m5_matching_expected_changes
+      (relation_name,key_preimage) VALUES ($1,$2)' USING logical_relation,key_value;
+    IF logical_kind='group_certificate' THEN
+      IF groundloop_m5_expected_group_certificate(logical_digest::char(64))<>logical_digest
+         OR NOT EXISTS (SELECT 1 FROM groundloop_m5_group_certificate_artifact a
+           WHERE a.certificate_digest=logical_digest
+             AND a.decision_policy_version=patch.decision_policy_version
+             AND a.group_version_id=logical_output->>'object_id'
+             AND a.requirement_count=jsonb_array_length(logical_fields->2->'value'->'children'))
+      THEN RAISE EXCEPTION 'persisted matching group certificate artifact mismatch'; END IF;
+    ELSE
+      IF groundloop_m5_expected_claim_certificate(logical_digest::char(64))<>logical_digest
+         OR NOT EXISTS (SELECT 1 FROM groundloop_m5_claim_certificate_artifact a
+           WHERE a.certificate_digest=logical_digest
+             AND a.decision_policy_version=patch.decision_policy_version
+             AND a.claim_id=logical_output->>'object_id')
+      THEN RAISE EXCEPTION 'persisted matching claim certificate artifact mismatch'; END IF;
+    END IF;
+    IF groundloop_m5_matching_certificate_preimage(
+         logical_kind,logical_digest::char(64))<>
+       groundloop_m5_matching_reencode_logical(logical_output->'after')
+    THEN RAISE EXCEPTION 'persisted matching certificate byte mismatch'; END IF;
+    EXECUTE 'SELECT count(*) FROM pg_temp.groundloop_m5_matching_change_journal
+              WHERE relation_name=$1 AND key_preimage=$2'
+      INTO journal_count USING logical_relation,key_value;
+    IF journal_count NOT IN (0,1) THEN
+      RAISE EXCEPTION 'persisted matching certificate artifact journal cardinality mismatch'; END IF;
+    IF journal_count=1 AND EXISTS (
+      SELECT 1 FROM pg_temp.groundloop_m5_matching_change_journal j
+       WHERE j.relation_name=logical_relation AND j.key_preimage=key_value
+         AND (j.first_operation<>'INSERT' OR j.last_operation<>'INSERT'
+           OR j.mutation_count<>1 OR NOT j.saw_insert OR j.saw_update OR j.saw_delete))
+    THEN RAISE EXCEPTION 'persisted matching certificate artifact requires one INSERT or reuse'; END IF;
+    IF logical_kind='group_certificate' THEN
+      FOR expected_counter IN 0..jsonb_array_length(logical_fields->2->'value'->'children')-1 LOOP
+        EXECUTE 'INSERT INTO pg_temp.groundloop_m5_matching_expected_changes
+          (relation_name,key_preimage) VALUES ($1,$2)'
+          USING 'groundloop_m5_group_certificate_artifact_row',
+            groundloop_m5_matching_journal_key(
+              'groundloop_m5_group_certificate_artifact_row',
+              ARRAY[logical_digest,expected_counter::text]);
+      END LOOP;
+      EXECUTE 'SELECT count(*) FROM pg_temp.groundloop_m5_matching_change_journal
+                WHERE relation_name=''groundloop_m5_group_certificate_artifact_row''
+                  AND final_new->>''certificate_digest''=$1'
+        INTO expected_count USING logical_digest;
+      IF expected_count<>(CASE WHEN journal_count=1 THEN
+           jsonb_array_length(logical_fields->2->'value'->'children') ELSE 0 END)
+      THEN RAISE EXCEPTION 'persisted matching inserted group certificate row journal mismatch'; END IF;
+    END IF;
+  END LOOP;
+  FOREACH relation_name IN ARRAY ARRAY[
+    'groundloop_m5_matching_image_working','groundloop_m5_matching_patch_artifact',
+    'groundloop_m5_matching_work_contribution','groundloop_m5_matching_work_accumulator'
+  ] LOOP
+    EXECUTE 'SELECT count(*) FROM pg_temp.groundloop_m5_matching_change_journal WHERE relation_name=$1'
+      INTO journal_count USING relation_name;
+    IF journal_count<>1 THEN
+      RAISE EXCEPTION 'persisted matching transition requires exactly one % row',relation_name;
+    END IF;
+  END LOOP;
+  FOR relation_name,child IN
+    SELECT 'groundloop_m5_matching_observation_working',unnest(patch.observation_change_preimages)
+    UNION ALL SELECT 'groundloop_m5_matching_edge_working',unnest(patch.edge_change_preimages)
+    UNION ALL SELECT 'groundloop_m5_matching_hash_mask_working',unnest(patch.mask_change_preimages)
+    UNION ALL SELECT 'groundloop_m5_matching_hall_working',unnest(patch.hall_change_preimages)
+  LOOP
+    decoded_change:=groundloop_m5_matching_validate_change(child,
+      CASE relation_name
+        WHEN 'groundloop_m5_matching_observation_working' THEN 'observation'
+        WHEN 'groundloop_m5_matching_edge_working' THEN 'edge'
+        WHEN 'groundloop_m5_matching_hash_mask_working' THEN 'mask'
+        ELSE 'hall' END);
+    key_value:=groundloop_m5_matching_journal_key(relation_name,
+      CASE relation_name
+        WHEN 'groundloop_m5_matching_observation_working' THEN ARRAY[selected_epoch::text,decoded_change->>'outer_one']
+        WHEN 'groundloop_m5_matching_edge_working' THEN ARRAY[selected_epoch::text,decoded_change->>'outer_one',decoded_change->>'outer_two']
+        WHEN 'groundloop_m5_matching_hash_mask_working' THEN ARRAY[selected_epoch::text,decoded_change->>'outer_one',decoded_change->>'outer_two']
+        ELSE ARRAY[selected_epoch::text,decoded_change->>'outer_one'] END);
+    EXECUTE 'INSERT INTO pg_temp.groundloop_m5_matching_expected_changes
+      (relation_name,key_preimage) VALUES ($1,$2)' USING relation_name,key_value;
+    EXECUTE 'SELECT to_jsonb(j) FROM pg_temp.groundloop_m5_matching_change_journal j
+              WHERE relation_name=$1 AND key_preimage=$2'
+      INTO journal_row USING relation_name,key_value;
+    IF journal_row IS NULL OR NOT groundloop_m5_matching_working_row_matches_point(
+         relation_name,journal_row->'final_new',decoded_change,selected_epoch,selected_result)
+       OR groundloop_m5_matching_working_point_preimage(
+            relation_name,journal_row->'final_new')<>
+          groundloop_m5_matching_encode_fields(
+            groundloop_m5_matching_typed_fields(decoded_change->'after'->'node'))
+    THEN RAISE EXCEPTION 'persisted matching physical journal/patch mismatch for %',relation_name; END IF;
+    before_point_value:=decoded_change->'before';
+    current_row_value:=NULL;
+    IF relation_name='groundloop_m5_matching_observation_working' THEN
+      SELECT to_jsonb(c) INTO current_row_value
+        FROM groundloop_m5_matching_observation_current c
+       WHERE c.observation_id=decoded_change->>'outer_one';
+    ELSIF relation_name='groundloop_m5_matching_edge_working' THEN
+      SELECT to_jsonb(c) INTO current_row_value
+        FROM groundloop_m5_matching_edge_current c
+       WHERE c.requirement_version_id=decoded_change->>'outer_one'
+         AND c.text_hash=decoded_change->>'outer_two';
+    ELSIF relation_name='groundloop_m5_matching_hash_mask_working' THEN
+      SELECT to_jsonb(c) INTO current_row_value
+        FROM groundloop_m5_matching_hash_mask_current c
+       WHERE c.group_version_id=decoded_change->>'outer_one'
+         AND c.text_hash=decoded_change->>'outer_two';
+    ELSE
+      SELECT to_jsonb(c) INTO current_row_value
+        FROM groundloop_m5_matching_hall_current c
+       WHERE c.group_version_id=decoded_change->>'outer_one';
+    END IF;
+    IF before_point_value='null'::jsonb THEN
+      IF journal_row->>'first_operation'<>'INSERT'
+         OR journal_row->>'last_operation'<>'INSERT'
+         OR (journal_row->>'mutation_count')::integer<>1
+         OR NOT (journal_row->>'saw_insert')::boolean
+         OR (journal_row->>'saw_update')::boolean
+         OR (journal_row->>'saw_delete')::boolean
+      THEN RAISE EXCEPTION 'persisted matching absent before-image requires one INSERT'; END IF;
+      IF journal_row->'first_old'<>'null'::jsonb OR current_row_value IS NOT NULL THEN
+        RAISE EXCEPTION 'persisted matching absent before-image mismatch for %',relation_name; END IF;
+    ELSIF before_point_value->>'layer'='working' THEN
+      IF journal_row->>'first_operation'<>'UPDATE'
+         OR journal_row->>'last_operation'<>'UPDATE'
+         OR (journal_row->>'mutation_count')::integer<>1
+         OR (journal_row->>'saw_insert')::boolean
+         OR NOT (journal_row->>'saw_update')::boolean
+         OR (journal_row->>'saw_delete')::boolean
+      THEN RAISE EXCEPTION 'persisted matching working before-image requires one UPDATE'; END IF;
+      IF NOT groundloop_m5_matching_working_row_matches_point(
+        relation_name,journal_row->'first_old',decoded_change,
+        (before_point_value->>'epoch')::bigint,
+        (before_point_value->>'revision')::bigint,'before')
+         OR groundloop_m5_matching_working_point_preimage(
+              relation_name,journal_row->'first_old')<>
+            groundloop_m5_matching_encode_fields(
+              groundloop_m5_matching_typed_fields(before_point_value->'node'))
+      THEN RAISE EXCEPTION 'persisted matching working before-image mismatch for %',relation_name; END IF;
+    ELSE
+      IF journal_row->>'first_operation'<>'INSERT'
+         OR journal_row->>'last_operation'<>'INSERT'
+         OR (journal_row->>'mutation_count')::integer<>1
+         OR NOT (journal_row->>'saw_insert')::boolean
+         OR (journal_row->>'saw_update')::boolean
+         OR (journal_row->>'saw_delete')::boolean
+      THEN RAISE EXCEPTION 'persisted matching current fallback requires one INSERT'; END IF;
+      IF journal_row->'first_old'<>'null'::jsonb
+         OR NOT groundloop_m5_matching_current_row_matches_point(
+           relation_name,current_row_value,decoded_change)
+         OR groundloop_m5_matching_current_point_preimage(
+              relation_name,current_row_value)<>
+            groundloop_m5_matching_encode_fields(
+              groundloop_m5_matching_typed_fields(before_point_value->'node'))
+      THEN RAISE EXCEPTION 'persisted matching current before-image mismatch for %',relation_name; END IF;
+    END IF;
+  END LOOP;
+  FOREACH relation_name IN ARRAY ARRAY[
+    'groundloop_m5_matching_observation_working','groundloop_m5_matching_edge_working',
+    'groundloop_m5_matching_hash_mask_working','groundloop_m5_matching_hall_working'
+  ] LOOP
+    expected_count:=CASE relation_name
+      WHEN 'groundloop_m5_matching_observation_working' THEN cardinality(patch.observation_change_preimages)
+      WHEN 'groundloop_m5_matching_edge_working' THEN cardinality(patch.edge_change_preimages)
+      WHEN 'groundloop_m5_matching_hash_mask_working' THEN cardinality(patch.mask_change_preimages)
+      ELSE cardinality(patch.hall_change_preimages) END;
+    EXECUTE 'SELECT count(*) FROM pg_temp.groundloop_m5_matching_change_journal WHERE relation_name=$1'
+      INTO journal_count USING relation_name;
+    IF journal_count<>expected_count THEN
+      RAISE EXCEPTION 'persisted matching physical journal has missing or extra rows for %',relation_name; END IF;
+  END LOOP;
+  EXECUTE 'SELECT count(*) FROM (
+      (SELECT relation_name,key_preimage
+         FROM pg_temp.groundloop_m5_matching_expected_changes
+        WHERE relation_name IN (
+          ''groundloop_m5_matching_observation_working'',
+          ''groundloop_m5_matching_edge_working'',
+          ''groundloop_m5_matching_hash_mask_working'',
+          ''groundloop_m5_matching_hall_working'')
+       EXCEPT ALL
+       SELECT relation_name,key_preimage
+         FROM pg_temp.groundloop_m5_matching_change_journal
+        WHERE relation_name IN (
+          ''groundloop_m5_matching_observation_working'',
+          ''groundloop_m5_matching_edge_working'',
+          ''groundloop_m5_matching_hash_mask_working'',
+          ''groundloop_m5_matching_hall_working''))
+      UNION ALL
+      (SELECT relation_name,key_preimage
+         FROM pg_temp.groundloop_m5_matching_change_journal
+        WHERE relation_name IN (
+          ''groundloop_m5_matching_observation_working'',
+          ''groundloop_m5_matching_edge_working'',
+          ''groundloop_m5_matching_hash_mask_working'',
+          ''groundloop_m5_matching_hall_working'')
+       EXCEPT ALL
+       SELECT relation_name,key_preimage
+         FROM pg_temp.groundloop_m5_matching_expected_changes
+        WHERE relation_name IN (
+          ''groundloop_m5_matching_observation_working'',
+          ''groundloop_m5_matching_edge_working'',
+          ''groundloop_m5_matching_hash_mask_working'',
+          ''groundloop_m5_matching_hall_working''))
+    ) mismatch' INTO journal_count;
+  IF journal_count<>0 THEN
+    RAISE EXCEPTION 'persisted matching physical journal is not an exact set bijection'; END IF;
+  EXECUTE 'SELECT count(*) FROM (
+      (SELECT relation_name,key_preimage
+         FROM pg_temp.groundloop_m5_matching_expected_changes
+        WHERE relation_name IN (
+          ''groundloop_m5_working_requirement_state'',
+          ''groundloop_m5_working_group_state'',
+          ''groundloop_m5_working_claim_state'',
+          ''groundloop_m5_working_answer_state'',
+          ''groundloop_m5_working_group_certificate_binding'',
+          ''groundloop_m5_working_claim_certificate_binding'')
+       EXCEPT ALL
+       SELECT relation_name,key_preimage
+         FROM pg_temp.groundloop_m5_matching_change_journal
+        WHERE relation_name IN (
+          ''groundloop_m5_working_requirement_state'',
+          ''groundloop_m5_working_group_state'',
+          ''groundloop_m5_working_claim_state'',
+          ''groundloop_m5_working_answer_state'',
+          ''groundloop_m5_working_group_certificate_binding'',
+          ''groundloop_m5_working_claim_certificate_binding''))
+      UNION ALL
+      (SELECT relation_name,key_preimage
+         FROM pg_temp.groundloop_m5_matching_change_journal
+        WHERE relation_name IN (
+          ''groundloop_m5_working_requirement_state'',
+          ''groundloop_m5_working_group_state'',
+          ''groundloop_m5_working_claim_state'',
+          ''groundloop_m5_working_answer_state'',
+          ''groundloop_m5_working_group_certificate_binding'',
+          ''groundloop_m5_working_claim_certificate_binding'')
+       EXCEPT ALL
+       SELECT relation_name,key_preimage
+         FROM pg_temp.groundloop_m5_matching_expected_changes
+        WHERE relation_name IN (
+          ''groundloop_m5_working_requirement_state'',
+          ''groundloop_m5_working_group_state'',
+          ''groundloop_m5_working_claim_state'',
+          ''groundloop_m5_working_answer_state'',
+          ''groundloop_m5_working_group_certificate_binding'',
+          ''groundloop_m5_working_claim_certificate_binding''))
+    ) mismatch' INTO journal_count;
+  IF journal_count<>0 THEN
+    RAISE EXCEPTION 'persisted matching logical journal is not an exact set bijection'; END IF;
+  EXECUTE 'SELECT count(*) FROM (
+      SELECT relation_name,key_preimage
+        FROM pg_temp.groundloop_m5_matching_change_journal
+       WHERE relation_name IN (
+         ''groundloop_m5_group_certificate_artifact'',
+         ''groundloop_m5_group_certificate_artifact_row'',
+         ''groundloop_m5_claim_certificate_artifact'')
+      EXCEPT ALL
+      SELECT relation_name,key_preimage
+        FROM pg_temp.groundloop_m5_matching_expected_changes
+       WHERE relation_name IN (
+         ''groundloop_m5_group_certificate_artifact'',
+         ''groundloop_m5_group_certificate_artifact_row'',
+         ''groundloop_m5_claim_certificate_artifact'')
+    ) mismatch' INTO journal_count;
+  IF journal_count<>0 THEN
+    RAISE EXCEPTION 'persisted matching certificate journal has an extra row'; END IF;
+  EXECUTE 'SELECT count(*) FROM (
+      SELECT relation_name,key_preimage
+        FROM pg_temp.groundloop_m5_matching_change_journal
+      EXCEPT ALL
+      SELECT relation_name,key_preimage
+        FROM pg_temp.groundloop_m5_matching_expected_changes
+    ) unconsumed' INTO journal_count;
+  IF journal_count<>0 THEN
+    RAISE EXCEPTION 'persisted matching transition has unconsumed journal rows'; END IF;
+  EXECUTE 'UPDATE pg_temp.groundloop_m5_matching_transition_context
+              SET validation_done=true
+            WHERE backend_pid=$1 AND transaction_id=pg_current_xact_id()::text::bigint
+              AND session_role=session_user'
+    USING pg_backend_pid();
   RETURN NULL;
 END;
 $$;
+REVOKE ALL ON FUNCTION groundloop_m5_matching_capture_transition_anchor()
+  FROM PUBLIC;
+REVOKE ALL ON FUNCTION groundloop_m5_matching_deferred_validate()
+  FROM PUBLIC;
+CREATE TRIGGER groundloop_m5_matching_runtime_anchor_capture
+AFTER INSERT OR UPDATE ON groundloop_m5_runtime_epoch
+FOR EACH ROW EXECUTE FUNCTION groundloop_m5_matching_capture_transition_anchor();
+CREATE CONSTRAINT TRIGGER groundloop_m5_matching_runtime_anchor_validate
+AFTER INSERT OR UPDATE ON groundloop_m5_runtime_epoch
+DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+EXECUTE FUNCTION groundloop_m5_matching_deferred_validate();
 DO $$ DECLARE relation_name text; BEGIN
   FOREACH relation_name IN ARRAY ARRAY[
     'groundloop_m5_matching_image_working',
@@ -1699,13 +3531,20 @@ DO $$ DECLARE relation_name text; BEGIN
     'groundloop_m5_matching_patch_artifact',
     'groundloop_m5_matching_work_contribution',
     'groundloop_m5_matching_work_accumulator',
-    'groundloop_m5_requirement_state_materialized',
-    'groundloop_m5_group_state_materialized',
-    'groundloop_m5_claim_state_materialized',
-    'groundloop_m5_answer_state_materialized',
+    'groundloop_m5_working_requirement_state',
+    'groundloop_m5_working_group_state',
+    'groundloop_m5_working_claim_state',
+    'groundloop_m5_working_answer_state',
+    'groundloop_m5_group_certificate_artifact',
+    'groundloop_m5_group_certificate_artifact_row',
+    'groundloop_m5_claim_certificate_artifact',
     'groundloop_m5_working_group_certificate_binding',
     'groundloop_m5_working_claim_certificate_binding'
   ] LOOP
-    EXECUTE format('CREATE CONSTRAINT TRIGGER %I AFTER INSERT OR UPDATE OR DELETE ON %I DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION groundloop_m5_matching_deferred_validate()', relation_name || '_d25_complete', relation_name);
+    EXECUTE format(
+      'CREATE CONSTRAINT TRIGGER %I AFTER INSERT OR UPDATE OR DELETE ON %I '
+      'DEFERRABLE INITIALLY DEFERRED FOR EACH ROW '
+      'EXECUTE FUNCTION groundloop_m5_matching_deferred_validate()',
+      relation_name||'_d25_transition_root',relation_name);
   END LOOP;
 END $$;
