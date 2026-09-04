@@ -1,9 +1,90 @@
 # M5-D25 Schema-017 Lane B Handoff
 
-Status: **HOLD — B1 and executable B2 checkpoints complete; B3 pending; not
-an accepted migration-017 candidate and not D25 implementation evidence**
+Status: **HOLD — B1, executable B2, B3a activated-no-history backfill, and the
+bounded structural `after=None` transition correction are executable; full
+B3 seal/promotion remains incomplete and is blocked on a new M5-D26 contract
+decision; this is not an accepted migration-017 candidate and not D25
+implementation evidence**
 
 Date: 2026-09-04
+
+## 2026-09-04 final-byte checkpoint and stop boundary
+
+The current checkpoint is frozen on these exact source bytes:
+
+- `migrations/017_m5_persisted_matching.sql`:
+  `8ca8812d90522b67f0b1b59123e7c41648dfb22f70d80d8e9ffbefed40e00f2a`;
+- `src/groundloop/postgres/migrations.py`:
+  `29d6ee2802228b26afb69199b596f1780b32209ba501f12cc2e697a7bcecf723`;
+- `tests/m5/postgres_runtime/test_migration_017.py`:
+  `19b75fd04e2e0ac795b41d6f6f757f60cd8d2cd9b0c5411d05a869235fa7a200`.
+
+On those bytes, `git diff --check`, Ruff, strict mypy, compileall, and
+collection of exactly 151 migration-017 tests passed. The final live
+PostgreSQL restart passed `151/151` in 602.18 seconds. A focused restart that
+included the module installer plus all 14 structural `after=None` cases and
+all three cross-mode/context cases passed `18/18` in 20.72 seconds. The
+database guard was exactly `0/0/0` both before and after: zero other active
+clients, zero `d25_migration_017_*` schemas, and zero `d25_runtime_*` roles.
+An independent exact-byte review of the `after=None` implementation and tests
+returned `GO`, `P0=0`, `P1=0`.
+
+B3a reconstructs an activated database with no typed history and now covers
+one rich positive, 37 mutations, and 15 rollback/failure-injection cases. The
+earlier B3a-only run passed `53/53`; all of those tests are also included in
+the exact final-byte `151/151` restart. The structural removal path now admits
+only requirement/group state under `replace_group`/`REPLACE` or
+`retire_group`/`RETIRE`, checks the exact predecessor digest and effective
+absence, and rejects any working semantic-row mutation for the absent value.
+
+### Mandatory M5-D26 stop
+
+The full B3 seal cannot be completed faithfully under the combined frozen
+M5-D22 and M5-D25 rules. M5-D25 represents a retirement/removal with logical
+`after=None`, so there is deliberately no newly published requirement/group
+state row. M5-D22 defines state-artifact hashes only for present rows while
+the changed-state set must include every full-state change, and migration 015
+validates each reference against a newly published row/binding at the event
+epoch and revision. The fake runtime's
+`repr(None)`/synthetic absent-certificate hash is not authoritative and cannot
+be copied into migration 017. Inventing a row, skipping validation silently,
+or manufacturing a digest would violate the frozen contract.
+
+The recommended narrow M5-D26 amendment is to define a byte-total absence
+artifact digest for removed requirement state, group state, and the applicable
+group-certificate binding under the existing six changed-state-reference
+kinds, then replace the exact migration-015 validator branch for that case.
+This preserves explicit removal provenance without a new reference kind or
+tombstone-table redesign. Omitting removal references would weaken the
+complete changed-state-set contract; adding tombstone tables would be a larger
+schema and identity change. No B3e implementation may proceed until this
+choice is frozen, audited twice on identical bytes, and activated through a
+new path-exclusive plan.
+
+### Remaining B3 work after D26
+
+The current promotion/context code is retained only as a reviewed scaffold.
+It is not accepted seal/activation evidence. Before any integration it still
+requires closure and exact falsifiers for all remaining B3b--B3e obligations.
+An independent review of the exact SQL bytes above retained four B3b P1s:
+
+1. activation does not reject another live preactivation M4/v1 epoch or bind
+   the complete committed/sealed/complete head tuple and `sealed_at`;
+2. activation accepts arbitrary hexadecimal 017 bundle/migration hashes
+   instead of the exact accepted 017 ledger identity;
+3. M5 publication-head and activation absence are tested but not explicitly
+   locked/proved by the authorizer; and
+4. seal does not bind the complete predecessor status/revision tuple or require
+   the working-image policy to equal the typed update policy.
+
+Expected-set equality, deferred promotion validation, and the final seal
+transaction are also incomplete. After D26 and those changes, the entire Lane
+B static, live PostgreSQL, rollback, concurrency, independent-audit, and
+cross-version regression gates must restart on the exact candidate bytes.
+
+Therefore this branch is a recoverable HOLD checkpoint only. It authorizes no
+merge to `main`, deployment, runtime-mode change, D25/M5.4 PASS, model-quality
+claim, or AI-accuracy claim.
 
 ## Exact base and ownership
 
@@ -11,13 +92,13 @@ The lane started from activation commit
 `691e3d174e059ac041d3a46678fcb630e15478d5` on branch
 `workstream/m5-d25-schema-017`. It touched only the four authorized Lane B
 paths: migration 017, the migration installer, its new test module, and this
-handoff. This bounded B1 checkpoint may be committed for audit continuity, but
-no Lane B result may integrate until the deferred-validation contract is
-complete.
+handoff. The branch may retain bounded commits for audit continuity, but no
+Lane B result may integrate until the deferred-validation and seal contracts
+are complete.
 
 ## Implemented investigation surface
 
-The current uncommitted bytes provide the 13 D25 current/working/image,
+The checkpoint bytes provide the 13 D25 current/working/image,
 patch/contribution and accumulator relations, representative indexes, local
 Hall checks, the exact 41-table `ACCESS EXCLUSIVE MODE NOWAIT` installer lock
 tuple, pinned migration-016 prerequisite, content-ledger identity, top-level
@@ -75,9 +156,9 @@ source/context/operation/counter/journal/privilege falsifiers, rollback-safe
 fixture isolation, and a complete 84-test restart. Complete seal-promotion
 and activated-upgrade behavior remain B3 work.
 
-Separately, B3 retains a P1: the activated-without-history Hall backfill uses
-`count(*)` over a left join and therefore reports one absent mask. It must
-count a nullable matched D25 key before final Lane B freeze.
+The earlier B3a Hall-backfill `count(*)` P1 is closed: the query counts the
+nullable matched D25 key, and the activated-no-history matrix is included in
+the exact final-byte pass recorded above.
 
 The validator binds and sums all 37 counters but does not claim migration 017
 independently observes SELECT-side probe/representative/augmenting operations;
