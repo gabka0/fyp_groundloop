@@ -23,9 +23,9 @@ none of its migration/source/test bytes are copied or accepted here.
 ## 2. Exact candidate byte pin
 
 ```text
-candidate_sha256 = 5ad87a8b43b869911d7092038b9eda1bbda6c42b33b934c8b125ff1c2f88753c
-candidate_lines = 384
-candidate_bytes = 18032
+candidate_sha256 = 401ab5863c3869bb1fbcb8bc96e9adb3e01d6568bf9d13aab791587096a63a0d
+candidate_lines = 419
+candidate_bytes = 19707
 candidate_owned_paths = 2
 ```
 
@@ -93,7 +93,35 @@ mode.
 6. Only two same-byte GOs permit a separate authority-freeze commit. No
    authority/status/implementation-plan file is edited before that gate.
 
-## 6. Semantic/digest reviewer prompt
+## 6. First exact-byte HOLD and remediation restart
+
+Two independent reviews audited exact commit
+`fcd708b0cd7c31556c33253ea320a4cd36ed46c4`, tree
+`ece3743a93ecd84bbd9192791f92297fb2878c4c`, and candidate SHA-256
+`5ad87a8b43b869911d7092038b9eda1bbda6c42b33b934c8b125ff1c2f88753c`
+(384 lines, 18,032 bytes). Both returned `HOLD`: the semantic review reported
+`P0=0`, `P1=1`, `P2=1`; the PostgreSQL review reported `P0=0`, `P1=1`,
+`P2=0`.
+
+The shared P1 proved that equating stored result, base-epoch, and D25-source
+payload hashes did not derive the frozen structural payload from the exact
+deactivation. A self-consistent wrong hash could pass. The semantic P2 also
+requested explicit requirement-state positive coverage under both structural
+actions.
+
+The remediated candidate now requires exactly one deactivation at the event
+epoch, independently derives the exact M5-D2 `RETIRE` payload from its
+predecessor or the exact M5-D2 `REPLACE` payload from its predecessor plus the
+linked successor's independently validated record hash, and requires equality
+with every stored payload/source copy. Mandatory negatives cover wrong
+payload, predecessor, successor, successor record hash, and an extra
+deactivation; requirement-state positives cover both `REPLACE` and `RETIRE`.
+
+The first verdicts are permanently invalid for the remediated bytes. Both
+independent reviews must restart on one new exact commit and the current
+candidate SHA pinned above.
+
+## 7. Semantic/digest reviewer prompt
 
 ```text
 Audit GroundLoop M5-D26 read-only at the exact commit and candidate SHA given
@@ -113,7 +141,7 @@ candidate SHA, files read, checks, and any P2. Do not edit Git/files/database
 or authorize implementation.
 ```
 
-## 7. PostgreSQL reviewer prompt
+## 8. PostgreSQL reviewer prompt
 
 ```text
 Audit GroundLoop M5-D26 read-only at the exact commit and candidate SHA given
@@ -134,7 +162,7 @@ commit/SHA/files/checks and P2. Do not edit files/Git/database or authorize
 migration 017.
 ```
 
-## 8. Nonclaim boundary
+## 9. Nonclaim boundary
 
 Until the review gate and later authority freeze complete, M5-D26 is not an
 accepted decision. D25 and M5.0-25 remain implementation-`PENDING`; M5.4-05

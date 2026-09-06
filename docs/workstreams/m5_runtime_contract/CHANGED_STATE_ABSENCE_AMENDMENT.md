@@ -127,12 +127,43 @@ The only event/update/deactivation mappings are:
 | `replace_group` | `REPLACE` | one non-NULL successor group version |
 | `retire_group` | `RETIRE` | NULL |
 
-The one `groundloop_m5_group_deactivation` row must have `epoch_id=K`,
-`event_id=E`, the mapped action, and the exact predecessor group version.
+There must be exactly one `groundloop_m5_group_deactivation` row for epoch
+`K`. That row must have `event_id=E`, the mapped action, and the exact
+predecessor group version. No second deactivation at `K`, even for another
+group, is permitted by this branch.
+
+The validator must independently derive the structural payload rather than
+merely compare stored copies of `H`. For `RETIRE`, it requires exactly:
+
+```text
+H = stable_m5_digest(
+  "m5-retire-group-event-v1", *TEXT(predecessor_group_version_id))
+```
+
+For `REPLACE`, let `J` be that same deactivation row's non-NULL
+`successor_group_version_id`. The exact `groundloop_m5_group_version(J)` must
+be the migration-014-valid successor: created by `K`, in the predecessor's
+family, superseding that predecessor, `PUBLISHED` at seal, and paired with its
+complete dense requirement set. Its stored `record_payload_hash=R` must equal
+the independently recomputed frozen `m5-group-record-v1` digest over that
+persisted successor and requirement set. The event payload then requires
+exactly:
+
+```text
+H = stable_m5_digest(
+  "m5-replace-group-event-v1", *TEXT(predecessor_group_version_id),
+  *HASH(R))
+```
+
+The successor used for `R` and the payload digest must be exactly `J`; another
+row, caller-supplied hash, or merely self-consistent stored `H` is invalid.
+The recomputed payload must equal the result payload, base-epoch payload, and
+D25 `structural_open` source identity hash already required above.
 Migration-014's existing whole-group validator remains responsible for the
-same-family successor and retirement facts. A registration, document event,
-observation, policy change, failed event, activation bootstrap, or any other
-action cannot authorize an absence artifact.
+same-family successor and retirement facts, but its checks do not substitute
+for this payload recomputation. A registration, document event, observation,
+policy change, failed event, activation bootstrap, or any other action cannot
+authorize an absence artifact.
 
 ### 3.2 Exact D25 logical change
 
@@ -309,8 +340,9 @@ passes with no skip or silent deselection:
 2. The exact same object ID under each legal kind produces a distinct absence
    digest; all three excluded kinds reject even when supplied a correctly
    computed absence-domain hash.
-3. A sealed `RETIRE` with a present requirement predecessor emits and validates
-   its exact requirement-state absence reference.
+3. A sealed `REPLACE` and a sealed `RETIRE` each emit and validate the exact
+   requirement-state absence reference for every present requirement of the
+   deactivated predecessor.
 4. A sealed `REPLACE` and `RETIRE` each emit and validate the predecessor
    group-state absence reference while any new version uses the unchanged
    present recipe.
@@ -330,8 +362,11 @@ passes with no skip or silent deselection:
 10. A state interval or binding left open, closed at another epoch, reopened,
     or accompanied by a same-object successor row/binding rejects.
 11. Wrong update kind, deactivation action, event ID, epoch ID, predecessor
-    group, requirement owner, REPLACE successor nullability, or RETIRE
-    successor nullability rejects.
+    group, requirement owner, REPLACE successor/nullability/record payload,
+    RETIRE successor nullability, arbitrary or wrong structural payload, or a
+    second deactivation row at the epoch rejects. One-field mutations of the
+    predecessor ID, successor ID, successor `record_payload_hash`, and
+    recomputed event payload are mandatory negatives.
 12. A failed/nonsealed event, activation, document event, policy change,
     registration, observation, or audit-only result cannot use absence.
 13. A reference whose epoch/revision differs from the exact sealed epoch,
