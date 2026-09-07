@@ -10,18 +10,22 @@ at `0e0ff43`; R2d pure typed-direct application outcome integrated at
 `2c2aed9`; the later M5.4-02/-03/-04 late-result activity evidence and
 inventory-location repair are integrated at `290dbb3`; M5.0-24 is
 contract-`PASS` / implementation-`PENDING`; M5-D25 and M5.0-25 are contract-
-`PASS` / implementation-`PENDING`; all implementation grants are closed, and
-no D24 or D25 implementation lane has current edit ownership
+`PASS` / implementation-`PENDING`; M5-D26 and M5.0-26 are contract-`PASS` /
+implementation-`PENDING`; all implementation grants are closed or held
+read-only, and no D24, D25, or D26 implementation lane has current edit
+ownership
 
 Date: 2026-08-02; M5-D24 path amendments and integration records 2026-08-06
 through 2026-08-19; M5.4-02/-03/-04 integration record 2026-09-02; M5-D25
-contract freeze 2026-09-03
+contract freeze 2026-09-03; M5-D26 contract freeze 2026-09-07
 
 Authority: `docs/m5_design_freeze.md` defines semantics and
 `docs/m5_implementation_plan.md` defines gates. This document defines only
 ownership, integration order, and evidence required from parallel lanes.
 M5-D25 implementation must additionally obey the exact accepted
 `docs/workstreams/m5_runtime_contract/PERSISTED_MATCHING_AMENDMENT.md`.
+M5-D26 implementation must additionally obey the exact accepted
+`docs/workstreams/m5_runtime_contract/CHANGED_STATE_ABSENCE_AMENDMENT.md`.
 
 The accepted C7 correction at
 `docs/workstreams/m5_runtime_contract/DIRECT_ACQUISITION_TERMINAL_CUTOFF_CORRECTION.md`
@@ -752,3 +756,32 @@ persisted-store, completion, seal, provider, evaluation, and runtime-mode work
 remain outside that first grant. M5.0-24 remains implementation-`PENDING`,
 M5.4-05 through M5.4-09 and all M5.5/M5.6 gates remain `PENDING`, and runtime
 stays `v1_only` outside isolated fixtures.
+
+### Wave R5 -- M5-D26 contract authority freeze
+
+The D26 candidate resolves only the retired-state/certificate-reference
+contradiction left between M5-D25 and migration 015. It was remediated and
+accepted on exact commit `ad04a372cd106f1702cddffcbafad56e826c8bc4`, tree
+`2dba444399920262f386631f5b2cb578701b06c9`, and content SHA-256
+`85372d4c2f9108810bd75c3e5611de541d0f31c8a096421f30e68fad84676721`.
+The final independent semantic/digest and PostgreSQL/enforceability reviews
+each returned `GO` with `P0=0`, `P1=0`, and `P2=0` on those identical bytes.
+
+The authority-freeze tranche owns only the exact ten paths recorded in
+`docs/workstreams/m5_runtime_implementation/D26_CONTRACT_FREEZE_HANDOFF.md`.
+It may freeze M5-D26, runtime-addendum revision 7, and M5.0-26. It owns no
+migration, source, test, database, provider, deployment, runtime-mode, or
+AI-quality path. The accepted D26 candidate and its review handoff are
+immutable inputs.
+
+The existing `workstream/m5-d25-contracts-digests` and
+`workstream/m5-d25-schema-017` branches are read-only implementation evidence
+during this tranche. Their commits do not become accepted implementation by
+being cited, and the schema branch's four retained D25 B3b P1s remain open.
+No implementation lane may resume until a separate post-freeze plan pins the
+audited/integrated freeze commit and assigns fresh path-exclusive branches.
+
+M5-D25/M5.0-25 and M5-D26/M5.0-26 remain implementation-`PENDING`.
+M5.4-05 through M5.4-09 and every M5.5/M5.6 gate remain `PENDING`; runtime
+stays `v1_only`; and no deployment, model-quality, utility, security, novelty,
+or superiority claim follows.

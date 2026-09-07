@@ -1,5 +1,50 @@
 # GroundLoop Decision Log
 
+## 2026-09-07 — M5-D26 Changed-State Absence Contract Accepted
+
+Decision status: **accepted authoritative contract amendment**. M5-D26 and
+acceptance row M5.0-26 are contract-`PASS` / implementation-`PENDING`, and the
+M5.4 runtime addendum advances to revision 7. The complete authoritative
+contract is
+`docs/workstreams/m5_runtime_contract/CHANGED_STATE_ABSENCE_AMENDMENT.md` at
+accepted content SHA-256
+`85372d4c2f9108810bd75c3e5611de541d0f31c8a096421f30e68fad84676721`.
+
+The final reviewed candidate has exact commit
+`ad04a372cd106f1702cddffcbafad56e826c8bc4`, tree
+`2dba444399920262f386631f5b2cb578701b06c9`, 422 lines, and 19,924 bytes on
+ancestry `691e3d1 -> fcd708b -> 4f93afd -> ad04a37`. The initial reviews found
+and forced correction of structural-payload derivation; a later PostgreSQL
+review forced correction of the D26 replacement-inventory scope. After each
+byte change both audits restarted. The decisive semantic/digest and
+PostgreSQL/enforceability reviews examined the final identical bytes and each
+returned `GO` with `P0=0`, `P1=0`, and `P2=0`; the focused unchanged gates
+passed 112/112 runtime contract/digest and 14/14 M4/legacy tests.
+
+M5-D26 defines one non-null typed absence artifact for the existing
+`requirement_state`, `group_state`, and `group_certificate` kinds when an exact
+structural `REPLACE` or `RETIRE` removes a published predecessor. It preserves
+all six kinds and the existing outer reference/set and present-state recipes.
+Validation requires the canonical D25 present-`before`/`after=None` change,
+independently derived structural payload, exact update/deactivation,
+predecessor digest and interval/binding closure, same-object successor absence,
+and exact sealed epoch/revision/head coordinates.
+
+Migration 017 receives only the additional authority to `CREATE OR REPLACE`
+the migration-015 function
+`groundloop_m5_validate_event_result_children()`. Migration-015 bytes, ledger,
+present branches, and its three constraint-trigger identities remain exact;
+separately accepted D25 migration-014 replacement authority remains governed
+by D25. No tombstone table, nullable hash, JSON/`repr` hashing, seventh kind,
+or application-only bypass is accepted.
+
+Acceptance implements nothing. M5-D25/M5.0-25 and M5-D26/M5.0-26 remain
+implementation-`PENDING`; migration 017 requires a separate path-exclusive
+activation. M5.4-05 through M5.4-09 and all M5.5/M5.6 gates remain `PENDING`;
+runtime remains `v1_only`. No deployment, AI-quality improvement, maintained-
+history result, M5.4/M5 completion, utility, security, novelty, or named-system
+superiority follows.
+
 ## 2026-09-03 — M5-D25 Persisted-Matching Contract Accepted
 
 Decision status: **accepted authoritative contract amendment**. M5-D25 and

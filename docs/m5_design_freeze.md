@@ -1,16 +1,17 @@
 # GroundLoop M5 Bounded Evidence-Group Design Freeze
 
-Status: frozen M5.0 contract, amended through accepted M5-D25 and
-M5-D24-C1--C7; implementation evidence for M5-D24 and M5-D25 remains pending
+Status: frozen M5.0 contract, amended through accepted M5-D26 and
+M5-D24-C1--C7; implementation evidence for M5-D24, M5-D25, and M5-D26 remains
+pending
 
 Date: 2026-08-02; M5-D21 through M5-D24-C7 amendments 2026-08-06--2026-08-18;
-M5-D25 amendment 2026-09-03
+M5-D25 amendment 2026-09-03; M5-D26 amendment 2026-09-07
 
 Authority: this document specializes `docs/technical_design.md` v0.2 for M5.
 It preserves original decisions D-1 through D-20 except where the earlier
 pseudocode is mathematically inconsistent with its own stated system-of-
 distinct-representatives semantics. Those corrections, the later runtime
-decisions M5-D21 through M5-D25, and accepted M5-D24-C1 through M5-D24-C7 are
+decisions M5-D21 through M5-D26, and accepted M5-D24-C1 through M5-D24-C7 are
 recorded in the decision log and frozen here. The byte-total M5-D24
 specialization is authoritative at
 `docs/workstreams/m5_runtime_contract/RECOVERY_WORK_AMENDMENT.md`.
@@ -22,6 +23,10 @@ The byte-total M5-D25 specialization is authoritative at
 `docs/workstreams/m5_runtime_contract/PERSISTED_MATCHING_AMENDMENT.md`; its
 independently accepted pre-freeze content SHA-256 is
 `bac12ab5e74632c04f1bd70d0ef0d00522ba9d268eb8b73d11845bbf3b873aae`.
+The narrow M5-D26 changed-state absence specialization is authoritative at
+`docs/workstreams/m5_runtime_contract/CHANGED_STATE_ABSENCE_AMENDMENT.md`; its
+independently accepted pre-freeze content SHA-256 is
+`85372d4c2f9108810bd75c3e5611de541d0f31c8a096421f30e68fad84676721`.
 
 M5 implementation begins only after the M5.0 *contract* gate passes. Later
 implementation-evidence cells in the acceptance matrix remain `PENDING` until
@@ -1181,6 +1186,49 @@ falsifiers, activation, and runtime-mode change require later separately
 committed path-exclusive grants. Runtime remains `v1_only` outside isolated
 fixtures.
 
+### M5-D26 -- byte-total changed-state absence artifact
+
+A successful structural group `REPLACE` or `RETIRE` closes the predecessor's
+published requirement/group state and any applicable group-certificate
+binding without publishing a same-object successor. M5-D25 nevertheless
+requires the corresponding complete logical change as present `before` and
+`after=None`, while migration 015's original reference validator accepts only
+a newly present row or binding. M5-D26 resolves only that contradiction.
+
+For the existing `requirement_state`, `group_state`, and `group_certificate`
+kinds under an exact structural replacement or retirement, the inner artifact
+hash is:
+
+```text
+stable_m5_digest(
+  "m5-changed-state-absence-artifact-v1",
+  *ENUM(kind), *TEXT(object_id))
+```
+
+The existing six-kind enum, non-null hash field, outer
+`m5-changed-state-reference-v2`, set recipe, and every present-state or
+certificate recipe remain unchanged. Validation proves one exact sealed
+event/update/deactivation, independently derives its frozen structural payload,
+requires the canonical D25 present-`before`/`after=None` logical change and
+output record, recomputes the predecessor digest, proves interval/binding
+closure and same-object successor absence, and binds the exact seal epoch and
+revision. It introduces no tombstone table, nullable hash, ambient JSON/`repr`
+hashing, seventh kind, or application-only bypass.
+
+Migration 017 receives one additional authority against migration 015: it may
+`CREATE OR REPLACE` only
+`groundloop_m5_validate_event_result_children()` to add this absence branch.
+Migration-015 bytes, ledger identity, present branches, and all three existing
+constraint-trigger identities remain exact. Separately accepted D25 authority
+remains governed by D25 and is neither expanded nor revoked by D26.
+
+The complete contract and 18 mandatory falsifiers are authoritative in
+`docs/workstreams/m5_runtime_contract/CHANGED_STATE_ABSENCE_AMENDMENT.md` at
+the accepted SHA-256 above. M5-D26 and M5.0-26 are contract-`PASS` /
+implementation-`PENDING`; D25/migration-017 implementation, M5.4 completion,
+deployment, and AI-quality claims remain `PENDING`. Runtime remains `v1_only`
+outside isolated fixtures.
+
 ## 11. Dynamic M4 integration contract
 
 ### M5-D14 -- typed v2 runtime identity
@@ -1808,6 +1856,7 @@ regression evidence.
 | M5-D24 | Recoverable dispatch and durable accounting | Database-clock leases and total acquisition projections make lost work recoverable; immutable dispatch/execution/work/timing evidence separates confirmed calls from ambiguity; migration 016 and post-terminal sidecars preserve exact replay without changing semantic or M4-v1 identities |
 | M5-D24-C1 | Execution disposition and return receipts | Successful execution disposition is explicit; successful requirement/direct receipts separate immutable first-return outcome from current terminal projection and expose exactly one first-write outer timing anchor without changing M4-v1 bytes |
 | M5-D25 | Recoverable persisted matching image | PostgreSQL current/working Hall state, immutable patch/contribution history, durable work accumulators, scoped write authorization, seal promotion, and independent physical/provenance audit are byte-total; migration 017 is the separate implementation barrier |
+| M5-D26 | Changed-state absence artifact | Structural REPLACE/RETIRE removals use one typed non-null absence digest for three existing reference kinds, with exact D25 logical-change, predecessor-closure, successor-absence, event-payload and seal-coordinate validation; migration 017 may replace only the required migration-015 child validator under D26 |
 
 ## 15. Release gate
 
@@ -1823,6 +1872,6 @@ that:
 6. the acceptance matrix has a falsifying test for every M5-D decision,
    including the M5-D21 typed-bridge exception, M5-D22 state-artifact
    identity, M5-D23 transition completeness, M5-D24 recoverable dispatch and
-   durable accounting, the M5-D24-C1--C7 corrections, and M5-D25 persisted
-   matching; and
+   durable accounting, the M5-D24-C1--C7 corrections, M5-D25 persisted
+   matching, and M5-D26 changed-state absence; and
 7. path ownership prevents shared-schema or shared-contract collisions.

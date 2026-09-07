@@ -53,6 +53,10 @@ order:
     (authoritative M5-D25 persisted-matching and migration-017 contract)
 42. `docs/workstreams/m5_runtime_implementation/D25_CONTRACT_FREEZE_HANDOFF.md`
     (accepted D25 bytes, review evidence, and next implementation boundary)
+43. `docs/workstreams/m5_runtime_contract/CHANGED_STATE_ABSENCE_AMENDMENT.md`
+    (authoritative M5-D26 retired-state absence-reference contract)
+44. `docs/workstreams/m5_runtime_implementation/D26_CONTRACT_FREEZE_HANDOFF.md`
+    (accepted D26 bytes, review evidence, and next implementation boundary)
 
 `docs/initial_technical_design.md` (v0.1) is superseded and retained for audit
 only. The M0.5 design freeze and M1.1 amendments are complete; frozen decisions
@@ -166,8 +170,16 @@ accepted SHA-256
 `bac12ab5e74632c04f1bd70d0ef0d00522ba9d268eb8b73d11845bbf3b873aae`.
 Its contract gate is `PASS` and its implementation evidence is `PENDING`;
 migration 017 and every source/test change require a new path-exclusive
-activation. Runtime remains `v1_only` outside isolated fixtures. M5 is not
-complete until every remaining M5.4--M5.6 executable gate is recorded.
+activation. M5-D26 is the frozen narrow correction for changed-state
+references whose exact structural `REPLACE`/`RETIRE` result is absence. Its
+authoritative amendment SHA-256 is
+`85372d4c2f9108810bd75c3e5611de541d0f31c8a096421f30e68fad84676721`;
+M5-D26 and M5.0-26 are contract-`PASS` / implementation-`PENDING`. It adds no
+reference kind, tombstone, nullable hash, present-state recipe, or deployment
+claim. Migration 017 may replace the one migration-015 child validator only
+under the separate D26 implementation activation. Runtime remains `v1_only`
+outside isolated fixtures. M5 is not complete until every remaining
+M5.4--M5.6 executable gate is recorded.
 
 A larger, independently adjudicated natural-history evaluation remains
 mandatory before dissertation-level selective-maintenance or end-to-end

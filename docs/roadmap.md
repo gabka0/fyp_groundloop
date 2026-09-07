@@ -236,7 +236,7 @@ is explicit pre-dissertation/M6 debt, not a hidden extension of M4.
 ## M5 — Bounded Evidence Groups
 
 Status: active. The M5.0 contract freeze is complete through accepted
-M5-D25; M5.1 pure reference semantics completed on 2026-08-03 after an
+M5-D26; M5.1 pure reference semantics completed on 2026-08-03 after an
 independent high-confidence audit GO. M5.2 and M5.3 are complete. M5.4-01
 through M5.4-04 pass; public activation and partial root/direct transitions have
 live evidence but do not independently close M5.4-05. M5-D24's R0 contracts and
@@ -261,8 +261,8 @@ and the immutable commit/post-integration audits returned `GO`. Its exact
 implementation evidence for transaction-owned acquisition, direct execution/
 failure routing and all-direct failure closure through the concrete stores. It
 stops before production seal/publication and lifecycle-head advancement,
-deployed provider adapters, runtime enablement, M5-D25 implementation, and the
-remaining end-to-end M5.4 evidence. The later separately activated fake-
+deployed provider adapters, runtime enablement, M5-D25/M5-D26 implementation,
+and the remaining end-to-end M5.4 evidence. The later separately activated fake-
 history and PostgreSQL late-result activity tranche is integrated at `290dbb3`
 with exact ancestry `3200b39 -> b9d251b -> a41386f -> eb8a314 -> 290dbb3`. Its final
 gates include 39/39 focused pure, 392/392 complete pure runtime, carried
@@ -287,6 +287,19 @@ separately activated implementation barrier; runtime stays `v1_only`, M5.0-24
 remains implementation-`PENDING`, and M5.4-05 through M5.4-09 remain
 `PENDING`.
 
+The M5-D26 changed-state absence contract is accepted at exact reviewed
+candidate commit `ad04a37`, tree
+`2dba444399920262f386631f5b2cb578701b06c9`, and content SHA-256
+`85372d4c2f9108810bd75c3e5611de541d0f31c8a096421f30e68fad84676721`
+after two decisive independent same-byte `GO` reviews with
+`P0=0/P1=0/P2=0`. M5.0-26 is contract-`PASS` /
+implementation-`PENDING`, and runtime-addendum revision 7 is authoritative.
+This acceptance adds only the typed retired-predecessor absence contract and
+narrow migration-015 child-validator replacement authority. It changes no
+migration, source, test, database, provider, deployment, runtime mode, or
+AI-quality result. D25/M5.0-25 and D26/M5.0-26 implementation, M5.4-05 through
+M5.4-09, and every M5.5/M5.6 gate remain `PENDING`; runtime stays `v1_only`.
+
 Deliverables:
 
 - Immutable versioned evidence requirements and groups with group-derived
@@ -305,7 +318,7 @@ Deliverables:
 Stages:
 
 - **M5.0:** design/theory/schema/data freeze. **Complete through accepted
-  M5-D25.** Contract rows pass; decision-row implementation halves remain
+  M5-D26.** Contract rows pass; decision-row implementation halves remain
   pending until the M5.6 cross-stage evidence mapping.
 - **M5.1:** pure records, history, structural events, and independent Python
   oracle. **Complete.**
@@ -321,8 +334,8 @@ Stages:
   state, and bounded frozen-model diagnostic. **Active; partial only.** The
   scoped R2e typed-direct pre-seal bridge passes, and the later evidence tranche
   promotes M5.4-02/-03/-04. M5.4-01 through M5.4-04 are `PASS`; M5.4-05 through
-  M5.4-09 remain `PENDING`. Runtime stays `v1_only`; the accepted M5-D25
-  contract leaves migration 017 as the next implementation barrier.
+  M5.4-09 remain `PENDING`. Runtime stays `v1_only`; the accepted M5-D25 and
+  M5-D26 contracts leave migration 017 as the next implementation barrier.
 - **M5.5:** controlled dataset adapter, seven qualified baselines, and
   reproducible systems/semantic reports.
 - **M5.6:** full validation, evidence bundle, documentation and honest verdict.
