@@ -378,10 +378,13 @@ passes with no skip or silent deselection:
 15. All six present-reference kinds retain their accepted positive and
     one-field negative vectors; no present recipe or direct certificate digest
     changes.
-16. Static object inventory proves migration 017 replaced only
-    `groundloop_m5_validate_event_result_children()` among pre-017 enforcement
-    objects, kept all three constraint-trigger identities, and changed no
-    migration-015 bytes or ledger field.
+16. Static D26-delta inventory proves that
+    `groundloop_m5_validate_event_result_children()` is the only
+    migration-015 enforcement object replaced by migration 017 and the only
+    additional pre-017 replacement attributable to M5-D26. Any separate
+    replacement already authorized by M5-D25 must remain within that accepted
+    D25 authority. All three migration-015 constraint-trigger identities stay
+    exact, and no migration-015 byte or ledger field changes.
 17. Migration-017 fresh install, exact rerun, content conflict, and every
     injected rollback leave the replacement function and the rest of the
     schema in one atomic before-or-after image.

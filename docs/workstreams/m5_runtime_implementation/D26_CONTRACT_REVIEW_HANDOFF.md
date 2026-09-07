@@ -23,9 +23,9 @@ none of its migration/source/test bytes are copied or accepted here.
 ## 2. Exact candidate byte pin
 
 ```text
-candidate_sha256 = 401ab5863c3869bb1fbcb8bc96e9adb3e01d6568bf9d13aab791587096a63a0d
-candidate_lines = 419
-candidate_bytes = 19707
+candidate_sha256 = 85372d4c2f9108810bd75c3e5611de541d0f31c8a096421f30e68fad84676721
+candidate_lines = 422
+candidate_bytes = 19924
 candidate_owned_paths = 2
 ```
 
@@ -121,7 +121,33 @@ The first verdicts are permanently invalid for the remediated bytes. Both
 independent reviews must restart on one new exact commit and the current
 candidate SHA pinned above.
 
-## 7. Semantic/digest reviewer prompt
+## 7. Second exact-byte HOLD and inventory-scope remediation
+
+The restarted semantic and PostgreSQL reviews audited exact commit
+`4f93afd99743e426849df0a0dc8cb54433686320`, tree
+`94a0b96bf442ef9701af99362816f3642c8ebf08`, and candidate SHA-256
+`401ab5863c3869bb1fbcb8bc96e9adb3e01d6568bf9d13aab791587096a63a0d`
+(419 lines, 19,707 bytes). The semantic review returned `GO` with `P0=0`,
+`P1=0`, `P2=0`; the PostgreSQL review returned `HOLD` with `P0=0`, `P1=1`,
+`P2=0`. One GO plus one HOLD does not pass the review gate.
+
+The PostgreSQL P1 found that Section 5 correctly scoped D26 to one additional
+migration-015 validator replacement, while mandatory falsifier 16 accidentally
+said that validator must be the only replacement among every pre-017
+enforcement object. That literal conflicted with two separately accepted
+D25-authorized migration-014 validator replacements in the held migration-017
+evidence.
+
+The candidate now requires the D26 validator to be the only migration-015
+enforcement object replaced by migration 017 and the only additional pre-017
+replacement attributable to D26, while preserving independently accepted D25
+authority. It continues to prohibit any other replacement under D26 and to
+preserve migration-015 bytes, ledger fields, and all three trigger identities.
+
+The second-cycle semantic GO is invalid for these changed bytes. Both reviews
+must restart again on one new exact commit and the current candidate SHA.
+
+## 8. Semantic/digest reviewer prompt
 
 ```text
 Audit GroundLoop M5-D26 read-only at the exact commit and candidate SHA given
@@ -141,7 +167,7 @@ candidate SHA, files read, checks, and any P2. Do not edit Git/files/database
 or authorize implementation.
 ```
 
-## 8. PostgreSQL reviewer prompt
+## 9. PostgreSQL reviewer prompt
 
 ```text
 Audit GroundLoop M5-D26 read-only at the exact commit and candidate SHA given
@@ -162,7 +188,7 @@ commit/SHA/files/checks and P2. Do not edit files/Git/database or authorize
 migration 017.
 ```
 
-## 9. Nonclaim boundary
+## 10. Nonclaim boundary
 
 Until the review gate and later authority freeze complete, M5-D26 is not an
 accepted decision. D25 and M5.0-25 remain implementation-`PENDING`; M5.4-05
