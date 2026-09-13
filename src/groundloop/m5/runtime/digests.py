@@ -85,6 +85,10 @@ TypedDirectVerificationExecutionValues = tuple[
     str | None,
 ]
 
+_CHANGED_STATE_ABSENCE_KIND_VALUES = frozenset(
+    ("requirement_state", "group_state", "group_certificate")
+)
+
 MatchingWorkValues = tuple[int, ...]
 AuditKeyValues = tuple[str, ...]
 
@@ -1872,6 +1876,27 @@ def changed_state_reference_digest(
     )
 
 
+def changed_state_absence_artifact_digest(
+    kind: str | Enum,
+    object_id: str,
+) -> str:
+    """Return the D26 artifact digest for one qualifying absent object."""
+
+    kind_wire = _enum_wire(kind)
+    if kind_wire not in _CHANGED_STATE_ABSENCE_KIND_VALUES:
+        raise ValidationError(
+            "changed-state absence kind must be requirement_state, group_state, "
+            "or group_certificate"
+        )
+    if not isinstance(object_id, str) or not object_id.strip():
+        raise ValidationError("object_id must be a nonempty string")
+    return stable_m5_digest(
+        "m5-changed-state-absence-artifact-v1",
+        enum_field(kind_wire),
+        text_field(object_id),
+    )
+
+
 def requirement_state_artifact_digest(
     *,
     requirement_version_id: str,
@@ -2801,6 +2826,7 @@ __all__ = [
     "attempt_runtime_timing_digest",
     "cancellation_plan_digest",
     "candidate_policy_manifest_digest",
+    "changed_state_absence_artifact_digest",
     "changed_state_reference_digest",
     "changed_state_set_digest",
     "child_set_digest",

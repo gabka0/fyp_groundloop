@@ -9,7 +9,7 @@ import pytest
 
 from groundloop.domain import StatusDelta, SubjectKind, VerificationLabel
 from groundloop.errors import ValidationError
-from groundloop.m4.contracts import VectorIndexKind
+from groundloop.m4.contracts import VectorIndexKind, stable_m4_digest
 from groundloop.m5.digests import f64_field, stable_m5_digest, text_field
 from groundloop.m5.runtime import digests
 from groundloop.m5.runtime.contracts import (
@@ -460,6 +460,278 @@ def test_combined_delta_and_changed_state_recipes_bind_complete_rows() -> None:
     )
     assert digests.changed_state_set_digest((changed,)) != (
         digests.changed_state_set_digest(())
+    )
+
+
+def test_d26_absence_artifact_golden_vectors_match_independent_framing() -> None:
+    object_id = "state-λ/雪🙂"
+    expected = {
+        M5StateReferenceKind.REQUIREMENT_STATE: (
+            "db963e82530bfa823fb9408f678219c031643ba990e8b2ad036321febc75bffb"
+        ),
+        M5StateReferenceKind.GROUP_STATE: (
+            "9d77813515825a990226785c1b9f9aa0acf1f9362ba8e911d6bedaa9f613482b"
+        ),
+        M5StateReferenceKind.GROUP_CERTIFICATE: (
+            "0b28c9a953eaa8946a5387a5e7c289435206ec645363a17b223101985518cae9"
+        ),
+    }
+
+    actual = {
+        kind: digests.changed_state_absence_artifact_digest(kind, object_id)
+        for kind in expected
+    }
+
+    assert actual == expected
+    assert len(set(actual.values())) == 3
+    for kind, value in actual.items():
+        assert value == _framed_sha256(
+            "m5-changed-state-absence-artifact-v1",
+            "enum",
+            kind.value,
+            "text",
+            object_id,
+        )
+    assert digests.changed_state_absence_artifact_digest(
+        M5StateReferenceKind.REQUIREMENT_STATE, "café"
+    ) != digests.changed_state_absence_artifact_digest(
+        M5StateReferenceKind.REQUIREMENT_STATE, "cafe\u0301"
+    )
+
+
+def test_d26_absence_artifact_rejects_excluded_kinds_and_invalid_ids() -> None:
+    for kind in (
+        M5StateReferenceKind.CLAIM_STATE,
+        M5StateReferenceKind.CLAIM_CERTIFICATE,
+        M5StateReferenceKind.ANSWER_STATE,
+    ):
+        correctly_framed_but_forbidden = _framed_sha256(
+            "m5-changed-state-absence-artifact-v1",
+            "enum",
+            kind.value,
+            "text",
+            "same-object",
+        )
+        assert len(correctly_framed_but_forbidden) == 64
+        with pytest.raises(ValidationError):
+            digests.changed_state_absence_artifact_digest(kind, "same-object")
+
+    with pytest.raises(ValidationError):
+        digests.changed_state_absence_artifact_digest("seventh_kind", "object")
+    for object_id in ("", " ", "\t\n", "\u00a0"):
+        with pytest.raises(ValidationError):
+            digests.changed_state_absence_artifact_digest(
+                M5StateReferenceKind.GROUP_STATE, object_id
+            )
+
+    spaced = digests.changed_state_absence_artifact_digest(
+        M5StateReferenceKind.GROUP_STATE, " group-1 "
+    )
+    assert spaced == _framed_sha256(
+        "m5-changed-state-absence-artifact-v1",
+        "enum",
+        "group_state",
+        "text",
+        " group-1 ",
+    )
+    assert spaced != digests.changed_state_absence_artifact_digest(
+        M5StateReferenceKind.GROUP_STATE, "group-1"
+    )
+
+
+def test_d26_absence_artifact_binds_domain_kind_object_and_framing() -> None:
+    base = digests.changed_state_absence_artifact_digest(
+        M5StateReferenceKind.REQUIREMENT_STATE, "object-a"
+    )
+
+    assert base != digests.changed_state_absence_artifact_digest(
+        M5StateReferenceKind.GROUP_STATE, "object-a"
+    )
+    assert base != digests.changed_state_absence_artifact_digest(
+        M5StateReferenceKind.REQUIREMENT_STATE, "object-b"
+    )
+    assert base != _framed_sha256(
+        "m5-changed-state-absence-artifact-v2",
+        "enum",
+        "requirement_state",
+        "text",
+        "object-a",
+    )
+    assert digests.changed_state_absence_artifact_digest(
+        M5StateReferenceKind.REQUIREMENT_STATE, "prefix"
+    ) != digests.changed_state_absence_artifact_digest(
+        M5StateReferenceKind.REQUIREMENT_STATE, "prefix-suffix"
+    )
+
+    one_byte_mutation = bytearray.fromhex(base)
+    one_byte_mutation[-1] ^= 1
+    assert bytes(one_byte_mutation).hex() != base
+
+
+def test_d26_absence_keeps_outer_reference_and_set_recipes_unchanged() -> None:
+    object_id = "state-λ/雪🙂"
+    kinds = tuple(
+        sorted(
+            (
+                M5StateReferenceKind.REQUIREMENT_STATE,
+                M5StateReferenceKind.GROUP_STATE,
+                M5StateReferenceKind.GROUP_CERTIFICATE,
+            ),
+            key=lambda kind: kind.value,
+        )
+    )
+    references = tuple(
+        digests.changed_state_reference_digest(
+            (
+                kind,
+                object_id,
+                17,
+                9,
+                digests.changed_state_absence_artifact_digest(kind, object_id),
+            )
+        )
+        for kind in kinds
+    )
+
+    assert references == (
+        "a445083a174b86869848b95ecc4643f9bc1b1c66feb5774fd3ba2057605b8c8a",
+        "f017dd5848207ee69c833d13adb6dd767c192b81e244b425815bf36e10fc40cf",
+        "828ac10e9d06faae85855e9beeb1cc8b36ed438579d427f8d1a10828be1e2bb7",
+    )
+    for kind, reference in zip(kinds, references, strict=True):
+        artifact_hash = digests.changed_state_absence_artifact_digest(kind, object_id)
+        assert reference == _framed_sha256(
+            "m5-changed-state-reference-v2",
+            "enum",
+            kind.value,
+            "text",
+            object_id,
+            "int",
+            "17",
+            "int",
+            "9",
+            "sha256",
+            artifact_hash,
+        )
+
+    assert digests.changed_state_set_digest(references) == (
+        "7483febbfedb64216d31d6238f2a8410c27694a46d7092ff25a4f5024589fe12"
+    )
+    assert digests.changed_state_set_digest(references) == _framed_sha256(
+        "m5-changed-state-set-v2",
+        "sequence",
+        "int",
+        "3",
+        "sha256",
+        references[0],
+        "sha256",
+        references[1],
+        "sha256",
+        references[2],
+    )
+
+
+def test_d26_all_six_present_reference_vectors_remain_unchanged() -> None:
+    present = (
+        (
+            M5StateReferenceKind.REQUIREMENT_STATE,
+            "requirement-present",
+            digests.requirement_state_artifact_digest(
+                requirement_version_id="requirement-present",
+                witness_hashes=(H1,),
+                supporting_observation_ids=("observation-present",),
+                witness_count=1,
+                satisfied=True,
+                decision_policy_version="policy-present",
+            ),
+        ),
+        (
+            M5StateReferenceKind.GROUP_STATE,
+            "group-present",
+            digests.group_state_artifact_digest(
+                group_version_id="group-present",
+                requirement_count=1,
+                satisfied_count=1,
+                matching_size=1,
+                complete=True,
+                decision_policy_version="policy-present",
+                certificate_digest=H2,
+            ),
+        ),
+        (M5StateReferenceKind.GROUP_CERTIFICATE, "group-present", H2),
+        (
+            M5StateReferenceKind.CLAIM_STATE,
+            "claim-present",
+            digests.claim_state_artifact_digest(
+                claim_id="claim-present",
+                support_count=0,
+                refute_count=0,
+                best_support_score=None,
+                best_refute_score=None,
+                supporting_observation_ids=(),
+                refuting_observation_ids=(),
+                complete_group_count=1,
+                complete_group_ids=("group-present",),
+                status="supported",
+                decision_policy_version="policy-present",
+                certificate_digest=H3,
+            ),
+        ),
+        (M5StateReferenceKind.CLAIM_CERTIFICATE, "claim-present", H3),
+        (
+            M5StateReferenceKind.ANSWER_STATE,
+            "answer-present",
+            digests.answer_state_artifact_digest(
+                answer_version_id="answer-present",
+                required_claim_count=1,
+                supported_count=1,
+                unsupported_count=0,
+                refuted_count=0,
+                conflicted_count=0,
+                status="valid",
+            ),
+        ),
+    )
+
+    assert tuple(kind.value for kind in M5StateReferenceKind) == (
+        "requirement_state",
+        "group_state",
+        "group_certificate",
+        "claim_state",
+        "claim_certificate",
+        "answer_state",
+    )
+    assert tuple(
+        digests.changed_state_reference_digest((kind, object_id, 17, 9, artifact))
+        for kind, object_id, artifact in present
+    ) == (
+        "fe54346bf4259566d30dd99ee7fd5b59742e576d796fad7479445f94a7ed3c3d",
+        "bafbf4a36008e891e72e7c8bf87aaa90b6648904fe290045fa403b08e410689f",
+        "12595d185653d95c91a24adc7a5797313d5d2f80b2e54e24e5891c0a9c24b334",
+        "6d9d5ea75c333d451787e68212f8e2ab0898235e712976f6117b9039a3a8a4c0",
+        "b0402f4cef837192e5e97dc36c0a66a5910364fc0b151a1078d1de9ed2b59999",
+        "24936b4510269e1fe92810d809da754cd7e66198ea6e7d84c90e9456c17c4d24",
+    )
+    for kind, object_id, artifact in present[:3]:
+        assert artifact != digests.changed_state_absence_artifact_digest(
+            kind, object_id
+        )
+
+
+def test_d26_helper_preserves_d25_and_legacy_m4_v1_vectors() -> None:
+    assert digests.matching_work_digest((0,) * 37) == (
+        "1a1d36b3bb19c2c30cc27b6c4b5967a9f59a86169108b23732e65e4fd382bb89"
+    )
+    logical_digest, logical_size, _ = digests.logical_output_digest(())
+    assert (logical_digest, logical_size) == (
+        "b4e641b66a06cb7d204377c37cfe031d958ce6d959832620fc2e9441339581c3",
+        71,
+    )
+    assert stable_m4_digest("m4-publication-v1", "1") == (
+        "d9b5f02b3dd64e2f8ee2dc92932d79e9b6b714b3dd572863ffb556c880ede235"
+    )
+    assert stable_m4_digest("m4-claim-registry-snapshot-v1", "claim-1") == (
+        "66f40bc75de429e3cd678c351dc359f06aa52675f477a49a6612c9e0a66d72d0"
     )
 
 
