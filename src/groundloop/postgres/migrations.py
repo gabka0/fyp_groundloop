@@ -14,7 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from psycopg import Connection
+from psycopg import Connection, IsolationLevel, sql
+from psycopg.pq import TransactionStatus
 
 from groundloop.m5.digests import hash_field, stable_m5_digest, text_field
 
@@ -72,6 +73,83 @@ M5_RUNTIME_RECOVERY_BUNDLE_ID = "m5-runtime-recovery-schema-bundle-v1"
 M5_RUNTIME_RECOVERY_MIGRATION_LABEL = "migrations/016_m5_runtime_recovery.sql"
 M5_RUNTIME_RECOVERY_MIGRATION_PATH = ROOT / M5_RUNTIME_RECOVERY_MIGRATION_LABEL
 M5_RUNTIME_RECOVERY_ORACLE_SHA256 = hashlib.sha256(b"").hexdigest()
+
+# M5-D25 deliberately pins the accepted migration-016 ledger bytes.  These
+# literals are authority: never derive them from whichever 016 happens to be
+# present in the checkout.
+M5_ACCEPTED_RECOVERY_BUNDLE_ID = "m5-runtime-recovery-schema-bundle-v1"
+M5_ACCEPTED_RECOVERY_MIGRATION_SHA256 = (
+    "a63d2a878a5196e071e3e51c6e6737cf76552057ade65da4112e0f0bafb412d7"
+)
+M5_ACCEPTED_RECOVERY_BUNDLE_SHA256 = (
+    "28a31f37c13cdaa2b89676e6279740a1f366e1acd16502c4fa722c2e0be21565"
+)
+M5_ACCEPTED_RECOVERY_ORACLE_SHA256 = (
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+)
+M5_ACCEPTED_RECOVERY_PREREQUISITE_SHA256 = (
+    "b7b03574dc2ba62fd6ba7be22744e2fe6d9ec178ffb2b4b9b552c5ff6281dacd"
+)
+
+M5_PERSISTED_MATCHING_BUNDLE_ID = "m5-persisted-matching-schema-bundle-v1"
+M5_PERSISTED_MATCHING_MIGRATION_LABEL = "migrations/017_m5_persisted_matching.sql"
+M5_PERSISTED_MATCHING_MIGRATION_PATH = ROOT / M5_PERSISTED_MATCHING_MIGRATION_LABEL
+M5_PERSISTED_MATCHING_ORACLE_SHA256 = hashlib.sha256(b"").hexdigest()
+
+# M5-D26 pins the only migration-017 byte sequence authorized to perform a
+# first install.  Ledger-first replay still compares the caller-derived
+# identity so a conflicting replay reports the historical ledger conflict;
+# an absent ledger never turns arbitrary caller bytes into accepted authority.
+M5_ACCEPTED_PERSISTED_MATCHING_MIGRATION_SHA256 = (
+    "e387b01fa80145273ba40d2d83581bc54762d3a4a2edd34669c095076c52154c"
+)
+M5_ACCEPTED_PERSISTED_MATCHING_BUNDLE_SHA256 = (
+    "52240e19968926d0c051fe6146b3c7d877cf582014341efbfcc78637f3ff5761"
+)
+
+M5_PERSISTED_MATCHING_INSTALL_LOCK_RELATIONS = (
+    "groundloop_runtime_mode",
+    "groundloop_m4_publication_head",
+    "groundloop_m5_publication_head",
+    "groundloop_m5_activation",
+    "groundloop_epoch",
+    "groundloop_m5_runtime_epoch",
+    "groundloop_m5_update",
+    "groundloop_decision_policy",
+    "groundloop_document",
+    "groundloop_document_version",
+    "groundloop_chunk_version",
+    "groundloop_answer_version",
+    "groundloop_claim",
+    "groundloop_m5_group_family",
+    "groundloop_m5_group_version",
+    "groundloop_m5_requirement_version",
+    "groundloop_m5_group_validity",
+    "groundloop_m5_group_deactivation",
+    "groundloop_m5_group_family_retirement",
+    "groundloop_semantic_subject",
+    "groundloop_semantic_observation",
+    "groundloop_observation_currency",
+    "groundloop_published_observation_currency",
+    "groundloop_claim_state_materialized",
+    "groundloop_answer_state_materialized",
+    "groundloop_claim_certificate",
+    "groundloop_published_claim_state",
+    "groundloop_published_answer_state",
+    "groundloop_m5_requirement_state_materialized",
+    "groundloop_m5_group_state_materialized",
+    "groundloop_m5_claim_state_materialized",
+    "groundloop_m5_answer_state_materialized",
+    "groundloop_m5_published_requirement_state",
+    "groundloop_m5_published_group_state",
+    "groundloop_m5_published_claim_state",
+    "groundloop_m5_published_answer_state",
+    "groundloop_m5_group_certificate_artifact",
+    "groundloop_m5_group_certificate_artifact_row",
+    "groundloop_m5_claim_certificate_artifact",
+    "groundloop_m5_published_group_certificate_binding",
+    "groundloop_m5_published_claim_certificate_binding",
+)
 
 _PREREQUISITE_RELATIONS = (
     "groundloop_epoch",
@@ -375,6 +453,10 @@ class M5RuntimeRecoveryBundleError(M5RuntimeBundleError):
     """Migration 016 cannot be installed or replayed safely."""
 
 
+class M5PersistedMatchingBundleError(M5RuntimeBundleError):
+    """Migration 017 cannot be installed or replayed safely."""
+
+
 @dataclass(frozen=True, slots=True)
 class M5BundleIdentity:
     bundle_id: str
@@ -417,6 +499,21 @@ class M5RuntimeRecoveryBundleIdentity:
 @dataclass(frozen=True, slots=True)
 class M5RuntimeRecoveryBundleInstallResult:
     identity: M5RuntimeRecoveryBundleIdentity
+    applied: bool
+
+
+@dataclass(frozen=True, slots=True)
+class M5PersistedMatchingBundleIdentity:
+    bundle_id: str
+    bundle_sha256: str
+    migration_sha256: str
+    oracle_sha256: str
+    prerequisite_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class M5PersistedMatchingBundleInstallResult:
+    identity: M5PersistedMatchingBundleIdentity
     applied: bool
 
 
@@ -531,6 +628,32 @@ def m5_runtime_recovery_bundle_identity(
         migration_sha256=migration_hash,
         oracle_sha256=M5_RUNTIME_RECOVERY_ORACLE_SHA256,
         prerequisite_sha256=M5_ACCEPTED_RUNTIME_BUNDLE_SHA256,
+    )
+
+
+def m5_persisted_matching_bundle_identity(
+    *, migration_bytes: bytes | None = None
+) -> M5PersistedMatchingBundleIdentity:
+    """Return migration 017's identity bound to the accepted migration 016."""
+
+    migration = (
+        M5_PERSISTED_MATCHING_MIGRATION_PATH.read_bytes()
+        if migration_bytes is None
+        else migration_bytes
+    )
+    migration_hash = _sha256(migration)
+    bundle_hash = stable_m5_digest(
+        M5_PERSISTED_MATCHING_BUNDLE_ID,
+        text_field(M5_PERSISTED_MATCHING_MIGRATION_LABEL),
+        hash_field(migration_hash),
+        hash_field(M5_ACCEPTED_RECOVERY_BUNDLE_SHA256),
+    )
+    return M5PersistedMatchingBundleIdentity(
+        bundle_id=M5_PERSISTED_MATCHING_BUNDLE_ID,
+        bundle_sha256=bundle_hash,
+        migration_sha256=migration_hash,
+        oracle_sha256=M5_PERSISTED_MATCHING_ORACLE_SHA256,
+        prerequisite_sha256=M5_ACCEPTED_RECOVERY_BUNDLE_SHA256,
     )
 
 
@@ -1275,6 +1398,1131 @@ def install_m5_runtime_recovery_bundle(
         return M5RuntimeRecoveryBundleInstallResult(identity=identity, applied=True)
 
 
+def _verify_accepted_m5_recovery_bundle(connection: Connection[Any]) -> None:
+    row = connection.execute(
+        """
+        SELECT bundle_id, migration_sha256, bundle_sha256, oracle_sha256,
+               prerequisite_sha256
+        FROM groundloop_m5_schema_bundle WHERE bundle_id = %s
+        """,
+        (M5_ACCEPTED_RECOVERY_BUNDLE_ID,),
+    ).fetchone()
+    expected = (
+        M5_ACCEPTED_RECOVERY_BUNDLE_ID,
+        M5_ACCEPTED_RECOVERY_MIGRATION_SHA256,
+        M5_ACCEPTED_RECOVERY_BUNDLE_SHA256,
+        M5_ACCEPTED_RECOVERY_ORACLE_SHA256,
+        M5_ACCEPTED_RECOVERY_PREREQUISITE_SHA256,
+    )
+    actual = None if row is None else tuple(str(value).strip() for value in row)
+    if actual != expected:
+        raise M5PrerequisiteError(
+            "migration 017 requires the exact accepted five-field "
+            "migration-016 ledger row"
+        )
+
+
+def _acquire_m5_persisted_matching_install_locks(
+    connection: Connection[Any],
+) -> None:
+    for relation in M5_PERSISTED_MATCHING_INSTALL_LOCK_RELATIONS:
+        connection.execute(f"LOCK TABLE {relation} IN ACCESS EXCLUSIVE MODE NOWAIT")
+
+
+def _m5_persisted_matching_singletons(connection: Connection[Any]) -> str:
+    mode_row = connection.execute(
+        "SELECT mode FROM groundloop_runtime_mode WHERE singleton FOR UPDATE"
+    ).fetchone()
+    if mode_row is None or str(mode_row[0]) not in {"v1_only", "m5_active"}:
+        raise M5PersistedMatchingBundleError("migration-017 runtime mode is invalid")
+    connection.execute(
+        "SELECT epoch_id FROM groundloop_m4_publication_head WHERE singleton FOR UPDATE"
+    ).fetchone()
+    connection.execute(
+        "SELECT epoch_id, sealed_revision FROM groundloop_m5_publication_head "
+        "WHERE singleton FOR UPDATE"
+    ).fetchone()
+    connection.execute(
+        "SELECT activation_id FROM groundloop_m5_activation WHERE singleton FOR UPDATE"
+    ).fetchone()
+    return str(mode_row[0])
+
+
+def _m5_persisted_matching_first_install_guard(
+    connection: Connection[Any], mode: str
+) -> None:
+    if connection.execute(
+        "SELECT EXISTS (SELECT 1 FROM groundloop_m5_runtime_epoch)"
+    ).fetchone() != (False,) or connection.execute(
+        "SELECT EXISTS (SELECT 1 FROM groundloop_m5_update)"
+    ).fetchone() != (False,):
+        raise M5PersistedMatchingBundleError(
+            "migration 017 forbids pre-D25 typed runtime history"
+        )
+    if mode == "m5_active":
+        shape = connection.execute(
+            """
+            SELECT count(*) FILTER (WHERE activation.singleton),
+                   count(*) FILTER (WHERE m5_head.singleton),
+                   min(m4_head.epoch_id), min(m5_head.epoch_id),
+                   min(m5_head.sealed_revision), min(epoch.revision),
+                   bool_and(epoch.structural_status = 'committed'
+                     AND epoch.semantic_status = 'sealed'
+                     AND epoch.evaluation_state = 'complete'
+                     AND epoch.publication_mode = 'strict'
+                     AND epoch.sealed_at IS NOT NULL),
+                   min(activation.base_m4_epoch_id)
+            FROM groundloop_runtime_mode mode
+            LEFT JOIN groundloop_m5_activation activation ON activation.singleton
+            LEFT JOIN groundloop_m4_publication_head m4_head ON m4_head.singleton
+            LEFT JOIN groundloop_m5_publication_head m5_head ON m5_head.singleton
+            LEFT JOIN groundloop_epoch epoch ON epoch.epoch_id=m5_head.epoch_id
+            WHERE mode.singleton
+            """
+        ).fetchone()
+        if (
+            shape is None
+            or shape[0] != 1
+            or shape[1] != 1
+            or shape[2] != shape[3]
+            or shape[4] != shape[5]
+            or shape[6] is not True
+            or shape[7] != shape[2]
+        ):
+            raise M5PersistedMatchingBundleError(
+                "migration-017 activated no-history heads are inconsistent"
+            )
+        epoch_id = int(shape[2])
+        revision = int(shape[4])
+        policy_rows = connection.execute(
+            """SELECT policy_version FROM groundloop_decision_policy
+               WHERE valid_from_epoch<=%s
+                 AND (valid_to_epoch IS NULL OR %s<valid_to_epoch)
+               ORDER BY policy_version""",
+            (epoch_id, epoch_id),
+        ).fetchall()
+        if len(policy_rows) != 1:
+            raise M5PersistedMatchingBundleError(
+                "migration-017 activated no-history policy interval is inconsistent"
+            )
+        policy = str(policy_rows[0][0])
+        connection.execute(
+            """CREATE TEMP TABLE groundloop_m5_matching_install_anchor(
+                 epoch_id bigint PRIMARY KEY, revision bigint NOT NULL,
+                 policy_version text NOT NULL, base_m4_epoch_id bigint NOT NULL)
+               ON COMMIT DROP"""
+        )
+        connection.execute(
+            "INSERT INTO groundloop_m5_matching_install_anchor VALUES (%s,%s,%s,%s)",
+            (epoch_id, revision, policy, int(shape[7])),
+        )
+        # The certificate projection is reconstructed from the pinned source
+        # oracles.  In particular it never starts from a published binding or
+        # an already persisted certificate digest.
+        from groundloop.postgres.m5 import build_m5_bootstrap_projection
+
+        projection = build_m5_bootstrap_projection(connection)
+        if (
+            projection.epoch_id != epoch_id
+            or projection.revision != revision
+            or projection.decision_policy_version != policy
+        ):
+            raise M5PersistedMatchingBundleError(
+                "migration-017 activated no-history projection point is inconsistent"
+            )
+        currency_mismatch = connection.execute(
+            """SELECT EXISTS (
+                 (SELECT subject_kind,subject_id,chunk_version_id,task_type,
+                         observation_id FROM groundloop_observation_currency
+                  EXCEPT ALL
+                  SELECT subject_kind,subject_id,chunk_version_id,task_type,
+                         observation_id FROM groundloop_published_observation_currency
+                   WHERE valid_from_epoch<=%s
+                     AND valid_to_epoch IS NULL)
+                 UNION ALL
+                 (SELECT subject_kind,subject_id,chunk_version_id,task_type,
+                         observation_id FROM groundloop_published_observation_currency
+                   WHERE valid_from_epoch<=%s
+                     AND valid_to_epoch IS NULL
+                  EXCEPT ALL
+                  SELECT subject_kind,subject_id,chunk_version_id,task_type,
+                         observation_id FROM groundloop_observation_currency))""",
+            (epoch_id, epoch_id),
+        ).fetchone()
+        if currency_mismatch != (False,):
+            raise M5PersistedMatchingBundleError(
+                "migration-017 activated no-history currency snapshot is inconsistent"
+            )
+        oracle_snapshot = connection.execute(
+            "SELECT epoch_id,policy_version FROM groundloop_m5_oracle_snapshot"
+        ).fetchall()
+        if oracle_snapshot != [(epoch_id, policy)]:
+            raise M5PersistedMatchingBundleError(
+                "migration-017 activated no-history oracle point is inconsistent"
+            )
+        semantic_checks = (
+            """SELECT requirement_version_id,witness_hashes,
+                      supporting_observation_ids,witness_count,satisfied,
+                      %s::text,%s::bigint,%s::bigint
+                 FROM groundloop_m5_requirement_state_oracle""",
+            """SELECT requirement_version_id,witness_hashes,
+                      supporting_observation_ids,witness_count,satisfied,
+                      decision_policy_version,updated_epoch,updated_revision
+                 FROM groundloop_m5_requirement_state_materialized""",
+            """SELECT group_version_id,requirement_count,satisfied_count,
+                      matching_size,complete,%s::text,%s::bigint,%s::bigint
+                 FROM groundloop_m5_group_state_oracle""",
+            """SELECT group_version_id,requirement_count,satisfied_count,
+                      matching_size,complete,decision_policy_version,
+                      updated_epoch,updated_revision
+                 FROM groundloop_m5_group_state_materialized""",
+            """SELECT claim_id,support_count,refute_count,best_support_score,
+                      best_refute_score,supporting_observation_ids,
+                      refuting_observation_ids,complete_group_count,
+                      complete_group_ids,status,%s::text,%s::bigint,%s::bigint
+                 FROM groundloop_m5_claim_state_oracle""",
+            """SELECT claim_id,support_count,refute_count,best_support_score,
+                      best_refute_score,supporting_observation_ids,
+                      refuting_observation_ids,complete_group_count,
+                      complete_group_ids,status,decision_policy_version,
+                      updated_epoch,updated_revision
+                 FROM groundloop_m5_claim_state_materialized""",
+            """SELECT answer_version_id,required_claim_count,supported_count,
+                      unsupported_count,refuted_count,conflicted_count,status,
+                      %s::bigint,%s::bigint
+                 FROM groundloop_m5_answer_state_oracle""",
+            """SELECT answer_version_id,required_claim_count,supported_count,
+                      unsupported_count,refuted_count,conflicted_count,status,
+                      updated_epoch,updated_revision
+                 FROM groundloop_m5_answer_state_materialized""",
+        )
+        semantic_parameters: tuple[tuple[object, ...], ...] = (
+            (policy, epoch_id, revision),
+            (),
+            (policy, epoch_id, revision),
+            (),
+            (policy, epoch_id, revision),
+            (),
+            (epoch_id, revision),
+            (),
+        )
+        for expected_index in range(0, len(semantic_checks), 2):
+            expected_sql = semantic_checks[expected_index]
+            actual_sql = semantic_checks[expected_index + 1]
+            expected_parameters = semantic_parameters[expected_index]
+            mismatch = connection.execute(
+                f"""SELECT EXISTS (
+                    ({expected_sql} EXCEPT ALL {actual_sql})
+                    UNION ALL
+                    ({actual_sql} EXCEPT ALL {expected_sql}))""",
+                (*expected_parameters, *expected_parameters),
+            ).fetchone()
+            if mismatch != (False,):
+                raise M5PersistedMatchingBundleError(
+                    "migration-017 activated no-history semantic family is inconsistent"
+                )
+        published_checks = (
+            (
+                """SELECT requirement_version_id,%s::bigint,NULL::bigint,%s::bigint,
+                       witness_hashes,supporting_observation_ids,witness_count,
+                       satisfied,%s::text
+                  FROM groundloop_m5_requirement_state_oracle""",
+                """SELECT requirement_version_id,valid_from_epoch,valid_to_epoch,
+                       sealed_revision,witness_hashes,supporting_observation_ids,
+                       witness_count,satisfied,decision_policy_version
+                  FROM groundloop_m5_published_requirement_state
+                 WHERE valid_from_epoch<=%s AND (valid_to_epoch IS NULL OR %s<valid_to_epoch)""",  # noqa: E501
+            ),
+            (
+                """SELECT group_version_id,%s::bigint,NULL::bigint,%s::bigint,
+                       requirement_count,satisfied_count,matching_size,complete,
+                       %s::text
+                  FROM groundloop_m5_group_state_oracle""",
+                """SELECT group_version_id,valid_from_epoch,valid_to_epoch,
+                       sealed_revision,
+                       requirement_count,satisfied_count,matching_size,complete,
+                       decision_policy_version
+                  FROM groundloop_m5_published_group_state
+                 WHERE valid_from_epoch<=%s AND (valid_to_epoch IS NULL OR %s<valid_to_epoch)""",  # noqa: E501
+            ),
+            (
+                """SELECT claim_id,%s::bigint,NULL::bigint,%s::bigint,support_count,
+                       refute_count,best_support_score,best_refute_score,
+                       supporting_observation_ids,refuting_observation_ids,
+                       complete_group_count,complete_group_ids,status,%s::text
+                  FROM groundloop_m5_claim_state_oracle""",
+                """SELECT claim_id,valid_from_epoch,valid_to_epoch,sealed_revision,
+                       support_count,refute_count,best_support_score,best_refute_score,
+                       supporting_observation_ids,refuting_observation_ids,
+                       complete_group_count,complete_group_ids,status,
+                       decision_policy_version
+                  FROM groundloop_m5_published_claim_state
+                 WHERE valid_from_epoch<=%s AND (valid_to_epoch IS NULL OR %s<valid_to_epoch)""",  # noqa: E501
+            ),
+            (
+                """SELECT answer_version_id,%s::bigint,NULL::bigint,%s::bigint,
+                       required_claim_count,supported_count,unsupported_count,
+                       refuted_count,conflicted_count,status
+                  FROM groundloop_m5_answer_state_oracle""",
+                """SELECT answer_version_id,valid_from_epoch,valid_to_epoch,
+                       sealed_revision,required_claim_count,supported_count,
+                       unsupported_count,refuted_count,conflicted_count,status
+                  FROM groundloop_m5_published_answer_state
+                 WHERE valid_from_epoch<=%s AND (valid_to_epoch IS NULL OR %s<valid_to_epoch)""",  # noqa: E501
+            ),
+        )
+        for expected_sql, actual_sql in published_checks:
+            expected_parameter_count = expected_sql.count("%s")
+            expected_values = (epoch_id, revision, policy)[:expected_parameter_count]
+            parameters = (
+                *expected_values,
+                epoch_id,
+                epoch_id,
+                epoch_id,
+                epoch_id,
+                *expected_values,
+            )
+            mismatch = connection.execute(
+                f"""SELECT EXISTS (({expected_sql} EXCEPT ALL {actual_sql})
+                                     UNION ALL
+                                    ({actual_sql} EXCEPT ALL {expected_sql}))""",
+                parameters,
+            ).fetchone()
+            if mismatch != (False,):
+                raise M5PersistedMatchingBundleError(
+                    "migration-017 activated no-history published semantic family "
+                    "is inconsistent"
+                )
+        connection.execute(
+            """CREATE TEMP TABLE groundloop_m5_matching_expected_group_certificate(
+                 group_version_id text PRIMARY KEY, certificate_digest text NOT NULL,
+                 decision_policy_version text NOT NULL,
+                 requirement_count integer NOT NULL)
+               ON COMMIT DROP"""
+        )
+        connection.execute(
+            """CREATE TEMP TABLE groundloop_m5_matching_expected_group_certificate_row(
+                 certificate_digest text NOT NULL, requirement_ordinal integer NOT NULL,
+                 requirement_version_id text NOT NULL, text_hash text NOT NULL,
+                 selected_observation_id text NOT NULL,
+                 PRIMARY KEY(certificate_digest,requirement_ordinal)) ON COMMIT DROP"""
+        )
+        connection.execute(
+            """CREATE TEMP TABLE groundloop_m5_matching_expected_claim_certificate(
+                 claim_id text PRIMARY KEY, certificate_digest text NOT NULL,
+                 decision_policy_version text NOT NULL, support_kind text NOT NULL,
+                 direct_support_observation_id text, group_version_id text,
+                 group_certificate_digest text, direct_refute_observation_id text)
+               ON COMMIT DROP"""
+        )
+        for group_id, certificate in projection.group_certificates.items():
+            connection.execute(
+                """INSERT INTO groundloop_m5_matching_expected_group_certificate
+                   VALUES (%s,%s,%s,%s)""",
+                (
+                    group_id,
+                    certificate.certificate_digest,
+                    certificate.decision_policy_version,
+                    len(certificate.rows),
+                ),
+            )
+            for row in certificate.rows:
+                connection.execute(
+                    """INSERT INTO groundloop_m5_matching_expected_group_certificate_row
+                       VALUES (%s,%s,%s,%s,%s)""",
+                    (
+                        certificate.certificate_digest,
+                        row.requirement_ordinal,
+                        row.requirement_version_id,
+                        row.text_hash,
+                        row.selected_observation_id,
+                    ),
+                )
+        for claim_id, claim_certificate in projection.claim_certificates.items():
+            connection.execute(
+                """INSERT INTO groundloop_m5_matching_expected_claim_certificate
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (
+                    claim_id,
+                    claim_certificate.certificate_digest,
+                    claim_certificate.decision_policy_version,
+                    claim_certificate.support_kind.value,
+                    claim_certificate.direct_support_observation_id,
+                    claim_certificate.group_version_id,
+                    claim_certificate.group_certificate_digest,
+                    claim_certificate.direct_refute_observation_id,
+                ),
+            )
+        state_certificate_mismatch = connection.execute(
+            """SELECT EXISTS (
+                 (SELECT state.group_version_id,egc.certificate_digest
+                    FROM groundloop_m5_group_state_oracle state
+                    LEFT JOIN groundloop_m5_matching_expected_group_certificate egc
+                      USING (group_version_id)
+                  EXCEPT ALL
+                  SELECT group_version_id,certificate_digest::text
+                    FROM groundloop_m5_group_state_materialized)
+                 UNION ALL
+                 (SELECT group_version_id,certificate_digest::text
+                    FROM groundloop_m5_group_state_materialized
+                  EXCEPT ALL
+                  SELECT state.group_version_id,egc.certificate_digest
+                    FROM groundloop_m5_group_state_oracle state
+                    LEFT JOIN groundloop_m5_matching_expected_group_certificate egc
+                      USING (group_version_id))
+                 UNION ALL
+                 (SELECT state.claim_id,certificate.certificate_digest
+                    FROM groundloop_m5_claim_state_oracle state
+                    JOIN groundloop_m5_matching_expected_claim_certificate certificate
+                      USING (claim_id)
+                  EXCEPT ALL
+                  SELECT claim_id,certificate_digest::text
+                    FROM groundloop_m5_claim_state_materialized)
+                 UNION ALL
+                 (SELECT claim_id,certificate_digest::text
+                    FROM groundloop_m5_claim_state_materialized
+                  EXCEPT ALL
+                  SELECT state.claim_id,certificate.certificate_digest
+                    FROM groundloop_m5_claim_state_oracle state
+                    JOIN groundloop_m5_matching_expected_claim_certificate certificate
+                      USING (claim_id))
+                 UNION ALL
+                 (SELECT state.group_version_id,egc.certificate_digest
+                    FROM groundloop_m5_group_state_oracle state
+                    LEFT JOIN groundloop_m5_matching_expected_group_certificate egc
+                      USING (group_version_id)
+                  EXCEPT ALL
+                  SELECT group_version_id,certificate_digest::text
+                    FROM groundloop_m5_published_group_state
+                   WHERE valid_from_epoch<=%s
+                     AND (valid_to_epoch IS NULL OR %s<valid_to_epoch))
+                 UNION ALL
+                 (SELECT state.claim_id,certificate.certificate_digest
+                    FROM groundloop_m5_claim_state_oracle state
+                    JOIN groundloop_m5_matching_expected_claim_certificate certificate
+                      USING (claim_id)
+                  EXCEPT ALL
+                  SELECT claim_id,certificate_digest::text
+                    FROM groundloop_m5_published_claim_state
+                   WHERE valid_from_epoch<=%s
+                     AND (valid_to_epoch IS NULL OR %s<valid_to_epoch)))""",
+            (epoch_id, epoch_id, epoch_id, epoch_id),
+        ).fetchone()
+        if state_certificate_mismatch != (False,):
+            raise M5PersistedMatchingBundleError(
+                "migration-017 activated no-history state certificate is inconsistent"
+            )
+        connection.execute(
+            """CREATE TEMP TABLE groundloop_m5_matching_expected_direct_answer
+               ON COMMIT DROP AS
+               WITH direct_claim AS (
+                 SELECT claim_id,
+                   CASE WHEN support_count>0 AND refute_count>0 THEN 'conflicted'
+                        WHEN support_count>0 THEN 'supported'
+                        WHEN refute_count>0 THEN 'refuted'
+                        ELSE 'unsupported' END status
+                   FROM groundloop_m5_direct_claim_state_oracle),
+               aggregate AS (
+                 SELECT answer.answer_version_id,
+                   count(*) FILTER (WHERE claim.required)::integer
+                     required_claim_count,
+                   count(*) FILTER (WHERE claim.required
+                                      AND state.status='supported')::integer
+                     supported_count,
+                   count(*) FILTER (WHERE claim.required
+                                      AND state.status='unsupported')::integer
+                     unsupported_count,
+                   count(*) FILTER (WHERE claim.required
+                                      AND state.status='refuted')::integer
+                     refuted_count,
+                   count(*) FILTER (WHERE claim.required
+                                      AND state.status='conflicted')::integer
+                     conflicted_count
+                   FROM groundloop_answer_version answer
+                   JOIN groundloop_claim claim
+                     ON claim.answer_version_id=answer.answer_version_id
+                   JOIN direct_claim state ON state.claim_id=claim.claim_id
+                  GROUP BY answer.answer_version_id)
+               SELECT aggregate.*,
+                 CASE WHEN refuted_count>0 THEN 'contradicted'
+                      WHEN conflicted_count>0 THEN 'conflicted'
+                      WHEN required_claim_count>0
+                       AND supported_count=required_claim_count THEN 'valid'
+                      WHEN supported_count>0 THEN 'partially_supported'
+                      ELSE 'unsupported' END status
+                 FROM aggregate"""
+        )
+        direct_checks = (
+            (
+                """SELECT claim_id,support_count,refute_count,best_support_score,
+                          best_refute_score,supporting_observation_ids,
+                          refuting_observation_ids,
+                          CASE WHEN support_count>0 AND refute_count>0 THEN 'conflicted'
+                               WHEN support_count>0 THEN 'supported'
+                               WHEN refute_count>0 THEN 'refuted'
+                               ELSE 'unsupported' END,
+                          %s::bigint,%s::bigint
+                     FROM groundloop_m5_direct_claim_state_oracle""",
+                """SELECT claim_id,support_count,refute_count,best_support_score,
+                          best_refute_score,supporting_observation_ids,
+                          refuting_observation_ids,status::text,updated_epoch,
+                          updated_revision FROM groundloop_claim_state_materialized""",
+                (epoch_id, revision),
+            ),
+            (
+                """SELECT answer_version_id,required_claim_count,supported_count,
+                          unsupported_count,refuted_count,conflicted_count,status,
+                          %s::bigint,%s::bigint
+                     FROM groundloop_m5_matching_expected_direct_answer""",
+                """SELECT answer_version_id,required_claim_count,supported_count,
+                          unsupported_count,refuted_count,conflicted_count,
+                          status::text,updated_epoch,updated_revision
+                     FROM groundloop_answer_state_materialized""",
+                (epoch_id, revision),
+            ),
+        )
+        for expected_sql, actual_sql, direct_parameters in direct_checks:
+            mismatch = connection.execute(
+                f"""SELECT EXISTS (({expected_sql} EXCEPT ALL {actual_sql})
+                                     UNION ALL
+                                    ({actual_sql} EXCEPT ALL {expected_sql}))""",
+                (*direct_parameters, *direct_parameters),
+            ).fetchone()
+            if mismatch != (False,):
+                raise M5PersistedMatchingBundleError(
+                    "migration-017 activated no-history direct semantic family "
+                    "is inconsistent"
+                )
+        direct_history_mismatch = connection.execute(
+            """WITH claim_expected AS (
+                 SELECT claim_id,support_count,refute_count,best_support_score,
+                        best_refute_score,supporting_observation_ids,
+                        refuting_observation_ids,
+                        CASE WHEN support_count>0 AND refute_count>0 THEN 'conflicted'
+                             WHEN support_count>0 THEN 'supported'
+                             WHEN refute_count>0 THEN 'refuted'
+                             ELSE 'unsupported' END status,
+                        groundloop_m5_recovery_stable_m4_digest(ARRAY[
+                          'm4-claim-certificate-v1',claim_id,
+                          coalesce(supporting_observation_ids[1],''),
+                          coalesce(refuting_observation_ids[1],'')]) certificate_digest
+                   FROM groundloop_m5_direct_claim_state_oracle)
+               SELECT EXISTS (SELECT 1 FROM (
+                 (SELECT claim_id,%s::bigint,NULL::bigint,support_count,refute_count,
+                         best_support_score,best_refute_score,supporting_observation_ids,
+                         refuting_observation_ids,status,certificate_digest
+                    FROM claim_expected
+                  EXCEPT ALL
+                 SELECT claim_id,valid_from_epoch,valid_to_epoch,support_count,
+                         refute_count,best_support_score,best_refute_score,
+                         supporting_observation_ids,refuting_observation_ids,
+                         status::text,certificate_digest::text
+                    FROM groundloop_published_claim_state
+                   WHERE valid_from_epoch<=%s
+                     AND (valid_to_epoch IS NULL OR %s<valid_to_epoch))
+                 UNION ALL
+                 (SELECT claim_id,valid_from_epoch,valid_to_epoch,support_count,
+                         refute_count,best_support_score,best_refute_score,
+                         supporting_observation_ids,refuting_observation_ids,
+                         status::text,certificate_digest::text
+                    FROM groundloop_published_claim_state
+                   WHERE valid_from_epoch<=%s
+                     AND (valid_to_epoch IS NULL OR %s<valid_to_epoch)
+                  EXCEPT ALL
+                  SELECT claim_id,%s::bigint,NULL::bigint,support_count,refute_count,
+                         best_support_score,best_refute_score,supporting_observation_ids,
+                         refuting_observation_ids,status,certificate_digest
+                    FROM claim_expected)) claim_state_mismatch
+                 UNION ALL
+                 SELECT 1 FROM (
+                 (SELECT claim_id,supporting_observation_ids[1],
+                         refuting_observation_ids[1],%s::bigint,%s::bigint
+                    FROM claim_expected
+                  EXCEPT ALL
+                  SELECT claim_id,support_observation_id,refute_observation_id,
+                         repaired_epoch,repaired_revision
+                    FROM groundloop_claim_certificate)
+                 UNION ALL
+                 (SELECT claim_id,support_observation_id,refute_observation_id,
+                         repaired_epoch,repaired_revision
+                    FROM groundloop_claim_certificate
+                  EXCEPT ALL
+                  SELECT claim_id,supporting_observation_ids[1],
+                         refuting_observation_ids[1],%s::bigint,%s::bigint
+                    FROM claim_expected)) claim_certificate_mismatch
+                 UNION ALL
+                 SELECT 1 FROM (
+                 (SELECT answer_version_id,%s::bigint,NULL::bigint,
+                         required_claim_count,supported_count,unsupported_count,
+                         refuted_count,conflicted_count,status
+                    FROM groundloop_m5_matching_expected_direct_answer
+                  EXCEPT ALL
+                  SELECT answer_version_id,valid_from_epoch,valid_to_epoch,
+                         required_claim_count,supported_count,unsupported_count,
+                         refuted_count,conflicted_count,status::text
+                    FROM groundloop_published_answer_state
+                   WHERE valid_from_epoch<=%s
+                     AND (valid_to_epoch IS NULL OR %s<valid_to_epoch))
+                 UNION ALL
+                 (SELECT answer_version_id,valid_from_epoch,valid_to_epoch,
+                         required_claim_count,supported_count,unsupported_count,
+                         refuted_count,conflicted_count,status::text
+                    FROM groundloop_published_answer_state
+                   WHERE valid_from_epoch<=%s
+                     AND (valid_to_epoch IS NULL OR %s<valid_to_epoch)
+                  EXCEPT ALL
+                  SELECT answer_version_id,%s::bigint,NULL::bigint,
+                         required_claim_count,supported_count,unsupported_count,
+                         refuted_count,conflicted_count,status
+                    FROM groundloop_m5_matching_expected_direct_answer)
+                 ) answer_state_mismatch)""",
+            (
+                epoch_id,
+                epoch_id,
+                epoch_id,
+                epoch_id,
+                epoch_id,
+                epoch_id,
+                epoch_id,
+                revision,
+                epoch_id,
+                revision,
+                epoch_id,
+                epoch_id,
+                epoch_id,
+                epoch_id,
+                epoch_id,
+                epoch_id,
+            ),
+        ).fetchone()
+        if direct_history_mismatch != (False,):
+            raise M5PersistedMatchingBundleError(
+                "migration-017 activated no-history direct published state "
+                "is inconsistent"
+            )
+
+        certificate_checks = (
+            (
+                """SELECT group_version_id,%s::bigint,NULL::bigint,%s::bigint,
+                       certificate_digest
+                  FROM groundloop_m5_matching_expected_group_certificate""",
+                """SELECT group_version_id,valid_from_epoch,valid_to_epoch,
+                       sealed_revision,certificate_digest
+                  FROM groundloop_m5_published_group_certificate_binding
+                 WHERE valid_from_epoch<=%s AND (valid_to_epoch IS NULL OR %s<valid_to_epoch)""",  # noqa: E501
+            ),
+            (
+                """SELECT claim_id,%s::bigint,NULL::bigint,%s::bigint,certificate_digest
+                  FROM groundloop_m5_matching_expected_claim_certificate""",
+                """SELECT claim_id,valid_from_epoch,valid_to_epoch,sealed_revision,
+                       certificate_digest
+                  FROM groundloop_m5_published_claim_certificate_binding
+                 WHERE valid_from_epoch<=%s AND (valid_to_epoch IS NULL OR %s<valid_to_epoch)""",  # noqa: E501
+            ),
+        )
+        for expected_sql, actual_sql in certificate_checks:
+            mismatch = connection.execute(
+                f"""SELECT EXISTS (({expected_sql} EXCEPT ALL {actual_sql})
+                                     UNION ALL
+                                    ({actual_sql} EXCEPT ALL {expected_sql}))""",
+                (
+                    epoch_id,
+                    revision,
+                    epoch_id,
+                    epoch_id,
+                    epoch_id,
+                    epoch_id,
+                    epoch_id,
+                    revision,
+                ),
+            ).fetchone()
+            if mismatch != (False,):
+                raise M5PersistedMatchingBundleError(
+                    "migration-017 activated no-history certificate binding is inconsistent"  # noqa: E501
+                )
+        artifact_mismatch = connection.execute(
+            """SELECT EXISTS (
+                 SELECT 1 FROM ((SELECT certificate_digest,decision_policy_version,
+                         'm5-group-certificate-v1'::text,group_version_id,requirement_count
+                    FROM groundloop_m5_matching_expected_group_certificate
+                  EXCEPT ALL
+                  SELECT a.certificate_digest::text,a.decision_policy_version,
+                         a.certificate_version,a.group_version_id,a.requirement_count
+                    FROM groundloop_m5_group_certificate_artifact a
+                    JOIN groundloop_m5_matching_expected_group_certificate e
+                      ON e.certificate_digest=a.certificate_digest)) gh_missing
+                 UNION ALL
+                 SELECT 1 FROM ((SELECT certificate_digest,requirement_ordinal,
+                         requirement_version_id,
+                         text_hash,selected_observation_id
+                    FROM groundloop_m5_matching_expected_group_certificate_row
+                  EXCEPT ALL
+                  SELECT r.certificate_digest::text,r.requirement_ordinal,
+                         r.requirement_version_id,r.text_hash::text,
+                         r.selected_observation_id
+                    FROM groundloop_m5_group_certificate_artifact_row r
+                    JOIN groundloop_m5_matching_expected_group_certificate e
+                      ON e.certificate_digest=r.certificate_digest)) group_row_missing
+                 UNION ALL
+                 SELECT 1 FROM ((SELECT certificate_digest,
+                         'm5-claim-certificate-v2'::text,claim_id,
+                         decision_policy_version,support_kind,direct_support_observation_id,
+                         group_version_id,group_certificate_digest,direct_refute_observation_id
+                    FROM groundloop_m5_matching_expected_claim_certificate
+                  EXCEPT ALL
+                 SELECT a.certificate_digest::text,a.certificate_version,a.claim_id,
+                         a.decision_policy_version,a.support_kind,
+                         a.direct_support_observation_id,a.group_version_id,
+                         a.group_certificate_digest::text,a.direct_refute_observation_id
+                    FROM groundloop_m5_claim_certificate_artifact a
+                    JOIN groundloop_m5_matching_expected_claim_certificate e
+                      ON e.certificate_digest=a.certificate_digest)) ch_missing
+                 UNION ALL
+                 SELECT 1 FROM ((SELECT a.certificate_digest::text,
+                         a.decision_policy_version,
+                         a.certificate_version,a.group_version_id,a.requirement_count
+                    FROM groundloop_m5_group_certificate_artifact a
+                    JOIN groundloop_m5_matching_expected_group_certificate e
+                      ON e.certificate_digest=a.certificate_digest
+                  EXCEPT ALL
+                  SELECT certificate_digest,decision_policy_version,
+                         'm5-group-certificate-v1'::text,group_version_id,requirement_count
+                    FROM groundloop_m5_matching_expected_group_certificate)) gh_extra
+                 UNION ALL
+                 SELECT 1 FROM ((SELECT r.certificate_digest::text,
+                         r.requirement_ordinal,
+                         r.requirement_version_id,r.text_hash::text,
+                         r.selected_observation_id
+                    FROM groundloop_m5_group_certificate_artifact_row r
+                    JOIN groundloop_m5_matching_expected_group_certificate e
+                      ON e.certificate_digest=r.certificate_digest
+                  EXCEPT ALL
+                  SELECT certificate_digest,requirement_ordinal,requirement_version_id,
+                         text_hash,selected_observation_id
+                    FROM groundloop_m5_matching_expected_group_certificate_row)) gx
+                 UNION ALL
+                 SELECT 1 FROM ((SELECT a.certificate_digest::text,
+                         a.certificate_version,a.claim_id,
+                         a.decision_policy_version,a.support_kind,
+                         a.direct_support_observation_id,a.group_version_id,
+                         a.group_certificate_digest::text,a.direct_refute_observation_id
+                    FROM groundloop_m5_claim_certificate_artifact a
+                    JOIN groundloop_m5_matching_expected_claim_certificate e
+                      ON e.certificate_digest=a.certificate_digest
+                  EXCEPT ALL
+                  SELECT certificate_digest,'m5-claim-certificate-v2'::text,claim_id,
+                         decision_policy_version,support_kind,direct_support_observation_id,
+                         group_version_id,group_certificate_digest,direct_refute_observation_id
+                    FROM groundloop_m5_matching_expected_claim_certificate)) cx)"""
+        ).fetchone()
+        if artifact_mismatch != (False,):
+            raise M5PersistedMatchingBundleError(
+                "migration-017 activated no-history certificate artifact is inconsistent"  # noqa: E501
+            )
+        mismatches = connection.execute(
+            "SELECT * FROM groundloop_m5_oracle_mismatch_counts"
+        ).fetchone()
+        if mismatches is None or any(int(value) != 0 for value in mismatches):
+            raise M5PersistedMatchingBundleError(
+                "migration-017 activated no-history semantic snapshot is inconsistent"
+            )
+        connection.execute(
+            """CREATE TEMP TABLE groundloop_m5_matching_expected_edge
+               ON COMMIT DROP AS
+               SELECT requirement_version_id,group_version_id,
+                      requirement_ordinal,text_hash,active_observation_ids
+                 FROM groundloop_m5_active_requirement_edge_oracle"""
+        )
+        connection.execute(
+            """CREATE TEMP TABLE groundloop_m5_matching_expected_observation
+               ON COMMIT DROP AS
+               SELECT observation_id,requirement_version_id,group_version_id,
+                      requirement_ordinal,text_hash
+                 FROM groundloop_m5_matching_expected_edge
+                CROSS JOIN LATERAL unnest(active_observation_ids) observation_id"""
+        )
+        connection.execute(
+            """CREATE TEMP TABLE groundloop_m5_matching_expected_mask
+               ON COMMIT DROP AS
+               SELECT group_version_id,text_hash,
+                      sum(1 << requirement_ordinal)::integer mask
+                 FROM groundloop_m5_matching_expected_edge
+                GROUP BY group_version_id,text_hash"""
+        )
+        connection.execute(
+            """CREATE TEMP TABLE groundloop_m5_matching_expected_hall
+               ON COMMIT DROP AS
+               WITH groups AS (
+                 SELECT group_version_id,max(requirement_count) requirement_count
+                   FROM groundloop_m5_group_subset_hall_oracle
+                  GROUP BY group_version_id
+               ), arrays AS (
+                 SELECT g.group_version_id,g.requirement_count,
+                   ARRAY[0::bigint] || ARRAY(
+                     SELECT count(mask_row.group_version_id)::bigint
+                       FROM generate_series(1,(1<<g.requirement_count)-1)
+                         AS generated(mask_value)
+                       LEFT JOIN groundloop_m5_matching_expected_mask mask_row
+                         ON mask_row.group_version_id=g.group_version_id
+                        AND mask_row.mask=generated.mask_value
+                      GROUP BY generated.mask_value
+                      ORDER BY generated.mask_value) mask_histogram,
+                   ARRAY[0::bigint] || ARRAY(
+                     SELECT neighbor_count::bigint
+                       FROM groundloop_m5_group_subset_hall_oracle subset_row
+                      WHERE subset_row.group_version_id=g.group_version_id
+                      ORDER BY subset_mask) neighbor_counts,
+                   ARRAY[0::bigint] || ARRAY(
+                     SELECT deficiency::bigint
+                       FROM groundloop_m5_group_subset_hall_oracle subset_row
+                      WHERE subset_row.group_version_id=g.group_version_id
+                      ORDER BY subset_mask) deficiencies
+                   FROM groups g)
+               SELECT arrays.*,
+                 greatest(0,(SELECT max(v) FROM unnest(deficiencies) v))::integer
+                   maximum_deficiency,
+                 requirement_count-greatest(
+                   0,(SELECT max(v) FROM unnest(deficiencies) v))::integer
+                   matching_size,
+                 (SELECT coalesce(sum(v),0) FROM unnest(mask_histogram) v)
+                   distinct_hash_count,
+                 %s::bigint installed_epoch_id,%s::bigint installed_revision
+               FROM arrays""",
+            (epoch_id, revision),
+        )
+
+
+def _m5_persisted_matching_backfill(
+    connection: Connection[Any],
+    mode: str,
+    failure_injector: Callable[[str], None] | None = None,
+) -> None:
+    if mode == "v1_only":
+        return
+    connection.execute(
+        "SELECT set_config('groundloop.m5_checked_transition','on',true)"
+    )
+    connection.execute(
+        "SELECT set_config('groundloop.m5_matching_mode','migration',true)"
+    )
+    connection.execute(
+        """
+        INSERT INTO groundloop_m5_matching_image_current
+        SELECT true, snapshot.policy_version, head.epoch_id, head.sealed_revision
+        FROM groundloop_m5_oracle_snapshot snapshot
+        JOIN groundloop_m5_publication_head head ON head.singleton
+        """  # noqa: E501
+    )
+    if failure_injector is not None:
+        failure_injector("after_backfill_image")
+    connection.execute(
+        """
+        INSERT INTO groundloop_m5_matching_observation_current
+        SELECT observation_id, expected.requirement_version_id,
+               expected.group_version_id, expected.requirement_ordinal,
+               expected.text_hash, head.epoch_id,
+               head.sealed_revision
+        FROM groundloop_m5_matching_expected_observation expected
+        JOIN groundloop_m5_publication_head head ON head.singleton
+        """
+    )
+    if failure_injector is not None:
+        failure_injector("after_backfill_observation")
+    connection.execute(
+        """
+        INSERT INTO groundloop_m5_matching_edge_current
+        SELECT requirement_version_id, text_hash, group_version_id,
+               requirement_ordinal, cardinality(active_observation_ids),
+               head.epoch_id, head.sealed_revision
+        FROM groundloop_m5_matching_expected_edge
+        JOIN groundloop_m5_publication_head head ON head.singleton
+        """
+    )
+    if failure_injector is not None:
+        failure_injector("after_backfill_edge")
+    connection.execute(
+        """
+        INSERT INTO groundloop_m5_matching_hash_mask_current
+        SELECT expected.group_version_id, expected.text_hash, expected.mask,
+               head.epoch_id, head.sealed_revision
+        FROM groundloop_m5_matching_expected_mask expected
+        JOIN groundloop_m5_publication_head head ON head.singleton
+        """
+    )
+    if failure_injector is not None:
+        failure_injector("after_backfill_mask")
+    connection.execute(
+        """
+        INSERT INTO groundloop_m5_matching_hall_current
+        SELECT group_version_id,requirement_count,mask_histogram,neighbor_counts,
+               deficiencies,maximum_deficiency,matching_size,distinct_hash_count,
+               installed_epoch_id,installed_revision
+          FROM groundloop_m5_matching_expected_hall
+        """
+    )
+    if failure_injector is not None:
+        failure_injector("after_backfill_hall")
+
+
+def _m5_persisted_matching_verify_backfill(
+    connection: Connection[Any], mode: str
+) -> None:
+    """Compare every installed D25 byte-bearing value to the pinned snapshot."""
+    if mode == "v1_only":
+        return
+    anchor_ok = connection.execute(
+        """SELECT count(*)=1 AND bool_and(
+                     anchor.epoch_id=m5_head.epoch_id
+                 AND anchor.epoch_id=m4_head.epoch_id
+                 AND anchor.epoch_id=activation.base_m4_epoch_id
+                 AND anchor.revision=m5_head.sealed_revision
+                 AND anchor.revision=epoch.revision
+                 AND epoch.structural_status='committed'
+                 AND epoch.semantic_status='sealed'
+                 AND epoch.evaluation_state='complete'
+                 AND epoch.publication_mode='strict'
+                 AND epoch.sealed_at IS NOT NULL
+                 AND policy.policy_version=anchor.policy_version
+                 AND mode.mode='m5_active')
+              FROM groundloop_m5_matching_install_anchor anchor
+              JOIN groundloop_runtime_mode mode ON mode.singleton
+              JOIN groundloop_m5_activation activation ON activation.singleton
+              JOIN groundloop_m4_publication_head m4_head ON m4_head.singleton
+              JOIN groundloop_m5_publication_head m5_head ON m5_head.singleton
+              JOIN groundloop_epoch epoch ON epoch.epoch_id=anchor.epoch_id
+              JOIN groundloop_decision_policy policy
+                ON policy.valid_from_epoch<=anchor.epoch_id
+               AND (policy.valid_to_epoch IS NULL
+                    OR anchor.epoch_id<policy.valid_to_epoch)"""
+    ).fetchone()
+    if anchor_ok != (True,):
+        raise M5PersistedMatchingBundleError(
+            "migration-017 activated no-history anchor changed during install"
+        )
+    currency_unchanged = connection.execute(
+        """SELECT NOT EXISTS (
+             (SELECT subject_kind,subject_id,chunk_version_id,task_type,
+                     observation_id FROM groundloop_observation_currency
+              EXCEPT ALL
+              SELECT subject_kind,subject_id,chunk_version_id,task_type,
+                     observation_id FROM groundloop_published_observation_currency p
+                JOIN groundloop_m5_matching_install_anchor a
+                  ON p.valid_from_epoch<=a.epoch_id
+                 AND p.valid_to_epoch IS NULL)
+             UNION ALL
+             (SELECT subject_kind,subject_id,chunk_version_id,task_type,
+                     observation_id FROM groundloop_published_observation_currency p
+                JOIN groundloop_m5_matching_install_anchor a
+                  ON p.valid_from_epoch<=a.epoch_id
+                 AND p.valid_to_epoch IS NULL
+              EXCEPT ALL
+              SELECT subject_kind,subject_id,chunk_version_id,task_type,
+                     observation_id FROM groundloop_observation_currency))"""
+    ).fetchone()
+    if currency_unchanged != (True,):
+        raise M5PersistedMatchingBundleError(
+            "migration-017 activated no-history currency changed during install"
+        )
+    comparisons = (
+        (
+            """SELECT true,policy_version,epoch_id,revision
+              FROM groundloop_m5_matching_install_anchor""",
+            """SELECT singleton,decision_policy_version,installed_epoch_id,
+                   installed_revision FROM groundloop_m5_matching_image_current""",
+        ),
+        (
+            """SELECT observation_id,requirement_version_id,group_version_id,
+                   requirement_ordinal,text_hash,point.epoch_id,point.revision
+              FROM groundloop_m5_matching_expected_observation
+              CROSS JOIN groundloop_m5_matching_install_anchor point""",
+            """SELECT observation_id,requirement_version_id,group_version_id,
+                   requirement_ordinal,text_hash::text,installed_epoch_id,
+                   installed_revision FROM groundloop_m5_matching_observation_current""",  # noqa: E501
+        ),
+        (
+            """SELECT requirement_version_id,text_hash,group_version_id,
+                   requirement_ordinal,cardinality(active_observation_ids),
+                   point.epoch_id,point.revision
+              FROM groundloop_m5_matching_expected_edge
+              CROSS JOIN groundloop_m5_matching_install_anchor point""",
+            """SELECT requirement_version_id,text_hash::text,group_version_id,
+                   requirement_ordinal,refcount,installed_epoch_id,
+                   installed_revision FROM groundloop_m5_matching_edge_current""",
+        ),
+        (
+            """SELECT group_version_id,text_hash,mask,point.epoch_id,point.revision
+              FROM groundloop_m5_matching_expected_mask
+              CROSS JOIN groundloop_m5_matching_install_anchor point""",
+            """SELECT group_version_id,text_hash::text,mask,installed_epoch_id,
+                   installed_revision FROM groundloop_m5_matching_hash_mask_current""",
+        ),
+        (
+            """SELECT group_version_id,requirement_count,mask_histogram,
+                   neighbor_counts,deficiencies,maximum_deficiency,matching_size,
+                   distinct_hash_count,installed_epoch_id,installed_revision
+              FROM groundloop_m5_matching_expected_hall""",
+            """SELECT group_version_id,requirement_count,mask_histogram,
+                   neighbor_counts,deficiencies,maximum_deficiency,matching_size,
+                   distinct_hash_count,installed_epoch_id,installed_revision
+              FROM groundloop_m5_matching_hall_current""",
+        ),
+    )
+    for expected_sql, actual_sql in comparisons:
+        mismatch = connection.execute(
+            f"""SELECT EXISTS (({expected_sql} EXCEPT ALL {actual_sql})
+                                 UNION ALL
+                                ({actual_sql} EXCEPT ALL {expected_sql}))"""
+        ).fetchone()
+        if mismatch != (False,):
+            raise M5PersistedMatchingBundleError(
+                "migration-017 activated no-history physical backfill is inconsistent"
+            )
+    forbidden = (
+        "groundloop_m5_matching_image_working",
+        "groundloop_m5_matching_observation_working",
+        "groundloop_m5_matching_edge_working",
+        "groundloop_m5_matching_hash_mask_working",
+        "groundloop_m5_matching_hall_working",
+        "groundloop_m5_matching_patch_artifact",
+        "groundloop_m5_matching_work_contribution",
+        "groundloop_m5_matching_work_accumulator",
+        "groundloop_m5_runtime_epoch",
+        "groundloop_m5_update",
+    )
+    for relation in forbidden:
+        present = connection.execute(
+            f"SELECT EXISTS (SELECT 1 FROM {relation})"
+        ).fetchone()
+        if present != (False,):
+            raise M5PersistedMatchingBundleError(
+                "migration-017 activated no-history working/history rows are forbidden"
+            )
+
+
+def install_m5_persisted_matching_bundle(
+    connection: Connection[Any],
+    *,
+    failure_injector: Callable[[str], None] | None = None,
+    migration_bytes: bytes | None = None,
+) -> M5PersistedMatchingBundleInstallResult:
+    """Atomically install or ledger-first replay frozen migration 017."""
+
+    if connection.info.transaction_status != TransactionStatus.IDLE:
+        raise M5PersistedMatchingBundleError(
+            "migration 017 requires an idle connection and owns its "
+            "top-level transaction"
+        )
+    if connection.read_only is True or connection.isolation_level not in (
+        None,
+        IsolationLevel.READ_COMMITTED,
+    ):
+        raise M5PersistedMatchingBundleError(
+            "migration 017 requires a read-write READ COMMITTED connection"
+        )
+    identity = m5_persisted_matching_bundle_identity(migration_bytes=migration_bytes)
+    migration = (
+        M5_PERSISTED_MATCHING_MIGRATION_PATH.read_bytes()
+        if migration_bytes is None
+        else migration_bytes
+    )
+    with connection.transaction():
+        connection.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED READ WRITE")
+        ledger = _read_ledger(connection, identity.bundle_id)
+        expected = (
+            identity.bundle_sha256,
+            identity.migration_sha256,
+            identity.oracle_sha256,
+            identity.prerequisite_sha256,
+        )
+        if ledger is not None:
+            if ledger != expected:
+                raise M5BundleHashConflictError(
+                    f"bundle {identity.bundle_id} is already ledgered with "
+                    "different content"
+                )
+            return M5PersistedMatchingBundleInstallResult(identity, False)
+        if failure_injector is not None:
+            failure_injector("after_initial_ledger")
+        if (
+            identity.migration_sha256 != M5_ACCEPTED_PERSISTED_MATCHING_MIGRATION_SHA256
+            or identity.bundle_sha256 != M5_ACCEPTED_PERSISTED_MATCHING_BUNDLE_SHA256
+        ):
+            raise M5PersistedMatchingBundleError(
+                "migration 017 first install bytes do not match the frozen "
+                "M5-D26 authority"
+            )
+        _verify_accepted_m5_recovery_bundle(connection)
+        _acquire_m5_persisted_matching_install_locks(connection)
+        if failure_injector is not None:
+            failure_injector("after_install_locks")
+        ledger = _read_ledger(connection, identity.bundle_id)
+        if ledger is not None:
+            if ledger != expected:
+                raise M5BundleHashConflictError(
+                    f"bundle {identity.bundle_id} is already ledgered with "
+                    "different content"
+                )
+            return M5PersistedMatchingBundleInstallResult(identity, False)
+        mode = _m5_persisted_matching_singletons(connection)
+        _m5_persisted_matching_first_install_guard(connection, mode)
+        connection.execute(
+            "SELECT set_config('search_path', "
+            "quote_ident(current_schema()) || ', pg_catalog', true)"
+        )
+        for name, sql_source in _m5_runtime_recovery_migration_groups(
+            migration.replace(
+                b"groundloop:m5-persisted-matching-group:",
+                b"groundloop:m5-runtime-recovery-group:",
+            )
+        ):
+            connection.execute(sql_source)
+            if failure_injector is not None:
+                failure_injector(f"after_{name}")
+        # Embedding migration 017's own accepted hash in its SQL source would
+        # be circular.  Pin both final identities as SECURITY DEFINER function
+        # configuration inside this same top-level transaction instead.  The
+        # activation authorizer reads these values under its function-local
+        # configuration, so caller GUCs cannot substitute another ledger row.
+        connection.execute(
+            sql.SQL(
+                "ALTER FUNCTION "
+                "groundloop_m5_authorize_persisted_matching_activation("
+                "bigint,bigint,text) SET "
+                "groundloop.m5_accepted_persisted_matching_bundle_sha256 TO {}"
+            ).format(sql.Literal(M5_ACCEPTED_PERSISTED_MATCHING_BUNDLE_SHA256))
+        )
+        connection.execute(
+            sql.SQL(
+                "ALTER FUNCTION "
+                "groundloop_m5_authorize_persisted_matching_activation("
+                "bigint,bigint,text) SET "
+                "groundloop.m5_accepted_persisted_matching_migration_sha256 TO {}"
+            ).format(sql.Literal(M5_ACCEPTED_PERSISTED_MATCHING_MIGRATION_SHA256))
+        )
+        _m5_persisted_matching_backfill(connection, mode, failure_injector)
+        if failure_injector is not None:
+            failure_injector("after_backfill")
+        connection.execute("SET CONSTRAINTS ALL IMMEDIATE")
+        _m5_persisted_matching_verify_backfill(connection, mode)
+        if failure_injector is not None:
+            failure_injector("before_ledger")
+        connection.execute(
+            """INSERT INTO groundloop_m5_schema_bundle
+               (bundle_id,bundle_sha256,migration_sha256,oracle_sha256,
+                prerequisite_sha256,applied_at) VALUES (%s,%s,%s,%s,%s,now())""",
+            (
+                identity.bundle_id,
+                identity.bundle_sha256,
+                identity.migration_sha256,
+                identity.oracle_sha256,
+                identity.prerequisite_sha256,
+            ),
+        )
+        if failure_injector is not None:
+            failure_injector("after_ledger")
+        return M5PersistedMatchingBundleInstallResult(identity, True)
+
+
 __all__ = [
     "LEGACY_MIGRATION_NAMES",
     "LEGACY_MIGRATION_PATHS",
@@ -1287,6 +2535,18 @@ __all__ = [
     "M5_ACCEPTED_RUNTIME_MIGRATION_SHA256",
     "M5_ACCEPTED_RUNTIME_ORACLE_SHA256",
     "M5_ACCEPTED_RUNTIME_PREREQUISITE_SHA256",
+    "M5_ACCEPTED_RECOVERY_BUNDLE_ID",
+    "M5_ACCEPTED_RECOVERY_BUNDLE_SHA256",
+    "M5_ACCEPTED_RECOVERY_MIGRATION_SHA256",
+    "M5_ACCEPTED_RECOVERY_ORACLE_SHA256",
+    "M5_ACCEPTED_RECOVERY_PREREQUISITE_SHA256",
+    "M5_ACCEPTED_PERSISTED_MATCHING_BUNDLE_SHA256",
+    "M5_ACCEPTED_PERSISTED_MATCHING_MIGRATION_SHA256",
+    "M5_PERSISTED_MATCHING_BUNDLE_ID",
+    "M5_PERSISTED_MATCHING_INSTALL_LOCK_RELATIONS",
+    "M5_PERSISTED_MATCHING_MIGRATION_LABEL",
+    "M5_PERSISTED_MATCHING_MIGRATION_PATH",
+    "M5_PERSISTED_MATCHING_ORACLE_SHA256",
     "M5_RUNTIME_INSTALL_LOCK_RELATIONS",
     "M5_RUNTIME_MIGRATION_LABEL",
     "M5_RUNTIME_MIGRATION_PATH",
@@ -1307,12 +2567,17 @@ __all__ = [
     "M5RuntimeRecoveryBundleError",
     "M5RuntimeRecoveryBundleIdentity",
     "M5RuntimeRecoveryBundleInstallResult",
+    "M5PersistedMatchingBundleError",
+    "M5PersistedMatchingBundleIdentity",
+    "M5PersistedMatchingBundleInstallResult",
     "apply_legacy_migrations",
     "install_m5_core_bundle",
     "install_m5_runtime_bundle",
     "install_m5_runtime_recovery_bundle",
+    "install_m5_persisted_matching_bundle",
     "legacy_prerequisite_source_sha256",
     "m5_bundle_identity",
     "m5_runtime_bundle_identity",
     "m5_runtime_recovery_bundle_identity",
+    "m5_persisted_matching_bundle_identity",
 ]
