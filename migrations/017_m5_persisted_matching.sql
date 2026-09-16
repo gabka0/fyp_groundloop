@@ -1196,6 +1196,40 @@ CREATE TABLE groundloop_m5_matching_patch_artifact (
     CHECK (cardinality(edge_change_digests)=cardinality(edge_change_preimages)),
     CHECK (cardinality(mask_change_digests)=cardinality(mask_change_preimages)),
     CHECK (cardinality(hall_change_digests)=cardinality(hall_change_preimages)),
+    CHECK (array_position(observation_change_digests,NULL) IS NULL AND
+           array_position(observation_change_preimages,NULL) IS NULL),
+    CHECK (array_position(edge_change_digests,NULL) IS NULL AND
+           array_position(edge_change_preimages,NULL) IS NULL),
+    CHECK (array_position(mask_change_digests,NULL) IS NULL AND
+           array_position(mask_change_preimages,NULL) IS NULL),
+    CHECK (array_position(hall_change_digests,NULL) IS NULL AND
+           array_position(hall_change_preimages,NULL) IS NULL),
+    CHECK (cardinality(observation_change_digests)=0 OR
+        (array_ndims(observation_change_digests)=1 AND
+         array_lower(observation_change_digests,1)=1 AND
+         array_upper(observation_change_digests,1)=cardinality(observation_change_digests))),
+    CHECK (cardinality(observation_change_preimages)=0 OR
+        (array_ndims(observation_change_preimages)=1 AND
+         array_lower(observation_change_preimages,1)=1 AND
+         array_upper(observation_change_preimages,1)=cardinality(observation_change_preimages))),
+    CHECK (cardinality(edge_change_digests)=0 OR
+        (array_ndims(edge_change_digests)=1 AND array_lower(edge_change_digests,1)=1 AND
+         array_upper(edge_change_digests,1)=cardinality(edge_change_digests))),
+    CHECK (cardinality(edge_change_preimages)=0 OR
+        (array_ndims(edge_change_preimages)=1 AND array_lower(edge_change_preimages,1)=1 AND
+         array_upper(edge_change_preimages,1)=cardinality(edge_change_preimages))),
+    CHECK (cardinality(mask_change_digests)=0 OR
+        (array_ndims(mask_change_digests)=1 AND array_lower(mask_change_digests,1)=1 AND
+         array_upper(mask_change_digests,1)=cardinality(mask_change_digests))),
+    CHECK (cardinality(mask_change_preimages)=0 OR
+        (array_ndims(mask_change_preimages)=1 AND array_lower(mask_change_preimages,1)=1 AND
+         array_upper(mask_change_preimages,1)=cardinality(mask_change_preimages))),
+    CHECK (cardinality(hall_change_digests)=0 OR
+        (array_ndims(hall_change_digests)=1 AND array_lower(hall_change_digests,1)=1 AND
+         array_upper(hall_change_digests,1)=cardinality(hall_change_digests))),
+    CHECK (cardinality(hall_change_preimages)=0 OR
+        (array_ndims(hall_change_preimages)=1 AND array_lower(hall_change_preimages,1)=1 AND
+         array_upper(hall_change_preimages,1)=cardinality(hall_change_preimages))),
     CHECK ((source_kind='structural_open' AND resulting_revision=1)
         OR (source_kind<>'structural_open' AND before_epoch_id=resulting_epoch_id
             AND resulting_revision=before_revision+1))
@@ -1304,6 +1338,42 @@ DECLARE
   prior_ordinal integer;
   prior_change jsonb;
 BEGIN
+  IF array_position(NEW.observation_change_digests,NULL) IS NOT NULL
+     OR array_position(NEW.observation_change_preimages,NULL) IS NOT NULL
+     OR array_position(NEW.edge_change_digests,NULL) IS NOT NULL
+     OR array_position(NEW.edge_change_preimages,NULL) IS NOT NULL
+     OR array_position(NEW.mask_change_digests,NULL) IS NOT NULL
+     OR array_position(NEW.mask_change_preimages,NULL) IS NOT NULL
+     OR array_position(NEW.hall_change_digests,NULL) IS NOT NULL
+     OR array_position(NEW.hall_change_preimages,NULL) IS NOT NULL
+     OR NOT (
+      (cardinality(NEW.observation_change_digests)=0 OR
+       (array_ndims(NEW.observation_change_digests)=1 AND
+        array_lower(NEW.observation_change_digests,1)=1 AND
+        array_upper(NEW.observation_change_digests,1)=cardinality(NEW.observation_change_digests))) AND
+      (cardinality(NEW.observation_change_preimages)=0 OR
+       (array_ndims(NEW.observation_change_preimages)=1 AND
+        array_lower(NEW.observation_change_preimages,1)=1 AND
+        array_upper(NEW.observation_change_preimages,1)=cardinality(NEW.observation_change_preimages))) AND
+      (cardinality(NEW.edge_change_digests)=0 OR
+       (array_ndims(NEW.edge_change_digests)=1 AND array_lower(NEW.edge_change_digests,1)=1 AND
+        array_upper(NEW.edge_change_digests,1)=cardinality(NEW.edge_change_digests))) AND
+      (cardinality(NEW.edge_change_preimages)=0 OR
+       (array_ndims(NEW.edge_change_preimages)=1 AND array_lower(NEW.edge_change_preimages,1)=1 AND
+        array_upper(NEW.edge_change_preimages,1)=cardinality(NEW.edge_change_preimages))) AND
+      (cardinality(NEW.mask_change_digests)=0 OR
+       (array_ndims(NEW.mask_change_digests)=1 AND array_lower(NEW.mask_change_digests,1)=1 AND
+        array_upper(NEW.mask_change_digests,1)=cardinality(NEW.mask_change_digests))) AND
+      (cardinality(NEW.mask_change_preimages)=0 OR
+       (array_ndims(NEW.mask_change_preimages)=1 AND array_lower(NEW.mask_change_preimages,1)=1 AND
+        array_upper(NEW.mask_change_preimages,1)=cardinality(NEW.mask_change_preimages))) AND
+      (cardinality(NEW.hall_change_digests)=0 OR
+       (array_ndims(NEW.hall_change_digests)=1 AND array_lower(NEW.hall_change_digests,1)=1 AND
+        array_upper(NEW.hall_change_digests,1)=cardinality(NEW.hall_change_digests))) AND
+      (cardinality(NEW.hall_change_preimages)=0 OR
+       (array_ndims(NEW.hall_change_preimages)=1 AND array_lower(NEW.hall_change_preimages,1)=1 AND
+        array_upper(NEW.hall_change_preimages,1)=cardinality(NEW.hall_change_preimages))))
+  THEN RAISE EXCEPTION 'persisted matching child arrays require canonical elements and bounds'; END IF;
   IF (NEW.source_kind='structural_open' AND
       (NEW.resulting_revision<>1 OR NEW.before_epoch_id=NEW.resulting_epoch_id))
      OR (NEW.source_kind<>'structural_open' AND
@@ -2069,6 +2139,22 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION groundloop_m5_matching_private_temp_triplet(
+    context_relation regclass, journal_relation regclass,
+    expected_relation regclass
+) RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path FROM CURRENT AS $$
+  SELECT count(*)=3
+     AND bool_and(relation.relowner=current_user::regrole::oid
+                  AND relation.relkind='r'
+                  AND relation.relpersistence='t')
+    FROM unnest(ARRAY[context_relation,journal_relation,expected_relation])
+           AS expected(relation_oid)
+    JOIN pg_catalog.pg_class relation ON relation.oid=expected.relation_oid
+$$;
+REVOKE ALL ON FUNCTION groundloop_m5_matching_private_temp_triplet(
+  regclass,regclass,regclass) FROM PUBLIC;
+
 CREATE FUNCTION groundloop_m5_matching_begin_transition_context(
     selected_epoch_id bigint, expected_runtime_revision bigint,
     resulting_revision bigint, selected_source_kind text, selected_source_id text
@@ -2149,6 +2235,17 @@ BEGIN
      OR to_regclass('pg_temp.groundloop_m5_matching_change_journal') IS NULL
      OR to_regclass('pg_temp.groundloop_m5_matching_expected_changes') IS NULL
   THEN RAISE EXCEPTION 'persisted matching transition lacks private context'; END IF;
+  IF NOT groundloop_m5_matching_private_temp_triplet(
+       to_regclass('pg_temp.groundloop_m5_matching_transition_context'),
+       to_regclass('pg_temp.groundloop_m5_matching_change_journal'),
+       to_regclass('pg_temp.groundloop_m5_matching_expected_changes'))
+     OR to_regclass('pg_temp.groundloop_m5_matching_transition_context')::oid::text
+          IS DISTINCT FROM current_setting('groundloop.m5_matching_context_oid',true)
+     OR to_regclass('pg_temp.groundloop_m5_matching_change_journal')::oid::text
+          IS DISTINCT FROM current_setting('groundloop.m5_matching_journal_oid',true)
+     OR to_regclass('pg_temp.groundloop_m5_matching_expected_changes')::oid::text
+          IS DISTINCT FROM current_setting('groundloop.m5_matching_expected_oid',true)
+  THEN RAISE EXCEPTION 'persisted matching transition private context was replaced'; END IF;
   EXECUTE 'SELECT epoch_id,resulting_revision,validation_started
              FROM pg_temp.groundloop_m5_matching_transition_context
             WHERE backend_pid=$1 AND transaction_id=pg_current_xact_id()::text::bigint
@@ -2229,6 +2326,1354 @@ BEGIN
 END;
 $$;
 
+-- M5-D26 is the sole migration-015 enforcement replacement authorized by
+-- migration 017.  The original present-reference branches below are retained;
+-- only an exact structural predecessor-removal set may use the typed absence
+-- artifact in the existing non-null state_artifact_hash column.
+CREATE OR REPLACE FUNCTION groundloop_m5_validate_event_result_children()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    event_id text;
+    result_row groundloop_m5_event_result%ROWTYPE;
+    actual_count integer;
+    first_ordinal integer;
+    last_ordinal integer;
+    digest_fields text[];
+    child_row record;
+    expected_digest char(64);
+    expected_state_hash char(64);
+    absence_hash char(64);
+    d26_is_structural boolean := false;
+    d26_update_kind text;
+    d26_previous_epoch bigint;
+    d26_previous_revision bigint;
+    d26_policy text;
+    d26_action text;
+    d26_predecessor text;
+    d26_successor text;
+    d26_expected_payload char(64);
+    d26_deactivation_count integer;
+    d26_requirement_count integer;
+    d26_published_requirement_count integer;
+    d26_binding_count integer;
+    d26_expected_count integer;
+    d26_patch_count integer;
+    d26_mismatch_count integer;
+    d26_patch groundloop_m5_matching_patch_artifact%ROWTYPE;
+    d26_contribution groundloop_m5_matching_work_contribution%ROWTYPE;
+    d26_position integer;
+    d26_fields text[];
+    d26_child bytea;
+    d26_child_digest text;
+    d26_expected_outer text[];
+    d26_decoded_change jsonb;
+    d26_prior_change jsonb;
+    d26_decoded_shapes jsonb;
+    d26_changes jsonb;
+    d26_outputs jsonb;
+    d26_expected_rows jsonb;
+BEGIN
+    event_id := CASE
+        WHEN TG_OP = 'DELETE' THEN OLD.structural_event_id
+        ELSE NEW.structural_event_id
+    END;
+    SELECT * INTO result_row
+    FROM groundloop_m5_event_result
+    WHERE structural_event_id = event_id;
+    IF NOT FOUND THEN
+        RETURN NULL;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1
+        FROM groundloop_epoch AS base_epoch
+        JOIN groundloop_m5_runtime_epoch AS runtime_epoch
+          ON runtime_epoch.epoch_id = base_epoch.epoch_id
+        WHERE base_epoch.epoch_id = result_row.epoch_id
+          AND base_epoch.event_id = result_row.structural_event_id
+          AND base_epoch.payload_hash = result_row.payload_hash
+          AND runtime_epoch.structural_event_id = result_row.structural_event_id
+          AND runtime_epoch.runtime_state = result_row.outcome
+    ) THEN
+        RAISE EXCEPTION
+            'M5 event result does not match its terminal base/runtime epoch';
+    END IF;
+    IF result_row.outcome = 'sealed'
+       AND result_row.publication_id <> encode(
+           digest(
+               int8send(octet_length(
+                   convert_to('m4-publication-v1', 'UTF8')
+               )::bigint)
+               || convert_to('m4-publication-v1', 'UTF8')
+               || int8send(octet_length(
+                   convert_to(result_row.epoch_id::text, 'UTF8')
+               )::bigint)
+               || convert_to(result_row.epoch_id::text, 'UTF8'),
+               'sha256'
+           ),
+           'hex'
+       ) THEN
+        RAISE EXCEPTION 'M5 sealed event result has the wrong publication ID';
+    END IF;
+    SELECT count(*)::integer, min(delta_ordinal), max(delta_ordinal)
+    INTO actual_count, first_ordinal, last_ordinal
+    FROM groundloop_m5_event_result_delta
+    WHERE structural_event_id = event_id;
+    IF actual_count <> result_row.delta_count
+       OR (actual_count > 0
+           AND (first_ordinal <> 0 OR last_ordinal <> actual_count - 1)) THEN
+        RAISE EXCEPTION 'M5 event-result delta set is incomplete or non-dense';
+    END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM groundloop_m5_event_result_delta AS earlier
+        JOIN groundloop_m5_event_result_delta AS later
+          ON later.structural_event_id = earlier.structural_event_id
+         AND later.delta_ordinal = earlier.delta_ordinal + 1
+        WHERE earlier.structural_event_id = event_id
+          AND ROW(earlier.object_type COLLATE "C", earlier.object_id COLLATE "C")
+              > ROW(later.object_type COLLATE "C", later.object_id COLLATE "C")
+    ) THEN
+        RAISE EXCEPTION 'M5 event-result deltas are not canonically sorted';
+    END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM groundloop_m5_event_result_delta AS delta
+        WHERE delta.structural_event_id = event_id
+          AND (
+              (delta.object_type = 'claim' AND (
+                  delta.old_status NOT IN (
+                      'supported', 'unsupported', 'refuted', 'conflicted'
+                  )
+                  OR delta.new_status NOT IN (
+                      'supported', 'unsupported', 'refuted', 'conflicted'
+                  )
+                  OR NOT EXISTS (
+                      SELECT 1 FROM groundloop_claim
+                      WHERE claim_id = delta.object_id
+                  )
+              ))
+              OR
+              (delta.object_type = 'answer' AND (
+                  delta.old_status NOT IN (
+                      'valid', 'partially_supported', 'unsupported',
+                      'conflicted', 'contradicted'
+                  )
+                  OR delta.new_status NOT IN (
+                      'valid', 'partially_supported', 'unsupported',
+                      'conflicted', 'contradicted'
+                  )
+                  OR NOT EXISTS (
+                      SELECT 1 FROM groundloop_answer_version
+                      WHERE answer_version_id = delta.object_id
+                  )
+              ))
+          )
+    ) THEN
+        RAISE EXCEPTION 'M5 event-result delta subtype is invalid';
+    END IF;
+    SELECT count(*)::integer, min(reference_ordinal), max(reference_ordinal)
+    INTO actual_count, first_ordinal, last_ordinal
+    FROM groundloop_m5_event_result_state_reference
+    WHERE structural_event_id = event_id;
+    IF actual_count <> result_row.state_reference_count
+       OR (actual_count > 0
+           AND (first_ordinal <> 0 OR last_ordinal <> actual_count - 1)) THEN
+        RAISE EXCEPTION
+            'M5 event-result reference set is incomplete or non-dense';
+    END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM groundloop_m5_event_result_state_reference AS earlier
+        JOIN groundloop_m5_event_result_state_reference AS later
+          ON later.structural_event_id = earlier.structural_event_id
+         AND later.reference_ordinal = earlier.reference_ordinal + 1
+        WHERE earlier.structural_event_id = event_id
+          AND ROW(
+              earlier.kind COLLATE "C", earlier.object_id COLLATE "C",
+              earlier.reference_digest COLLATE "C"
+          ) > ROW(
+              later.kind COLLATE "C", later.object_id COLLATE "C",
+              later.reference_digest COLLATE "C"
+          )
+    ) THEN
+        RAISE EXCEPTION 'M5 event-result references are not canonically sorted';
+    END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM groundloop_m5_event_result_state_reference AS reference
+        WHERE reference.structural_event_id = event_id
+          AND (
+              (reference.kind = 'requirement_state' AND NOT EXISTS (
+                  SELECT 1 FROM groundloop_m5_requirement_version
+                  WHERE requirement_version_id = reference.object_id
+              ))
+              OR (reference.kind IN ('group_state', 'group_certificate')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM groundloop_m5_group_version
+                      WHERE group_version_id = reference.object_id
+                  ))
+              OR (reference.kind IN ('claim_state', 'claim_certificate')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM groundloop_claim
+                      WHERE claim_id = reference.object_id
+                  ))
+              OR (reference.kind = 'answer_state' AND NOT EXISTS (
+                  SELECT 1 FROM groundloop_answer_version
+                  WHERE answer_version_id = reference.object_id
+              ))
+          )
+    ) THEN
+        RAISE EXCEPTION 'M5 changed-state reference subtype is invalid';
+    END IF;
+
+    SELECT update_row.update_kind,
+           update_row.previous_published_epoch_id,
+           update_row.decision_policy_version
+    INTO d26_update_kind, d26_previous_epoch, d26_policy
+    FROM groundloop_m5_update AS update_row
+    WHERE update_row.epoch_id = result_row.epoch_id;
+    IF result_row.outcome = 'sealed'
+       AND d26_update_kind IN ('replace_group', 'retire_group') THEN
+        SELECT count(*)::integer
+        INTO d26_deactivation_count
+        FROM groundloop_m5_group_deactivation
+        WHERE epoch_id = result_row.epoch_id;
+        IF d26_deactivation_count <> 1 THEN
+            RAISE EXCEPTION 'M5-D26 structural event requires exactly one deactivation';
+        END IF;
+        SELECT action, group_version_id, successor_group_version_id
+        INTO STRICT d26_action, d26_predecessor, d26_successor
+        FROM groundloop_m5_group_deactivation
+        WHERE epoch_id = result_row.epoch_id;
+        IF (d26_update_kind = 'replace_group'
+            AND (d26_action <> 'REPLACE' OR d26_successor IS NULL))
+           OR (d26_update_kind = 'retire_group'
+               AND (d26_action <> 'RETIRE' OR d26_successor IS NOT NULL)) THEN
+            RAISE EXCEPTION 'M5-D26 update/deactivation mapping is invalid';
+        END IF;
+        SELECT previous_epoch.revision INTO STRICT d26_previous_revision
+        FROM groundloop_epoch AS previous_epoch
+        WHERE previous_epoch.epoch_id = d26_previous_epoch
+          AND previous_epoch.structural_status = 'committed'
+          AND previous_epoch.semantic_status = 'sealed'
+          AND previous_epoch.evaluation_state = 'complete'
+          AND previous_epoch.publication_mode = 'strict'
+          AND previous_epoch.sealed_at IS NOT NULL;
+        IF NOT EXISTS (
+            SELECT 1
+            FROM groundloop_epoch AS sealed_epoch
+            JOIN groundloop_m5_runtime_epoch AS runtime_epoch
+              ON runtime_epoch.epoch_id = sealed_epoch.epoch_id
+            JOIN groundloop_m5_update AS update_row
+              ON update_row.epoch_id = sealed_epoch.epoch_id
+            JOIN groundloop_m4_publication_head AS m4_head ON m4_head.singleton
+            JOIN groundloop_m5_publication_head AS m5_head ON m5_head.singleton
+            JOIN groundloop_m5_group_deactivation AS deactivation
+              ON deactivation.epoch_id = sealed_epoch.epoch_id
+            WHERE sealed_epoch.epoch_id = result_row.epoch_id
+              AND sealed_epoch.event_id = result_row.structural_event_id
+              AND sealed_epoch.payload_hash = result_row.payload_hash
+              AND sealed_epoch.structural_status = 'committed'
+              AND sealed_epoch.semantic_status = 'sealed'
+              AND sealed_epoch.evaluation_state = 'complete'
+              AND sealed_epoch.publication_mode = 'strict'
+              AND sealed_epoch.sealed_at IS NOT NULL
+              AND runtime_epoch.structural_event_id = sealed_epoch.event_id
+              AND runtime_epoch.expected_previous_published_epoch_id =
+                  update_row.previous_published_epoch_id
+              AND runtime_epoch.runtime_state = 'sealed'
+              AND runtime_epoch.terminal_at IS NOT NULL
+              AND runtime_epoch.revision = sealed_epoch.revision
+              AND update_row.update_kind = d26_update_kind
+              AND update_row.previous_published_epoch_id = d26_previous_epoch
+              AND deactivation.event_id = sealed_epoch.event_id
+              AND deactivation.group_version_id = d26_predecessor
+              AND deactivation.action = d26_action
+              AND deactivation.successor_group_version_id
+                  IS NOT DISTINCT FROM d26_successor
+              AND m4_head.epoch_id = sealed_epoch.epoch_id
+              AND m5_head.epoch_id = sealed_epoch.epoch_id
+              AND m5_head.sealed_revision = sealed_epoch.revision
+              AND result_row.publication_id IS NOT NULL
+        ) THEN
+            RAISE EXCEPTION 'M5-D26 sealed structural identity is inconsistent';
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1
+            FROM groundloop_m5_group_version AS predecessor
+            JOIN groundloop_m5_group_validity AS validity
+              ON validity.group_version_id = predecessor.group_version_id
+             AND validity.group_family_id = predecessor.group_family_id
+            WHERE predecessor.group_version_id = d26_predecessor
+              AND predecessor.lifecycle_state = 'PUBLISHED'
+              AND validity.valid_from_epoch <= d26_previous_epoch
+              AND d26_previous_epoch < validity.valid_to_epoch
+              AND validity.valid_to_epoch = result_row.epoch_id
+        ) THEN
+            RAISE EXCEPTION 'M5-D26 predecessor group was not present and closed exactly';
+        END IF;
+        IF d26_action = 'REPLACE' THEN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM groundloop_m5_group_version AS predecessor
+                JOIN groundloop_m5_group_version AS successor
+                  ON successor.group_version_id = d26_successor
+                JOIN groundloop_m5_group_validity AS successor_validity
+                  ON successor_validity.group_version_id = successor.group_version_id
+                WHERE predecessor.group_version_id = d26_predecessor
+                  AND successor.creator_epoch_id = result_row.epoch_id
+                  AND successor.lifecycle_state = 'PUBLISHED'
+                  AND successor.group_family_id = predecessor.group_family_id
+                  AND successor.supersedes_group_version_id = d26_predecessor
+                  AND successor_validity.valid_from_epoch = result_row.epoch_id
+                  AND successor_validity.valid_to_epoch IS NULL
+                  AND successor.record_payload_hash =
+                      groundloop_m5_expected_group_record(successor.group_version_id)
+            ) THEN
+                RAISE EXCEPTION 'M5-D26 replacement successor is invalid';
+            END IF;
+            SELECT count(*)::integer,
+                   count(*) FILTER (WHERE lifecycle_state = 'PUBLISHED')::integer
+            INTO d26_requirement_count, d26_published_requirement_count
+            FROM groundloop_m5_requirement_version
+            WHERE group_version_id = d26_successor;
+            IF d26_requirement_count NOT BETWEEN 1 AND 8
+               OR d26_published_requirement_count <> d26_requirement_count
+               OR NOT EXISTS (
+                   SELECT 1
+                   FROM groundloop_m5_requirement_version
+                   WHERE group_version_id = d26_successor
+                   HAVING min(ordinal) = 0
+                      AND max(ordinal) = count(*) - 1
+                      AND count(DISTINCT ordinal) = count(*)
+               ) THEN
+                RAISE EXCEPTION 'M5-D26 replacement requirements are incomplete';
+            END IF;
+            SELECT groundloop_m5_digest_text_fields(ARRAY[
+                'm5-replace-group-event-v1',
+                'text', d26_predecessor,
+                'sha256', groundloop_m5_expected_group_record(d26_successor)
+            ]) INTO d26_expected_payload;
+        ELSE
+            SELECT groundloop_m5_digest_text_fields(ARRAY[
+                'm5-retire-group-event-v1', 'text', d26_predecessor
+            ]) INTO d26_expected_payload;
+        END IF;
+        IF d26_expected_payload <> result_row.payload_hash THEN
+            RAISE EXCEPTION 'M5-D26 structural payload is not independently derived';
+        END IF;
+
+        SELECT count(*)::integer
+        INTO d26_patch_count
+        FROM groundloop_m5_matching_work_contribution AS contribution
+        JOIN groundloop_m5_matching_patch_artifact AS patch
+          ON patch.patch_digest = contribution.patch_digest
+        WHERE contribution.epoch_id = result_row.epoch_id
+          AND contribution.source_kind = 'structural_open'
+          AND contribution.source_id = result_row.structural_event_id
+          AND contribution.source_identity_hash = result_row.payload_hash
+          AND contribution.before_epoch_id = d26_previous_epoch
+          AND contribution.before_revision = d26_previous_revision
+          AND contribution.resulting_revision = 1
+          AND patch.source_kind = contribution.source_kind
+          AND patch.source_id = contribution.source_id
+          AND patch.source_identity_hash = contribution.source_identity_hash
+          AND patch.before_epoch_id = contribution.before_epoch_id
+          AND patch.before_revision = contribution.before_revision
+          AND patch.resulting_epoch_id = contribution.epoch_id
+          AND patch.resulting_revision = contribution.resulting_revision
+          AND patch.decision_policy_version = d26_policy
+          AND patch.matching_work_digest = contribution.matching_work_digest;
+        IF d26_patch_count <> 1 THEN
+            RAISE EXCEPTION 'M5-D26 event lacks one exact structural D25 patch';
+        END IF;
+        SELECT patch.*
+        INTO STRICT d26_patch
+        FROM groundloop_m5_matching_work_contribution AS contribution
+        JOIN groundloop_m5_matching_patch_artifact AS patch
+          ON patch.patch_digest = contribution.patch_digest
+        WHERE contribution.epoch_id = result_row.epoch_id
+          AND contribution.source_kind = 'structural_open'
+          AND contribution.source_id = result_row.structural_event_id
+          AND contribution.source_identity_hash = result_row.payload_hash
+          AND contribution.before_epoch_id = d26_previous_epoch
+          AND contribution.before_revision = d26_previous_revision
+          AND contribution.resulting_revision = 1
+          AND patch.source_kind = contribution.source_kind
+          AND patch.source_id = contribution.source_id
+          AND patch.source_identity_hash = contribution.source_identity_hash
+          AND patch.before_epoch_id = contribution.before_epoch_id
+          AND patch.before_revision = contribution.before_revision
+          AND patch.resulting_epoch_id = contribution.epoch_id
+          AND patch.resulting_revision = contribution.resulting_revision
+          AND patch.decision_policy_version = d26_policy
+          AND patch.matching_work_digest = contribution.matching_work_digest;
+        SELECT contribution.*
+        INTO STRICT d26_contribution
+        FROM groundloop_m5_matching_work_contribution AS contribution
+        WHERE contribution.epoch_id = result_row.epoch_id
+          AND contribution.source_kind = 'structural_open'
+          AND contribution.source_id = result_row.structural_event_id
+          AND contribution.source_identity_hash = result_row.payload_hash
+          AND contribution.before_epoch_id = d26_previous_epoch
+          AND contribution.before_revision = d26_previous_revision
+          AND contribution.resulting_revision = 1
+          AND contribution.patch_digest = d26_patch.patch_digest;
+        IF array_position(d26_patch.observation_change_digests,NULL) IS NOT NULL
+           OR array_position(d26_patch.observation_change_preimages,NULL) IS NOT NULL
+           OR array_position(d26_patch.edge_change_digests,NULL) IS NOT NULL
+           OR array_position(d26_patch.edge_change_preimages,NULL) IS NOT NULL
+           OR array_position(d26_patch.mask_change_digests,NULL) IS NOT NULL
+           OR array_position(d26_patch.mask_change_preimages,NULL) IS NOT NULL
+           OR array_position(d26_patch.hall_change_digests,NULL) IS NOT NULL
+           OR array_position(d26_patch.hall_change_preimages,NULL) IS NOT NULL
+           OR cardinality(d26_patch.observation_change_digests) <>
+               cardinality(d26_patch.observation_change_preimages)
+           OR cardinality(d26_patch.edge_change_digests) <>
+               cardinality(d26_patch.edge_change_preimages)
+           OR cardinality(d26_patch.mask_change_digests) <>
+               cardinality(d26_patch.mask_change_preimages)
+           OR cardinality(d26_patch.hall_change_digests) <>
+               cardinality(d26_patch.hall_change_preimages)
+           OR NOT (
+              (cardinality(d26_patch.observation_change_digests)=0 OR
+               (array_ndims(d26_patch.observation_change_digests)=1 AND
+                array_lower(d26_patch.observation_change_digests,1)=1 AND
+                array_upper(d26_patch.observation_change_digests,1)=
+                    cardinality(d26_patch.observation_change_digests))) AND
+              (cardinality(d26_patch.observation_change_preimages)=0 OR
+               (array_ndims(d26_patch.observation_change_preimages)=1 AND
+                array_lower(d26_patch.observation_change_preimages,1)=1 AND
+                array_upper(d26_patch.observation_change_preimages,1)=
+                    cardinality(d26_patch.observation_change_preimages))) AND
+              (cardinality(d26_patch.edge_change_digests)=0 OR
+               (array_ndims(d26_patch.edge_change_digests)=1 AND
+                array_lower(d26_patch.edge_change_digests,1)=1 AND
+                array_upper(d26_patch.edge_change_digests,1)=
+                    cardinality(d26_patch.edge_change_digests))) AND
+              (cardinality(d26_patch.edge_change_preimages)=0 OR
+               (array_ndims(d26_patch.edge_change_preimages)=1 AND
+                array_lower(d26_patch.edge_change_preimages,1)=1 AND
+                array_upper(d26_patch.edge_change_preimages,1)=
+                    cardinality(d26_patch.edge_change_preimages))) AND
+              (cardinality(d26_patch.mask_change_digests)=0 OR
+               (array_ndims(d26_patch.mask_change_digests)=1 AND
+                array_lower(d26_patch.mask_change_digests,1)=1 AND
+                array_upper(d26_patch.mask_change_digests,1)=
+                    cardinality(d26_patch.mask_change_digests))) AND
+              (cardinality(d26_patch.mask_change_preimages)=0 OR
+               (array_ndims(d26_patch.mask_change_preimages)=1 AND
+                array_lower(d26_patch.mask_change_preimages,1)=1 AND
+                array_upper(d26_patch.mask_change_preimages,1)=
+                    cardinality(d26_patch.mask_change_preimages))) AND
+              (cardinality(d26_patch.hall_change_digests)=0 OR
+               (array_ndims(d26_patch.hall_change_digests)=1 AND
+                array_lower(d26_patch.hall_change_digests,1)=1 AND
+                array_upper(d26_patch.hall_change_digests,1)=
+                    cardinality(d26_patch.hall_change_digests))) AND
+              (cardinality(d26_patch.hall_change_preimages)=0 OR
+               (array_ndims(d26_patch.hall_change_preimages)=1 AND
+                array_lower(d26_patch.hall_change_preimages,1)=1 AND
+                array_upper(d26_patch.hall_change_preimages,1)=
+                    cardinality(d26_patch.hall_change_preimages))))
+        THEN
+            RAISE EXCEPTION
+                'M5-D26 retained child arrays lack canonical elements or bounds';
+        END IF;
+        IF groundloop_m5_matching_work_digest(
+               groundloop_m5_matching_work_values(d26_contribution)
+           ) <> d26_contribution.matching_work_digest
+           OR d26_contribution.matching_work_digest <>
+              d26_patch.matching_work_digest
+           OR groundloop_m5_matching_digest_text_fields(ARRAY[
+               'm5-matching-work-contribution-v1',
+               'int', d26_contribution.epoch_id::text,
+               'enum', d26_contribution.source_kind,
+               'text', d26_contribution.source_id,
+               'sha256', d26_contribution.source_identity_hash,
+               'int', d26_contribution.before_epoch_id::text,
+               'int', d26_contribution.before_revision::text,
+               'int', d26_contribution.resulting_revision::text,
+               'sha256', d26_contribution.patch_digest,
+               'sha256', d26_contribution.matching_work_digest
+           ]) <> d26_contribution.contribution_digest THEN
+            RAISE EXCEPTION 'M5-D26 retained contribution envelope is invalid';
+        END IF;
+
+        IF groundloop_m5_matching_hash_preimage(
+               d26_patch.group_shape_set_preimage
+           ) <> d26_patch.group_shape_set_digest THEN
+            RAISE EXCEPTION 'M5-D26 retained group-shape preimage is invalid';
+        END IF;
+        d26_fields := groundloop_m5_matching_decode_preimage(
+            d26_patch.group_shape_set_preimage
+        );
+        PERFORM groundloop_m5_matching_parse_typed_preimage(
+            d26_patch.group_shape_set_preimage,
+            'm5-persisted-matching-group-shape-set-v1'
+        );
+        d26_decoded_shapes := groundloop_m5_matching_validate_group_shapes(
+            d26_patch.group_shape_set_preimage
+        );
+        IF d26_fields[1] <> 'm5-persisted-matching-group-shape-set-v1' THEN
+            RAISE EXCEPTION 'M5-D26 retained group-shape domain is invalid';
+        END IF;
+
+        d26_prior_change := NULL;
+        FOR d26_position IN
+            1..cardinality(d26_patch.observation_change_preimages)
+        LOOP
+            d26_child := d26_patch.observation_change_preimages[d26_position];
+            d26_child_digest :=
+                d26_patch.observation_change_digests[d26_position];
+            d26_fields := groundloop_m5_matching_decode_preimage(d26_child);
+            PERFORM groundloop_m5_matching_parse_typed_preimage(
+                d26_child, 'm5-persisted-matching-observation-change-v1'
+            );
+            d26_decoded_change := groundloop_m5_matching_validate_change(
+                d26_child, 'observation'
+            );
+            PERFORM groundloop_m5_matching_validate_patch_change_point(
+                d26_decoded_change,
+                d26_patch.source_kind,
+                d26_patch.before_epoch_id,
+                d26_patch.before_revision,
+                d26_patch.resulting_epoch_id,
+                d26_patch.resulting_revision
+            );
+            PERFORM groundloop_m5_matching_validate_change_shape(
+                d26_decoded_change, d26_decoded_shapes, 'observation'
+            );
+            PERFORM groundloop_m5_matching_validate_change_order(
+                d26_prior_change, d26_decoded_change, 'observation'
+            );
+            d26_prior_change := d26_decoded_change;
+            IF d26_fields[1] <>
+               'm5-persisted-matching-observation-change-v1'
+               OR groundloop_m5_matching_hash_preimage(d26_child) <>
+                  d26_child_digest THEN
+                RAISE EXCEPTION
+                    'M5-D26 retained observation child is invalid';
+            END IF;
+        END LOOP;
+
+        d26_prior_change := NULL;
+        FOR d26_position IN 1..cardinality(d26_patch.edge_change_preimages)
+        LOOP
+            d26_child := d26_patch.edge_change_preimages[d26_position];
+            d26_child_digest := d26_patch.edge_change_digests[d26_position];
+            d26_fields := groundloop_m5_matching_decode_preimage(d26_child);
+            PERFORM groundloop_m5_matching_parse_typed_preimage(
+                d26_child, 'm5-persisted-matching-edge-change-v1'
+            );
+            d26_decoded_change := groundloop_m5_matching_validate_change(
+                d26_child, 'edge'
+            );
+            PERFORM groundloop_m5_matching_validate_patch_change_point(
+                d26_decoded_change,
+                d26_patch.source_kind,
+                d26_patch.before_epoch_id,
+                d26_patch.before_revision,
+                d26_patch.resulting_epoch_id,
+                d26_patch.resulting_revision
+            );
+            PERFORM groundloop_m5_matching_validate_change_shape(
+                d26_decoded_change, d26_decoded_shapes, 'edge'
+            );
+            PERFORM groundloop_m5_matching_validate_change_order(
+                d26_prior_change, d26_decoded_change, 'edge'
+            );
+            d26_prior_change := d26_decoded_change;
+            IF d26_fields[1] <> 'm5-persisted-matching-edge-change-v1'
+               OR groundloop_m5_matching_hash_preimage(d26_child) <>
+                  d26_child_digest THEN
+                RAISE EXCEPTION 'M5-D26 retained edge child is invalid';
+            END IF;
+        END LOOP;
+
+        d26_prior_change := NULL;
+        FOR d26_position IN 1..cardinality(d26_patch.mask_change_preimages)
+        LOOP
+            d26_child := d26_patch.mask_change_preimages[d26_position];
+            d26_child_digest := d26_patch.mask_change_digests[d26_position];
+            d26_fields := groundloop_m5_matching_decode_preimage(d26_child);
+            PERFORM groundloop_m5_matching_parse_typed_preimage(
+                d26_child, 'm5-persisted-matching-mask-change-v1'
+            );
+            d26_decoded_change := groundloop_m5_matching_validate_change(
+                d26_child, 'mask'
+            );
+            PERFORM groundloop_m5_matching_validate_patch_change_point(
+                d26_decoded_change,
+                d26_patch.source_kind,
+                d26_patch.before_epoch_id,
+                d26_patch.before_revision,
+                d26_patch.resulting_epoch_id,
+                d26_patch.resulting_revision
+            );
+            PERFORM groundloop_m5_matching_validate_change_shape(
+                d26_decoded_change, d26_decoded_shapes, 'mask'
+            );
+            PERFORM groundloop_m5_matching_validate_change_order(
+                d26_prior_change, d26_decoded_change, 'mask'
+            );
+            d26_prior_change := d26_decoded_change;
+            IF d26_fields[1] <> 'm5-persisted-matching-mask-change-v1'
+               OR groundloop_m5_matching_hash_preimage(d26_child) <>
+                  d26_child_digest THEN
+                RAISE EXCEPTION 'M5-D26 retained mask child is invalid';
+            END IF;
+        END LOOP;
+
+        d26_prior_change := NULL;
+        FOR d26_position IN 1..cardinality(d26_patch.hall_change_preimages)
+        LOOP
+            d26_child := d26_patch.hall_change_preimages[d26_position];
+            d26_child_digest := d26_patch.hall_change_digests[d26_position];
+            d26_fields := groundloop_m5_matching_decode_preimage(d26_child);
+            PERFORM groundloop_m5_matching_parse_typed_preimage(
+                d26_child, 'm5-persisted-matching-hall-change-v1'
+            );
+            d26_decoded_change := groundloop_m5_matching_validate_change(
+                d26_child, 'hall'
+            );
+            PERFORM groundloop_m5_matching_validate_patch_change_point(
+                d26_decoded_change,
+                d26_patch.source_kind,
+                d26_patch.before_epoch_id,
+                d26_patch.before_revision,
+                d26_patch.resulting_epoch_id,
+                d26_patch.resulting_revision
+            );
+            PERFORM groundloop_m5_matching_validate_change_shape(
+                d26_decoded_change, d26_decoded_shapes, 'hall'
+            );
+            PERFORM groundloop_m5_matching_validate_change_order(
+                d26_prior_change, d26_decoded_change, 'hall'
+            );
+            d26_prior_change := d26_decoded_change;
+            IF d26_fields[1] <> 'm5-persisted-matching-hall-change-v1'
+               OR groundloop_m5_matching_hash_preimage(d26_child) <>
+                  d26_child_digest THEN
+                RAISE EXCEPTION 'M5-D26 retained Hall child is invalid';
+            END IF;
+        END LOOP;
+
+        IF groundloop_m5_matching_hash_preimage(
+               d26_patch.logical_overlay_patch_preimage
+           ) <> d26_patch.logical_overlay_patch_digest
+           OR (
+               groundloop_m5_matching_decode_preimage(
+                   d26_patch.logical_overlay_patch_preimage
+               )
+           )[1] <> 'm5-persisted-logical-overlay-patch-v1' THEN
+            RAISE EXCEPTION 'M5-D26 retained logical patch preimage is invalid';
+        END IF;
+        PERFORM groundloop_m5_matching_parse_typed_preimage(
+            d26_patch.logical_overlay_patch_preimage,
+            'm5-persisted-logical-overlay-patch-v1'
+        );
+        PERFORM groundloop_m5_matching_validate_logical_output(
+            d26_patch.logical_output_preimage
+        );
+        d26_expected_outer := ARRAY[
+            'm5-persisted-matching-patch-v1',
+            'enum', d26_patch.source_kind,
+            'text', d26_patch.source_id,
+            'sha256', d26_patch.source_identity_hash,
+            'int', d26_patch.before_epoch_id::text,
+            'int', d26_patch.before_revision::text,
+            'int', d26_patch.resulting_epoch_id::text,
+            'int', d26_patch.resulting_revision::text,
+            'text', d26_patch.decision_policy_version,
+            'sha256', d26_patch.group_shape_set_digest,
+            'sequence', 'int',
+            cardinality(d26_patch.observation_change_digests)::text
+        ];
+        FOREACH d26_child_digest IN ARRAY
+            d26_patch.observation_change_digests
+        LOOP
+            d26_expected_outer := d26_expected_outer ||
+                ARRAY['sha256', d26_child_digest];
+        END LOOP;
+        d26_expected_outer := d26_expected_outer || ARRAY[
+            'sequence', 'int',
+            cardinality(d26_patch.edge_change_digests)::text
+        ];
+        FOREACH d26_child_digest IN ARRAY d26_patch.edge_change_digests
+        LOOP
+            d26_expected_outer := d26_expected_outer ||
+                ARRAY['sha256', d26_child_digest];
+        END LOOP;
+        d26_expected_outer := d26_expected_outer || ARRAY[
+            'sequence', 'int',
+            cardinality(d26_patch.mask_change_digests)::text
+        ];
+        FOREACH d26_child_digest IN ARRAY d26_patch.mask_change_digests
+        LOOP
+            d26_expected_outer := d26_expected_outer ||
+                ARRAY['sha256', d26_child_digest];
+        END LOOP;
+        d26_expected_outer := d26_expected_outer || ARRAY[
+            'sequence', 'int',
+            cardinality(d26_patch.hall_change_digests)::text
+        ];
+        FOREACH d26_child_digest IN ARRAY d26_patch.hall_change_digests
+        LOOP
+            d26_expected_outer := d26_expected_outer ||
+                ARRAY['sha256', d26_child_digest];
+        END LOOP;
+        d26_expected_outer := d26_expected_outer || ARRAY[
+            'sha256', d26_patch.logical_overlay_patch_digest,
+            'sha256', d26_patch.matching_work_digest
+        ];
+        IF groundloop_m5_matching_decode_preimage(
+               d26_patch.canonical_patch_preimage
+           ) <> d26_expected_outer
+           OR groundloop_m5_matching_digest_text_fields(d26_expected_outer) <>
+              d26_patch.patch_digest THEN
+            RAISE EXCEPTION 'M5-D26 retained canonical patch is invalid';
+        END IF;
+        PERFORM groundloop_m5_matching_parse_typed_preimage(
+            d26_patch.canonical_patch_preimage,
+            'm5-persisted-matching-patch-v1'
+        );
+
+        PERFORM groundloop_m5_matching_validate_logical_patch(
+            d26_patch.logical_overlay_patch_preimage,
+            d26_patch.logical_output_preimage,
+            result_row.epoch_id,
+            1,
+            d26_policy,
+            d26_decoded_shapes
+        );
+        d26_changes := (
+            groundloop_m5_matching_parse_typed_preimage(
+                d26_patch.logical_overlay_patch_preimage,
+                'm5-persisted-logical-overlay-patch-v1'
+            )->'children'->0->'children'
+        );
+        d26_outputs := groundloop_m5_matching_validate_logical_output(
+            d26_patch.logical_output_preimage
+        );
+
+        SELECT count(*)::integer,
+               count(*) FILTER (WHERE lifecycle_state = 'PUBLISHED')::integer
+        INTO d26_requirement_count, d26_published_requirement_count
+        FROM groundloop_m5_requirement_version
+        WHERE group_version_id = d26_predecessor;
+        IF d26_requirement_count NOT BETWEEN 1 AND 8
+           OR d26_published_requirement_count <> d26_requirement_count
+           OR NOT EXISTS (
+               SELECT 1
+               FROM groundloop_m5_requirement_version
+               WHERE group_version_id = d26_predecessor
+               HAVING min(ordinal) = 0
+                  AND max(ordinal) = count(*) - 1
+                  AND count(DISTINCT ordinal) = count(*)
+           ) THEN
+            RAISE EXCEPTION 'M5-D26 predecessor requirements are not published';
+        END IF;
+        SELECT count(*)::integer
+        INTO d26_binding_count
+        FROM groundloop_m5_published_group_certificate_binding AS binding
+        WHERE binding.group_version_id = d26_predecessor
+          AND binding.valid_from_epoch <= d26_previous_epoch
+          AND d26_previous_epoch < binding.valid_to_epoch;
+        IF d26_binding_count NOT BETWEEN 0 AND 1 THEN
+            RAISE EXCEPTION 'M5-D26 predecessor certificate binding is ambiguous';
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1
+            FROM groundloop_m5_published_group_state AS state
+            WHERE state.group_version_id = d26_predecessor
+              AND state.valid_from_epoch <= d26_previous_epoch
+              AND d26_previous_epoch < state.valid_to_epoch
+              AND state.valid_to_epoch = result_row.epoch_id
+              AND (
+                  (
+                      state.complete
+                      AND state.certificate_digest IS NOT NULL
+                      AND state.requirement_count = d26_requirement_count
+                      AND state.satisfied_count = d26_requirement_count
+                      AND state.matching_size = d26_requirement_count
+                      AND d26_binding_count = 1
+                      AND EXISTS (
+                          SELECT 1
+                          FROM groundloop_m5_published_group_certificate_binding
+                               AS binding
+                          WHERE binding.group_version_id = state.group_version_id
+                            AND binding.valid_from_epoch = state.valid_from_epoch
+                            AND binding.valid_to_epoch IS NOT DISTINCT FROM
+                                state.valid_to_epoch
+                            AND binding.sealed_revision = state.sealed_revision
+                            AND binding.certificate_digest =
+                                state.certificate_digest
+                      )
+                  )
+                  OR (
+                      NOT state.complete
+                      AND state.certificate_digest IS NULL
+                      AND d26_binding_count = 0
+                  )
+              )
+        ) THEN
+            RAISE EXCEPTION
+                'M5-D26 predecessor group state and binding are inconsistent';
+        END IF;
+        IF d26_binding_count = 1 AND (
+            EXISTS (
+                SELECT 1
+                FROM groundloop_m5_published_group_certificate_binding AS binding
+                JOIN groundloop_m5_group_certificate_artifact AS artifact
+                  ON artifact.certificate_digest = binding.certificate_digest
+                 AND artifact.group_version_id = binding.group_version_id
+                LEFT JOIN groundloop_m5_group_certificate_artifact_row
+                          AS artifact_row
+                  ON artifact_row.certificate_digest = artifact.certificate_digest
+                WHERE binding.group_version_id = d26_predecessor
+                  AND binding.valid_from_epoch <= d26_previous_epoch
+                  AND d26_previous_epoch < binding.valid_to_epoch
+                  AND binding.valid_to_epoch = result_row.epoch_id
+                GROUP BY artifact.certificate_digest,
+                         artifact.requirement_count,
+                         artifact.group_version_id
+                HAVING artifact.requirement_count <> d26_requirement_count
+                    OR count(artifact_row.requirement_ordinal) <>
+                           artifact.requirement_count
+                    OR min(artifact_row.requirement_ordinal) <> 0
+                    OR max(artifact_row.requirement_ordinal) <>
+                       artifact.requirement_count - 1
+                    OR artifact.certificate_digest <>
+                       groundloop_m5_expected_group_certificate(
+                           artifact.certificate_digest
+                       )
+            )
+            OR EXISTS (
+                SELECT 1
+                FROM groundloop_m5_published_group_certificate_binding AS binding
+                JOIN groundloop_m5_group_certificate_artifact AS artifact
+                  ON artifact.certificate_digest = binding.certificate_digest
+                 AND artifact.group_version_id = binding.group_version_id
+                JOIN groundloop_m5_published_group_state AS state
+                  ON state.group_version_id = binding.group_version_id
+                 AND state.valid_from_epoch = binding.valid_from_epoch
+                 AND state.valid_to_epoch IS NOT DISTINCT FROM
+                     binding.valid_to_epoch
+                 AND state.sealed_revision = binding.sealed_revision
+                 AND state.certificate_digest = binding.certificate_digest
+                JOIN groundloop_m5_group_certificate_artifact_row AS artifact_row
+                  ON artifact_row.certificate_digest = artifact.certificate_digest
+                WHERE binding.group_version_id = d26_predecessor
+                  AND binding.valid_from_epoch <= d26_previous_epoch
+                  AND d26_previous_epoch < binding.valid_to_epoch
+                  AND binding.valid_to_epoch = result_row.epoch_id
+                  AND (
+                      artifact.decision_policy_version <>
+                          state.decision_policy_version
+                      OR NOT EXISTS (
+                          SELECT 1
+                          FROM groundloop_m5_requirement_version AS requirement
+                          JOIN groundloop_semantic_observation AS observation
+                            ON observation.observation_id =
+                               artifact_row.selected_observation_id
+                          JOIN groundloop_published_observation_currency
+                               AS currency
+                            ON currency.observation_id =
+                               observation.observation_id
+                           AND currency.subject_kind = observation.subject_kind
+                           AND currency.subject_id = observation.subject_id
+                           AND currency.chunk_version_id =
+                               observation.chunk_version_id
+                           AND currency.task_type = observation.task_type
+                           AND currency.valid_from_epoch <= d26_previous_epoch
+                           AND (
+                               currency.valid_to_epoch IS NULL
+                               OR d26_previous_epoch < currency.valid_to_epoch
+                           )
+                          JOIN groundloop_chunk_version AS chunk
+                            ON chunk.chunk_version_id =
+                               observation.chunk_version_id
+                          JOIN groundloop_decision_policy AS policy
+                            ON policy.policy_version =
+                               artifact.decision_policy_version
+                           AND policy.valid_from_epoch <= d26_previous_epoch
+                           AND (
+                               policy.valid_to_epoch IS NULL
+                               OR d26_previous_epoch < policy.valid_to_epoch
+                           )
+                          WHERE requirement.requirement_version_id =
+                                artifact_row.requirement_version_id
+                            AND requirement.lifecycle_state = 'PUBLISHED'
+                            AND requirement.group_version_id =
+                                artifact.group_version_id
+                            AND requirement.ordinal =
+                                artifact_row.requirement_ordinal
+                            AND observation.subject_kind = 'requirement'
+                            AND observation.subject_id =
+                                artifact_row.requirement_version_id
+                            AND observation.task_type = 'verify_requirement_v1'
+                            AND observation.eligible_for_currency
+                            AND observation.support_score >=
+                                policy.support_threshold
+                            AND observation.support_score >
+                                observation.refute_score
+                            AND observation.support_score >
+                                observation.neutral_score
+                            AND encode(
+                                digest(
+                                    convert_to(
+                                        groundloop_normalize_text_v1(chunk.text),
+                                        'UTF8'
+                                    ),
+                                    'sha256'
+                                ),
+                                'hex'
+                            ) = artifact_row.text_hash
+                            AND chunk.valid_from_epoch <= d26_previous_epoch
+                            AND (
+                                chunk.valid_to_epoch IS NULL
+                                OR d26_previous_epoch < chunk.valid_to_epoch
+                            )
+                      )
+                  )
+            )
+        ) THEN
+            RAISE EXCEPTION
+                'M5-D26 predecessor certificate artifact is invalid';
+        END IF;
+        SELECT coalesce(
+            jsonb_agg(
+                jsonb_build_object(
+                    'kind', expected.kind,
+                    'object_id', expected.object_id,
+                    'before_hash', expected.before_hash
+                ) ORDER BY expected.kind COLLATE "C", expected.object_id COLLATE "C"
+            ),
+            '[]'::jsonb
+        )
+        INTO d26_expected_rows
+        FROM (
+            SELECT 'requirement_state'::text AS kind,
+                   state.requirement_version_id AS object_id,
+                   groundloop_m5_runtime_requirement_state_artifact(
+                       state.requirement_version_id,
+                       state.witness_hashes,
+                       state.supporting_observation_ids,
+                       state.witness_count,
+                       state.satisfied,
+                       state.decision_policy_version
+                   )::text AS before_hash
+            FROM groundloop_m5_requirement_version AS requirement
+            JOIN groundloop_m5_published_requirement_state AS state
+              ON state.requirement_version_id = requirement.requirement_version_id
+            WHERE requirement.group_version_id = d26_predecessor
+              AND requirement.lifecycle_state = 'PUBLISHED'
+              AND state.valid_from_epoch <= d26_previous_epoch
+              AND d26_previous_epoch < state.valid_to_epoch
+              AND state.valid_to_epoch = result_row.epoch_id
+            UNION ALL
+            SELECT 'group_state', state.group_version_id,
+                   groundloop_m5_runtime_group_state_artifact(
+                       state.group_version_id,
+                       state.requirement_count,
+                       state.satisfied_count,
+                       state.matching_size,
+                       state.complete,
+                       state.decision_policy_version,
+                       state.certificate_digest
+                   )::text
+            FROM groundloop_m5_published_group_state AS state
+            WHERE state.group_version_id = d26_predecessor
+              AND state.valid_from_epoch <= d26_previous_epoch
+              AND d26_previous_epoch < state.valid_to_epoch
+              AND state.valid_to_epoch = result_row.epoch_id
+            UNION ALL
+            SELECT 'group_certificate', binding.group_version_id,
+                   binding.certificate_digest::text
+            FROM groundloop_m5_published_group_certificate_binding AS binding
+            JOIN groundloop_m5_group_certificate_artifact AS artifact
+              ON artifact.certificate_digest = binding.certificate_digest
+             AND artifact.group_version_id = binding.group_version_id
+            WHERE binding.group_version_id = d26_predecessor
+              AND binding.valid_from_epoch <= d26_previous_epoch
+              AND d26_previous_epoch < binding.valid_to_epoch
+              AND binding.valid_to_epoch = result_row.epoch_id
+              AND binding.certificate_digest =
+                  groundloop_m5_expected_group_certificate(
+                      binding.certificate_digest
+                  )
+        ) AS expected;
+        d26_expected_count := jsonb_array_length(d26_expected_rows);
+        IF d26_expected_count <>
+           d26_requirement_count + 1 + d26_binding_count THEN
+            RAISE EXCEPTION 'M5-D26 predecessor state/binding closure is incomplete';
+        END IF;
+        IF EXISTS (
+            SELECT 1
+            FROM groundloop_m5_published_requirement_state AS state
+            JOIN groundloop_m5_requirement_version AS requirement
+              ON requirement.requirement_version_id = state.requirement_version_id
+            WHERE requirement.group_version_id = d26_predecessor
+              AND (
+                  state.valid_from_epoch >= result_row.epoch_id
+                  OR state.valid_to_epoch IS NULL
+                  OR (
+                      state.valid_from_epoch <= result_row.epoch_id
+                      AND result_row.epoch_id < state.valid_to_epoch
+                  )
+              )
+        ) OR EXISTS (
+            SELECT 1
+            FROM groundloop_m5_published_group_state AS state
+            WHERE state.group_version_id = d26_predecessor
+              AND (
+                  state.valid_from_epoch >= result_row.epoch_id
+                  OR state.valid_to_epoch IS NULL
+                  OR (
+                      state.valid_from_epoch <= result_row.epoch_id
+                      AND result_row.epoch_id < state.valid_to_epoch
+                  )
+              )
+        ) OR EXISTS (
+            SELECT 1
+            FROM groundloop_m5_published_group_certificate_binding AS binding
+            WHERE binding.group_version_id = d26_predecessor
+              AND (
+                  binding.valid_from_epoch >= result_row.epoch_id
+                  OR binding.valid_to_epoch IS NULL
+                  OR (
+                      binding.valid_from_epoch <= result_row.epoch_id
+                      AND result_row.epoch_id < binding.valid_to_epoch
+                  )
+              )
+        ) THEN
+            RAISE EXCEPTION 'M5-D26 predecessor has a same-object successor';
+        END IF;
+
+        WITH expected AS (
+            SELECT value->>'kind' AS kind,
+                   value->>'object_id' AS object_id,
+                   value->>'before_hash' AS before_hash
+            FROM jsonb_array_elements(d26_expected_rows)
+        ), changes AS (
+            SELECT value->'children'->0->>'value' AS kind,
+                   value->'children'->1->>'value' AS object_id,
+                   value->'children'->2->>'value' AS before_hash
+            FROM jsonb_array_elements(d26_changes)
+            WHERE value->'children'->0->>'value' IN (
+                'requirement_state', 'group_state', 'group_certificate'
+            )
+              AND value->'children'->2->>'tag' = 'sha256'
+              AND value->'children'->3->>'tag' = 'null'
+        )
+        SELECT count(*)::integer INTO d26_mismatch_count
+        FROM (
+            (SELECT * FROM expected EXCEPT ALL SELECT * FROM changes)
+            UNION ALL
+            (SELECT * FROM changes EXCEPT ALL SELECT * FROM expected)
+        ) AS mismatch;
+        IF d26_mismatch_count <> 0 THEN
+            RAISE EXCEPTION 'M5-D26 D25 before-to-None change set mismatch';
+        END IF;
+        WITH expected AS (
+            SELECT value->>'kind' AS kind, value->>'object_id' AS object_id
+            FROM jsonb_array_elements(d26_expected_rows)
+        ), outputs AS (
+            SELECT value->>'kind' AS kind, value->>'object_id' AS object_id
+            FROM jsonb_array_elements(d26_outputs)
+            WHERE value->>'kind' IN (
+                'requirement_state', 'group_state', 'group_certificate'
+            )
+              AND value->'after'->>'tag' = 'none'
+        )
+        SELECT count(*)::integer INTO d26_mismatch_count
+        FROM (
+            (SELECT * FROM expected EXCEPT ALL SELECT * FROM outputs)
+            UNION ALL
+            (SELECT * FROM outputs EXCEPT ALL SELECT * FROM expected)
+        ) AS mismatch;
+        IF d26_mismatch_count <> 0 THEN
+            RAISE EXCEPTION 'M5-D26 logical output absence set mismatch';
+        END IF;
+        WITH expected AS (
+            SELECT value->>'kind' AS kind, value->>'object_id' AS object_id
+            FROM jsonb_array_elements(d26_expected_rows)
+        ), stored_references AS (
+            SELECT reference.kind, reference.object_id
+            FROM groundloop_m5_event_result_state_reference AS reference
+            WHERE reference.structural_event_id = event_id
+              AND reference.kind IN (
+                  'requirement_state', 'group_state', 'group_certificate'
+              )
+              AND reference.state_artifact_hash =
+                  groundloop_m5_digest_text_fields(ARRAY[
+                      'm5-changed-state-absence-artifact-v1',
+                      'enum', reference.kind,
+                      'text', reference.object_id
+                  ])
+        )
+        SELECT count(*)::integer INTO d26_mismatch_count
+        FROM (
+            (SELECT * FROM expected EXCEPT ALL SELECT * FROM stored_references)
+            UNION ALL
+            (SELECT * FROM stored_references EXCEPT ALL SELECT * FROM expected)
+        ) AS mismatch;
+        IF d26_mismatch_count <> 0 THEN
+            RAISE EXCEPTION 'M5-D26 stored absence reference set mismatch';
+        END IF;
+        d26_is_structural := true;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM groundloop_m5_runtime_work AS work
+        WHERE work.work_digest = result_row.event_work_digest
+          AND work.structural_event_id = result_row.structural_event_id
+          AND work.epoch_id = result_row.epoch_id
+          AND work.work_kind = 'event'
+    ) THEN
+        RAISE EXCEPTION 'M5 event result does not bind its event work row';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1
+        FROM groundloop_m5_runtime_work AS work
+        WHERE work.structural_event_id = result_row.structural_event_id
+          AND work.epoch_id = result_row.epoch_id
+          AND work.work_kind = 'call'
+    ) THEN
+        RAISE EXCEPTION 'M5 event result lacks its call work row';
+    END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM groundloop_m5_runtime_work AS work
+        WHERE work.work_digest = result_row.event_work_digest
+          AND work.public_delta_count <> result_row.delta_count
+    ) THEN
+        RAISE EXCEPTION 'M5 event work public-delta count is inconsistent';
+    END IF;
+    digest_fields := ARRAY[
+        'm5-combined-status-delta-set-v2',
+        'sequence', 'int', result_row.delta_count::text
+    ];
+    FOR child_row IN
+        SELECT *
+        FROM groundloop_m5_event_result_delta
+        WHERE structural_event_id = event_id
+        ORDER BY delta_ordinal
+    LOOP
+        digest_fields := digest_fields || ARRAY[
+            'sequence', 'int', '6',
+            'text', child_row.structural_event_id,
+            'text', child_row.object_type,
+            'text', child_row.object_id,
+            'text', child_row.old_status,
+            'text', child_row.new_status,
+            'text', child_row.reason
+        ];
+    END LOOP;
+    expected_digest := groundloop_m5_digest_text_fields(digest_fields);
+    IF result_row.combined_status_delta_set_hash <> expected_digest THEN
+        RAISE EXCEPTION 'M5 combined status-delta set hash is incorrect';
+    END IF;
+    digest_fields := ARRAY[
+        'm5-changed-state-set-v2',
+        'sequence', 'int', result_row.state_reference_count::text
+    ];
+    FOR child_row IN
+        SELECT *
+        FROM groundloop_m5_event_result_state_reference
+        WHERE structural_event_id = event_id
+        ORDER BY reference_ordinal
+    LOOP
+        expected_digest := groundloop_m5_digest_text_fields(ARRAY[
+            'm5-changed-state-reference-v2',
+            'enum', child_row.kind,
+            'text', child_row.object_id,
+            'int', child_row.epoch_id::text,
+            'int', child_row.revision::text,
+            'sha256', child_row.state_artifact_hash
+        ]);
+        IF child_row.reference_digest <> expected_digest THEN
+            RAISE EXCEPTION 'M5 changed-state reference digest is incorrect';
+        END IF;
+        expected_state_hash := NULL;
+        absence_hash := NULL;
+        IF child_row.kind IN (
+            'requirement_state', 'group_state', 'group_certificate'
+        ) THEN
+            absence_hash := groundloop_m5_digest_text_fields(ARRAY[
+                'm5-changed-state-absence-artifact-v1',
+                'enum', child_row.kind,
+                'text', child_row.object_id
+            ]);
+        END IF;
+        IF absence_hash IS NOT NULL
+           AND child_row.state_artifact_hash = absence_hash THEN
+            IF NOT d26_is_structural
+               OR child_row.epoch_id <> result_row.epoch_id
+               OR child_row.revision <> (
+                   SELECT revision FROM groundloop_epoch
+                   WHERE epoch_id = result_row.epoch_id
+               ) THEN
+                RAISE EXCEPTION 'M5-D26 absence reference has invalid seal coordinates';
+            END IF;
+            expected_state_hash := absence_hash;
+        ELSE
+            CASE child_row.kind
+                WHEN 'requirement_state' THEN
+                    SELECT groundloop_m5_runtime_requirement_state_artifact(
+                        state.requirement_version_id,
+                        state.witness_hashes,
+                        state.supporting_observation_ids,
+                        state.witness_count,
+                        state.satisfied,
+                        state.decision_policy_version
+                    )
+                    INTO expected_state_hash
+                    FROM groundloop_m5_published_requirement_state AS state
+                    WHERE state.requirement_version_id = child_row.object_id
+                      AND state.valid_from_epoch = child_row.epoch_id
+                      AND state.sealed_revision = child_row.revision;
+                WHEN 'group_state' THEN
+                    SELECT groundloop_m5_runtime_group_state_artifact(
+                        state.group_version_id,
+                        state.requirement_count,
+                        state.satisfied_count,
+                        state.matching_size,
+                        state.complete,
+                        state.decision_policy_version,
+                        state.certificate_digest
+                    )
+                    INTO expected_state_hash
+                    FROM groundloop_m5_published_group_state AS state
+                    WHERE state.group_version_id = child_row.object_id
+                      AND state.valid_from_epoch = child_row.epoch_id
+                      AND state.sealed_revision = child_row.revision;
+                WHEN 'group_certificate' THEN
+                    SELECT binding.certificate_digest
+                    INTO expected_state_hash
+                    FROM groundloop_m5_published_group_certificate_binding AS binding
+                    WHERE binding.group_version_id = child_row.object_id
+                      AND binding.valid_from_epoch = child_row.epoch_id
+                      AND binding.sealed_revision = child_row.revision;
+                WHEN 'claim_state' THEN
+                    SELECT groundloop_m5_runtime_claim_state_artifact(
+                        state.claim_id,
+                        state.support_count,
+                        state.refute_count,
+                        state.best_support_score,
+                        state.best_refute_score,
+                        state.supporting_observation_ids,
+                        state.refuting_observation_ids,
+                        state.complete_group_count,
+                        state.complete_group_ids,
+                        state.status,
+                        state.decision_policy_version,
+                        state.certificate_digest
+                    )
+                    INTO expected_state_hash
+                    FROM groundloop_m5_published_claim_state AS state
+                    WHERE state.claim_id = child_row.object_id
+                      AND state.valid_from_epoch = child_row.epoch_id
+                      AND state.sealed_revision = child_row.revision;
+                WHEN 'claim_certificate' THEN
+                    SELECT binding.certificate_digest
+                    INTO expected_state_hash
+                    FROM groundloop_m5_published_claim_certificate_binding AS binding
+                    WHERE binding.claim_id = child_row.object_id
+                      AND binding.valid_from_epoch = child_row.epoch_id
+                      AND binding.sealed_revision = child_row.revision;
+                WHEN 'answer_state' THEN
+                    SELECT groundloop_m5_runtime_answer_state_artifact(
+                        state.answer_version_id,
+                        state.required_claim_count,
+                        state.supported_count,
+                        state.unsupported_count,
+                        state.refuted_count,
+                        state.conflicted_count,
+                        state.status
+                    )
+                    INTO expected_state_hash
+                    FROM groundloop_m5_published_answer_state AS state
+                    WHERE state.answer_version_id = child_row.object_id
+                      AND state.valid_from_epoch = child_row.epoch_id
+                      AND state.sealed_revision = child_row.revision;
+                ELSE
+                    RAISE EXCEPTION 'M5 changed-state reference kind is invalid';
+            END CASE;
+        END IF;
+        IF expected_state_hash IS NULL
+           OR child_row.state_artifact_hash <> expected_state_hash THEN
+            RAISE EXCEPTION
+                'M5 changed-state reference does not match historical state';
+        END IF;
+        digest_fields := digest_fields
+            || ARRAY['sha256', child_row.reference_digest];
+    END LOOP;
+    expected_digest := groundloop_m5_digest_text_fields(digest_fields);
+    IF result_row.changed_state_set_hash <> expected_digest THEN
+        RAISE EXCEPTION 'M5 changed-state set hash is incorrect';
+    END IF;
+    IF result_row.original_open_receipt_binding_hash <>
+       groundloop_m5_digest_text_fields(ARRAY[
+           'm5-open-event-receipt-binding-v2',
+           'int', result_row.epoch_id::text,
+           'bool', '0',
+           'bool', '0',
+           'null',
+           'bool', '0',
+           'null'
+       ]) THEN
+        RAISE EXCEPTION 'M5 original open-receipt binding is incorrect';
+    END IF;
+    IF result_row.outcome = 'sealed'
+       AND result_row.original_publication_receipt_binding_hash <>
+           groundloop_m5_digest_text_fields(ARRAY[
+               'm5-publication-receipt-binding-v2',
+               'int', result_row.epoch_id::text,
+               'text', result_row.publication_id,
+               'bool', '0'
+           ]) THEN
+        RAISE EXCEPTION 'M5 publication-receipt binding is incorrect';
+    END IF;
+    digest_fields := ARRAY[
+        'm5-event-run-logical-result-v2',
+        'text', result_row.structural_event_id,
+        'sha256', result_row.payload_hash,
+        'int', result_row.epoch_id::text,
+        'enum', result_row.outcome,
+        'sha256', result_row.original_open_receipt_binding_hash
+    ];
+    IF result_row.original_publication_receipt_binding_hash IS NULL THEN
+        digest_fields := digest_fields || ARRAY['null'];
+    ELSE
+        digest_fields := digest_fields || ARRAY[
+            'sha256', result_row.original_publication_receipt_binding_hash
+        ];
+    END IF;
+    digest_fields := digest_fields || ARRAY[
+        'sha256', result_row.event_work_digest,
+        'sha256', result_row.combined_status_delta_set_hash,
+        'sha256', result_row.changed_state_set_hash
+    ];
+    IF result_row.failure_reason IS NULL THEN
+        digest_fields := digest_fields || ARRAY['null'];
+    ELSE
+        digest_fields := digest_fields || ARRAY[
+            'enum', result_row.failure_reason
+        ];
+    END IF;
+    IF result_row.logical_result_hash <>
+       groundloop_m5_digest_text_fields(digest_fields) THEN
+        RAISE EXCEPTION 'M5 logical event-result hash is incorrect';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
 CREATE FUNCTION groundloop_m5_matching_artifact_journal_guard()
 RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path FROM CURRENT AS $$
 BEGIN
@@ -2241,8 +3686,15 @@ CREATE FUNCTION groundloop_m5_matching_begin_promotion_context(
     selected_mode text, selected_epoch_id bigint, expected_revision bigint,
     resulting_revision bigint, selected_policy text
 ) RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path FROM CURRENT AS $$
+DECLARE anchor_m4_epoch bigint;
+DECLARE anchor_m5_epoch bigint;
+DECLARE anchor_m5_revision bigint;
+DECLARE anchor_activation_count integer;
+DECLARE anchor_predecessor_revision bigint;
+DECLARE anchor_predecessor_sealed_at timestamptz;
+DECLARE anchor_current_policy text;
 BEGIN
-  IF selected_mode NOT IN ('seal','activation')
+  IF selected_mode IS NULL OR selected_mode NOT IN ('seal','activation')
      OR to_regclass('pg_temp.groundloop_m5_matching_promotion_context') IS NOT NULL
      OR to_regclass('pg_temp.groundloop_m5_matching_promotion_journal') IS NOT NULL
      OR to_regclass('pg_temp.groundloop_m5_matching_promotion_expected') IS NOT NULL
@@ -2254,11 +3706,27 @@ BEGIN
      OR nullif(current_setting('groundloop.m5_matching_journal_oid',true),'') IS NOT NULL
      OR nullif(current_setting('groundloop.m5_matching_expected_oid',true),'') IS NOT NULL
   THEN RAISE EXCEPTION 'persisted matching promotion context already exists'; END IF;
+  SELECT epoch_id INTO STRICT anchor_m4_epoch
+    FROM groundloop_m4_publication_head WHERE singleton;
+  SELECT epoch_id,sealed_revision INTO anchor_m5_epoch,anchor_m5_revision
+    FROM groundloop_m5_publication_head WHERE singleton;
+  SELECT count(*)::integer INTO anchor_activation_count
+    FROM groundloop_m5_activation WHERE singleton;
+  SELECT revision,sealed_at
+    INTO STRICT anchor_predecessor_revision,anchor_predecessor_sealed_at
+    FROM groundloop_epoch WHERE epoch_id=anchor_m4_epoch;
+  SELECT decision_policy_version INTO anchor_current_policy
+    FROM groundloop_m5_matching_image_current WHERE singleton;
   EXECUTE 'CREATE TEMP TABLE pg_temp.groundloop_m5_matching_promotion_context (
     backend_pid integer NOT NULL, transaction_id bigint NOT NULL,
     session_role text NOT NULL, mode text NOT NULL,
     epoch_id bigint NOT NULL, expected_revision bigint NOT NULL,
     resulting_revision bigint NOT NULL, policy_version text NOT NULL,
+    anchor_m4_epoch_id bigint NOT NULL, anchor_m5_epoch_id bigint,
+    anchor_m5_revision bigint, anchor_activation_count integer NOT NULL,
+    anchor_predecessor_revision bigint NOT NULL,
+    anchor_predecessor_sealed_at timestamptz NOT NULL,
+    anchor_current_policy text,
     validation_started boolean NOT NULL DEFAULT false,
     validation_done boolean NOT NULL DEFAULT false,
     PRIMARY KEY(backend_pid,transaction_id,session_role)
@@ -2275,9 +3743,13 @@ BEGIN
     PRIMARY KEY(relation_name,key_preimage)
   ) ON COMMIT DROP';
   EXECUTE 'INSERT INTO pg_temp.groundloop_m5_matching_promotion_context
-    VALUES ($1,pg_current_xact_id()::text::bigint,session_user,$2,$3,$4,$5,$6,false,false)'
+    VALUES ($1,pg_current_xact_id()::text::bigint,session_user,$2,$3,$4,$5,$6,
+      $7,$8,$9,$10,$11,$12,$13,false,false)'
     USING pg_backend_pid(),selected_mode,selected_epoch_id,expected_revision,
-          resulting_revision,selected_policy;
+          resulting_revision,selected_policy,anchor_m4_epoch,anchor_m5_epoch,
+          anchor_m5_revision,anchor_activation_count,
+          anchor_predecessor_revision,anchor_predecessor_sealed_at,
+          anchor_current_policy;
   PERFORM set_config('groundloop.m5_matching_context_oid',
     to_regclass('pg_temp.groundloop_m5_matching_promotion_context')::oid::text,true);
   PERFORM set_config('groundloop.m5_matching_journal_oid',
@@ -2300,7 +3772,11 @@ BEGIN
      OR to_regclass('pg_temp.groundloop_m5_matching_promotion_journal') IS NULL
      OR to_regclass('pg_temp.groundloop_m5_matching_promotion_expected') IS NULL
   THEN RAISE EXCEPTION 'persisted matching promotion lacks private context'; END IF;
-  IF to_regclass('pg_temp.groundloop_m5_matching_promotion_context')::oid::text
+  IF NOT groundloop_m5_matching_private_temp_triplet(
+       to_regclass('pg_temp.groundloop_m5_matching_promotion_context'),
+       to_regclass('pg_temp.groundloop_m5_matching_promotion_journal'),
+       to_regclass('pg_temp.groundloop_m5_matching_promotion_expected'))
+     OR to_regclass('pg_temp.groundloop_m5_matching_promotion_context')::oid::text
           IS DISTINCT FROM current_setting('groundloop.m5_matching_context_oid',true)
      OR to_regclass('pg_temp.groundloop_m5_matching_promotion_journal')::oid::text
           IS DISTINCT FROM current_setting('groundloop.m5_matching_journal_oid',true)
@@ -2395,8 +3871,21 @@ BEGIN
         RAISE EXCEPTION 'persisted matching working rows cannot be deleted';
     END IF;
     IF mode='transition' THEN
-      IF to_regclass('pg_temp.groundloop_m5_matching_transition_context') IS NULL THEN
+      IF to_regclass('pg_temp.groundloop_m5_matching_transition_context') IS NULL
+         OR to_regclass('pg_temp.groundloop_m5_matching_change_journal') IS NULL
+         OR to_regclass('pg_temp.groundloop_m5_matching_expected_changes') IS NULL THEN
         RAISE EXCEPTION 'persisted matching transition lacks private context'; END IF;
+      IF NOT groundloop_m5_matching_private_temp_triplet(
+           to_regclass('pg_temp.groundloop_m5_matching_transition_context'),
+           to_regclass('pg_temp.groundloop_m5_matching_change_journal'),
+           to_regclass('pg_temp.groundloop_m5_matching_expected_changes'))
+         OR to_regclass('pg_temp.groundloop_m5_matching_transition_context')::oid::text
+              IS DISTINCT FROM current_setting('groundloop.m5_matching_context_oid',true)
+         OR to_regclass('pg_temp.groundloop_m5_matching_change_journal')::oid::text
+              IS DISTINCT FROM current_setting('groundloop.m5_matching_journal_oid',true)
+         OR to_regclass('pg_temp.groundloop_m5_matching_expected_changes')::oid::text
+              IS DISTINCT FROM current_setting('groundloop.m5_matching_expected_oid',true)
+      THEN RAISE EXCEPTION 'persisted matching transition private context was replaced'; END IF;
       IF TG_TABLE_NAME LIKE '%_current' THEN
         RAISE EXCEPTION 'transition cannot mutate current matching image';
       END IF;
@@ -2419,7 +3908,11 @@ BEGIN
          OR to_regclass('pg_temp.groundloop_m5_matching_promotion_journal') IS NULL
          OR to_regclass('pg_temp.groundloop_m5_matching_promotion_expected') IS NULL
       THEN RAISE EXCEPTION 'persisted matching promotion context mismatch'; END IF;
-      IF to_regclass('pg_temp.groundloop_m5_matching_promotion_context')::oid::text
+      IF NOT groundloop_m5_matching_private_temp_triplet(
+           to_regclass('pg_temp.groundloop_m5_matching_promotion_context'),
+           to_regclass('pg_temp.groundloop_m5_matching_promotion_journal'),
+           to_regclass('pg_temp.groundloop_m5_matching_promotion_expected'))
+         OR to_regclass('pg_temp.groundloop_m5_matching_promotion_context')::oid::text
               IS DISTINCT FROM current_setting('groundloop.m5_matching_context_oid',true)
          OR to_regclass('pg_temp.groundloop_m5_matching_promotion_journal')::oid::text
               IS DISTINCT FROM current_setting('groundloop.m5_matching_journal_oid',true)
@@ -2544,7 +4037,7 @@ BEGIN
      WHERE epoch_id=selected_epoch_id FOR UPDATE;
     SELECT revision INTO locked_runtime_revision FROM groundloop_m5_runtime_epoch
      WHERE epoch_id=selected_epoch_id FOR UPDATE;
-    SELECT image.decision_policy_version INTO selected_policy
+    SELECT update_row.decision_policy_version INTO selected_policy
       FROM groundloop_m5_matching_image_working image
       JOIN groundloop_m5_update update_row USING(epoch_id)
       JOIN groundloop_m5_matching_work_accumulator accumulator USING(epoch_id)
@@ -2561,23 +4054,44 @@ BEGIN
       JOIN groundloop_m5_schema_bundle ledger
         ON ledger.bundle_id='m5-persisted-matching-schema-bundle-v1'
      WHERE image.epoch_id=selected_epoch_id
+       AND update_row.previous_published_epoch_id=m4_head.epoch_id
+       AND image.decision_policy_version=update_row.decision_policy_version
        AND current_image.installed_epoch_id=m5_head.epoch_id
        AND current_image.installed_revision=m5_head.sealed_revision
        AND image.base_epoch_id=current_image.installed_epoch_id
        AND image.base_revision=current_image.installed_revision
        AND image.updated_revision<=expected_revision
        AND accumulator.updated_revision<=expected_revision
+       AND predecessor.epoch_id=update_row.previous_published_epoch_id
+       AND predecessor.revision=m5_head.sealed_revision
+       AND predecessor.structural_status='committed'
        AND predecessor.semantic_status='sealed'
+       AND predecessor.evaluation_state='complete'
+       AND predecessor.publication_mode='strict'
+       AND predecessor.sealed_at IS NOT NULL
        AND EXISTS (SELECT 1 FROM groundloop_runtime_mode
                     WHERE singleton AND mode='m5_active')
-       AND EXISTS (SELECT 1 FROM groundloop_epoch
-                    WHERE epoch_id=selected_epoch_id
-                      AND structural_status='committed'
-                      AND semantic_status='complete'
-                      AND evaluation_state='complete')
-       AND EXISTS (SELECT 1 FROM groundloop_m5_runtime_epoch
-                    WHERE epoch_id=selected_epoch_id
-                      AND runtime_state='semantic_complete');
+       AND EXISTS (SELECT 1 FROM groundloop_epoch live_epoch
+                    WHERE live_epoch.epoch_id=selected_epoch_id
+                      AND live_epoch.event_id=(SELECT runtime.structural_event_id
+                        FROM groundloop_m5_runtime_epoch runtime
+                        WHERE runtime.epoch_id=selected_epoch_id)
+                      AND live_epoch.revision=expected_revision
+                      AND live_epoch.structural_status='committed'
+                      AND live_epoch.semantic_status='complete'
+                      AND live_epoch.evaluation_state='complete'
+                      AND live_epoch.publication_mode='provisional'
+                      AND live_epoch.sealed_at IS NULL)
+       AND EXISTS (SELECT 1 FROM groundloop_m5_runtime_epoch runtime
+                    WHERE runtime.epoch_id=selected_epoch_id
+                      AND runtime.structural_event_id=(SELECT live_epoch.event_id
+                        FROM groundloop_epoch live_epoch
+                        WHERE live_epoch.epoch_id=selected_epoch_id)
+                      AND runtime.expected_previous_published_epoch_id=
+                          update_row.previous_published_epoch_id
+                      AND runtime.revision=expected_revision
+                      AND runtime.runtime_state='semantic_complete'
+                      AND runtime.terminal_at IS NULL);
     IF NOT FOUND OR locked_epoch_revision<>expected_revision
        OR locked_runtime_revision<>expected_revision
        OR sealed_revision<>expected_revision+1
@@ -2607,9 +4121,15 @@ BEGIN
        OR nullif(current_setting('groundloop.m5_matching_journal_oid',true),'') IS NOT NULL
        OR nullif(current_setting('groundloop.m5_matching_expected_oid',true),'') IS NOT NULL
     THEN RAISE EXCEPTION 'persisted matching authorization mode already selected'; END IF;
+    -- Preserve the frozen singleton tier order.  Row locks cannot protect an
+    -- absent singleton key, so the tier-3/tier-4 tables are locked immediately
+    -- before their row probes, after the tier-1/tier-2 rows are held.
     PERFORM 1 FROM groundloop_runtime_mode WHERE singleton FOR UPDATE;
     PERFORM 1 FROM groundloop_m4_publication_head WHERE singleton FOR UPDATE;
-    -- The caller's frozen relation locks protect the absent M5 singleton keys.
+    LOCK TABLE groundloop_m5_publication_head IN SHARE ROW EXCLUSIVE MODE;
+    PERFORM 1 FROM groundloop_m5_publication_head WHERE singleton FOR UPDATE;
+    LOCK TABLE groundloop_m5_activation IN SHARE ROW EXCLUSIVE MODE;
+    PERFORM 1 FROM groundloop_m5_activation WHERE singleton FOR UPDATE;
     PERFORM 1 FROM groundloop_epoch
       WHERE epoch_id=expected_m4_head_epoch_id FOR UPDATE;
     PERFORM 1 FROM groundloop_m5_runtime_epoch
@@ -2624,8 +4144,10 @@ BEGIN
       JOIN groundloop_epoch epoch ON epoch.epoch_id=head.epoch_id
       JOIN groundloop_m5_schema_bundle ledger
         ON ledger.bundle_id='m5-persisted-matching-schema-bundle-v1'
-       AND ledger.bundle_sha256 ~ '^[0-9a-f]{64}$'
-       AND ledger.migration_sha256 ~ '^[0-9a-f]{64}$'
+       AND ledger.bundle_sha256=current_setting(
+         'groundloop.m5_accepted_persisted_matching_bundle_sha256')
+       AND ledger.migration_sha256=current_setting(
+         'groundloop.m5_accepted_persisted_matching_migration_sha256')
        AND ledger.oracle_sha256=
          'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
        AND ledger.prerequisite_sha256=
@@ -2635,11 +4157,25 @@ BEGIN
        AND policy.valid_from_epoch<=head.epoch_id
        AND (policy.valid_to_epoch IS NULL OR head.epoch_id<policy.valid_to_epoch)
      WHERE mode.singleton AND mode.mode='v1_only'
+       AND epoch.structural_status='committed'
+       AND epoch.semantic_status='sealed'
+       AND epoch.evaluation_state='complete'
+       AND epoch.publication_mode='strict'
+       AND epoch.sealed_at IS NOT NULL
      ;
     IF actual_head<>expected_m4_head_epoch_id OR actual_revision<>expected_head_epoch_revision
        OR EXISTS (SELECT 1 FROM groundloop_m5_publication_head)
        OR EXISTS (SELECT 1 FROM groundloop_m5_activation)
        OR EXISTS (SELECT 1 FROM groundloop_m5_runtime_epoch WHERE runtime_state NOT IN ('sealed','failed'))
+       OR EXISTS (
+         SELECT 1 FROM groundloop_epoch live_epoch
+         WHERE live_epoch.epoch_id<>actual_head
+           AND live_epoch.structural_status='committed'
+           AND live_epoch.semantic_status IN ('pending','complete'))
+       OR (SELECT count(*) FROM groundloop_decision_policy policy
+            WHERE policy.valid_from_epoch<=actual_head
+              AND (policy.valid_to_epoch IS NULL
+                   OR actual_head<policy.valid_to_epoch))<>1
        OR EXISTS (SELECT 1 FROM groundloop_m5_matching_image_current)
        OR EXISTS (SELECT 1 FROM groundloop_m5_matching_image_working)
        OR EXISTS (SELECT 1 FROM groundloop_m5_matching_observation_current)
@@ -2679,6 +4215,591 @@ DO $$ DECLARE relation_name text; BEGIN
   END LOOP;
 END $$;
 
+CREATE FUNCTION groundloop_m5_matching_guard_promotion_envelope()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path FROM CURRENT AS $$
+DECLARE selected_mode text;
+DECLARE context_started boolean;
+DECLARE context_count bigint;
+BEGIN
+  selected_mode:=nullif(current_setting('groundloop.m5_matching_mode',true),'');
+  IF selected_mode IS NULL OR selected_mode NOT IN ('seal','activation') THEN
+    IF to_regclass('pg_temp.groundloop_m5_matching_promotion_context') IS NOT NULL
+       OR to_regclass('pg_temp.groundloop_m5_matching_promotion_journal') IS NOT NULL
+       OR to_regclass('pg_temp.groundloop_m5_matching_promotion_expected') IS NOT NULL
+    THEN RAISE EXCEPTION 'persisted matching promotion envelope mode/context escape'; END IF;
+    RETURN CASE WHEN TG_OP='DELETE' THEN OLD ELSE NEW END;
+  END IF;
+  IF to_regclass('pg_temp.groundloop_m5_matching_promotion_context') IS NULL
+     OR to_regclass('pg_temp.groundloop_m5_matching_promotion_journal') IS NULL
+     OR to_regclass('pg_temp.groundloop_m5_matching_promotion_expected') IS NULL
+     OR NOT groundloop_m5_matching_private_temp_triplet(
+          to_regclass('pg_temp.groundloop_m5_matching_promotion_context'),
+          to_regclass('pg_temp.groundloop_m5_matching_promotion_journal'),
+          to_regclass('pg_temp.groundloop_m5_matching_promotion_expected'))
+     OR to_regclass('pg_temp.groundloop_m5_matching_promotion_context')::oid::text
+          IS DISTINCT FROM current_setting('groundloop.m5_matching_context_oid',true)
+     OR to_regclass('pg_temp.groundloop_m5_matching_promotion_journal')::oid::text
+          IS DISTINCT FROM current_setting('groundloop.m5_matching_journal_oid',true)
+     OR to_regclass('pg_temp.groundloop_m5_matching_promotion_expected')::oid::text
+          IS DISTINCT FROM current_setting('groundloop.m5_matching_expected_oid',true)
+  THEN RAISE EXCEPTION 'persisted matching promotion envelope lacks private context'; END IF;
+  EXECUTE 'SELECT count(*),bool_or(validation_started)
+             FROM pg_temp.groundloop_m5_matching_promotion_context
+            WHERE backend_pid=$1 AND transaction_id=pg_current_xact_id()::text::bigint
+              AND session_role=session_user AND mode=$2'
+    INTO context_count,context_started USING pg_backend_pid(),selected_mode;
+  IF context_count<>1 OR coalesce(context_started,false) THEN
+    RAISE EXCEPTION 'persisted matching envelope DML after promotion validation'; END IF;
+  RETURN CASE WHEN TG_OP='DELETE' THEN OLD ELSE NEW END;
+END;
+$$;
+REVOKE ALL ON FUNCTION groundloop_m5_matching_guard_promotion_envelope()
+  FROM PUBLIC;
+
+CREATE FUNCTION groundloop_m5_matching_deferred_validate_promotion()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path FROM CURRENT AS $$
+DECLARE selected_mode text;
+DECLARE selected_epoch bigint;
+DECLARE selected_expected bigint;
+DECLARE selected_result bigint;
+DECLARE selected_policy text;
+DECLARE context_backend integer;
+DECLARE context_xid bigint;
+DECLARE context_role text;
+DECLARE anchor_m4_epoch bigint;
+DECLARE anchor_m5_epoch bigint;
+DECLARE anchor_m5_revision bigint;
+DECLARE anchor_activation_count integer;
+DECLARE anchor_predecessor_revision bigint;
+DECLARE anchor_predecessor_sealed_at timestamptz;
+DECLARE anchor_current_policy text;
+DECLARE validation_started_value boolean;
+DECLARE validation_done_value boolean;
+DECLARE context_count bigint;
+DECLARE relation_name text;
+DECLARE current_relation text;
+DECLARE row_value jsonb;
+DECLARE final_value jsonb;
+DECLARE journal_value jsonb;
+DECLARE key_value bytea;
+DECLARE positive_value boolean;
+DECLARE prior_present boolean;
+DECLARE mismatch boolean;
+DECLARE journal_count bigint;
+BEGIN
+  selected_mode:=nullif(current_setting('groundloop.m5_matching_mode',true),'');
+  IF selected_mode IS NULL OR selected_mode NOT IN ('seal','activation') THEN
+    IF to_regclass('pg_temp.groundloop_m5_matching_promotion_context') IS NOT NULL
+       OR to_regclass('pg_temp.groundloop_m5_matching_promotion_journal') IS NOT NULL
+       OR to_regclass('pg_temp.groundloop_m5_matching_promotion_expected') IS NOT NULL
+    THEN RAISE EXCEPTION 'persisted matching promotion mode/context escape'; END IF;
+    RETURN NULL;
+  END IF;
+  IF to_regclass('pg_temp.groundloop_m5_matching_promotion_context') IS NULL
+     OR to_regclass('pg_temp.groundloop_m5_matching_promotion_journal') IS NULL
+     OR to_regclass('pg_temp.groundloop_m5_matching_promotion_expected') IS NULL
+     OR NOT groundloop_m5_matching_private_temp_triplet(
+          to_regclass('pg_temp.groundloop_m5_matching_promotion_context'),
+          to_regclass('pg_temp.groundloop_m5_matching_promotion_journal'),
+          to_regclass('pg_temp.groundloop_m5_matching_promotion_expected'))
+     OR to_regclass('pg_temp.groundloop_m5_matching_promotion_context')::oid::text
+          IS DISTINCT FROM current_setting('groundloop.m5_matching_context_oid',true)
+     OR to_regclass('pg_temp.groundloop_m5_matching_promotion_journal')::oid::text
+          IS DISTINCT FROM current_setting('groundloop.m5_matching_journal_oid',true)
+     OR to_regclass('pg_temp.groundloop_m5_matching_promotion_expected')::oid::text
+          IS DISTINCT FROM current_setting('groundloop.m5_matching_expected_oid',true)
+  THEN RAISE EXCEPTION 'persisted matching promotion validation lacks private context'; END IF;
+  selected_epoch:=current_setting('groundloop.m5_matching_epoch_id')::bigint;
+  selected_expected:=current_setting('groundloop.m5_matching_expected_revision')::bigint;
+  selected_result:=current_setting('groundloop.m5_matching_resulting_revision')::bigint;
+  selected_policy:=current_setting('groundloop.m5_matching_policy');
+  EXECUTE 'SELECT backend_pid,transaction_id,session_role,mode,epoch_id,
+                  expected_revision,resulting_revision,policy_version,
+                  anchor_m4_epoch_id,anchor_m5_epoch_id,anchor_m5_revision,
+                  anchor_activation_count,anchor_predecessor_revision,
+                  anchor_predecessor_sealed_at,anchor_current_policy,
+                  validation_started,validation_done
+             FROM pg_temp.groundloop_m5_matching_promotion_context'
+    INTO STRICT context_backend,context_xid,context_role,selected_mode,
+      selected_epoch,selected_expected,selected_result,selected_policy,
+      anchor_m4_epoch,anchor_m5_epoch,anchor_m5_revision,
+      anchor_activation_count,anchor_predecessor_revision,
+      anchor_predecessor_sealed_at,anchor_current_policy,
+      validation_started_value,validation_done_value;
+  EXECUTE 'SELECT count(*) FROM pg_temp.groundloop_m5_matching_promotion_context'
+    INTO context_count;
+  IF context_count<>1 OR context_backend<>pg_backend_pid()
+     OR context_xid<>pg_current_xact_id()::text::bigint
+     OR context_role<>session_user
+     OR selected_mode<>current_setting('groundloop.m5_matching_mode')
+     OR selected_epoch<>current_setting('groundloop.m5_matching_epoch_id')::bigint
+     OR selected_expected<>
+          current_setting('groundloop.m5_matching_expected_revision')::bigint
+     OR selected_result<>
+          current_setting('groundloop.m5_matching_resulting_revision')::bigint
+     OR selected_policy<>current_setting('groundloop.m5_matching_policy')
+  THEN RAISE EXCEPTION 'persisted matching promotion private context/GUC mismatch'; END IF;
+  IF validation_done_value THEN RETURN NULL; END IF;
+  IF validation_started_value THEN
+    RAISE EXCEPTION 'persisted matching promotion validation re-entered'; END IF;
+  EXECUTE 'UPDATE pg_temp.groundloop_m5_matching_promotion_context
+              SET validation_started=true
+            WHERE backend_pid=$1 AND transaction_id=pg_current_xact_id()::text::bigint
+              AND session_role=session_user' USING pg_backend_pid();
+
+  key_value:=groundloop_m5_matching_journal_key(
+    'groundloop_m5_matching_image_current',ARRAY['true']);
+  EXECUTE 'INSERT INTO pg_temp.groundloop_m5_matching_promotion_expected
+    VALUES (''groundloop_m5_matching_image_current'',$1)' USING key_value;
+  EXECUTE 'SELECT to_jsonb(j) FROM pg_temp.groundloop_m5_matching_promotion_journal j
+            WHERE relation_name=''groundloop_m5_matching_image_current''
+              AND key_preimage=$1' INTO journal_value USING key_value;
+  IF journal_value IS NULL
+     OR journal_value->'final_new'->>'decision_policy_version'<>selected_policy
+     OR (journal_value->'final_new'->>'installed_epoch_id')::bigint<>selected_epoch
+     OR (journal_value->'final_new'->>'installed_revision')::bigint<>selected_result
+  THEN RAISE EXCEPTION 'persisted matching promotion image is incomplete'; END IF;
+
+  IF selected_mode='activation' THEN
+    IF anchor_m5_epoch IS NOT NULL OR anchor_m5_revision IS NOT NULL
+       OR anchor_activation_count<>0 OR anchor_current_policy IS NOT NULL
+       OR anchor_m4_epoch<>selected_epoch
+       OR anchor_predecessor_revision<>selected_expected
+       OR selected_result<>selected_expected
+       OR journal_value->>'first_operation'<>'INSERT'
+       OR journal_value->>'last_operation'<>'INSERT'
+       OR (journal_value->>'mutation_count')::integer<>1
+       OR journal_value->'first_old'<>'null'::jsonb
+       OR NOT (journal_value->>'saw_insert')::boolean
+       OR (journal_value->>'saw_update')::boolean
+       OR (journal_value->>'saw_delete')::boolean
+       OR NOT EXISTS (
+         SELECT 1 FROM groundloop_runtime_mode runtime_mode
+         JOIN groundloop_m4_publication_head m4_head ON m4_head.singleton
+         JOIN groundloop_m5_publication_head m5_head ON m5_head.singleton
+         JOIN groundloop_m5_activation activation ON activation.singleton
+         JOIN groundloop_epoch epoch ON epoch.epoch_id=m5_head.epoch_id
+         JOIN groundloop_decision_policy policy
+           ON policy.policy_version=selected_policy
+          AND policy.valid_from_epoch<=selected_epoch
+          AND (policy.valid_to_epoch IS NULL
+               OR selected_epoch<policy.valid_to_epoch)
+         WHERE runtime_mode.singleton AND runtime_mode.mode='m5_active'
+           AND m4_head.epoch_id=selected_epoch
+           AND m5_head.epoch_id=selected_epoch
+           AND m5_head.sealed_revision=selected_result
+           AND activation.base_m4_epoch_id=selected_epoch
+           AND epoch.revision=selected_result
+           AND epoch.structural_status='committed'
+           AND epoch.semantic_status='sealed'
+           AND epoch.evaluation_state='complete'
+           AND epoch.publication_mode='strict'
+           AND epoch.sealed_at=anchor_predecessor_sealed_at
+           AND (SELECT count(*) FROM groundloop_decision_policy covering_policy
+                 WHERE covering_policy.valid_from_epoch<=selected_epoch
+                   AND (covering_policy.valid_to_epoch IS NULL
+                        OR selected_epoch<covering_policy.valid_to_epoch))=1
+           AND NOT EXISTS (
+             SELECT 1 FROM groundloop_epoch live_epoch
+             WHERE live_epoch.epoch_id<>selected_epoch
+               AND live_epoch.structural_status='committed'
+               AND live_epoch.semantic_status IN ('pending','complete')))
+    THEN RAISE EXCEPTION 'persisted matching activation final envelope mismatch'; END IF;
+
+    SELECT EXISTS (
+      (SELECT edge.observation_id,edge.requirement_version_id,
+              edge.group_version_id,edge.requirement_ordinal,edge.text_hash,
+              selected_epoch,selected_result
+         FROM groundloop_m5_active_requirement_edge_oracle source
+         CROSS JOIN LATERAL unnest(source.active_observation_ids) edge_observation(observation_id)
+         CROSS JOIN LATERAL (SELECT edge_observation.observation_id,
+           source.requirement_version_id,source.group_version_id,
+           source.requirement_ordinal,source.text_hash) edge
+       EXCEPT ALL
+       SELECT observation_id,requirement_version_id,group_version_id,
+              requirement_ordinal,text_hash,installed_epoch_id,installed_revision
+         FROM groundloop_m5_matching_observation_current)
+      UNION ALL
+      (SELECT observation_id,requirement_version_id,group_version_id,
+              requirement_ordinal,text_hash,installed_epoch_id,installed_revision
+         FROM groundloop_m5_matching_observation_current
+       EXCEPT ALL
+       SELECT edge_observation.observation_id,source.requirement_version_id,
+              source.group_version_id,source.requirement_ordinal,source.text_hash,
+              selected_epoch,selected_result
+         FROM groundloop_m5_active_requirement_edge_oracle source
+         CROSS JOIN LATERAL unnest(source.active_observation_ids) edge_observation(observation_id)))
+      INTO mismatch;
+    IF mismatch THEN RAISE EXCEPTION 'persisted matching activation observation set mismatch'; END IF;
+    SELECT EXISTS (
+      (SELECT requirement_version_id,text_hash,group_version_id,
+              requirement_ordinal,cardinality(active_observation_ids),
+              selected_epoch,selected_result
+         FROM groundloop_m5_active_requirement_edge_oracle
+       EXCEPT ALL
+       SELECT requirement_version_id,text_hash,group_version_id,
+              requirement_ordinal,refcount,installed_epoch_id,installed_revision
+         FROM groundloop_m5_matching_edge_current)
+      UNION ALL
+      (SELECT requirement_version_id,text_hash,group_version_id,
+              requirement_ordinal,refcount,installed_epoch_id,installed_revision
+         FROM groundloop_m5_matching_edge_current
+       EXCEPT ALL
+       SELECT requirement_version_id,text_hash,group_version_id,
+              requirement_ordinal,cardinality(active_observation_ids),
+              selected_epoch,selected_result
+         FROM groundloop_m5_active_requirement_edge_oracle)) INTO mismatch;
+    IF mismatch THEN RAISE EXCEPTION 'persisted matching activation edge set mismatch'; END IF;
+    SELECT EXISTS (
+      (SELECT group_version_id,text_hash,
+              sum(1<<requirement_ordinal)::integer,selected_epoch,selected_result
+         FROM groundloop_m5_active_requirement_edge_oracle
+        GROUP BY group_version_id,text_hash
+       EXCEPT ALL
+       SELECT group_version_id,text_hash,mask,installed_epoch_id,installed_revision
+         FROM groundloop_m5_matching_hash_mask_current)
+      UNION ALL
+      (SELECT group_version_id,text_hash,mask,installed_epoch_id,installed_revision
+         FROM groundloop_m5_matching_hash_mask_current
+       EXCEPT ALL
+       SELECT group_version_id,text_hash,
+              sum(1<<requirement_ordinal)::integer,selected_epoch,selected_result
+         FROM groundloop_m5_active_requirement_edge_oracle
+        GROUP BY group_version_id,text_hash)) INTO mismatch;
+    IF mismatch THEN RAISE EXCEPTION 'persisted matching activation mask set mismatch'; END IF;
+    SELECT EXISTS (
+      WITH expected AS (
+        SELECT hall.group_version_id,max(hall.requirement_count) requirement_count,
+          ARRAY[0::bigint]||array_agg(hall.neighbor_count ORDER BY hall.subset_mask)
+            neighbor_counts,
+          ARRAY[0::bigint]||array_agg(hall.deficiency ORDER BY hall.subset_mask)
+            deficiencies
+        FROM groundloop_m5_group_subset_hall_oracle hall
+        GROUP BY hall.group_version_id), masks AS (
+        SELECT group_version_id,text_hash,sum(1<<requirement_ordinal)::integer mask
+        FROM groundloop_m5_active_requirement_edge_oracle
+        GROUP BY group_version_id,text_hash), completed AS (
+        SELECT expected.*,
+          ARRAY[0::bigint]||ARRAY(
+            SELECT count(mask_row.group_version_id)::bigint
+            FROM generate_series(1,(1<<expected.requirement_count)-1) generated(mask_value)
+            LEFT JOIN masks mask_row ON mask_row.group_version_id=expected.group_version_id
+              AND mask_row.mask=generated.mask_value
+            GROUP BY generated.mask_value ORDER BY generated.mask_value) mask_histogram
+        FROM expected)
+      SELECT 1 FROM (
+        (SELECT group_version_id,requirement_count,mask_histogram,neighbor_counts,
+                deficiencies,greatest(0,(SELECT max(v) FROM unnest(deficiencies) v))::integer,
+                requirement_count-greatest(0,(SELECT max(v) FROM unnest(deficiencies) v))::integer,
+                (SELECT coalesce(sum(v),0) FROM unnest(mask_histogram) v),
+                selected_epoch,selected_result FROM completed
+         EXCEPT ALL
+         SELECT group_version_id,requirement_count,mask_histogram,neighbor_counts,
+                deficiencies,maximum_deficiency,matching_size,distinct_hash_count,
+                installed_epoch_id,installed_revision
+           FROM groundloop_m5_matching_hall_current)
+        UNION ALL
+        (SELECT group_version_id,requirement_count,mask_histogram,neighbor_counts,
+                deficiencies,maximum_deficiency,matching_size,distinct_hash_count,
+                installed_epoch_id,installed_revision
+           FROM groundloop_m5_matching_hall_current
+         EXCEPT ALL
+         SELECT group_version_id,requirement_count,mask_histogram,neighbor_counts,
+                deficiencies,greatest(0,(SELECT max(v) FROM unnest(deficiencies) v))::integer,
+                requirement_count-greatest(0,(SELECT max(v) FROM unnest(deficiencies) v))::integer,
+                (SELECT coalesce(sum(v),0) FROM unnest(mask_histogram) v),
+                selected_epoch,selected_result FROM completed)) difference)
+      INTO mismatch;
+    IF mismatch THEN RAISE EXCEPTION 'persisted matching activation Hall set mismatch'; END IF;
+
+    FOREACH current_relation IN ARRAY ARRAY[
+      'groundloop_m5_matching_observation_current',
+      'groundloop_m5_matching_edge_current',
+      'groundloop_m5_matching_hash_mask_current',
+      'groundloop_m5_matching_hall_current'] LOOP
+      FOR row_value IN EXECUTE format('SELECT to_jsonb(row_value) FROM %I row_value',current_relation)
+      LOOP
+        key_value:=groundloop_m5_matching_row_key(current_relation,row_value);
+        EXECUTE 'INSERT INTO pg_temp.groundloop_m5_matching_promotion_expected VALUES ($1,$2)'
+          USING current_relation,key_value;
+        EXECUTE 'SELECT to_jsonb(j) FROM pg_temp.groundloop_m5_matching_promotion_journal j
+                  WHERE relation_name=$1 AND key_preimage=$2'
+          INTO journal_value USING current_relation,key_value;
+        IF journal_value IS NULL OR journal_value->>'first_operation'<>'INSERT'
+           OR journal_value->>'last_operation'<>'INSERT'
+           OR (journal_value->>'mutation_count')::integer<>1
+           OR journal_value->'first_old'<>'null'::jsonb
+           OR journal_value->'final_new' IS DISTINCT FROM row_value
+           OR NOT (journal_value->>'saw_insert')::boolean
+           OR (journal_value->>'saw_update')::boolean
+           OR (journal_value->>'saw_delete')::boolean
+        THEN RAISE EXCEPTION 'persisted matching activation current-row operation mismatch'; END IF;
+      END LOOP;
+    END LOOP;
+  ELSE
+    IF anchor_m5_epoch IS NULL OR anchor_m5_revision IS NULL
+       OR anchor_activation_count<>1 OR anchor_current_policy IS NULL
+       OR anchor_m4_epoch<>anchor_m5_epoch
+       OR anchor_m5_revision<>anchor_predecessor_revision
+       OR selected_result<>selected_expected+1
+       OR journal_value->>'first_operation'<>'UPDATE'
+       OR journal_value->>'last_operation'<>'UPDATE'
+       OR (journal_value->>'mutation_count')::integer<>1
+       OR journal_value->'first_old'->>'decision_policy_version'<>
+            anchor_current_policy
+       OR (journal_value->'first_old'->>'installed_epoch_id')::bigint<>
+            anchor_m5_epoch
+       OR (journal_value->'first_old'->>'installed_revision')::bigint<>
+            anchor_m5_revision
+       OR (journal_value->>'saw_insert')::boolean
+       OR NOT (journal_value->>'saw_update')::boolean
+       OR (journal_value->>'saw_delete')::boolean
+       OR NOT EXISTS (
+         SELECT 1 FROM groundloop_runtime_mode runtime_mode
+         JOIN groundloop_m4_publication_head m4_head ON m4_head.singleton
+         JOIN groundloop_m5_publication_head m5_head ON m5_head.singleton
+         JOIN groundloop_epoch epoch ON epoch.epoch_id=selected_epoch
+         JOIN groundloop_epoch predecessor
+           ON predecessor.epoch_id=anchor_m4_epoch
+         JOIN groundloop_m5_runtime_epoch runtime
+           ON runtime.epoch_id=epoch.epoch_id
+         JOIN groundloop_m5_update update_row
+           ON update_row.epoch_id=epoch.epoch_id
+         JOIN groundloop_m5_matching_image_working working_image
+           ON working_image.epoch_id=selected_epoch
+         JOIN groundloop_m5_matching_image_current current_image
+           ON current_image.singleton
+         JOIN groundloop_m5_event_result result
+           ON result.epoch_id=epoch.epoch_id
+          AND result.structural_event_id=epoch.event_id
+         WHERE runtime_mode.singleton AND runtime_mode.mode='m5_active'
+           AND m4_head.epoch_id=selected_epoch
+           AND m5_head.epoch_id=selected_epoch
+           AND m5_head.sealed_revision=selected_result
+           AND predecessor.revision=anchor_predecessor_revision
+           AND predecessor.structural_status='committed'
+           AND predecessor.semantic_status='sealed'
+           AND predecessor.evaluation_state='complete'
+           AND predecessor.publication_mode='strict'
+           AND predecessor.sealed_at=anchor_predecessor_sealed_at
+           AND epoch.revision=selected_result
+           AND epoch.structural_status='committed'
+           AND epoch.semantic_status='sealed'
+           AND epoch.evaluation_state='complete'
+           AND epoch.publication_mode='strict'
+           AND epoch.sealed_at IS NOT NULL
+           AND runtime.structural_event_id=epoch.event_id
+           AND runtime.runtime_state='sealed'
+           AND runtime.terminal_at IS NOT NULL
+           AND runtime.revision=selected_result
+           AND runtime.expected_previous_published_epoch_id=anchor_m4_epoch
+           AND update_row.previous_published_epoch_id=anchor_m4_epoch
+           AND update_row.decision_policy_version=selected_policy
+           AND working_image.base_epoch_id=anchor_m5_epoch
+           AND working_image.base_revision=anchor_m5_revision
+           AND working_image.decision_policy_version=selected_policy
+           AND working_image.updated_revision<=selected_expected
+           AND current_image.decision_policy_version=selected_policy
+           AND current_image.installed_epoch_id=selected_epoch
+           AND current_image.installed_revision=selected_result
+           AND result.payload_hash=epoch.payload_hash
+           AND result.outcome='sealed')
+    THEN RAISE EXCEPTION 'persisted matching seal final envelope mismatch'; END IF;
+
+    FOREACH relation_name IN ARRAY ARRAY[
+      'groundloop_m5_matching_observation_working',
+      'groundloop_m5_matching_edge_working',
+      'groundloop_m5_matching_hash_mask_working',
+      'groundloop_m5_matching_hall_working'] LOOP
+      current_relation:=replace(relation_name,'_working','_current');
+      FOR row_value IN EXECUTE format(
+        'SELECT to_jsonb(row_value) FROM %I row_value WHERE epoch_id=$1',relation_name)
+        USING selected_epoch
+      LOOP
+        positive_value:=CASE relation_name
+          WHEN 'groundloop_m5_matching_observation_working' THEN
+            (row_value->>'present')::boolean
+          WHEN 'groundloop_m5_matching_edge_working' THEN
+            (row_value->>'refcount')::bigint>0
+          WHEN 'groundloop_m5_matching_hash_mask_working' THEN
+            (row_value->>'mask')::integer>0
+          ELSE (row_value->>'present')::boolean END;
+        key_value:=groundloop_m5_matching_row_key(current_relation,row_value);
+        EXECUTE 'SELECT to_jsonb(j) FROM pg_temp.groundloop_m5_matching_promotion_journal j
+                  WHERE relation_name=$1 AND key_preimage=$2'
+          INTO journal_value USING current_relation,key_value;
+        prior_present:=journal_value IS NOT NULL
+          AND journal_value->'first_old'<>'null'::jsonb;
+        IF positive_value OR prior_present THEN
+          EXECUTE 'INSERT INTO pg_temp.groundloop_m5_matching_promotion_expected VALUES ($1,$2)'
+            USING current_relation,key_value;
+        END IF;
+        EXECUTE format(
+          'SELECT to_jsonb(current_row) FROM %I current_row '
+          'WHERE groundloop_m5_matching_row_key($1,to_jsonb(current_row))=$2',
+          current_relation) INTO final_value USING current_relation,key_value;
+        IF positive_value THEN
+          IF journal_value IS NULL OR journal_value->>'last_operation'<>
+               (CASE WHEN prior_present THEN 'UPDATE' ELSE 'INSERT' END)
+             OR journal_value->>'first_operation'<>
+               (CASE WHEN prior_present THEN 'UPDATE' ELSE 'INSERT' END)
+             OR (journal_value->>'mutation_count')::integer<>1
+             OR (journal_value->>'saw_insert')::boolean<>NOT prior_present
+             OR (journal_value->>'saw_update')::boolean<>prior_present
+             OR (journal_value->>'saw_delete')::boolean
+             OR final_value IS NULL
+             OR journal_value->'final_new' IS DISTINCT FROM final_value
+             OR (final_value->>'installed_epoch_id')::bigint<>selected_epoch
+             OR (final_value->>'installed_revision')::bigint<>selected_result
+          THEN RAISE EXCEPTION 'persisted matching seal current upsert mismatch for %',current_relation; END IF;
+          IF relation_name='groundloop_m5_matching_observation_working' AND
+             ROW(final_value->>'observation_id',final_value->>'requirement_version_id',
+                 final_value->>'group_version_id',
+                 (final_value->>'requirement_ordinal')::integer,
+                 final_value->>'text_hash') IS DISTINCT FROM
+             ROW(row_value->>'observation_id',row_value->>'requirement_version_id',
+                 row_value->>'group_version_id',
+                 (row_value->>'requirement_ordinal')::integer,row_value->>'text_hash')
+          THEN RAISE EXCEPTION 'persisted matching seal observation value mismatch';
+          ELSIF relation_name='groundloop_m5_matching_edge_working' AND
+             ROW(final_value->>'requirement_version_id',final_value->>'text_hash',
+                 final_value->>'group_version_id',
+                 (final_value->>'requirement_ordinal')::integer,
+                 (final_value->>'refcount')::bigint) IS DISTINCT FROM
+             ROW(row_value->>'requirement_version_id',row_value->>'text_hash',
+                 row_value->>'group_version_id',
+                 (row_value->>'requirement_ordinal')::integer,
+                 (row_value->>'refcount')::bigint)
+          THEN RAISE EXCEPTION 'persisted matching seal edge value mismatch';
+          ELSIF relation_name='groundloop_m5_matching_hash_mask_working' AND
+             ROW(final_value->>'group_version_id',final_value->>'text_hash',
+                 (final_value->>'mask')::integer) IS DISTINCT FROM
+             ROW(row_value->>'group_version_id',row_value->>'text_hash',
+                 (row_value->>'mask')::integer)
+          THEN RAISE EXCEPTION 'persisted matching seal mask value mismatch';
+          ELSIF relation_name='groundloop_m5_matching_hall_working' AND
+             (final_value-'installed_epoch_id'-'installed_revision') IS DISTINCT FROM
+             (row_value-'epoch_id'-'present'-'updated_revision')
+          THEN RAISE EXCEPTION 'persisted matching seal Hall value mismatch'; END IF;
+        ELSE
+          IF final_value IS NOT NULL THEN
+            RAISE EXCEPTION 'persisted matching seal tombstone left a current row'; END IF;
+          IF prior_present AND (journal_value->>'first_operation'<>'DELETE'
+             OR journal_value->>'last_operation'<>'DELETE'
+             OR (journal_value->>'mutation_count')::integer<>1
+             OR (journal_value->>'saw_insert')::boolean
+             OR (journal_value->>'saw_update')::boolean
+             OR NOT (journal_value->>'saw_delete')::boolean
+             OR journal_value->'final_new'<>'null'::jsonb)
+          THEN RAISE EXCEPTION 'persisted matching seal current delete mismatch'; END IF;
+          IF NOT prior_present AND journal_value IS NOT NULL THEN
+            RAISE EXCEPTION 'persisted matching seal emitted a spurious tombstone mutation'; END IF;
+        END IF;
+      END LOOP;
+    END LOOP;
+  END IF;
+
+  EXECUTE 'SELECT count(*) FROM (
+    (SELECT relation_name,key_preimage
+       FROM pg_temp.groundloop_m5_matching_promotion_expected
+     EXCEPT ALL
+     SELECT relation_name,key_preimage
+       FROM pg_temp.groundloop_m5_matching_promotion_journal)
+    UNION ALL
+    (SELECT relation_name,key_preimage
+       FROM pg_temp.groundloop_m5_matching_promotion_journal
+     EXCEPT ALL
+     SELECT relation_name,key_preimage
+       FROM pg_temp.groundloop_m5_matching_promotion_expected)) mismatch'
+    INTO journal_count;
+  IF journal_count<>0 THEN
+    RAISE EXCEPTION 'persisted matching promotion journal is not an exact set bijection'; END IF;
+  EXECUTE 'UPDATE pg_temp.groundloop_m5_matching_promotion_context
+              SET validation_done=true
+            WHERE backend_pid=$1 AND transaction_id=pg_current_xact_id()::text::bigint
+              AND session_role=session_user' USING pg_backend_pid();
+  RETURN NULL;
+END;
+$$;
+REVOKE ALL ON FUNCTION groundloop_m5_matching_deferred_validate_promotion()
+  FROM PUBLIC;
+DO $$ DECLARE relation_name text; BEGIN
+  FOREACH relation_name IN ARRAY ARRAY[
+    'groundloop_m5_matching_image_current',
+    'groundloop_m5_matching_observation_current',
+    'groundloop_m5_matching_edge_current',
+    'groundloop_m5_matching_hash_mask_current',
+    'groundloop_m5_matching_hall_current'] LOOP
+    EXECUTE format(
+      'CREATE CONSTRAINT TRIGGER %I AFTER INSERT OR UPDATE OR DELETE ON %I '
+      'DEFERRABLE INITIALLY DEFERRED FOR EACH ROW '
+      'EXECUTE FUNCTION groundloop_m5_matching_deferred_validate_promotion()',
+      relation_name||'_d25_promotion_root',relation_name);
+  END LOOP;
+END $$;
+
+-- Final publication rows are independent roots for promotion validation.  A
+-- BEFORE guard on the same closed envelope prevents any row from invalidating
+-- the checked snapshot after deferred constraints have been forced immediate.
+DO $$ DECLARE relation_name text; BEGIN
+  FOREACH relation_name IN ARRAY ARRAY[
+    'groundloop_runtime_mode',
+    'groundloop_m4_publication_head',
+    'groundloop_m5_publication_head',
+    'groundloop_m5_activation',
+    'groundloop_epoch',
+    'groundloop_m5_runtime_epoch',
+    'groundloop_m5_update',
+    'groundloop_decision_policy',
+    'groundloop_document',
+    'groundloop_document_version',
+    'groundloop_chunk_version',
+    'groundloop_answer_version',
+    'groundloop_claim',
+    'groundloop_m5_group_family',
+    'groundloop_m5_group_version',
+    'groundloop_m5_requirement_version',
+    'groundloop_m5_group_validity',
+    'groundloop_m5_group_deactivation',
+    'groundloop_m5_group_family_retirement',
+    'groundloop_semantic_subject',
+    'groundloop_semantic_observation',
+    'groundloop_observation_currency',
+    'groundloop_published_observation_currency',
+    'groundloop_claim_state_materialized',
+    'groundloop_answer_state_materialized',
+    'groundloop_claim_certificate',
+    'groundloop_published_claim_state',
+    'groundloop_published_answer_state',
+    'groundloop_m5_requirement_state_materialized',
+    'groundloop_m5_group_state_materialized',
+    'groundloop_m5_claim_state_materialized',
+    'groundloop_m5_answer_state_materialized',
+    'groundloop_m5_published_requirement_state',
+    'groundloop_m5_published_group_state',
+    'groundloop_m5_published_claim_state',
+    'groundloop_m5_published_answer_state',
+    'groundloop_m5_group_certificate_artifact',
+    'groundloop_m5_group_certificate_artifact_row',
+    'groundloop_m5_claim_certificate_artifact',
+    'groundloop_m5_published_group_certificate_binding',
+    'groundloop_m5_published_claim_certificate_binding',
+    'groundloop_m5_event_result',
+    'groundloop_m5_event_result_delta',
+    'groundloop_m5_event_result_state_reference',
+    'groundloop_m5_runtime_work'] LOOP
+    EXECUTE format(
+      'CREATE TRIGGER %I BEFORE INSERT OR UPDATE OR DELETE ON %I '
+      'FOR EACH ROW EXECUTE FUNCTION groundloop_m5_matching_guard_promotion_envelope()',
+      'groundloop_m5_promotion_guard_'||substr(md5(relation_name),1,16),relation_name);
+    EXECUTE format(
+      'CREATE CONSTRAINT TRIGGER %I AFTER INSERT OR UPDATE OR DELETE ON %I '
+      'DEFERRABLE INITIALLY DEFERRED FOR EACH ROW '
+      'EXECUTE FUNCTION groundloop_m5_matching_deferred_validate_promotion()',
+      'groundloop_m5_promotion_root_'||substr(md5(relation_name),1,16),relation_name);
+  END LOOP;
+END $$;
+
 REVOKE ALL ON FUNCTION groundloop_m5_matching_begin_transition_context(
   bigint,bigint,bigint,text,text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION groundloop_m5_matching_journal_change(
@@ -2696,8 +4817,21 @@ BEGIN
   IF coalesce(current_setting('groundloop.m5_matching_mode',true),'')<>'transition' THEN
     RETURN NEW;
   END IF;
-  IF to_regclass('pg_temp.groundloop_m5_matching_transition_context') IS NULL THEN
+  IF to_regclass('pg_temp.groundloop_m5_matching_transition_context') IS NULL
+     OR to_regclass('pg_temp.groundloop_m5_matching_change_journal') IS NULL
+     OR to_regclass('pg_temp.groundloop_m5_matching_expected_changes') IS NULL THEN
     RAISE EXCEPTION 'persisted matching runtime anchor lacks private context'; END IF;
+  IF NOT groundloop_m5_matching_private_temp_triplet(
+       to_regclass('pg_temp.groundloop_m5_matching_transition_context'),
+       to_regclass('pg_temp.groundloop_m5_matching_change_journal'),
+       to_regclass('pg_temp.groundloop_m5_matching_expected_changes'))
+     OR to_regclass('pg_temp.groundloop_m5_matching_transition_context')::oid::text
+          IS DISTINCT FROM current_setting('groundloop.m5_matching_context_oid',true)
+     OR to_regclass('pg_temp.groundloop_m5_matching_change_journal')::oid::text
+          IS DISTINCT FROM current_setting('groundloop.m5_matching_journal_oid',true)
+     OR to_regclass('pg_temp.groundloop_m5_matching_expected_changes')::oid::text
+          IS DISTINCT FROM current_setting('groundloop.m5_matching_expected_oid',true)
+  THEN RAISE EXCEPTION 'persisted matching transition private context was replaced'; END IF;
   EXECUTE 'UPDATE pg_temp.groundloop_m5_matching_transition_context
               SET anchor_count=anchor_count+1,
                   runtime_first_old=CASE WHEN anchor_count=0 THEN $3 ELSE runtime_first_old END,
@@ -2792,12 +4926,25 @@ DECLARE derived_group_state_only bigint:=0;
 DECLARE derived_claim_state_only bigint:=0;
 DECLARE initialized_hall_groups text[]:=ARRAY[]::text[];
 DECLARE ordinary_mask_groups text[]:=ARRAY[]::text[];
+DECLARE certificate_artifact record;
+DECLARE certificate_row record;
+DECLARE certificate_fields text[];
+DECLARE expected_certificate_digest char(64);
 BEGIN
   IF coalesce(current_setting('groundloop.m5_matching_mode',true),'')<>'transition' THEN
     IF to_regclass('pg_temp.groundloop_m5_matching_transition_context') IS NOT NULL
-       OR nullif(current_setting('groundloop.m5_matching_context_oid',true),'') IS NOT NULL
-       OR nullif(current_setting('groundloop.m5_matching_journal_oid',true),'') IS NOT NULL
-       OR nullif(current_setting('groundloop.m5_matching_expected_oid',true),'') IS NOT NULL
+       OR (
+         coalesce(current_setting('groundloop.m5_matching_mode',true),'')
+           NOT IN ('seal','activation')
+         AND (
+           nullif(current_setting('groundloop.m5_matching_context_oid',true),'')
+             IS NOT NULL
+           OR nullif(current_setting('groundloop.m5_matching_journal_oid',true),'')
+             IS NOT NULL
+           OR nullif(current_setting('groundloop.m5_matching_expected_oid',true),'')
+             IS NOT NULL
+         )
+       )
     THEN RAISE EXCEPTION 'persisted matching transition mode/context escape'; END IF;
     RETURN NULL;
   END IF;
@@ -2805,12 +4952,16 @@ BEGIN
      OR to_regclass('pg_temp.groundloop_m5_matching_change_journal') IS NULL
      OR to_regclass('pg_temp.groundloop_m5_matching_expected_changes') IS NULL
   THEN RAISE EXCEPTION 'persisted matching deferred validation lacks private context'; END IF;
-  IF to_regclass('pg_temp.groundloop_m5_matching_transition_context')::oid::text<>
-       current_setting('groundloop.m5_matching_context_oid',true)
-     OR to_regclass('pg_temp.groundloop_m5_matching_change_journal')::oid::text<>
-       current_setting('groundloop.m5_matching_journal_oid',true)
-     OR to_regclass('pg_temp.groundloop_m5_matching_expected_changes')::oid::text<>
-       current_setting('groundloop.m5_matching_expected_oid',true)
+  IF NOT groundloop_m5_matching_private_temp_triplet(
+       to_regclass('pg_temp.groundloop_m5_matching_transition_context'),
+       to_regclass('pg_temp.groundloop_m5_matching_change_journal'),
+       to_regclass('pg_temp.groundloop_m5_matching_expected_changes'))
+     OR to_regclass('pg_temp.groundloop_m5_matching_transition_context')::oid::text
+         IS DISTINCT FROM current_setting('groundloop.m5_matching_context_oid',true)
+     OR to_regclass('pg_temp.groundloop_m5_matching_change_journal')::oid::text
+         IS DISTINCT FROM current_setting('groundloop.m5_matching_journal_oid',true)
+     OR to_regclass('pg_temp.groundloop_m5_matching_expected_changes')::oid::text
+         IS DISTINCT FROM current_setting('groundloop.m5_matching_expected_oid',true)
   THEN RAISE EXCEPTION 'persisted matching private context table was replaced'; END IF;
   selected_epoch := current_setting('groundloop.m5_matching_epoch_id')::bigint;
   selected_result := current_setting('groundloop.m5_matching_resulting_revision')::bigint;
@@ -3183,8 +5334,12 @@ BEGIN
     before_present:=CASE
       WHEN decoded_change->'before'='null'::jsonb THEN false
       WHEN decoded_change->'before'->>'layer'='current' THEN true
-      ELSE (decoded_change->'before'->>'present')::boolean END;
-    after_present:=(decoded_change->'after'->>'present')::boolean;
+      ELSE (
+        decoded_change->'before'->'node'->'children'->7->>'value'
+      )::boolean END;
+    after_present:=(
+      decoded_change->'after'->'node'->'children'->7->>'value'
+    )::boolean;
     derived_additions:=derived_additions+
       CASE WHEN NOT before_present AND after_present THEN 1 ELSE 0 END;
     derived_removals:=derived_removals+
@@ -3503,12 +5658,42 @@ BEGIN
               WHERE state.value->>'kind'='claim_state'
                 AND state.value->>'object_id'=certificate.value->>'object_id'))
   THEN RAISE EXCEPTION 'persisted matching derived logical work counter mismatch'; END IF;
-  SELECT count(*) INTO expected_count FROM jsonb_array_elements(logical_outputs) entry(value)
-    WHERE entry.value->>'kind'='status_delta';
-  SELECT count(*) INTO status_count FROM groundloop_status_delta
-    WHERE epoch_id=selected_epoch AND revision=selected_result;
-  IF status_count<>expected_count THEN
-    RAISE EXCEPTION 'persisted matching status-delta cardinality mismatch'; END IF;
+  SELECT count(*) INTO expected_count
+  FROM (
+    (SELECT decoded.logical_fields->0->'value'->>'value' AS event_id,
+            decoded.logical_fields->1->'value'->>'value' AS object_type,
+            decoded.logical_fields->2->'value'->>'value' AS object_id,
+            decoded.logical_fields->3->'value'->>'value' AS old_status,
+            decoded.logical_fields->4->'value'->>'value' AS new_status,
+            decoded.logical_fields->5->'value'->>'value' AS reason
+       FROM jsonb_array_elements(logical_outputs) entry(value)
+       CROSS JOIN LATERAL (SELECT entry.value->'after'->'fields')
+         AS decoded(logical_fields)
+      WHERE entry.value->>'kind'='status_delta'
+     EXCEPT ALL
+     SELECT delta.event_id,delta.object_type,delta.object_id,
+            delta.old_status,delta.new_status,delta.reason
+       FROM groundloop_status_delta delta
+      WHERE delta.epoch_id=selected_epoch AND delta.revision=selected_result)
+    UNION ALL
+    (SELECT delta.event_id,delta.object_type,delta.object_id,
+            delta.old_status,delta.new_status,delta.reason
+       FROM groundloop_status_delta delta
+      WHERE delta.epoch_id=selected_epoch AND delta.revision=selected_result
+     EXCEPT ALL
+     SELECT decoded.logical_fields->0->'value'->>'value',
+            decoded.logical_fields->1->'value'->>'value',
+            decoded.logical_fields->2->'value'->>'value',
+            decoded.logical_fields->3->'value'->>'value',
+            decoded.logical_fields->4->'value'->>'value',
+            decoded.logical_fields->5->'value'->>'value'
+       FROM jsonb_array_elements(logical_outputs) entry(value)
+       CROSS JOIN LATERAL (SELECT entry.value->'after'->'fields')
+         AS decoded(logical_fields)
+      WHERE entry.value->>'kind'='status_delta')
+  ) mismatch;
+  IF expected_count<>0 THEN
+    RAISE EXCEPTION 'persisted matching status-delta multiset mismatch'; END IF;
   FOR logical_output IN SELECT entry.value FROM jsonb_array_elements(logical_outputs) entry(value)
     WHERE entry.value->>'kind'='status_delta'
   LOOP
@@ -3559,25 +5744,77 @@ BEGIN
           logical_patch_parsed->'children'->0->'children') change(value)
        WHERE change.value->'children'->0->>'value'=logical_kind
          AND change.value->'children'->1->>'value'=logical_output->>'object_id';
+      logical_digest:=prior_digest;
+    ELSE
+      logical_digest:=logical_fields->(CASE logical_kind
+        WHEN 'group_certificate' THEN 4 ELSE 8 END)->'value'->>'value';
+    END IF;
+    IF logical_kind='group_certificate' THEN
+      SELECT * INTO STRICT certificate_artifact
+        FROM groundloop_m5_group_certificate_artifact
+       WHERE certificate_digest=logical_digest::char(64);
+      certificate_fields:=ARRAY[
+        'm5-group-certificate-v1',
+        'text',certificate_artifact.decision_policy_version,
+        'text',certificate_artifact.group_version_id,
+        'int',certificate_artifact.requirement_count::text,
+        'sequence','int',certificate_artifact.requirement_count::text];
+      FOR certificate_row IN
+        SELECT * FROM groundloop_m5_group_certificate_artifact_row
+         WHERE certificate_digest=logical_digest::char(64)
+         ORDER BY requirement_ordinal
+      LOOP
+        certificate_fields:=certificate_fields||ARRAY[
+          'sequence','int','4',
+          'int',certificate_row.requirement_ordinal::text,
+          'text',certificate_row.requirement_version_id,
+          'sha256',certificate_row.text_hash::text,
+          'text',certificate_row.selected_observation_id];
+      END LOOP;
+    ELSE
+      SELECT * INTO STRICT certificate_artifact
+        FROM groundloop_m5_claim_certificate_artifact
+       WHERE certificate_digest=logical_digest::char(64);
+      certificate_fields:=ARRAY[
+        'm5-claim-certificate-v2',
+        'text',certificate_artifact.claim_id,
+        'text',certificate_artifact.decision_policy_version,
+        'enum',certificate_artifact.support_kind]
+        ||CASE WHEN certificate_artifact.direct_support_observation_id IS NULL
+          THEN ARRAY['null'] ELSE ARRAY[
+            'text',certificate_artifact.direct_support_observation_id] END
+        ||CASE WHEN certificate_artifact.group_version_id IS NULL
+          THEN ARRAY['null'] ELSE ARRAY[
+            'text',certificate_artifact.group_version_id] END
+        ||CASE WHEN certificate_artifact.group_certificate_digest IS NULL
+          THEN ARRAY['null'] ELSE ARRAY[
+            'sha256',certificate_artifact.group_certificate_digest::text] END
+        ||CASE WHEN certificate_artifact.direct_refute_observation_id IS NULL
+          THEN ARRAY['null'] ELSE ARRAY[
+            'text',certificate_artifact.direct_refute_observation_id] END;
+    END IF;
+    expected_certificate_digest:=
+      groundloop_m5_matching_digest_text_fields(certificate_fields);
+    IF logical_output->'after'->>'tag'='none' THEN
       IF prior_digest IS NULL OR
          (logical_kind='group_certificate' AND
-           (groundloop_m5_expected_group_certificate(prior_digest::char(64))<>prior_digest
-            OR EXISTS (SELECT 1 FROM pg_temp.groundloop_m5_matching_change_journal
-              WHERE relation_name IN ('groundloop_m5_group_certificate_artifact',
+           (expected_certificate_digest<>prior_digest
+            OR EXISTS (SELECT 1
+              FROM pg_temp.groundloop_m5_matching_change_journal AS journal
+              WHERE journal.relation_name IN ('groundloop_m5_group_certificate_artifact',
                 'groundloop_m5_group_certificate_artifact_row')
-                AND (final_new->>'certificate_digest'=prior_digest
-                  OR first_old->>'certificate_digest'=prior_digest))))
+                AND (journal.final_new->>'certificate_digest'=prior_digest
+                  OR journal.first_old->>'certificate_digest'=prior_digest))))
          OR (logical_kind='claim_certificate' AND
-           (groundloop_m5_expected_claim_certificate(prior_digest::char(64))<>prior_digest
-            OR EXISTS (SELECT 1 FROM pg_temp.groundloop_m5_matching_change_journal
-              WHERE relation_name='groundloop_m5_claim_certificate_artifact'
-                AND (final_new->>'certificate_digest'=prior_digest
-                  OR first_old->>'certificate_digest'=prior_digest))))
+           (expected_certificate_digest<>prior_digest
+            OR EXISTS (SELECT 1
+              FROM pg_temp.groundloop_m5_matching_change_journal AS journal
+              WHERE journal.relation_name='groundloop_m5_claim_certificate_artifact'
+                AND (journal.final_new->>'certificate_digest'=prior_digest
+                  OR journal.first_old->>'certificate_digest'=prior_digest))))
       THEN RAISE EXCEPTION 'persisted matching absent certificate output mismatch'; END IF;
       CONTINUE;
     END IF;
-    logical_digest:=logical_fields->(CASE logical_kind WHEN 'group_certificate' THEN 4 ELSE 8 END)
-      ->'value'->>'value';
     logical_relation:=CASE logical_kind WHEN 'group_certificate'
       THEN 'groundloop_m5_group_certificate_artifact'
       ELSE 'groundloop_m5_claim_certificate_artifact' END;
@@ -3585,7 +5822,7 @@ BEGIN
     EXECUTE 'INSERT INTO pg_temp.groundloop_m5_matching_expected_changes
       (relation_name,key_preimage) VALUES ($1,$2)' USING logical_relation,key_value;
     IF logical_kind='group_certificate' THEN
-      IF groundloop_m5_expected_group_certificate(logical_digest::char(64))<>logical_digest
+      IF expected_certificate_digest<>logical_digest
          OR NOT EXISTS (SELECT 1 FROM groundloop_m5_group_certificate_artifact a
            WHERE a.certificate_digest=logical_digest
              AND a.decision_policy_version=patch.decision_policy_version
@@ -3593,7 +5830,7 @@ BEGIN
              AND a.requirement_count=jsonb_array_length(logical_fields->2->'value'->'children'))
       THEN RAISE EXCEPTION 'persisted matching group certificate artifact mismatch'; END IF;
     ELSE
-      IF groundloop_m5_expected_claim_certificate(logical_digest::char(64))<>logical_digest
+      IF expected_certificate_digest<>logical_digest
          OR NOT EXISTS (SELECT 1 FROM groundloop_m5_claim_certificate_artifact a
            WHERE a.certificate_digest=logical_digest
              AND a.decision_policy_version=patch.decision_policy_version

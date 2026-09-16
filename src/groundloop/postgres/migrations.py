@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from psycopg import Connection, IsolationLevel
+from psycopg import Connection, IsolationLevel, sql
 from psycopg.pq import TransactionStatus
 
 from groundloop.m5.digests import hash_field, stable_m5_digest, text_field
@@ -95,6 +95,17 @@ M5_PERSISTED_MATCHING_BUNDLE_ID = "m5-persisted-matching-schema-bundle-v1"
 M5_PERSISTED_MATCHING_MIGRATION_LABEL = "migrations/017_m5_persisted_matching.sql"
 M5_PERSISTED_MATCHING_MIGRATION_PATH = ROOT / M5_PERSISTED_MATCHING_MIGRATION_LABEL
 M5_PERSISTED_MATCHING_ORACLE_SHA256 = hashlib.sha256(b"").hexdigest()
+
+# M5-D26 pins the only migration-017 byte sequence authorized to perform a
+# first install.  Ledger-first replay still compares the caller-derived
+# identity so a conflicting replay reports the historical ledger conflict;
+# an absent ledger never turns arbitrary caller bytes into accepted authority.
+M5_ACCEPTED_PERSISTED_MATCHING_MIGRATION_SHA256 = (
+    "e387b01fa80145273ba40d2d83581bc54762d3a4a2edd34669c095076c52154c"
+)
+M5_ACCEPTED_PERSISTED_MATCHING_BUNDLE_SHA256 = (
+    "52240e19968926d0c051fe6146b3c7d877cf582014341efbfcc78637f3ff5761"
+)
 
 M5_PERSISTED_MATCHING_INSTALL_LOCK_RELATIONS = (
     "groundloop_runtime_mode",
@@ -2432,6 +2443,14 @@ def install_m5_persisted_matching_bundle(
             return M5PersistedMatchingBundleInstallResult(identity, False)
         if failure_injector is not None:
             failure_injector("after_initial_ledger")
+        if (
+            identity.migration_sha256 != M5_ACCEPTED_PERSISTED_MATCHING_MIGRATION_SHA256
+            or identity.bundle_sha256 != M5_ACCEPTED_PERSISTED_MATCHING_BUNDLE_SHA256
+        ):
+            raise M5PersistedMatchingBundleError(
+                "migration 017 first install bytes do not match the frozen "
+                "M5-D26 authority"
+            )
         _verify_accepted_m5_recovery_bundle(connection)
         _acquire_m5_persisted_matching_install_locks(connection)
         if failure_injector is not None:
@@ -2459,6 +2478,27 @@ def install_m5_persisted_matching_bundle(
             connection.execute(sql_source)
             if failure_injector is not None:
                 failure_injector(f"after_{name}")
+        # Embedding migration 017's own accepted hash in its SQL source would
+        # be circular.  Pin both final identities as SECURITY DEFINER function
+        # configuration inside this same top-level transaction instead.  The
+        # activation authorizer reads these values under its function-local
+        # configuration, so caller GUCs cannot substitute another ledger row.
+        connection.execute(
+            sql.SQL(
+                "ALTER FUNCTION "
+                "groundloop_m5_authorize_persisted_matching_activation("
+                "bigint,bigint,text) SET "
+                "groundloop.m5_accepted_persisted_matching_bundle_sha256 TO {}"
+            ).format(sql.Literal(M5_ACCEPTED_PERSISTED_MATCHING_BUNDLE_SHA256))
+        )
+        connection.execute(
+            sql.SQL(
+                "ALTER FUNCTION "
+                "groundloop_m5_authorize_persisted_matching_activation("
+                "bigint,bigint,text) SET "
+                "groundloop.m5_accepted_persisted_matching_migration_sha256 TO {}"
+            ).format(sql.Literal(M5_ACCEPTED_PERSISTED_MATCHING_MIGRATION_SHA256))
+        )
         _m5_persisted_matching_backfill(connection, mode, failure_injector)
         if failure_injector is not None:
             failure_injector("after_backfill")
@@ -2500,6 +2540,8 @@ __all__ = [
     "M5_ACCEPTED_RECOVERY_MIGRATION_SHA256",
     "M5_ACCEPTED_RECOVERY_ORACLE_SHA256",
     "M5_ACCEPTED_RECOVERY_PREREQUISITE_SHA256",
+    "M5_ACCEPTED_PERSISTED_MATCHING_BUNDLE_SHA256",
+    "M5_ACCEPTED_PERSISTED_MATCHING_MIGRATION_SHA256",
     "M5_PERSISTED_MATCHING_BUNDLE_ID",
     "M5_PERSISTED_MATCHING_INSTALL_LOCK_RELATIONS",
     "M5_PERSISTED_MATCHING_MIGRATION_LABEL",
