@@ -1,13 +1,15 @@
 # GroundLoop M5 Implementation Status
 
-Status date: 2026-09-07
+Status date: 2026-09-17
 
-Milestone status: **M5.0 contract through accepted M5-D26 and M5.1--M5.3 are
+Milestone status: **M5.0 contract through accepted M5-D27 and M5.1--M5.3 are
 complete; M5.4 is partially complete.**
 M5.4-01 through M5.4-04 pass. M5.4-05 through M5.4-09 and every M5.5--M5.6
 implementation/evaluation closure remain pending. M5-D24-C1 through M5-D24-C7
-are accepted. M5.0-24, M5.0-25, and M5.0-26 are each contract-`PASS` /
-implementation-`PENDING`. M5-D26's accepted candidate SHA-256 is
+are accepted. M5.0-24 through M5.0-27 are each contract-`PASS` /
+implementation-`PENDING`. M5-D27's accepted candidate SHA-256 is
+`7a51afc1f1b6c249572222a023814de8b22220058e00f09564de64f552bd411c`.
+M5-D26's accepted candidate SHA-256 is
 `85372d4c2f9108810bd75c3e5611de541d0f31c8a096421f30e68fad84676721`.
 M5-D25's accepted candidate SHA-256 is
 `bac12ab5e74632c04f1bd70d0ef0d00522ba9d268eb8b73d11845bbf3b873aae`.
@@ -166,7 +168,7 @@ m5_multiagent_execution_plan faffae5f839623efd9e387f63e951881cf1f46c5b66f37c3db6
 ```
 
 Those hashes identify the initial audited M5.0 semantic candidate. Later
-accepted amendments M5-D21 through M5-D26 extend or correct that contract
+accepted amendments M5-D21 through M5-D27 extend or correct that contract
 and are identified by their own decision and audit records below. Final
 implementation artifact hashes and the decision-row cross-stage mapping will
 be recorded at M5.6.
@@ -175,7 +177,7 @@ be recorded at M5.6.
 
 The accepted governing documents are:
 
-- `docs/m5_design_freeze.md` -- decisions M5-D1 through M5-D26 and theorems
+- `docs/m5_design_freeze.md` -- decisions M5-D1 through M5-D27 and theorems
   M5-T1/M5-T2;
 - `docs/workstreams/m5_runtime_contract/RECOVERY_WORK_AMENDMENT.md` -- exact
   M5-D24 lease, dispatch/evidence, work/timing, late-return, and migration-016
@@ -207,6 +209,8 @@ The accepted governing documents are:
 - `docs/workstreams/m5_runtime_contract/CHANGED_STATE_ABSENCE_AMENDMENT.md` --
   accepted M5-D26 typed absence artifact and migration-015 child-validator
   replacement contract;
+- `docs/workstreams/m5_runtime_contract/REQUIREMENT_STATE_COUNTER_ERRATUM.md`
+  -- accepted M5-D27 requirement-state counter-ownership correction;
 - `docs/m5_implementation_plan.md` -- stages M5.1 through M5.6;
 - `docs/m5_multiagent_execution_plan.md` -- path-exclusive ownership and
   integration order; and
@@ -280,10 +284,11 @@ The composed migration/failure/bundle-race gate passed 67/67 tests.
 M5.4-01 passes through the integrated byte-total contract, digest, direction,
 shape, nullability, F64, ordering, and pure-frontier suite. M5-D22 closes the
 previously undefined inner state-artifact identity without changing M4-v1 or
-M5 semantic state. Runtime-addendum revision 7, M5-D23 through M5-D26, and
+M5 semantic state. Runtime-addendum revision 8, M5-D23 through M5-D27, and
 their authoritative amendments now freeze retry/cancellation, recoverable
 dispatch/accounting, persisted-matching/reconnect, and changed-state absence
-contracts; their complete implementation evidence remains pending. Public
+contracts plus the requirement-state counter-ownership correction; their
+complete implementation evidence remains pending. Public
 activation is implemented and passes 8/8 live tests,
 including all six bootstrap reference kinds, cross-language SQL/Python hashes,
 no synthetic epoch, read-only replay, conflicts, and six failure-atomic
@@ -608,14 +613,37 @@ or AI-quality result is implemented. D25 and M5.0-25 remain implementation-
 `PENDING`; M5.4-05 through M5.4-09 and every M5.5/M5.6 gate remain `PENDING`;
 runtime remains `v1_only` outside isolated fixtures.
 
+### 4.4 Accepted M5-D27 requirement-state counter-ownership erratum
+
+The separately reviewed D27 candidate at commit `bbfd4bf`, tree
+`4a2f2cc72c0e46410a76b3a80078130c194b2bd7`, and SHA-256
+`7a51afc1f1b6c249572222a023814de8b22220058e00f09564de64f552bd411c`
+is accepted as the authoritative wording-only correction. The first candidate
+was rejected with three P1 findings and corrected. The decisive independent
+authority/semantics and PostgreSQL/schema/compatibility audits then reviewed
+the same final bytes and each returned `GO`, `P0=0`, `P1=0`.
+
+This closes only the D27 contract gate and advances the runtime addendum to
+revision 8. M5.0-27 is contract-`PASS` / implementation-`PENDING`. D24 has no
+dedicated requirement-state physical row-count coordinate, and no D24 or D25
+counter aliases it. Requirement-state mutations remain exact D25 logical
+patch/output and transition-bijection evidence. Any transaction-local planned/
+actual count is diagnostic only and is neither persisted nor hashed.
+
+No DTO, digest, migration, schema, source, test, database, provider,
+deployment, runtime activation, measured result, or AI-quality result is
+implemented. M5-D24 through M5-D27 and M5.0-24 through M5.0-27 remain
+implementation-`PENDING`; Task 2, M5.4-05 through M5.4-09, and every M5.5/M5.6
+gate remain `PENDING`; runtime remains `v1_only` outside isolated fixtures.
+
 ## 5. Remaining closure boundary
 
 M5 completes only after M5.1--M5.6 pass. Closure still requires M5.4-05 through
 M5.4-09, including the remaining production dynamic paths and provider/runtime
 enablement, sparse publication, lifecycle-head advancement and production
 seal, and the complete end-to-end crash/reconnect matrix; the accepted but
-unimplemented M5-D25/M5-D26 migration-017 persisted-matching and absence-
-validation boundary; a real
+unimplemented M5-D25/M5-D26 persisted-matching and absence-validation
+boundary plus the M5-D27-correct Task-2 store/runtime composition; a real
 maintained-runtime M5.5 controlled WiCE execution; and M5.6 reproduction,
 artifact, documentation, and final acceptance audits.
 

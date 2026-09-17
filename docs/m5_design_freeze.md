@@ -1,17 +1,18 @@
 # GroundLoop M5 Bounded Evidence-Group Design Freeze
 
-Status: frozen M5.0 contract, amended through accepted M5-D26 and
-M5-D24-C1--C7; implementation evidence for M5-D24, M5-D25, and M5-D26 remains
+Status: frozen M5.0 contract, amended through accepted M5-D27 and
+M5-D24-C1--C7; implementation evidence for M5-D24 through M5-D27 remains
 pending
 
 Date: 2026-08-02; M5-D21 through M5-D24-C7 amendments 2026-08-06--2026-08-18;
-M5-D25 amendment 2026-09-03; M5-D26 amendment 2026-09-07
+M5-D25 amendment 2026-09-03; M5-D26 amendment 2026-09-07; M5-D27 erratum
+2026-09-17
 
 Authority: this document specializes `docs/technical_design.md` v0.2 for M5.
 It preserves original decisions D-1 through D-20 except where the earlier
 pseudocode is mathematically inconsistent with its own stated system-of-
 distinct-representatives semantics. Those corrections, the later runtime
-decisions M5-D21 through M5-D26, and accepted M5-D24-C1 through M5-D24-C7 are
+decisions M5-D21 through M5-D27, and accepted M5-D24-C1 through M5-D24-C7 are
 recorded in the decision log and frozen here. The byte-total M5-D24
 specialization is authoritative at
 `docs/workstreams/m5_runtime_contract/RECOVERY_WORK_AMENDMENT.md`.
@@ -27,6 +28,10 @@ The narrow M5-D26 changed-state absence specialization is authoritative at
 `docs/workstreams/m5_runtime_contract/CHANGED_STATE_ABSENCE_AMENDMENT.md`; its
 independently accepted pre-freeze content SHA-256 is
 `85372d4c2f9108810bd75c3e5611de541d0f31c8a096421f30e68fad84676721`.
+The wording-only M5-D27 counter-ownership correction is authoritative at
+`docs/workstreams/m5_runtime_contract/REQUIREMENT_STATE_COUNTER_ERRATUM.md`;
+its independently accepted pre-freeze content SHA-256 is
+`7a51afc1f1b6c249572222a023814de8b22220058e00f09564de64f552bd411c`.
 
 M5 implementation begins only after the M5.0 *contract* gate passes. Later
 implementation-evidence cells in the acceptance matrix remain `PENDING` until
@@ -1229,6 +1234,40 @@ implementation-`PENDING`; D25/migration-017 implementation, M5.4 completion,
 deployment, and AI-quality claims remain `PENDING`. Runtime remains `v1_only`
 outside isolated fixtures.
 
+### M5-D27 -- requirement-state physical counter ownership
+
+M5-D24 freezes the complete `M5RuntimeWork` physical-write coordinates for
+group state, claim state, answer state, certificate bindings, and public
+deltas. It contains no requirement-state-write coordinate. M5-D25 Section 12
+later included `requirement` in its prose list of D24-owned physical write
+counts even though no corresponding DTO field, digest position, schema column,
+contribution coordinate, or accumulator coordinate exists. M5-D27 deletes
+only that contradictory word.
+
+There is deliberately no D24 requirement-state physical row-count metric in
+the current system. A requirement-state row may be written without asserting
+that its count is zero and without charging it to another coordinate. The D24
+vector/digest/migrations and the D25 37-counter vector remain byte-for-byte
+unchanged. In particular, `group_state_write_count`,
+`group_local_state_operations`, `requirement_state_only_changes`, and
+`output_bytes` retain their existing distinct meanings.
+
+Every requirement-state mutation remains fully represented in the canonical
+D25 logical patch/output and enforced by migration 017's exact transition
+bijection. An implementation may keep a transaction-local planned/actual row
+count for assertions or failure injection, but that value is nonauthoritative:
+it is not persisted, hashed, exposed, reported as a frozen metric, or
+reconstructed during replay. Stored D24 event-result hydration and the
+separate retained D25 accumulator/read surface remain unchanged.
+
+The complete correction and eight mandatory falsifiers are authoritative in
+`docs/workstreams/m5_runtime_contract/REQUIREMENT_STATE_COUNTER_ERRATUM.md` at
+the accepted SHA-256 above. M5-D27 and M5.0-27 are contract-`PASS` /
+implementation-`PENDING`. This decision changes no DTO, digest, schema,
+migration, lock order, transition, reference recipe, measured value,
+deployment, or AI-quality claim. Runtime remains `v1_only` outside isolated
+fixtures.
+
 ## 11. Dynamic M4 integration contract
 
 ### M5-D14 -- typed v2 runtime identity
@@ -1857,6 +1896,7 @@ regression evidence.
 | M5-D24-C1 | Execution disposition and return receipts | Successful execution disposition is explicit; successful requirement/direct receipts separate immutable first-return outcome from current terminal projection and expose exactly one first-write outer timing anchor without changing M4-v1 bytes |
 | M5-D25 | Recoverable persisted matching image | PostgreSQL current/working Hall state, immutable patch/contribution history, durable work accumulators, scoped write authorization, seal promotion, and independent physical/provenance audit are byte-total; migration 017 is the separate implementation barrier |
 | M5-D26 | Changed-state absence artifact | Structural REPLACE/RETIRE removals use one typed non-null absence digest for three existing reference kinds, with exact D25 logical-change, predecessor-closure, successor-absence, event-payload and seal-coordinate validation; migration 017 may replace only the required migration-015 child validator under D26 |
+| M5-D27 | Requirement-state counter ownership | D24 owns no requirement-state physical row-count coordinate; no counter or alias is invented, while every requirement-state change remains exact D25 logical patch/output and transition-bijection evidence |
 
 ## 15. Release gate
 
@@ -1873,5 +1913,6 @@ that:
    including the M5-D21 typed-bridge exception, M5-D22 state-artifact
    identity, M5-D23 transition completeness, M5-D24 recoverable dispatch and
    durable accounting, the M5-D24-C1--C7 corrections, M5-D25 persisted
-   matching, and M5-D26 changed-state absence; and
+   matching, M5-D26 changed-state absence, and M5-D27 requirement-state
+   counter ownership; and
 7. path ownership prevents shared-schema or shared-contract collisions.

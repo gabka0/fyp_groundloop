@@ -1,5 +1,47 @@
 # GroundLoop Decision Log
 
+## 2026-09-17 — M5-D27 Requirement-State Counter Ownership Accepted
+
+Decision status: **accepted authoritative wording-only amendment**. M5-D27 and
+acceptance row M5.0-27 are contract-`PASS` / implementation-`PENDING`, and the
+M5.4 runtime addendum advances to revision 8. The complete authoritative
+erratum is
+`docs/workstreams/m5_runtime_contract/REQUIREMENT_STATE_COUNTER_ERRATUM.md` at
+accepted content SHA-256
+`7a51afc1f1b6c249572222a023814de8b22220058e00f09564de64f552bd411c`.
+
+The final reviewed candidate has exact commit
+`bbfd4bf8c2a2a9c015fbfa1156bc66f172cb3962`, tree
+`4a2f2cc72c0e46410a76b3a80078130c194b2bd7`, 186 lines, and 8,655 bytes on
+ancestry `e3d83e3 -> 4247a92 -> bbfd4bf`. The first candidate was rejected with
+`P0=0`, `P1=3`; it was narrowed from every nonempty transition to only
+requirement-state-writing transitions, expanded to exact state/binding/delta
+counter names, and strengthened against consistently rehashed surrogate
+counters. The decisive independent authority/semantics and PostgreSQL/schema/
+compatibility reviews then examined identical final bytes and each returned
+`GO`, `P0=0`, `P1=0`.
+
+M5-D27 confirms that the exhaustive D24 `M5RuntimeWork` vector owns actual
+group-state, claim-state, answer-state, certificate-binding, and public-delta
+write counts but contains no requirement-state physical-row count. The single
+conflicting M5-D25 Section-12 word `requirement` is therefore deleted from that
+D24-owner list. This is an explicit measurement limitation, not a zero-write
+assertion.
+
+No counter or alias is invented. The D24 DTO/digest/schema/migration and the
+D25 37-counter vector remain byte-for-byte unchanged. Requirement-state
+changes remain exact D25 logical patch/output and transition-bijection
+evidence. `group_state_write_count`, `group_local_state_operations`,
+`requirement_state_only_changes`, and `output_bytes` retain their prior
+meanings. Any transaction-local requirement-state write count is diagnostic
+only: it is not persisted, hashed, returned, or reconstructed on replay.
+
+Acceptance implements nothing. M5-D24 through M5-D27 and M5.0-24 through
+M5.0-27 remain implementation-`PENDING`; Task 2 and M5.4-05 through M5.4-09
+remain `PENDING`; runtime remains `v1_only`. No migration, source, database,
+deployment, AI-quality, performance, utility, security, novelty, or named-
+system superiority result follows.
+
 ## 2026-09-07 — M5-D26 Changed-State Absence Contract Accepted
 
 Decision status: **accepted authoritative contract amendment**. M5-D26 and

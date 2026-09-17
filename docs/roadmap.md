@@ -236,7 +236,7 @@ is explicit pre-dissertation/M6 debt, not a hidden extension of M4.
 ## M5 — Bounded Evidence Groups
 
 Status: active. The M5.0 contract freeze is complete through accepted
-M5-D26; M5.1 pure reference semantics completed on 2026-08-03 after an
+M5-D27; M5.1 pure reference semantics completed on 2026-08-03 after an
 independent high-confidence audit GO. M5.2 and M5.3 are complete. M5.4-01
 through M5.4-04 pass; public activation and partial root/direct transitions have
 live evidence but do not independently close M5.4-05. M5-D24's R0 contracts and
@@ -300,6 +300,19 @@ migration, source, test, database, provider, deployment, runtime mode, or
 AI-quality result. D25/M5.0-25 and D26/M5.0-26 implementation, M5.4-05 through
 M5.4-09, and every M5.5/M5.6 gate remain `PENDING`; runtime stays `v1_only`.
 
+The M5-D27 requirement-state counter-ownership erratum is accepted at exact
+reviewed candidate commit `bbfd4bf`, tree
+`4a2f2cc72c0e46410a76b3a80078130c194b2bd7`, and content SHA-256
+`7a51afc1f1b6c249572222a023814de8b22220058e00f09564de64f552bd411c`
+after two independent same-byte `GO` reviews with `P0=0/P1=0`. M5.0-27 is
+contract-`PASS` / implementation-`PENDING`, and runtime-addendum revision 8 is
+authoritative. D24 has no requirement-state physical row-count coordinate;
+the correction adds no counter or alias and leaves requirement-state changes
+as exact D25 patch/output/bijection evidence. It changes no DTO, digest,
+migration, schema, source, test, database, provider, deployment, runtime mode,
+measured result, or AI-quality result. Task 2 and M5.4-05 through M5.4-09
+remain `PENDING`; runtime stays `v1_only`.
+
 Deliverables:
 
 - Immutable versioned evidence requirements and groups with group-derived
@@ -318,7 +331,7 @@ Deliverables:
 Stages:
 
 - **M5.0:** design/theory/schema/data freeze. **Complete through accepted
-  M5-D26.** Contract rows pass; decision-row implementation halves remain
+  M5-D27.** Contract rows pass; decision-row implementation halves remain
   pending until the M5.6 cross-stage evidence mapping.
 - **M5.1:** pure records, history, structural events, and independent Python
   oracle. **Complete.**
@@ -335,7 +348,8 @@ Stages:
   scoped R2e typed-direct pre-seal bridge passes, and the later evidence tranche
   promotes M5.4-02/-03/-04. M5.4-01 through M5.4-04 are `PASS`; M5.4-05 through
   M5.4-09 remain `PENDING`. Runtime stays `v1_only`; the accepted M5-D25 and
-  M5-D26 contracts leave migration 017 as the next implementation barrier.
+  M5-D26 contracts plus the M5-D27 counter correction govern the active
+  persisted store/runtime implementation boundary.
 - **M5.5:** controlled dataset adapter, seven qualified baselines, and
   reproducible systems/semantic reports.
 - **M5.6:** full validation, evidence bundle, documentation and honest verdict.

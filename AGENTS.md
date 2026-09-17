@@ -57,6 +57,10 @@ order:
     (authoritative M5-D26 retired-state absence-reference contract)
 44. `docs/workstreams/m5_runtime_implementation/D26_CONTRACT_FREEZE_HANDOFF.md`
     (accepted D26 bytes, review evidence, and next implementation boundary)
+45. `docs/workstreams/m5_runtime_contract/REQUIREMENT_STATE_COUNTER_ERRATUM.md`
+    (authoritative M5-D27 requirement-state counter-ownership correction)
+46. `docs/workstreams/m5_runtime_implementation/D27_CONTRACT_FREEZE_HANDOFF.md`
+    (accepted D27 bytes, review evidence, and next implementation boundary)
 
 `docs/initial_technical_design.md` (v0.1) is superseded and retained for audit
 only. The M0.5 design freeze and M1.1 amendments are complete; frozen decisions
@@ -177,9 +181,16 @@ authoritative amendment SHA-256 is
 M5-D26 and M5.0-26 are contract-`PASS` / implementation-`PENDING`. It adds no
 reference kind, tombstone, nullable hash, present-state recipe, or deployment
 claim. Migration 017 may replace the one migration-015 child validator only
-under the separate D26 implementation activation. Runtime remains `v1_only`
-outside isolated fixtures. M5 is not complete until every remaining
-M5.4--M5.6 executable gate is recorded.
+under the separate D26 implementation activation. M5-D27 is the frozen
+wording-only correction that confirms there is no dedicated requirement-state
+physical-row coordinate in D24 `M5RuntimeWork`. Its authoritative SHA-256 is
+`7a51afc1f1b6c249572222a023814de8b22220058e00f09564de64f552bd411c`;
+M5-D27 and M5.0-27 are contract-`PASS` / implementation-`PENDING`. It adds no
+counter, DTO, digest, schema, migration, alias, replay field, or measurement.
+Requirement-state changes remain exact D25 patch/bijection evidence, while any
+transaction-local write count is diagnostic only. Runtime remains `v1_only`
+outside isolated fixtures. M5 is not complete until every remaining M5.4--M5.6
+executable gate is recorded.
 
 A larger, independently adjudicated natural-history evaluation remains
 mandatory before dissertation-level selective-maintenance or end-to-end

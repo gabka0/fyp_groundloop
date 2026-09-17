@@ -1,15 +1,15 @@
 # GroundLoop M5.4 Byte-Total Runtime Contract Addendum
 
-Status: frozen runtime contract revision 7; M5-D25 and M5-D26 contracts
-**GO** / implementation **PENDING**; full M5.4 remains blocked on
-migration-017 and executable runtime evidence
+Status: frozen runtime contract revision 8; M5-D25 through M5-D27 contracts
+**GO** / implementation **PENDING**; full M5.4 remains blocked on executable
+runtime evidence
 
 Date: 2026-08-03; revision 5 / M5-D21 through M5-D24 amendments 2026-08-06;
 revision 6 / M5-D25 amendment 2026-09-03; revision 7 / M5-D26 amendment
-2026-09-07
+2026-09-07; revision 8 / M5-D27 erratum 2026-09-17
 
 Authority: this addendum specializes `docs/m5_design_freeze.md` M5-D1 through
-M5-D26 and M5-T1/M5-T2. It does not change those decisions. The M5 design
+M5-D27 and M5-T1/M5-T2. It does not change those decisions. The M5 design
 freeze remains authoritative for semantic truth; this addendum is authoritative
 for M5.4 runtime DTOs, identities, transition boundaries, persistence
 ownership, replay, and acceptance tests.
@@ -21,7 +21,7 @@ start only after migration 014 and its SQL oracle bundle have passed the M5.3
 fresh-install, populated-upgrade, compatibility, and three-oracle gates.
 
 This addendum MUST NOT authorize a change to an M5.0 semantic decision. An
-implementation conflict with this addendum and M5-D1 through M5-D26 MUST stop
+implementation conflict with this addendum and M5-D1 through M5-D27 MUST stop
 M5.4 as **NO-GO**. The exact amendment procedure MUST be a new numbered M5
 decision in `docs/m5_design_freeze.md`, a matching acceptance-matrix row, and a
 new runtime-addendum revision before code resumes. The migration-014 M4-open
@@ -47,6 +47,11 @@ one typed absence artifact for three existing kinds and grants migration 017
 authority to replace only the necessary migration-015 child validator. It
 changes no present reference recipe, outer reference, schema column, D25
 matching identity, or stage result.
+The accepted M5-D27 wording-only erratum at
+`REQUIREMENT_STATE_COUNTER_ERRATUM.md` supersedes only the conflicting D25
+Section-12 assignment of a nonexistent requirement-state physical write count
+to D24. It changes no D24 or D25 vector, digest, schema, migration, transition,
+lock order, replay field, or measured value.
 
 Normative wire values in backticks MUST be exact lowercase UTF-8. Every DTO in
 this document MUST be immutable. Every tuple MUST use the order stated here.
@@ -2217,17 +2222,35 @@ attributable to D26. Separately accepted D25 migration-014 replacement
 authority is unchanged. Migration-015 file bytes, ledger identity, present
 branches, and all three constraint triggers remain exact.
 
-## 24. Final decision
+## 24. M5-D27 amendment precedence
 
-**Decision: GO for the M5-D26 contract; the prior M5-D25 GO remains in force.
-Confidence: high.**
+The complete wording-only D27 correction is maintained separately at
+`REQUIREMENT_STATE_COUNTER_ERRATUM.md`. Its independently accepted pre-freeze
+content SHA-256 is
+`7a51afc1f1b6c249572222a023814de8b22220058e00f09564de64f552bd411c`.
+Where D25 Section 12 assigned actual requirement-state SQL write counts to the
+exhaustive D24 `M5RuntimeWork` vector, M5-D27 governs: D24 has no such
+coordinate. Its existing group-state, claim-state, answer-state, certificate-
+binding, and public-delta coordinates remain exact.
 
-Revision 7 freezes the reviewed M5-D26 bytes while leaving M5-D24, M5-D25, and
-M5-D26 implementation evidence `PENDING`. It does not directly authorize
-migration 017 or source/test edits and does not declare M5.4 complete. Full
-production runtime and measured history remain **NO-GO** until migration 017,
-persisted matching/absence validation, and the executable M5.4 gates pass under
-later explicit manifests. Runtime remains `v1_only` outside isolated fixtures.
-This sequencing boundary is an honest implementation dependency, not evidence
-of a semantic result, deployment, AI-quality improvement, or performance
-claim.
+No D24 or D25 coordinate may be renamed or used as a surrogate. Every
+requirement-state mutation remains exact D25 logical patch/output and
+transition-bijection evidence. A transaction-local planned/actual count may be
+used only as nonpersisted diagnostic evidence. Stored D24 event-result
+hydration and the separate retained D25 accumulator/read surface remain
+unchanged; D25 work is not added to `M5EventRunResult` or its logical digest.
+
+## 25. Final decision
+
+**Decision: GO for the M5-D27 contract; the prior M5-D25 and M5-D26 GOs remain
+in force. Confidence: high.**
+
+Revision 8 freezes the reviewed M5-D27 bytes while leaving M5-D24 through
+M5-D27 implementation evidence `PENDING`. It authorizes no migration, schema,
+DTO, digest, source/test implementation, public runtime, or deployment and does
+not declare Task 2 or M5.4 complete. Full production runtime and measured
+history remain **NO-GO** until persisted matching/absence validation,
+store/runtime composition, and the executable M5.4 gates pass under later
+explicit manifests. Runtime remains `v1_only` outside isolated fixtures. This
+sequencing boundary is an honest implementation dependency, not evidence of a
+semantic result, deployment, AI-quality improvement, or performance claim.

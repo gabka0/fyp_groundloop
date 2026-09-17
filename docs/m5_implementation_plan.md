@@ -1,15 +1,16 @@
 # GroundLoop M5 Implementation Plan
 
-Status: M5.0 contract accepted through M5-D26 and M5.1--M5.3 complete;
-M5.0-24, M5.0-25, and M5.0-26 are contract-`PASS` /
+Status: M5.0 contract accepted through M5-D27 and M5.1--M5.3 complete;
+M5.0-24 through M5.0-27 are contract-`PASS` /
 implementation-`PENDING`; M5.4-01 through M5.4-04 are `PASS`, M5.4-05 through
-M5.4-09 remain `PENDING`, and all completed runtime grants are historical with
-no current edit ownership
+M5.4-09 remain `PENDING`; the Task-2 activation at `e3d83e3` is current, while
+its Lane-A/Lane-B implementation evidence remains unaccepted
 
 Date: 2026-08-02; M5-D24 execution and R2e integration current through
 2026-08-19; M5.4-02/-03/-04 evidence integration current through 2026-09-02;
 M5-D25 contract acceptance current through 2026-09-03; M5-D26 contract
-acceptance current through 2026-09-07
+acceptance current through 2026-09-07; M5-D27 erratum acceptance current
+through 2026-09-17
 
 Authority: `docs/m5_design_freeze.md` governs. M5-D24 recovery/accounting work
 also obeys
@@ -23,6 +24,10 @@ obey
 `docs/workstreams/m5_runtime_contract/CHANGED_STATE_ABSENCE_AMENDMENT.md` at
 accepted SHA-256
 `85372d4c2f9108810bd75c3e5611de541d0f31c8a096421f30e68fad84676721`.
+Requirement-state physical-write counter ownership also obeys
+`docs/workstreams/m5_runtime_contract/REQUIREMENT_STATE_COUNTER_ERRATUM.md` at
+accepted SHA-256
+`7a51afc1f1b6c249572222a023814de8b22220058e00f09564de64f552bd411c`.
 Implementation stops on any conflict with those contracts rather than silently
 choosing new semantics.
 
@@ -680,6 +685,32 @@ the accepted freeze commit before any D26 implementation branch may resume.
 D25 and M5.0-25 remain implementation-`PENDING`; M5.4-05 through M5.4-09 and
 every M5.5/M5.6 gate remain `PENDING`; runtime remains `v1_only` outside
 isolated fixtures.
+
+### 7.8 M5-D27 contract checkpoint
+
+M5-D27 is accepted on exact reviewed candidate commit `bbfd4bf`, tree
+`4a2f2cc72c0e46410a76b3a80078130c194b2bd7`, and content SHA-256
+`7a51afc1f1b6c249572222a023814de8b22220058e00f09564de64f552bd411c`
+after independent authority/semantics and PostgreSQL/schema/compatibility
+reviews both returned `GO`, `P0=0`, `P1=0`. Runtime-addendum revision 8 and
+acceptance row M5.0-27 freeze the wording-only requirement-state counter-owner
+correction.
+
+This is contract `PASS` / implementation `PENDING`. D24 has no dedicated
+requirement-state physical row-count coordinate; no existing D24/D25 counter
+may be used as an alias. Requirement-state mutations remain exact D25 logical
+patch/output and transition-bijection evidence. A package-private prepared
+transition may compare planned and actual requirement-state writes inside one
+transaction, but that diagnostic value is not persisted, hashed, exposed, or
+reconstructed.
+
+The erratum changes no DTO, digest, schema, migration, source, test, database,
+provider, deployment, runtime mode, or AI-quality result. Requirement-state-
+writing Task-2 work may resume only under a separate path-exclusive activation
+based on the exact integrated freeze barrier. M5-D24 through M5-D27 and
+M5.0-24 through M5.0-27 remain implementation-`PENDING`; Task 2, M5.4-05
+through M5.4-09, and every M5.5/M5.6 gate remain `PENDING`; runtime remains
+`v1_only` outside isolated fixtures.
 
 M5.4 exit gate: deterministic fake-port path passes first, then a bounded
 maintained PostgreSQL history and frozen-model diagnostic pass with complete

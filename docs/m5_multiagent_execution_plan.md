@@ -11,13 +11,14 @@ at `0e0ff43`; R2d pure typed-direct application outcome integrated at
 inventory-location repair are integrated at `290dbb3`; M5.0-24 is
 contract-`PASS` / implementation-`PENDING`; M5-D25 and M5.0-25 are contract-
 `PASS` / implementation-`PENDING`; M5-D26 and M5.0-26 are contract-`PASS` /
-implementation-`PENDING`; all implementation grants are closed or held
-read-only, and no D24, D25, or D26 implementation lane has current edit
-ownership
+implementation-`PENDING`; M5-D27 and M5.0-27 are contract-`PASS` /
+implementation-`PENDING`; the Task-2 activation at `e3d83e3` owns its exact
+path-exclusive lanes, whose implementation evidence is not yet accepted
 
 Date: 2026-08-02; M5-D24 path amendments and integration records 2026-08-06
 through 2026-08-19; M5.4-02/-03/-04 integration record 2026-09-02; M5-D25
-contract freeze 2026-09-03; M5-D26 contract freeze 2026-09-07
+contract freeze 2026-09-03; M5-D26 contract freeze 2026-09-07; Task-2
+activation and M5-D27 contract freeze 2026-09-17
 
 Authority: `docs/m5_design_freeze.md` defines semantics and
 `docs/m5_implementation_plan.md` defines gates. This document defines only
@@ -26,6 +27,8 @@ M5-D25 implementation must additionally obey the exact accepted
 `docs/workstreams/m5_runtime_contract/PERSISTED_MATCHING_AMENDMENT.md`.
 M5-D26 implementation must additionally obey the exact accepted
 `docs/workstreams/m5_runtime_contract/CHANGED_STATE_ABSENCE_AMENDMENT.md`.
+M5-D27 implementation must additionally obey the exact accepted
+`docs/workstreams/m5_runtime_contract/REQUIREMENT_STATE_COUNTER_ERRATUM.md`.
 
 The accepted C7 correction at
 `docs/workstreams/m5_runtime_contract/DIRECT_ACQUISITION_TERMINAL_CUTOFF_CORRECTION.md`
@@ -785,3 +788,32 @@ M5-D25/M5.0-25 and M5-D26/M5.0-26 remain implementation-`PENDING`.
 M5.4-05 through M5.4-09 and every M5.5/M5.6 gate remain `PENDING`; runtime
 stays `v1_only`; and no deployment, model-quality, utility, security, novelty,
 or superiority claim follows.
+
+### Wave R6 -- M5-D27 counter-ownership authority freeze
+
+The D27 candidate resolves only the nonexistent D24 requirement-state physical
+write coordinate named by M5-D25 prose. The corrected candidate was accepted
+on exact commit `bbfd4bf8c2a2a9c015fbfa1156bc66f172cb3962`, tree
+`4a2f2cc72c0e46410a76b3a80078130c194b2bd7`, and content SHA-256
+`7a51afc1f1b6c249572222a023814de8b22220058e00f09564de64f552bd411c`.
+The final independent authority/semantics and PostgreSQL/schema/compatibility
+reviews each returned `GO`, `P0=0`, `P1=0` on identical bytes.
+
+The authority-freeze tranche owns only the exact ten paths recorded in
+`docs/workstreams/m5_runtime_implementation/D27_CONTRACT_FREEZE_HANDOFF.md`.
+It may freeze M5-D27, runtime-addendum revision 8, and M5.0-27. It owns no
+migration, source, test, database, provider, deployment, runtime-mode, or AI-
+quality path. The accepted D27 erratum and the active Task-2 implementation
+branches are immutable inputs to this tranche.
+
+The separately accepted Task-2 activation at `e3d83e3` remains the only
+implementation ownership grant. D27 neither accepts its current Lane-A/Lane-B
+candidates nor silently expands their paths. A requirement-state-writing
+continuation must start from the exact integrated D27 barrier under a new
+path-exclusive activation; no current lane may edit a contract, migration,
+DTO, digest, schema, or public result to invent the missing counter.
+
+M5-D24 through M5-D27 and M5.0-24 through M5.0-27 remain implementation-
+`PENDING`. Task 2, M5.4-05 through M5.4-09, and every M5.5/M5.6 gate remain
+`PENDING`; runtime stays `v1_only`; and no deployment, model-quality, utility,
+security, novelty, or superiority claim follows.
