@@ -135,6 +135,7 @@ The coordinator must verify before integration:
 6. two independent reviewers return `GO`, `P0=0`, `P1=0` on identical freeze
    commit/tree bytes before a fast-forward integration and push.
 
-Any byte edit restarts both freeze reviews. Integration creates authority only;
-technical work resumes solely under a new path-exclusive activation based on
-the exact pushed barrier.
+Any byte edit restarts both freeze reviews. Integration creates authority only.
+The already activated Lane-A/Lane-B work remains governed by `e3d83e3`; only
+requirement-state-writing continuation may resume under a new path-exclusive
+activation based on the exact pushed D27 barrier.

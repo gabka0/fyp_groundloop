@@ -38,9 +38,10 @@ supersedes this addendum wherever those operational surfaces differ. The
 accepted M5-D25 contract at `PERSISTED_MATCHING_AMENDMENT.md` supersedes this
 addendum for persisted matching, migration 017, matching-work ownership, and
 physical/provenance audit surfaces. There is no unresolved D25 contract
-blocker, but acceptance implements nothing: migration 017 and source/test work
-still require a separate path-exclusive activation. Full M5.4 completion
-remains blocked on that implementation and its executable evidence. The
+blocker. Migration 017 and the initial Task-2 store/publication-helper paths
+were separately activated and integrated or opened under their exact grants;
+their implementation evidence remains pending. Full M5.4 completion remains
+blocked on that implementation and its executable evidence. The
 accepted M5-D26 contract at `CHANGED_STATE_ABSENCE_AMENDMENT.md` supersedes
 only the removed-predecessor changed-state-reference validation gap: it defines
 one typed absence artifact for three existing kinds and grants migration 017
