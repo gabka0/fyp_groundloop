@@ -24,6 +24,7 @@ from groundloop.m5.runtime import digests
 from groundloop.m5.runtime.contracts import (
     MATCHING_WORK_COUNTER_NAMES,
     M5ChangedStateReference,
+    M5RuntimeWork,
     M5StateReferenceKind,
 )
 
@@ -112,6 +113,7 @@ _D26_KINDS = frozenset(
         M5StateReferenceKind.GROUP_CERTIFICATE.value,
     }
 )
+_RUNTIME_WORK_COUNTER_NAMES = M5RuntimeWork.counter_names()
 
 
 def _require_nonnegative_int(name: str, value: int, *, positive: bool = False) -> None:
@@ -1718,6 +1720,40 @@ def _validate_event_result_binding(
         replayed=False,
     )
     event_work_digest = _strip_hash(row[12], name="event work digest")
+    # These identifiers come from the frozen M5RuntimeWork DTO rather than from
+    # caller-authored SQL.  Reading by (event, work_kind) is the runtime-work
+    # primary-key point lookup required by the measured-seal contract.
+    work_rows = cursor.execute(
+        "SELECT structural_event_id, epoch_id, work_kind, work_digest, "
+        + ", ".join(_RUNTIME_WORK_COUNTER_NAMES)
+        + " FROM groundloop_m5_runtime_work "
+        "WHERE structural_event_id=%s AND work_kind='event'",
+        (envelope.event_id,),
+    ).fetchall()
+    if len(work_rows) != 1:
+        raise ValidationError("sealed event result lacks one exact event work row")
+    work_row = work_rows[0]
+    try:
+        work_values = {
+            name: int(value)
+            for name, value in zip(
+                _RUNTIME_WORK_COUNTER_NAMES, work_row[4:], strict=True
+            )
+        }
+        event_work = M5RuntimeWork(
+            **work_values,
+            work_digest=_strip_hash(work_row[3], name="event work authority digest"),
+        )
+    except (TypeError, ValueError, ValidationError) as exc:
+        raise ValidationError("sealed event work authority is invalid") from exc
+    if (
+        str(work_row[0]) != envelope.event_id
+        or int(work_row[1]) != envelope.epoch_id
+        or str(work_row[2]) != "event"
+        or event_work.work_digest != event_work_digest
+        or event_work.public_delta_count != len(children.combined_deltas)
+    ):
+        raise ValidationError("sealed event result does not bind exact event work")
     expected_logical_result = digests.event_run_logical_result_digest(
         event_id=envelope.event_id,
         payload_hash=envelope.payload_hash,
@@ -1725,7 +1761,7 @@ def _validate_event_result_binding(
         sealed_or_failed_outcome="sealed",
         original_open_receipt_binding_hash=open_binding,
         original_publication_receipt_binding_hash=publication_binding,
-        event_work_digest=event_work_digest,
+        event_work_digest=event_work.work_digest,
         combined_status_delta_set_hash=delta_set_hash,
         changed_state_set_hash=changed_state_set_hash,
         failure_reason=None,
