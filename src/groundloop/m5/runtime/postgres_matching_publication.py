@@ -14,12 +14,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from psycopg import Cursor
+from psycopg.types.json import Jsonb
 
 from groundloop.domain import StatusDelta
 from groundloop.errors import InvalidEventError, ValidationError
+from groundloop.m4.contracts import stable_m4_digest
 from groundloop.m5.digests import hash_field, stable_m5_digest, text_field
 from groundloop.m5.runtime import digests
 from groundloop.m5.runtime.contracts import (
+    MATCHING_WORK_COUNTER_NAMES,
     M5ChangedStateReference,
     M5StateReferenceKind,
 )
@@ -95,6 +98,7 @@ class _SealEnvelope:
     previous_epoch_id: int
     previous_revision: int
     update_kind: str
+    decision_policy_version: str
     predecessor_group_id: str | None
     deactivation_action: str | None
     successor_group_id: str | None
@@ -302,7 +306,10 @@ def promote_matching_overlay(
     if sealed_revision != expected_revision + 1:
         raise ValidationError("sealed_revision must be expected_revision + 1")
 
-    cursor.execute("SELECT set_config('groundloop.m5_checked_transition','on',true)")
+    cursor.execute(
+        "SELECT groundloop_m5_authorize_checked_transition(%s,%s)",
+        (epoch_id, expected_revision),
+    )
     cursor.execute(
         "SELECT groundloop_m5_authorize_persisted_matching_seal(%s,%s,%s)",
         (epoch_id, expected_revision, sealed_revision),
@@ -482,7 +489,8 @@ def _load_seal_envelope(
                m4_head.epoch_id, m5_head.epoch_id, m5_head.sealed_revision,
                deactivation.event_id, deactivation.group_version_id,
                deactivation.action, deactivation.successor_group_version_id,
-               count(deactivation.epoch_id) OVER (), predecessor_epoch.revision
+               count(deactivation.epoch_id) OVER (), predecessor_epoch.revision,
+               update_row.decision_policy_version
         FROM groundloop_epoch AS epoch
         JOIN groundloop_m5_runtime_epoch AS runtime USING (epoch_id)
         JOIN groundloop_m5_update AS update_row USING (epoch_id)
@@ -519,95 +527,324 @@ def _load_seal_envelope(
         previous_epoch_id=int(row[14]),
         previous_revision=int(row[24]),
         update_kind=str(row[15]),
+        decision_policy_version=str(row[25]),
         predecessor_group_id=(None if row[20] is None else str(row[20])),
         deactivation_action=(None if row[21] is None else str(row[21])),
         successor_group_id=(None if row[22] is None else str(row[22])),
     )
 
 
-def _load_logical_changes(
-    cursor: Cursor[Any], *, epoch_id: int
+def _typed_optional_hash(node: object, *, name: str) -> str | None:
+    if not isinstance(node, dict):
+        raise ValidationError(f"{name} has an invalid typed node")
+    if node.get("tag") == "null":
+        return None
+    if node.get("tag") != "sha256":
+        raise ValidationError(f"{name} has an invalid typed hash tag")
+    return _strip_hash(node.get("value"), name=name)
+
+
+def _load_structural_logical_changes(
+    cursor: Cursor[Any], *, envelope: _SealEnvelope
 ) -> tuple[_LogicalChange, ...]:
+    """Point-read and byte-validate the one D26 structural contribution."""
+
     rows = cursor.execute(
         """
-        SELECT contribution.resulting_revision, contribution.source_kind,
-               contribution.source_id, contribution.source_identity_hash,
-               contribution.before_epoch_id, contribution.before_revision,
-               change.value->'children'->0->>'value' AS kind,
-               change.value->'children'->1->>'value' AS object_id,
-               CASE WHEN change.value->'children'->2->>'tag' = 'null'
-                    THEN NULL ELSE change.value->'children'->2->>'value' END,
-               CASE WHEN change.value->'children'->3->>'tag' = 'null'
-                    THEN NULL ELSE change.value->'children'->3->>'value' END,
-               EXISTS (
-                   SELECT 1
-                   FROM jsonb_array_elements(
-                       groundloop_m5_matching_validate_logical_output(
-                           patch.logical_output_preimage
-                       )
-                   ) AS output(value)
-                   WHERE output.value->>'kind' =
-                         change.value->'children'->0->>'value'
-                     AND output.value->>'object_id' =
-                         change.value->'children'->1->>'value'
-                     AND output.value->'after'->>'tag' = 'none'
-               ),
-               patch.logical_overlay_patch_digest,
-               patch.logical_overlay_patch_preimage
+        SELECT to_jsonb(contribution), to_jsonb(patch),
+               patch.group_shape_set_preimage,
+               patch.observation_change_preimages,
+               patch.edge_change_preimages,
+               patch.mask_change_preimages,
+               patch.hall_change_preimages,
+               patch.logical_overlay_patch_preimage,
+               patch.logical_output_preimage,
+               patch.canonical_patch_preimage
         FROM groundloop_m5_matching_work_contribution AS contribution
         JOIN groundloop_m5_matching_patch_artifact AS patch
           ON patch.patch_digest = contribution.patch_digest
-        CROSS JOIN LATERAL jsonb_array_elements(
-            groundloop_m5_matching_parse_typed_preimage(
-                patch.logical_overlay_patch_preimage,
-                'm5-persisted-logical-overlay-patch-v1'
-            )->'children'->0->'children'
-        ) AS change(value)
         WHERE contribution.epoch_id = %s
-        ORDER BY contribution.resulting_revision,
-                 (change.value->'children'->0->>'value') COLLATE "C",
-                 (change.value->'children'->1->>'value') COLLATE "C"
+          AND contribution.source_kind = 'structural_open'
+          AND contribution.source_id = %s
         """,
-        (epoch_id,),
+        (envelope.epoch_id, envelope.event_id),
     ).fetchall()
-    verified_preimages: dict[str, bytes] = {}
+    if (
+        len(rows) != 1
+        or not isinstance(rows[0][0], dict)
+        or not isinstance(rows[0][1], dict)
+    ):
+        raise ValidationError("D26 requires one unique structural patch envelope")
+    row = rows[0]
+    contribution = dict(row[0])
+    patch = dict(row[1])
+    expected_contribution_fields: dict[str, object] = {
+        "epoch_id": envelope.epoch_id,
+        "source_kind": "structural_open",
+        "source_id": envelope.event_id,
+        "source_identity_hash": envelope.payload_hash,
+        "before_epoch_id": envelope.previous_epoch_id,
+        "before_revision": envelope.previous_revision,
+        "resulting_revision": 1,
+    }
+    expected_patch_fields: dict[str, object] = {
+        **{
+            key: value
+            for key, value in expected_contribution_fields.items()
+            if key != "epoch_id"
+        },
+        "resulting_epoch_id": envelope.epoch_id,
+        "decision_policy_version": envelope.decision_policy_version,
+    }
+    if any(
+        contribution.get(key) != value
+        for key, value in expected_contribution_fields.items()
+    ):
+        raise ValidationError("D26 structural contribution coordinates are invalid")
+    if any(patch.get(key) != value for key, value in expected_patch_fields.items()):
+        raise ValidationError("D26 structural patch coordinates are invalid")
+
+    patch_digest = _strip_hash(patch.get("patch_digest"), name="patch digest")
+    if (
+        _strip_hash(contribution.get("patch_digest"), name="contribution patch digest")
+        != patch_digest
+    ):
+        raise ValidationError("D26 contribution and patch identities disagree")
+    counters: list[int] = []
+    for name in MATCHING_WORK_COUNTER_NAMES:
+        value = contribution.get(name)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValidationError("D26 contribution work vector is invalid")
+        counters.append(value)
+    work_digest = digests.matching_work_digest(tuple(counters))
+    if (
+        _strip_hash(
+            contribution.get("matching_work_digest"),
+            name="contribution work digest",
+        )
+        != work_digest
+        or _strip_hash(patch.get("matching_work_digest"), name="patch work digest")
+        != work_digest
+    ):
+        raise ValidationError("D26 patch/contribution work digests disagree")
+    expected_contribution_digest = digests.matching_work_contribution_digest(
+        epoch_id=envelope.epoch_id,
+        source_kind="structural_open",
+        source_id=envelope.event_id,
+        source_identity_hash=envelope.payload_hash,
+        before_epoch_id=envelope.previous_epoch_id,
+        before_revision=envelope.previous_revision,
+        resulting_revision=1,
+        patch_digest=patch_digest,
+        matching_work_digest_value=work_digest,
+    )
+    if (
+        _strip_hash(contribution.get("contribution_digest"), name="contribution digest")
+        != expected_contribution_digest
+    ):
+        raise ValidationError("D26 contribution digest is invalid")
+
+    group_shape_preimage = bytes(row[2])
+    group_shape_digest = _strip_hash(
+        patch.get("group_shape_set_digest"), name="group-shape digest"
+    )
+    if hashlib.sha256(group_shape_preimage).hexdigest() != group_shape_digest:
+        raise ValidationError("D26 group-shape bytes are invalid")
+    shape_row = cursor.execute(
+        "SELECT groundloop_m5_matching_validate_group_shapes(%s)",
+        (group_shape_preimage,),
+    ).fetchone()
+    if shape_row is None or not isinstance(shape_row[0], list):
+        raise ValidationError("D26 group-shape bytes did not decode")
+
+    family_arrays = (
+        ("observation", "observation_change_digests", row[3]),
+        ("edge", "edge_change_digests", row[4]),
+        ("mask", "mask_change_digests", row[5]),
+        ("hall", "hall_change_digests", row[6]),
+    )
+    for family, digest_name, raw_preimages in family_arrays:
+        declared = patch.get(digest_name)
+        if not isinstance(declared, list) or raw_preimages is None:
+            raise ValidationError("D26 physical child arrays are malformed")
+        preimages = tuple(bytes(value) for value in raw_preimages)
+        if len(declared) != len(preimages):
+            raise ValidationError("D26 physical child arrays have unequal lengths")
+        prior: dict[str, object] | None = None
+        for declared_value, preimage in zip(declared, preimages, strict=True):
+            child_digest = _strip_hash(declared_value, name="physical child digest")
+            if hashlib.sha256(preimage).hexdigest() != child_digest:
+                raise ValidationError("D26 physical child bytes are invalid")
+            decoded = cursor.execute(
+                """
+                WITH decoded AS (
+                  SELECT groundloop_m5_matching_validate_change(%s,%s) AS value
+                ), shapes AS (
+                  SELECT groundloop_m5_matching_validate_group_shapes(%s) AS value
+                )
+                SELECT decoded.value
+                FROM decoded, shapes
+                WHERE groundloop_m5_matching_validate_patch_change_point(
+                        decoded.value,'structural_open',%s,%s,%s,1)
+                  AND groundloop_m5_matching_validate_change_shape(
+                        decoded.value,shapes.value,%s)
+                  AND groundloop_m5_matching_validate_change_order(
+                        %s,decoded.value,%s)
+                """,
+                (
+                    preimage,
+                    family,
+                    group_shape_preimage,
+                    envelope.previous_epoch_id,
+                    envelope.previous_revision,
+                    envelope.epoch_id,
+                    family,
+                    None if prior is None else Jsonb(prior),
+                    family,
+                ),
+            ).fetchone()
+            if decoded is None or not isinstance(decoded[0], dict):
+                raise ValidationError("D26 physical child is noncanonical")
+            prior = decoded[0]
+
+    logical_patch_preimage = bytes(row[7])
+    logical_output_preimage = bytes(row[8])
+    logical_digest = _strip_hash(
+        patch.get("logical_overlay_patch_digest"), name="logical patch digest"
+    )
+    if hashlib.sha256(logical_patch_preimage).hexdigest() != logical_digest:
+        raise ValidationError("D26 logical patch bytes are invalid")
+    logical_row = cursor.execute(
+        """
+        SELECT groundloop_m5_matching_parse_typed_preimage(
+                 %s,'m5-persisted-logical-overlay-patch-v1'),
+               groundloop_m5_matching_validate_logical_output(%s)
+        WHERE groundloop_m5_matching_validate_logical_patch(
+                %s,%s,%s,1,%s,
+                groundloop_m5_matching_validate_group_shapes(%s))
+        """,
+        (
+            logical_patch_preimage,
+            logical_output_preimage,
+            logical_patch_preimage,
+            logical_output_preimage,
+            envelope.epoch_id,
+            envelope.decision_policy_version,
+            group_shape_preimage,
+        ),
+    ).fetchone()
+    if (
+        logical_row is None
+        or not isinstance(logical_row[0], dict)
+        or not isinstance(logical_row[1], list)
+    ):
+        raise ValidationError("D26 logical patch/output bytes are noncanonical")
+
+    digest_arrays: dict[str, tuple[str, ...]] = {}
+    for name in (
+        "observation_change_digests",
+        "edge_change_digests",
+        "mask_change_digests",
+        "hall_change_digests",
+    ):
+        raw = patch.get(name)
+        assert isinstance(raw, list)
+        digest_arrays[name] = tuple(_strip_hash(value, name=name) for value in raw)
+    expected_patch_digest = digests.persisted_matching_patch_digest(
+        source_kind="structural_open",
+        source_id=envelope.event_id,
+        source_identity_hash=envelope.payload_hash,
+        before_epoch_id=envelope.previous_epoch_id,
+        before_revision=envelope.previous_revision,
+        resulting_epoch_id=envelope.epoch_id,
+        resulting_revision=1,
+        decision_policy_version=envelope.decision_policy_version,
+        group_shape_set_digest=group_shape_digest,
+        observation_change_digests=digest_arrays["observation_change_digests"],
+        edge_change_digests=digest_arrays["edge_change_digests"],
+        mask_change_digests=digest_arrays["mask_change_digests"],
+        hall_change_digests=digest_arrays["hall_change_digests"],
+        logical_overlay_patch_digest_value=logical_digest,
+        matching_work_digest_value=work_digest,
+    )
+    expected_patch_preimage = digests.persisted_matching_patch_preimage(
+        source_kind="structural_open",
+        source_id=envelope.event_id,
+        source_identity_hash=envelope.payload_hash,
+        before_epoch_id=envelope.previous_epoch_id,
+        before_revision=envelope.previous_revision,
+        resulting_epoch_id=envelope.epoch_id,
+        resulting_revision=1,
+        decision_policy_version=envelope.decision_policy_version,
+        group_shape_set_digest=group_shape_digest,
+        observation_change_digests=digest_arrays["observation_change_digests"],
+        edge_change_digests=digest_arrays["edge_change_digests"],
+        mask_change_digests=digest_arrays["mask_change_digests"],
+        hall_change_digests=digest_arrays["hall_change_digests"],
+        logical_overlay_patch_digest_value=logical_digest,
+        matching_work_digest_value=work_digest,
+    )
+    if (
+        patch_digest != expected_patch_digest
+        or bytes(row[9]) != expected_patch_preimage
+    ):
+        raise ValidationError("D26 canonical outer patch bytes are invalid")
+
+    parsed_children = logical_row[0].get("children")
+    if not isinstance(parsed_children, list) or not parsed_children:
+        raise ValidationError("D26 logical patch has an invalid outer sequence")
+    changes_node = parsed_children[0]
+    if not isinstance(changes_node, dict) or not isinstance(
+        changes_node.get("children"), list
+    ):
+        raise ValidationError("D26 logical change sequence is invalid")
+    outputs: dict[tuple[str, str], bool] = {}
+    for output in logical_row[1]:
+        if not isinstance(output, dict):
+            raise ValidationError("D26 logical output record is invalid")
+        key = (str(output.get("kind")), str(output.get("object_id")))
+        after = output.get("after")
+        if key in outputs or not isinstance(after, dict):
+            raise ValidationError("D26 logical output keys are not unique")
+        outputs[key] = after.get("tag") == "none"
     changes: list[_LogicalChange] = []
-    for row in rows:
-        patch_digest = _strip_hash(row[11], name="logical patch digest")
-        patch_preimage = bytes(row[12])
-        previous = verified_preimages.setdefault(patch_digest, patch_preimage)
-        if (
-            previous != patch_preimage
-            or hashlib.sha256(patch_preimage).hexdigest() != patch_digest
+    for raw_change in changes_node["children"]:
+        if not isinstance(raw_change, dict) or not isinstance(
+            raw_change.get("children"), list
         ):
-            raise ValidationError("logical patch digest/preimage mismatch")
-        kind = str(row[6])
-        if kind not in _REFERENCE_KIND_BY_WIRE:
-            raise ValidationError("logical patch contains an unknown state kind")
-        before_hash = (
-            None if row[8] is None else _strip_hash(row[8], name="logical before hash")
-        )
-        after_hash = (
-            None if row[9] is None else _strip_hash(row[9], name="logical after hash")
-        )
-        output_is_absent = bool(row[10])
-        if output_is_absent != (after_hash is None):
-            raise ValidationError("logical change and output presence disagree")
+            raise ValidationError("D26 logical change is malformed")
+        children = raw_change["children"]
+        if len(children) != 4 or any(not isinstance(value, dict) for value in children):
+            raise ValidationError("D26 logical change arity is invalid")
+        kind = str(children[0].get("value"))
+        object_id = str(children[1].get("value"))
+        if kind not in _REFERENCE_KIND_BY_WIRE or not object_id.strip():
+            raise ValidationError("D26 logical change key is invalid")
+        key = (kind, object_id)
+        if key not in outputs:
+            raise ValidationError("D26 logical output omits a change")
+        before_hash = _typed_optional_hash(children[2], name="logical before hash")
+        after_hash = _typed_optional_hash(children[3], name="logical after hash")
+        if outputs[key] != (after_hash is None):
+            raise ValidationError("D26 logical change/output presence disagrees")
         changes.append(
             _LogicalChange(
-                revision=int(row[0]),
-                source_kind=str(row[1]),
-                source_id=str(row[2]),
-                source_identity_hash=_strip_hash(row[3], name="source identity hash"),
-                before_epoch_id=int(row[4]),
-                before_revision=int(row[5]),
+                revision=1,
+                source_kind="structural_open",
+                source_id=envelope.event_id,
+                source_identity_hash=envelope.payload_hash,
+                before_epoch_id=envelope.previous_epoch_id,
+                before_revision=envelope.previous_revision,
                 kind=kind,
-                object_id=str(row[7]),
+                object_id=object_id,
                 before_hash=before_hash,
                 after_hash=after_hash,
-                output_is_absent=output_is_absent,
+                output_is_absent=outputs[key],
             )
         )
+    state_output_keys = {key for key in outputs if key[0] in _REFERENCE_KIND_BY_WIRE}
+    if state_output_keys != {(change.kind, change.object_id) for change in changes}:
+        raise ValidationError("D26 logical output contains an extra state record")
     return tuple(changes)
 
 
@@ -769,6 +1006,94 @@ def _present_artifact_hash(
     return _strip_hash(row[0], name="published certificate digest")
 
 
+def _published_present_keys(
+    cursor: Cursor[Any], *, epoch_id: int, revision: int
+) -> tuple[tuple[str, str], ...]:
+    rows = cursor.execute(
+        """
+        SELECT kind, object_id
+        FROM (
+          SELECT 'requirement_state'::text AS kind,
+                 requirement_version_id AS object_id
+          FROM groundloop_m5_published_requirement_state
+          WHERE valid_from_epoch=%s AND sealed_revision=%s
+          UNION ALL
+          SELECT 'group_state', group_version_id
+          FROM groundloop_m5_published_group_state
+          WHERE valid_from_epoch=%s AND sealed_revision=%s
+          UNION ALL
+          SELECT 'claim_state', claim_id
+          FROM groundloop_m5_published_claim_state
+          WHERE valid_from_epoch=%s AND sealed_revision=%s
+          UNION ALL
+          SELECT 'answer_state', answer_version_id
+          FROM groundloop_m5_published_answer_state
+          WHERE valid_from_epoch=%s AND sealed_revision=%s
+          UNION ALL
+          SELECT 'group_certificate', group_version_id
+          FROM groundloop_m5_published_group_certificate_binding
+          WHERE valid_from_epoch=%s AND sealed_revision=%s
+          UNION ALL
+          SELECT 'claim_certificate', claim_id
+          FROM groundloop_m5_published_claim_certificate_binding
+          WHERE valid_from_epoch=%s AND sealed_revision=%s
+        ) AS published
+        ORDER BY kind COLLATE "C", object_id COLLATE "C"
+        """,
+        (epoch_id, revision) * 6,
+    ).fetchall()
+    keys = tuple((str(row[0]), str(row[1])) for row in rows)
+    if len(set(keys)) != len(keys) or any(
+        kind not in _REFERENCE_KIND_BY_WIRE or not object_id.strip()
+        for kind, object_id in keys
+    ):
+        raise ValidationError("newly published changed-state keys are invalid")
+    return keys
+
+
+def _closed_absence_candidate_keys(
+    cursor: Cursor[Any], *, epoch_id: int
+) -> tuple[tuple[str, str], ...]:
+    rows = cursor.execute(
+        """
+        SELECT kind, object_id
+        FROM (
+          SELECT 'requirement_state'::text AS kind,
+                 closed.requirement_version_id AS object_id
+          FROM groundloop_m5_published_requirement_state AS closed
+          WHERE closed.valid_to_epoch=%s
+            AND NOT EXISTS (
+              SELECT 1 FROM groundloop_m5_published_requirement_state AS next
+              WHERE next.requirement_version_id=closed.requirement_version_id
+                AND next.valid_from_epoch=%s)
+          UNION ALL
+          SELECT 'group_state', closed.group_version_id
+          FROM groundloop_m5_published_group_state AS closed
+          WHERE closed.valid_to_epoch=%s
+            AND NOT EXISTS (
+              SELECT 1 FROM groundloop_m5_published_group_state AS next
+              WHERE next.group_version_id=closed.group_version_id
+                AND next.valid_from_epoch=%s)
+          UNION ALL
+          SELECT 'group_certificate', closed.group_version_id
+          FROM groundloop_m5_published_group_certificate_binding AS closed
+          WHERE closed.valid_to_epoch=%s
+            AND NOT EXISTS (
+              SELECT 1
+              FROM groundloop_m5_published_group_certificate_binding AS next
+              WHERE next.group_version_id=closed.group_version_id
+                AND next.valid_from_epoch=%s)
+        ) AS closed
+        ORDER BY kind COLLATE "C", object_id COLLATE "C"
+        """,
+        (epoch_id, epoch_id, epoch_id, epoch_id, epoch_id, epoch_id),
+    ).fetchall()
+    keys = tuple((str(row[0]), str(row[1])) for row in rows)
+    if len(set(keys)) != len(keys):
+        raise ValidationError("closed changed-state keys are duplicated")
+    return keys
+
+
 def _validate_d26_absence_set(
     cursor: Cursor[Any],
     *,
@@ -894,13 +1219,24 @@ def _validate_d26_absence_set(
     ).fetchall()
     total_requirements = cursor.execute(
         """
-        SELECT count(*) FROM groundloop_m5_requirement_version
-        WHERE group_version_id = %s AND lifecycle_state = 'PUBLISHED'
+        SELECT count(*),
+               count(*) FILTER (WHERE lifecycle_state='PUBLISHED'),
+               min(ordinal), max(ordinal), count(DISTINCT ordinal)
+        FROM groundloop_m5_requirement_version
+        WHERE group_version_id = %s
         """,
         (predecessor,),
     ).fetchone()
-    if total_requirements is None or len(requirement_rows) != int(
-        total_requirements[0]
+    if total_requirements is None:
+        raise ValidationError("absence predecessor requirement set is missing")
+    requirement_count = int(total_requirements[0])
+    if (
+        not 1 <= requirement_count <= 8
+        or int(total_requirements[1]) != requirement_count
+        or int(total_requirements[2]) != 0
+        or int(total_requirements[3]) != requirement_count - 1
+        or int(total_requirements[4]) != requirement_count
+        or len(requirement_rows) != requirement_count
     ):
         raise ValidationError("absence requirement predecessor closure is incomplete")
     for row in requirement_rows:
@@ -973,9 +1309,138 @@ def _validate_d26_absence_set(
     ).fetchall()
     if len(binding_rows) > 1:
         raise ValidationError("absence predecessor has multiple certificate bindings")
+    group_complete = bool(group_row[3])
+    group_certificate = (
+        None
+        if group_row[5] is None
+        else _strip_hash(group_row[5], name="predecessor group certificate")
+    )
+    if group_complete:
+        if (
+            int(group_row[0]) != requirement_count
+            or int(group_row[1]) != requirement_count
+            or int(group_row[2]) != requirement_count
+            or group_certificate is None
+            or len(binding_rows) != 1
+            or _strip_hash(binding_rows[0][0], name="certificate binding")
+            != group_certificate
+        ):
+            raise ValidationError(
+                "absence complete group state/binding authority is inconsistent"
+            )
+    elif group_certificate is not None or binding_rows:
+        raise ValidationError(
+            "absence incomplete group cannot have certificate authority"
+        )
     if binding_rows:
+        binding_digest = _strip_hash(
+            binding_rows[0][0], name="predecessor certificate binding"
+        )
+        artifact = cursor.execute(
+            """
+            SELECT artifact.group_version_id, artifact.requirement_count,
+                   artifact.decision_policy_version,
+                   groundloop_m5_expected_group_certificate(
+                       artifact.certificate_digest),
+                   count(artifact_row.requirement_ordinal),
+                   min(artifact_row.requirement_ordinal),
+                   max(artifact_row.requirement_ordinal),
+                   count(DISTINCT artifact_row.requirement_ordinal)
+            FROM groundloop_m5_group_certificate_artifact AS artifact
+            LEFT JOIN groundloop_m5_group_certificate_artifact_row AS artifact_row
+              ON artifact_row.certificate_digest=artifact.certificate_digest
+            WHERE artifact.certificate_digest=%s
+            GROUP BY artifact.certificate_digest, artifact.group_version_id,
+                     artifact.requirement_count,
+                     artifact.decision_policy_version
+            """,
+            (binding_digest,),
+        ).fetchall()
+        if len(artifact) != 1 or (
+            str(artifact[0][0]) != predecessor
+            or int(artifact[0][1]) != requirement_count
+            or _strip_hash(artifact[0][3], name="expected certificate")
+            != binding_digest
+            or int(artifact[0][4]) != requirement_count
+            or int(artifact[0][5]) != 0
+            or int(artifact[0][6]) != requirement_count - 1
+            or int(artifact[0][7]) != requirement_count
+        ):
+            raise ValidationError("absence certificate artifact rows are invalid")
+        selected_rows = cursor.execute(
+            """
+            SELECT artifact_row.requirement_ordinal,
+                   artifact_row.requirement_version_id,
+                   artifact_row.text_hash,
+                   artifact_row.selected_observation_id,
+                   EXISTS (
+                     SELECT 1
+                     FROM groundloop_m5_requirement_version AS requirement
+                     JOIN groundloop_semantic_observation AS observation
+                       ON observation.observation_id=
+                          artifact_row.selected_observation_id
+                     JOIN groundloop_published_observation_currency AS currency
+                       ON currency.observation_id=observation.observation_id
+                      AND currency.subject_kind=observation.subject_kind
+                      AND currency.subject_id=observation.subject_id
+                      AND currency.chunk_version_id=observation.chunk_version_id
+                      AND currency.task_type=observation.task_type
+                      AND currency.valid_from_epoch <= %s
+                      AND (currency.valid_to_epoch IS NULL
+                           OR %s < currency.valid_to_epoch)
+                     JOIN groundloop_chunk_version AS chunk
+                       ON chunk.chunk_version_id=observation.chunk_version_id
+                     JOIN groundloop_decision_policy AS policy
+                       ON policy.policy_version=%s
+                      AND policy.valid_from_epoch <= %s
+                      AND (policy.valid_to_epoch IS NULL
+                           OR %s < policy.valid_to_epoch)
+                     WHERE requirement.requirement_version_id=
+                           artifact_row.requirement_version_id
+                       AND requirement.lifecycle_state='PUBLISHED'
+                       AND requirement.group_version_id=%s
+                       AND requirement.ordinal=
+                           artifact_row.requirement_ordinal
+                       AND observation.subject_kind='requirement'
+                       AND observation.subject_id=
+                           artifact_row.requirement_version_id
+                       AND observation.task_type='verify_requirement_v1'
+                       AND observation.eligible_for_currency
+                       AND observation.support_score >= policy.support_threshold
+                       AND observation.support_score > observation.refute_score
+                       AND observation.support_score > observation.neutral_score
+                       AND encode(digest(convert_to(
+                           groundloop_normalize_text_v1(chunk.text),'UTF8'),
+                           'sha256'),'hex')=artifact_row.text_hash
+                       AND chunk.valid_from_epoch <= %s
+                       AND (chunk.valid_to_epoch IS NULL
+                            OR %s < chunk.valid_to_epoch)
+                   )
+            FROM groundloop_m5_group_certificate_artifact_row AS artifact_row
+            WHERE artifact_row.certificate_digest=%s
+            ORDER BY artifact_row.requirement_ordinal
+            """,
+            (
+                envelope.previous_epoch_id,
+                envelope.previous_epoch_id,
+                str(artifact[0][2]),
+                envelope.previous_epoch_id,
+                envelope.previous_epoch_id,
+                predecessor,
+                envelope.previous_epoch_id,
+                envelope.previous_epoch_id,
+                binding_digest,
+            ),
+        ).fetchall()
+        if len(selected_rows) != requirement_count or any(
+            int(row[0]) != ordinal or not bool(row[4])
+            for ordinal, row in enumerate(selected_rows)
+        ):
+            raise ValidationError(
+                "absence certificate selected-observation authority is invalid"
+            )
         expected[(M5StateReferenceKind.GROUP_CERTIFICATE.value, predecessor)] = (
-            _strip_hash(binding_rows[0][0], name="predecessor certificate binding")
+            binding_digest
         )
 
     if set(absent) != set(expected):
@@ -1103,51 +1568,54 @@ def _build_combined_deltas(
     return tuple(sorted(deltas, key=lambda value: (value.object_type, value.object_id)))
 
 
-def build_matching_publication_children(
+def _derive_matching_publication_children(
     cursor: Cursor[Any],
     *,
     epoch_id: int,
     sealed_revision: int,
-) -> M5MatchingPublicationChildren:
-    """Derive complete net deltas and D22/D26 references from durable rows.
-
-    Call this after semantic/certificate promotion and both heads/epoch headers
-    have reached their final sealed coordinates, but before inserting the
-    immutable event-result children.  It performs no writes.
-    """
+) -> tuple[_SealEnvelope, M5MatchingPublicationChildren]:
 
     _require_nonnegative_int("epoch_id", epoch_id, positive=True)
     _require_nonnegative_int("sealed_revision", sealed_revision, positive=True)
     envelope = _load_seal_envelope(
         cursor, epoch_id=epoch_id, sealed_revision=sealed_revision
     )
-    logical_changes = _load_logical_changes(cursor, epoch_id=epoch_id)
-    net = _net_logical_changes(logical_changes)
+    present_keys = _published_present_keys(
+        cursor, epoch_id=epoch_id, revision=sealed_revision
+    )
+    absence_candidates = _closed_absence_candidate_keys(cursor, epoch_id=epoch_id)
     absent: dict[tuple[str, str], tuple[str | None, tuple[_LogicalChange, ...]]] = {}
-    references: list[M5ChangedStateReference] = []
-    for (kind, object_id), (before_hash, after_hash, history) in sorted(net.items()):
-        reference_kind = _REFERENCE_KIND_BY_WIRE[kind]
-        if after_hash is None:
-            if kind not in _D26_KINDS or before_hash is None:
+    if absence_candidates:
+        if envelope.update_kind not in {"replace_group", "retire_group"}:
+            raise ValidationError(
+                "absence references require replace_group or retire_group"
+            )
+        logical_changes = _load_structural_logical_changes(cursor, envelope=envelope)
+        net = _net_logical_changes(logical_changes)
+        for key, (before_hash, after_hash, history) in net.items():
+            if after_hash is not None:
+                continue
+            if key[0] not in _D26_KINDS or before_hash is None:
                 raise ValidationError(
                     "nonqualifying logical absence cannot be published"
                 )
-            absent[(kind, object_id)] = (before_hash, history)
-            state_artifact_hash = digests.changed_state_absence_artifact_digest(
-                reference_kind, object_id
+            absent[key] = (before_hash, history)
+        if set(absent) != set(absence_candidates):
+            raise ValidationError(
+                "D26 logical absence set disagrees with closed interval authority"
             )
-        else:
-            state_artifact_hash = _present_artifact_hash(
-                cursor,
-                kind=kind,
-                object_id=object_id,
-                epoch_id=epoch_id,
-                revision=sealed_revision,
-            )
-            if state_artifact_hash != after_hash:
-                raise ValidationError(
-                    "published state disagrees with D25 logical after hash"
-                )
+        _validate_d26_absence_set(cursor, envelope=envelope, absent=absent)
+
+    references: list[M5ChangedStateReference] = []
+    for kind, object_id in present_keys:
+        reference_kind = _REFERENCE_KIND_BY_WIRE[kind]
+        state_artifact_hash = _present_artifact_hash(
+            cursor,
+            kind=kind,
+            object_id=object_id,
+            epoch_id=epoch_id,
+            revision=sealed_revision,
+        )
         references.append(
             M5ChangedStateReference.build(
                 kind=reference_kind,
@@ -1157,10 +1625,23 @@ def build_matching_publication_children(
                 state_artifact_hash=state_artifact_hash,
             )
         )
-    if absent:
-        _validate_d26_absence_set(cursor, envelope=envelope, absent=absent)
+    for kind, object_id in sorted(absent):
+        if (kind, object_id) in set(present_keys):
+            raise ValidationError("one changed-state key is both present and absent")
+        reference_kind = _REFERENCE_KIND_BY_WIRE[kind]
+        references.append(
+            M5ChangedStateReference.build(
+                kind=reference_kind,
+                object_id=object_id,
+                epoch_id=epoch_id,
+                revision=sealed_revision,
+                state_artifact_hash=digests.changed_state_absence_artifact_digest(
+                    reference_kind, object_id
+                ),
+            )
+        )
     combined_deltas = _build_combined_deltas(
-        cursor, envelope=envelope, changed_keys=set(net)
+        cursor, envelope=envelope, changed_keys=set(present_keys)
     )
     references_tuple = tuple(
         sorted(
@@ -1172,10 +1653,114 @@ def build_matching_publication_children(
             ),
         )
     )
-    return M5MatchingPublicationChildren(
-        combined_deltas=combined_deltas,
-        changed_state_references=references_tuple,
+    return (
+        envelope,
+        M5MatchingPublicationChildren(
+            combined_deltas=combined_deltas,
+            changed_state_references=references_tuple,
+        ),
     )
+
+
+def prepare_matching_publication_children(
+    cursor: Cursor[Any], *, epoch_id: int, sealed_revision: int
+) -> M5MatchingPublicationChildren:
+    """Prepare store-derived children before the immutable result parent exists.
+
+    The caller may use these deterministic hashes to insert the parent result.
+    It must then call :func:`build_matching_publication_children`; only that
+    result-bound second derivation is safe to insert as public children.
+    """
+
+    return _derive_matching_publication_children(
+        cursor, epoch_id=epoch_id, sealed_revision=sealed_revision
+    )[1]
+
+
+def _validate_event_result_binding(
+    cursor: Cursor[Any],
+    *,
+    envelope: _SealEnvelope,
+    children: M5MatchingPublicationChildren,
+) -> None:
+    rows = cursor.execute(
+        """
+        SELECT structural_event_id, payload_hash, epoch_id, outcome,
+               publication_id, combined_status_delta_set_hash,
+               changed_state_set_hash, delta_count, state_reference_count,
+               failure_reason, original_open_receipt_binding_hash,
+               original_publication_receipt_binding_hash,
+               event_work_digest, logical_result_hash
+        FROM groundloop_m5_event_result
+        WHERE structural_event_id=%s
+        """,
+        (envelope.event_id,),
+    ).fetchall()
+    if len(rows) != 1:
+        raise ValidationError("publication children require one exact event result")
+    row = rows[0]
+    publication_id = stable_m4_digest("m4-publication-v1", str(envelope.epoch_id))
+    delta_set_hash = digests.combined_status_delta_set_digest(children.combined_deltas)
+    changed_state_set_hash = digests.changed_state_set_digest(
+        reference.reference_digest for reference in children.changed_state_references
+    )
+    open_binding = digests.open_event_receipt_binding_digest(
+        epoch_id=envelope.epoch_id,
+        replayed=False,
+        already_sealed=False,
+        publication_id=None,
+        already_failed=False,
+        failure_reason=None,
+    )
+    publication_binding = digests.publication_receipt_binding_digest(
+        epoch_id=envelope.epoch_id,
+        publication_id=publication_id,
+        replayed=False,
+    )
+    event_work_digest = _strip_hash(row[12], name="event work digest")
+    expected_logical_result = digests.event_run_logical_result_digest(
+        event_id=envelope.event_id,
+        payload_hash=envelope.payload_hash,
+        epoch_id=envelope.epoch_id,
+        sealed_or_failed_outcome="sealed",
+        original_open_receipt_binding_hash=open_binding,
+        original_publication_receipt_binding_hash=publication_binding,
+        event_work_digest=event_work_digest,
+        combined_status_delta_set_hash=delta_set_hash,
+        changed_state_set_hash=changed_state_set_hash,
+        failure_reason=None,
+    )
+    if (
+        str(row[0]) != envelope.event_id
+        or _strip_hash(row[1], name="result payload hash") != envelope.payload_hash
+        or int(row[2]) != envelope.epoch_id
+        or str(row[3]) != "sealed"
+        or str(row[4]) != publication_id
+        or _strip_hash(row[5], name="result delta-set hash") != delta_set_hash
+        or _strip_hash(row[6], name="result changed-state hash")
+        != changed_state_set_hash
+        or int(row[7]) != len(children.combined_deltas)
+        or int(row[8]) != len(children.changed_state_references)
+        or row[9] is not None
+        or _strip_hash(row[10], name="open binding") != open_binding
+        or _strip_hash(row[11], name="publication binding") != publication_binding
+        or _strip_hash(row[13], name="logical result hash") != expected_logical_result
+    ):
+        raise ValidationError(
+            "publication children do not bind the exact sealed event result"
+        )
+
+
+def build_matching_publication_children(
+    cursor: Cursor[Any], *, epoch_id: int, sealed_revision: int
+) -> M5MatchingPublicationChildren:
+    """Re-derive children and bind them to the inserted sealed result parent."""
+
+    envelope, children = _derive_matching_publication_children(
+        cursor, epoch_id=epoch_id, sealed_revision=sealed_revision
+    )
+    _validate_event_result_binding(cursor, envelope=envelope, children=children)
+    return children
 
 
 __all__ = [
@@ -1183,5 +1768,6 @@ __all__ = [
     "M5MatchingPublicationChildren",
     "build_matching_publication_children",
     "install_matching_activation_projection",
+    "prepare_matching_publication_children",
     "promote_matching_overlay",
 ]

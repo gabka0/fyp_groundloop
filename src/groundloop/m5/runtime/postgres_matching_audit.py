@@ -565,6 +565,15 @@ class _ProvenanceResult:
     mismatches: tuple[M5PersistedMatchingProvenanceMismatch, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _RuntimeAuthority:
+    status: M5MatchingEpochStatus
+    revision: int
+    base_epoch_id: int
+    base_revision: int
+    decision_policy_version: str
+
+
 def _typed_value(node: object) -> object:
     if not isinstance(node, dict):
         raise M5MatchingAuditInvalidError("typed point node is not an object")
@@ -1118,23 +1127,114 @@ def _empty_working_maps() -> dict[M5MatchingAuditFamily, dict[AuditKey, WorkingP
     return {family: {} for family in _FAMILIES}
 
 
-def _runtime_rows(cursor: Cursor[Any]) -> dict[int, tuple[M5MatchingEpochStatus, int]]:
+def _runtime_rows(cursor: Cursor[Any]) -> dict[int, _RuntimeAuthority]:
     rows = cursor.execute(
         """
         SELECT runtime.epoch_id, runtime.runtime_state, runtime.revision,
-               epoch.revision
+               runtime.terminal_at,
+               runtime.expected_previous_published_epoch_id,
+               epoch.revision, epoch.structural_status,
+               epoch.semantic_status, epoch.evaluation_state,
+               epoch.publication_mode, epoch.sealed_at,
+               update_row.previous_published_epoch_id,
+               update_row.decision_policy_version,
+               predecessor.revision, predecessor.structural_status,
+               predecessor.semantic_status, predecessor.evaluation_state,
+               predecessor.publication_mode, predecessor.sealed_at
         FROM groundloop_m5_runtime_epoch AS runtime
         JOIN groundloop_epoch AS epoch USING (epoch_id)
+        JOIN groundloop_m5_update AS update_row USING (epoch_id)
+        JOIN groundloop_epoch AS predecessor
+          ON predecessor.epoch_id = update_row.previous_published_epoch_id
         ORDER BY runtime.epoch_id
         """
     ).fetchall()
-    result: dict[int, tuple[M5MatchingEpochStatus, int]] = {}
+    result: dict[int, _RuntimeAuthority] = {}
     for row in rows:
         epoch_id = _integer(row[0], name="runtime epoch", minimum=1)
+        if epoch_id in result:
+            raise M5MatchingAuditInvalidError("runtime epoch key is duplicated")
+        runtime_state = _text(row[1], name="runtime state")
         runtime_revision = _integer(row[2], name="runtime revision", minimum=1)
-        if runtime_revision != _integer(row[3], name="epoch revision", minimum=1):
+        base_epoch_id = _integer(row[4], name="runtime base epoch", minimum=1)
+        epoch_revision = _integer(row[5], name="epoch revision", minimum=1)
+        update_base_epoch_id = _integer(row[11], name="update base epoch", minimum=1)
+        base_revision = _integer(row[13], name="base revision", minimum=0)
+        if runtime_revision != epoch_revision:
             raise M5MatchingAuditInvalidError("runtime and epoch revisions disagree")
-        result[epoch_id] = (_status(row[1]), runtime_revision)
+        if base_epoch_id != update_base_epoch_id:
+            raise M5MatchingAuditInvalidError("runtime and update bases disagree")
+        if (
+            tuple(row[14:18]) != ("committed", "sealed", "complete", "strict")
+            or row[18] is None
+        ):
+            raise M5MatchingAuditInvalidError(
+                "runtime predecessor is not an exact sealed base"
+            )
+        terminal = row[3] is not None
+        epoch_state = tuple(row[6:10])
+        sealed_at = row[10] is not None
+        if runtime_state in {"structural_committed", "semantic_pending"}:
+            valid_state = (
+                epoch_state
+                == (
+                    "committed",
+                    "pending",
+                    "pending",
+                    "provisional",
+                )
+                and not terminal
+                and not sealed_at
+            )
+        elif runtime_state == "semantic_complete":
+            valid_state = (
+                epoch_state
+                == (
+                    "committed",
+                    "complete",
+                    "complete",
+                    "provisional",
+                )
+                and not terminal
+                and not sealed_at
+            )
+        elif runtime_state == "sealed":
+            valid_state = (
+                epoch_state
+                == (
+                    "committed",
+                    "sealed",
+                    "complete",
+                    "strict",
+                )
+                and terminal
+                and sealed_at
+            )
+        elif runtime_state == "failed":
+            valid_state = (
+                epoch_state
+                == (
+                    "failed",
+                    "failed",
+                    "failed",
+                    "provisional",
+                )
+                and terminal
+                and not sealed_at
+            )
+        else:
+            valid_state = False
+        if not valid_state:
+            raise M5MatchingAuditInvalidError(
+                "runtime and epoch terminal/status authority disagree"
+            )
+        result[epoch_id] = _RuntimeAuthority(
+            status=_status(runtime_state),
+            revision=runtime_revision,
+            base_epoch_id=base_epoch_id,
+            base_revision=base_revision,
+            decision_policy_version=_text(row[12], name="update policy"),
+        )
     return result
 
 
@@ -1155,6 +1255,53 @@ def _work_values(value: dict[str, Any]) -> tuple[int, ...]:
     return tuple(
         _integer(value.get(name), name=name, minimum=0)
         for name in MATCHING_WORK_COUNTER_NAMES
+    )
+
+
+def _work_digest_binding_matches(
+    contribution: dict[str, Any], patch: dict[str, Any], expected_digest: str
+) -> bool:
+    return (
+        _hash(
+            contribution.get("matching_work_digest"),
+            name="contribution work digest",
+        )
+        == expected_digest
+        and _hash(patch.get("matching_work_digest"), name="patch work digest")
+        == expected_digest
+    )
+
+
+def _revision_sequence_matches_authority(
+    authority: _RuntimeAuthority, revisions: tuple[int, ...]
+) -> bool:
+    return bool(
+        revisions
+        and revisions[0] == 1
+        and revisions == tuple(sorted(set(revisions)))
+        and authority.revision >= revisions[-1]
+    )
+
+
+def _structural_patch_matches_authority(
+    patch: dict[str, Any],
+    authority: _RuntimeAuthority,
+    current_header: tuple[int, int, str],
+) -> bool:
+    return (
+        patch.get("source_kind") == "structural_open"
+        and (
+            _integer(patch.get("before_epoch_id"), name="patch base epoch", minimum=1),
+            _integer(
+                patch.get("before_revision"),
+                name="patch base revision",
+                minimum=0,
+            ),
+        )
+        == (authority.base_epoch_id, authority.base_revision)
+        == current_header[:2]
+        and _text(patch.get("decision_policy_version"), name="patch policy")
+        == authority.decision_policy_version
     )
 
 
@@ -1235,10 +1382,7 @@ def _audit_provenance(
             integrity_ok = False
         counters = _work_values(contribution)
         work_digest = digests.matching_work_digest(counters)
-        if work_digest != _hash(
-            contribution.get("matching_work_digest"),
-            name="contribution work digest",
-        ):
+        if not _work_digest_binding_matches(contribution, patch_values, work_digest):
             integrity_ok = False
         declared_contribution = _hash(
             contribution.get("contribution_digest"),
@@ -1365,21 +1509,17 @@ def _audit_provenance(
         if status_row is None or not epoch_patches:
             integrity_ok = False
             continue
-        status, terminal_runtime_revision = status_row
+        status = status_row.status
+        terminal_runtime_revision = status_row.revision
         revisions = tuple(
             int(patch.values["resulting_revision"]) for patch in epoch_patches
         )
-        if revisions != tuple(range(1, len(revisions) + 1)):
+        if not _revision_sequence_matches_authority(status_row, revisions):
             integrity_ok = False
         first = epoch_patches[0].values
-        if first.get("source_kind") != "structural_open":
-            integrity_ok = False
-        before_coordinates = (
-            _integer(first.get("before_epoch_id"), name="base epoch", minimum=1),
-            _integer(first.get("before_revision"), name="base revision", minimum=0),
-        )
-        policy = _text(first.get("decision_policy_version"), name="epoch policy")
-        if before_coordinates != current_header[:2]:
+        before_coordinates = (status_row.base_epoch_id, status_row.base_revision)
+        policy = status_row.decision_policy_version
+        if not _structural_patch_matches_authority(first, status_row, current_header):
             integrity_ok = False
         working = _empty_working_maps()
         working_touch: dict[M5MatchingAuditFamily, dict[AuditKey, str]] = {
@@ -1443,7 +1583,7 @@ def _audit_provenance(
         expected_working[epoch_id] = working
         expected_working_touch[epoch_id] = working_touch
         if status is M5MatchingEpochStatus.SEALED:
-            if terminal_runtime_revision != updated_revision + 1:
+            if terminal_runtime_revision <= updated_revision:
                 integrity_ok = False
             for family in _FAMILIES:
                 for key, working_point_value in working[family].items():
@@ -1491,7 +1631,8 @@ def _audit_provenance(
             raise M5MatchingAuditInvalidError(
                 "working-image row lacks replay authority"
             )
-        status, runtime_revision = status_row
+        status = status_row.status
+        runtime_revision = status_row.revision
         last_patch = max(
             header_patches, key=lambda patch: int(patch.values["resulting_revision"])
         )
@@ -1509,7 +1650,7 @@ def _audit_provenance(
     expected_accumulators: dict[int, tuple[str, ...]] = {}
     for epoch_id, vectors in counters_by_epoch.items():
         total = tuple(sum(values) for values in zip(*vectors, strict=True))
-        status, _ = runtime[epoch_id]
+        status = runtime[epoch_id].status
         updated_revision = max(
             int(patch.values["resulting_revision"])
             for patch in patches_by_epoch[epoch_id]
@@ -1535,7 +1676,7 @@ def _audit_provenance(
             )
         actual_accumulators[epoch_id] = digests.accumulator_provenance_fields(
             epoch_id,
-            runtime[epoch_id][0],
+            runtime[epoch_id].status,
             _work_values(value),
             _hash(value.get("matching_work_digest"), name="accumulator digest"),
             _integer(
