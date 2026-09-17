@@ -91,7 +91,17 @@ def _require_sha256(name: str, value: str) -> None:
 
 
 def _text(value: object) -> str:
-    return str(value).strip()
+    """Decode a PostgreSQL text value without changing its identity bytes."""
+
+    return str(value)
+
+
+def _sha256_text(value: object) -> str:
+    """Decode a fixed-width PostgreSQL digest, removing only CHAR padding."""
+
+    digest = str(value).rstrip(" ")
+    _require_sha256("persisted digest", digest)
+    return digest
 
 
 def _tuple_ints(value: object) -> tuple[int, ...]:
@@ -112,9 +122,18 @@ def require_persisted_matching_bundle(cursor: Cursor[Any]) -> None:
         """,
         (_PERSISTED_MATCHING_BUNDLE_ROW[0],),
     ).fetchone()
-    if row is None or tuple(_text(value) for value in row) != (
-        _PERSISTED_MATCHING_BUNDLE_ROW
-    ):
+    actual = (
+        None
+        if row is None
+        else (
+            _text(row[0]),
+            _sha256_text(row[1]),
+            _sha256_text(row[2]),
+            _sha256_text(row[3]),
+            _sha256_text(row[4]),
+        )
+    )
+    if actual != _PERSISTED_MATCHING_BUNDLE_ROW:
         raise InvalidEventError(
             "typed M5 matching requires the exact accepted migration-017 bundle"
         )
@@ -123,40 +142,84 @@ def require_persisted_matching_bundle(cursor: Cursor[Any]) -> None:
 def _authorize_checked_prefix(
     cursor: Cursor[Any], *, epoch_id: int, expected_revision: int
 ) -> None:
-    """Acquire/revalidate the frozen tier-6 epoch/runtime CAS prefix."""
+    """Acquire the tier-6 CAS prefix and bind a transaction-local read scope."""
 
     cursor.execute(
         "SELECT groundloop_m5_authorize_checked_transition(%s, %s)",
         (epoch_id, expected_revision),
+    )
+    cursor.execute(
+        """
+        SELECT set_config(
+                 'groundloop.m5_matching_reader_epoch_id', %s, true
+               ),
+               set_config(
+                 'groundloop.m5_matching_reader_revision', %s, true
+               ),
+               set_config(
+                 'groundloop.m5_matching_reader_backend_pid',
+                 pg_backend_pid()::text, true
+               ),
+               set_config(
+                 'groundloop.m5_matching_reader_transaction_id',
+                 pg_current_xact_id()::text, true
+               )
+        """,
+        (str(epoch_id), str(expected_revision)),
     )
 
 
 def _require_checked_prefix(
     cursor: Cursor[Any], *, epoch_id: int, expected_revision: int | None = None
 ) -> tuple[int, int]:
-    """Revalidate the transaction-local checked prefix and its exact rows."""
+    """Assert the exact already-acquired epoch scope, then revalidate its CAS."""
 
     setting = cursor.execute(
-        "SELECT current_setting('groundloop.m5_checked_transition', true)"
+        """
+        SELECT current_setting('groundloop.m5_checked_transition', true),
+               current_setting(
+                 'groundloop.m5_matching_reader_epoch_id', true
+               ),
+               current_setting(
+                 'groundloop.m5_matching_reader_revision', true
+               ),
+               current_setting(
+                 'groundloop.m5_matching_reader_backend_pid', true
+               ),
+               current_setting(
+                 'groundloop.m5_matching_reader_transaction_id', true
+               ),
+               pg_backend_pid()::text,
+               pg_current_xact_id()::text
+        """
     ).fetchone()
-    if setting is None or setting[0] != "on":
-        raise ValidationError("matching point read lacks the checked epoch prefix")
+    if (
+        setting is None
+        or setting[0] != "on"
+        or setting[1] != str(epoch_id)
+        or not setting[2]
+        or setting[3] != setting[5]
+        or setting[4] != setting[6]
+    ):
+        raise ValidationError(
+            "matching point read lacks the exact checked epoch prefix"
+        )
+    scoped_revision = int(setting[2])
+    if expected_revision is not None and scoped_revision != expected_revision:
+        raise EventConflictError("matching point read has a different scoped revision")
     row = cursor.execute(
         """
         SELECT epoch.revision, runtime.revision
         FROM groundloop_epoch AS epoch
         JOIN groundloop_m5_runtime_epoch AS runtime USING (epoch_id)
         WHERE epoch.epoch_id = %s
-        FOR UPDATE OF epoch, runtime
         """,
         (epoch_id,),
     ).fetchone()
     if row is None:
         raise InvalidEventError("matching point read names an unknown typed epoch")
     revisions = (int(row[0]), int(row[1]))
-    if revisions[0] != revisions[1] or (
-        expected_revision is not None and revisions[0] != expected_revision
-    ):
+    if revisions[0] != revisions[1] or revisions[0] != scoped_revision:
         raise EventConflictError("matching point read lost its epoch/runtime CAS")
     return revisions
 
@@ -169,53 +232,143 @@ def effective_matching_image(
     _require_positive_int("epoch_id", epoch_id)
     require_persisted_matching_bundle(cursor)
     _require_checked_prefix(cursor, epoch_id=epoch_id)
-    row = cursor.execute(
+    current = cursor.execute(
         """
-        SELECT current_image.decision_policy_version,
-               current_image.installed_epoch_id,
-               current_image.installed_revision,
-               working_image.epoch_id,
-               working_image.base_epoch_id,
-               working_image.base_revision,
-               working_image.decision_policy_version,
-               working_image.updated_revision
-        FROM groundloop_m5_matching_image_current AS current_image
-        JOIN groundloop_m5_matching_image_working AS working_image
-          ON working_image.epoch_id = %s
-        JOIN groundloop_m5_update AS typed_update
-          ON typed_update.epoch_id = working_image.epoch_id
-        JOIN groundloop_m4_publication_head AS m4_head ON m4_head.singleton
+        SELECT decision_policy_version, installed_epoch_id, installed_revision
+        FROM groundloop_m5_matching_image_current
+        WHERE singleton
+        FOR UPDATE
+        """
+    ).fetchone()
+    if current is None:
+        raise ValidationError("persisted matching current image is missing")
+    current_policy = _text(current[0])
+    current_epoch = int(current[1])
+    current_revision = int(current[2])
+
+    current_authority = cursor.execute(
+        """
+        SELECT m4_head.epoch_id, m5_head.epoch_id, m5_head.sealed_revision,
+               predecessor.revision,
+               predecessor.structural_status,
+               predecessor.semantic_status,
+               predecessor.evaluation_state,
+               predecessor.sealed_at IS NOT NULL,
+               (SELECT count(*)
+                  FROM groundloop_decision_policy AS strict_policy
+                 WHERE strict_policy.valid_from_epoch <= %s
+                   AND (strict_policy.valid_to_epoch IS NULL
+                        OR %s < strict_policy.valid_to_epoch)),
+               EXISTS (
+                 SELECT 1
+                   FROM groundloop_decision_policy AS selected_policy
+                  WHERE selected_policy.policy_version = %s
+                    AND selected_policy.valid_from_epoch <= %s
+                    AND (selected_policy.valid_to_epoch IS NULL
+                         OR %s < selected_policy.valid_to_epoch)
+               )
+        FROM groundloop_m4_publication_head AS m4_head
         JOIN groundloop_m5_publication_head AS m5_head ON m5_head.singleton
-        JOIN groundloop_epoch AS predecessor
-          ON predecessor.epoch_id = current_image.installed_epoch_id
-        WHERE current_image.singleton
-          AND current_image.installed_epoch_id = m4_head.epoch_id
-          AND current_image.installed_epoch_id = m5_head.epoch_id
-          AND current_image.installed_revision = m5_head.sealed_revision
-          AND predecessor.revision = current_image.installed_revision
-          AND predecessor.structural_status = 'committed'
-          AND predecessor.semantic_status = 'sealed'
-          AND predecessor.evaluation_state = 'complete'
-          AND predecessor.sealed_at IS NOT NULL
-          AND working_image.base_epoch_id = current_image.installed_epoch_id
-          AND working_image.base_revision = current_image.installed_revision
-          AND working_image.decision_policy_version =
-              typed_update.decision_policy_version
-        FOR UPDATE OF current_image, working_image
+        JOIN groundloop_epoch AS predecessor ON predecessor.epoch_id = %s
+        WHERE m4_head.singleton
+        """,
+        (
+            current_epoch,
+            current_epoch,
+            current_policy,
+            current_epoch,
+            current_epoch,
+            current_epoch,
+        ),
+    ).fetchone()
+    if (
+        current_authority is None
+        or int(current_authority[0]) != current_epoch
+        or int(current_authority[1]) != current_epoch
+        or int(current_authority[2]) != current_revision
+        or int(current_authority[3]) != current_revision
+        or _text(current_authority[4]) != "committed"
+        or _text(current_authority[5]) != "sealed"
+        or _text(current_authority[6]) != "complete"
+        or not bool(current_authority[7])
+        or int(current_authority[8]) != 1
+        or not bool(current_authority[9])
+    ):
+        raise ValidationError("persisted matching current image is inconsistent")
+
+    working = cursor.execute(
+        """
+        SELECT epoch_id, base_epoch_id, base_revision,
+               decision_policy_version, updated_revision
+        FROM groundloop_m5_matching_image_working
+        WHERE epoch_id = %s
+        FOR UPDATE
         """,
         (epoch_id,),
     ).fetchone()
-    if row is None:
-        raise ValidationError("persisted matching image headers are inconsistent")
+    if working is None:
+        raise ValidationError("persisted matching working image is missing")
+    working_epoch = int(working[0])
+    working_base_epoch = int(working[1])
+    working_base_revision = int(working[2])
+    working_policy = _text(working[3])
+    working_updated_revision = int(working[4])
+
+    policy_authority = cursor.execute(
+        """
+        SELECT runtime.expected_previous_published_epoch_id,
+               runtime.candidate_policy_id,
+               runtime.candidate_policy_manifest_hash,
+               typed_update.previous_published_epoch_id,
+               typed_update.decision_policy_version,
+               typed_policy.candidate_policy_manifest_hash,
+               typed_policy.decision_policy_version,
+               direct_update.epoch_id,
+               direct_update.previous_published_epoch_id,
+               direct_update.candidate_policy_id,
+               direct_policy.decision_policy_version
+        FROM groundloop_m5_runtime_epoch AS runtime
+        JOIN groundloop_m5_update AS typed_update USING (epoch_id)
+        JOIN groundloop_m5_candidate_policy AS typed_policy
+          ON typed_policy.candidate_policy_id = runtime.candidate_policy_id
+        LEFT JOIN groundloop_m4_update AS direct_update
+          ON direct_update.epoch_id = runtime.epoch_id
+        LEFT JOIN groundloop_candidate_policy AS direct_policy
+          ON direct_policy.candidate_policy_id = direct_update.candidate_policy_id
+        WHERE runtime.epoch_id = %s
+        """,
+        (epoch_id,),
+    ).fetchone()
+    direct_present = policy_authority is not None and policy_authority[7] is not None
+    if (
+        policy_authority is None
+        or working_epoch != epoch_id
+        or working_base_epoch != current_epoch
+        or working_base_revision != current_revision
+        or int(policy_authority[0]) != current_epoch
+        or int(policy_authority[3]) != current_epoch
+        or _sha256_text(policy_authority[2]) != _sha256_text(policy_authority[5])
+        or _text(policy_authority[4]) != working_policy
+        or _text(policy_authority[6]) != working_policy
+        or (
+            direct_present
+            and (
+                int(policy_authority[8]) != current_epoch
+                or _text(policy_authority[9]) != _text(policy_authority[1])
+                or _text(policy_authority[10]) != working_policy
+            )
+        )
+    ):
+        raise ValidationError("persisted matching image policy is inconsistent")
     return M5MatchingImagePoint(
-        _text(row[0]),
-        int(row[1]),
-        int(row[2]),
-        int(row[3]),
-        int(row[4]),
-        int(row[5]),
-        _text(row[6]),
-        int(row[7]),
+        current_policy,
+        current_epoch,
+        current_revision,
+        working_epoch,
+        working_base_epoch,
+        working_base_revision,
+        working_policy,
+        working_updated_revision,
     )
 
 
@@ -227,29 +380,6 @@ def resolved_matching_observation_point(
     _require_positive_int("epoch_id", epoch_id)
     _require_text("observation_id", observation_id)
     effective_matching_image(cursor, epoch_id)
-    row = cursor.execute(
-        """
-        SELECT epoch_id, observation_id, requirement_version_id,
-               group_version_id, requirement_ordinal, text_hash,
-               present, updated_revision
-        FROM groundloop_m5_matching_observation_working
-        WHERE epoch_id = %s AND observation_id = %s
-        FOR UPDATE
-        """,
-        (epoch_id, observation_id),
-    ).fetchone()
-    if row is not None:
-        return M5MatchingObservationWorking(
-            M5MatchingLayer.WORKING,
-            int(row[0]),
-            _text(row[1]),
-            _text(row[2]),
-            _text(row[3]),
-            int(row[4]),
-            _text(row[5]),
-            bool(row[6]),
-            int(row[7]),
-        )
     current = cursor.execute(
         """
         SELECT observation_id, requirement_version_id, group_version_id,
@@ -261,6 +391,29 @@ def resolved_matching_observation_point(
         """,
         (observation_id,),
     ).fetchone()
+    working = cursor.execute(
+        """
+        SELECT epoch_id, observation_id, requirement_version_id,
+               group_version_id, requirement_ordinal, text_hash,
+               present, updated_revision
+        FROM groundloop_m5_matching_observation_working
+        WHERE epoch_id = %s AND observation_id = %s
+        FOR UPDATE
+        """,
+        (epoch_id, observation_id),
+    ).fetchone()
+    if working is not None:
+        return M5MatchingObservationWorking(
+            M5MatchingLayer.WORKING,
+            int(working[0]),
+            _text(working[1]),
+            _text(working[2]),
+            _text(working[3]),
+            int(working[4]),
+            _sha256_text(working[5]),
+            bool(working[6]),
+            int(working[7]),
+        )
     if current is None:
         return None
     return M5MatchingObservationCurrent(
@@ -269,7 +422,7 @@ def resolved_matching_observation_point(
         _text(current[1]),
         _text(current[2]),
         int(current[3]),
-        _text(current[4]),
+        _sha256_text(current[4]),
         int(current[5]),
         int(current[6]),
     )
@@ -287,28 +440,6 @@ def resolved_matching_edge_point(
     _require_text("requirement_version_id", requirement_version_id)
     _require_sha256("text_hash", text_hash)
     effective_matching_image(cursor, epoch_id)
-    row = cursor.execute(
-        """
-        SELECT epoch_id, requirement_version_id, text_hash,
-               group_version_id, requirement_ordinal, refcount,
-               updated_revision
-        FROM groundloop_m5_matching_edge_working
-        WHERE epoch_id = %s AND requirement_version_id = %s AND text_hash = %s
-        FOR UPDATE
-        """,
-        (epoch_id, requirement_version_id, text_hash),
-    ).fetchone()
-    if row is not None:
-        return M5MatchingEdgeWorking(
-            M5MatchingLayer.WORKING,
-            int(row[0]),
-            _text(row[1]),
-            _text(row[2]),
-            _text(row[3]),
-            int(row[4]),
-            int(row[5]),
-            int(row[6]),
-        )
     current = cursor.execute(
         """
         SELECT requirement_version_id, text_hash, group_version_id,
@@ -320,12 +451,34 @@ def resolved_matching_edge_point(
         """,
         (requirement_version_id, text_hash),
     ).fetchone()
+    working = cursor.execute(
+        """
+        SELECT epoch_id, requirement_version_id, text_hash,
+               group_version_id, requirement_ordinal, refcount,
+               updated_revision
+        FROM groundloop_m5_matching_edge_working
+        WHERE epoch_id = %s AND requirement_version_id = %s AND text_hash = %s
+        FOR UPDATE
+        """,
+        (epoch_id, requirement_version_id, text_hash),
+    ).fetchone()
+    if working is not None:
+        return M5MatchingEdgeWorking(
+            M5MatchingLayer.WORKING,
+            int(working[0]),
+            _text(working[1]),
+            _sha256_text(working[2]),
+            _text(working[3]),
+            int(working[4]),
+            int(working[5]),
+            int(working[6]),
+        )
     if current is None:
         return None
     return M5MatchingEdgeCurrent(
         M5MatchingLayer.CURRENT,
         _text(current[0]),
-        _text(current[1]),
+        _sha256_text(current[1]),
         _text(current[2]),
         int(current[3]),
         int(current[4]),
@@ -343,24 +496,6 @@ def resolved_matching_mask_point(
     _require_text("group_version_id", group_version_id)
     _require_sha256("text_hash", text_hash)
     effective_matching_image(cursor, epoch_id)
-    row = cursor.execute(
-        """
-        SELECT epoch_id, group_version_id, text_hash, mask, updated_revision
-        FROM groundloop_m5_matching_hash_mask_working
-        WHERE epoch_id = %s AND group_version_id = %s AND text_hash = %s
-        FOR UPDATE
-        """,
-        (epoch_id, group_version_id, text_hash),
-    ).fetchone()
-    if row is not None:
-        return M5MatchingMaskWorking(
-            M5MatchingLayer.WORKING,
-            int(row[0]),
-            _text(row[1]),
-            _text(row[2]),
-            int(row[3]),
-            int(row[4]),
-        )
     current = cursor.execute(
         """
         SELECT group_version_id, text_hash, mask,
@@ -371,12 +506,30 @@ def resolved_matching_mask_point(
         """,
         (group_version_id, text_hash),
     ).fetchone()
+    working = cursor.execute(
+        """
+        SELECT epoch_id, group_version_id, text_hash, mask, updated_revision
+        FROM groundloop_m5_matching_hash_mask_working
+        WHERE epoch_id = %s AND group_version_id = %s AND text_hash = %s
+        FOR UPDATE
+        """,
+        (epoch_id, group_version_id, text_hash),
+    ).fetchone()
+    if working is not None:
+        return M5MatchingMaskWorking(
+            M5MatchingLayer.WORKING,
+            int(working[0]),
+            _text(working[1]),
+            _sha256_text(working[2]),
+            int(working[3]),
+            int(working[4]),
+        )
     if current is None:
         return None
     return M5MatchingMaskCurrent(
         M5MatchingLayer.CURRENT,
         _text(current[0]),
-        _text(current[1]),
+        _sha256_text(current[1]),
         int(current[2]),
         int(current[3]),
         int(current[4]),
@@ -391,34 +544,6 @@ def resolved_matching_hall_point(
     _require_positive_int("epoch_id", epoch_id)
     _require_text("group_version_id", group_version_id)
     effective_matching_image(cursor, epoch_id)
-    row = cursor.execute(
-        """
-        SELECT epoch_id, group_version_id, present, requirement_count,
-               mask_histogram, neighbor_counts, deficiencies,
-               maximum_deficiency, matching_size, distinct_hash_count,
-               updated_revision
-        FROM groundloop_m5_matching_hall_working
-        WHERE epoch_id = %s AND group_version_id = %s
-        FOR UPDATE
-        """,
-        (epoch_id, group_version_id),
-    ).fetchone()
-    if row is not None:
-        present = bool(row[2])
-        return M5MatchingHallWorking(
-            M5MatchingLayer.WORKING,
-            int(row[0]),
-            _text(row[1]),
-            present,
-            None if row[3] is None else int(row[3]),
-            None if row[4] is None else _tuple_ints(row[4]),
-            None if row[5] is None else _tuple_ints(row[5]),
-            None if row[6] is None else _tuple_ints(row[6]),
-            None if row[7] is None else int(row[7]),
-            None if row[8] is None else int(row[8]),
-            None if row[9] is None else int(row[9]),
-            int(row[10]),
-        )
     current = cursor.execute(
         """
         SELECT group_version_id, requirement_count, mask_histogram,
@@ -431,6 +556,34 @@ def resolved_matching_hall_point(
         """,
         (group_version_id,),
     ).fetchone()
+    working = cursor.execute(
+        """
+        SELECT epoch_id, group_version_id, present, requirement_count,
+               mask_histogram, neighbor_counts, deficiencies,
+               maximum_deficiency, matching_size, distinct_hash_count,
+               updated_revision
+        FROM groundloop_m5_matching_hall_working
+        WHERE epoch_id = %s AND group_version_id = %s
+        FOR UPDATE
+        """,
+        (epoch_id, group_version_id),
+    ).fetchone()
+    if working is not None:
+        present = bool(working[2])
+        return M5MatchingHallWorking(
+            M5MatchingLayer.WORKING,
+            int(working[0]),
+            _text(working[1]),
+            present,
+            None if working[3] is None else int(working[3]),
+            None if working[4] is None else _tuple_ints(working[4]),
+            None if working[5] is None else _tuple_ints(working[5]),
+            None if working[6] is None else _tuple_ints(working[6]),
+            None if working[7] is None else int(working[7]),
+            None if working[8] is None else int(working[8]),
+            None if working[9] is None else int(working[9]),
+            int(working[10]),
+        )
     if current is None:
         return None
     return M5MatchingHallCurrent(
@@ -600,7 +753,7 @@ def representative_effective_hashes(
         """,
         (epoch_id, group_version_id, mask, group_version_id, mask, epoch_id, limit),
     ).fetchall()
-    hashes = tuple(_text(row[0]) for row in rows)
+    hashes = tuple(_sha256_text(row[0]) for row in rows)
     expected_count = min(hall.mask_histogram[mask], hall.requirement_count)
     if len(hashes) != expected_count:
         raise ValidationError(
@@ -654,6 +807,11 @@ def derive_matching_transition_intent(
         FROM groundloop_epoch AS epoch
         JOIN groundloop_m5_runtime_epoch AS runtime USING (epoch_id)
         JOIN groundloop_m5_update AS typed_update USING (epoch_id)
+        JOIN groundloop_m5_candidate_policy AS typed_policy
+          ON typed_policy.candidate_policy_id = runtime.candidate_policy_id
+        JOIN groundloop_m4_update AS direct_update USING (epoch_id)
+        JOIN groundloop_candidate_policy AS direct_policy
+          ON direct_policy.candidate_policy_id = direct_update.candidate_policy_id
         JOIN groundloop_epoch AS predecessor
           ON predecessor.epoch_id = typed_update.previous_published_epoch_id
         JOIN groundloop_m4_publication_head AS m4_head
@@ -666,9 +824,37 @@ def derive_matching_transition_intent(
           ON current_image.singleton
          AND current_image.installed_epoch_id = m5_head.epoch_id
          AND current_image.installed_revision = m5_head.sealed_revision
+        JOIN groundloop_decision_policy AS current_policy
+          ON current_policy.policy_version = current_image.decision_policy_version
         WHERE epoch.epoch_id = %s
           AND epoch.event_id = %s
           AND runtime.structural_event_id = %s
+          AND runtime.expected_previous_published_epoch_id =
+              typed_update.previous_published_epoch_id
+          AND runtime.candidate_policy_manifest_hash =
+              typed_policy.candidate_policy_manifest_hash
+          AND typed_policy.decision_policy_version =
+              typed_update.decision_policy_version
+          AND direct_update.previous_published_epoch_id =
+              typed_update.previous_published_epoch_id
+          AND direct_update.candidate_policy_id = runtime.candidate_policy_id
+          AND direct_policy.decision_policy_version =
+              typed_update.decision_policy_version
+          AND current_image.decision_policy_version =
+              typed_update.decision_policy_version
+          AND current_policy.valid_from_epoch <= current_image.installed_epoch_id
+          AND (current_policy.valid_to_epoch IS NULL OR
+               current_image.installed_epoch_id < current_policy.valid_to_epoch)
+          AND 1 = (
+              SELECT count(*)
+              FROM groundloop_decision_policy AS strict_policy
+              WHERE strict_policy.valid_from_epoch <=
+                    current_image.installed_epoch_id
+                AND (strict_policy.valid_to_epoch IS NULL OR
+                     current_image.installed_epoch_id <
+                     strict_policy.valid_to_epoch)
+          )
+          AND predecessor.revision = m5_head.sealed_revision
           AND predecessor.structural_status = 'committed'
           AND predecessor.semantic_status = 'sealed'
           AND predecessor.evaluation_state = 'complete'
@@ -679,7 +865,7 @@ def derive_matching_transition_intent(
     ).fetchone()
     if source is None:
         raise InvalidEventError("structural matching source authority is incomplete")
-    source_identity_hash = _text(source[0])
+    source_identity_hash = _sha256_text(source[0])
     if expected_source_identity_hash is not None and (
         expected_source_identity_hash != source_identity_hash
     ):
@@ -765,28 +951,228 @@ def _overlay_work_from_values(values: Sequence[int]) -> M5OverlayWork:
     )
 
 
-def current_matching_work(cursor: Cursor[Any], epoch_id: int) -> M5OverlayWork:
-    """Read and digest-check the retained accumulator for any epoch state."""
+def _matching_work_read_context(cursor: Cursor[Any], epoch_id: int) -> int:
+    """Validate a retained accumulator's nonterminal, failed, or sealed envelope."""
 
+    _require_checked_prefix(cursor, epoch_id=epoch_id)
+    current = cursor.execute(
+        """
+        SELECT decision_policy_version, installed_epoch_id, installed_revision
+        FROM groundloop_m5_matching_image_current
+        WHERE singleton
+        FOR UPDATE
+        """
+    ).fetchone()
+    if current is None:
+        raise ValidationError("persisted matching current image is missing")
+    current_policy = _text(current[0])
+    current_epoch = int(current[1])
+    current_revision = int(current[2])
+
+    working = cursor.execute(
+        """
+        SELECT epoch_id, base_epoch_id, base_revision,
+               decision_policy_version, updated_revision
+        FROM groundloop_m5_matching_image_working
+        WHERE epoch_id = %s
+        FOR UPDATE
+        """,
+        (epoch_id,),
+    ).fetchone()
+    if working is None:
+        raise ValidationError("persisted matching working image is missing")
+    working_epoch = int(working[0])
+    working_base_epoch = int(working[1])
+    working_base_revision = int(working[2])
+    working_policy = _text(working[3])
+    working_updated_revision = int(working[4])
+
+    context = cursor.execute(
+        """
+        SELECT epoch.revision, epoch.structural_status,
+               epoch.semantic_status, epoch.evaluation_state,
+               epoch.publication_mode, epoch.sealed_at IS NOT NULL,
+               runtime.revision, runtime.runtime_state,
+               runtime.terminal_at IS NOT NULL,
+               runtime.expected_previous_published_epoch_id,
+               typed_update.previous_published_epoch_id,
+               typed_update.decision_policy_version,
+               typed_policy.candidate_policy_manifest_hash,
+               runtime.candidate_policy_manifest_hash,
+               typed_policy.decision_policy_version,
+               m4_head.epoch_id, m5_head.epoch_id,
+               m5_head.sealed_revision, predecessor.revision,
+               predecessor.structural_status,
+               predecessor.semantic_status,
+               predecessor.evaluation_state,
+               predecessor.publication_mode,
+               predecessor.sealed_at IS NOT NULL,
+               (SELECT count(*)
+                  FROM groundloop_decision_policy AS strict_policy
+                 WHERE strict_policy.valid_from_epoch <= %s
+                   AND (strict_policy.valid_to_epoch IS NULL
+                        OR %s < strict_policy.valid_to_epoch)),
+               EXISTS (
+                 SELECT 1
+                   FROM groundloop_decision_policy AS selected_policy
+                  WHERE selected_policy.policy_version = %s
+                    AND selected_policy.valid_from_epoch <= %s
+                    AND (selected_policy.valid_to_epoch IS NULL
+                         OR %s < selected_policy.valid_to_epoch)
+               ),
+               direct_update.epoch_id,
+               direct_update.previous_published_epoch_id,
+               direct_update.candidate_policy_id,
+               runtime.candidate_policy_id,
+               direct_policy.decision_policy_version
+        FROM groundloop_epoch AS epoch
+        JOIN groundloop_m5_runtime_epoch AS runtime USING (epoch_id)
+        JOIN groundloop_m5_update AS typed_update USING (epoch_id)
+        JOIN groundloop_m5_candidate_policy AS typed_policy
+          ON typed_policy.candidate_policy_id = runtime.candidate_policy_id
+        JOIN groundloop_m4_publication_head AS m4_head ON m4_head.singleton
+        JOIN groundloop_m5_publication_head AS m5_head ON m5_head.singleton
+        JOIN groundloop_epoch AS predecessor
+          ON predecessor.epoch_id = typed_update.previous_published_epoch_id
+        LEFT JOIN groundloop_m4_update AS direct_update
+          ON direct_update.epoch_id = epoch.epoch_id
+        LEFT JOIN groundloop_candidate_policy AS direct_policy
+          ON direct_policy.candidate_policy_id = direct_update.candidate_policy_id
+        WHERE epoch.epoch_id = %s
+        """,
+        (
+            current_epoch,
+            current_epoch,
+            current_policy,
+            current_epoch,
+            current_epoch,
+            epoch_id,
+        ),
+    ).fetchone()
+    if context is None:
+        raise ValidationError("persisted matching work envelope is incomplete")
+    runtime_state = _text(context[7])
+    direct_present = context[26] is not None
+    if (
+        working_epoch != epoch_id
+        or int(context[0]) != int(context[6])
+        or int(context[9]) != working_base_epoch
+        or int(context[10]) != working_base_epoch
+        or int(context[18]) != working_base_revision
+        or _text(context[11]) != working_policy
+        or _text(context[14]) != working_policy
+        or _sha256_text(context[12]) != _sha256_text(context[13])
+        or _text(context[19]) != "committed"
+        or _text(context[20]) != "sealed"
+        or _text(context[21]) != "complete"
+        or _text(context[22]) != "strict"
+        or not bool(context[23])
+        or int(context[24]) != 1
+        or not bool(context[25])
+        or working_updated_revision > int(context[6])
+        or (
+            direct_present
+            and (
+                int(context[27]) != working_base_epoch
+                or _text(context[28]) != _text(context[29])
+                or _text(context[30]) != working_policy
+            )
+        )
+    ):
+        raise ValidationError("persisted matching work envelope is inconsistent")
+
+    if runtime_state == "sealed":
+        valid_terminal = (
+            bool(context[8])
+            and _text(context[1]) == "committed"
+            and _text(context[2]) == "sealed"
+            and _text(context[3]) == "complete"
+            and _text(context[4]) == "strict"
+            and bool(context[5])
+            and current_epoch == epoch_id
+            and current_revision == int(context[6])
+            and int(context[15]) == epoch_id
+            and int(context[16]) == epoch_id
+            and int(context[17]) == int(context[6])
+            and current_policy == working_policy
+        )
+    elif runtime_state == "failed":
+        valid_terminal = (
+            bool(context[8])
+            and _text(context[1]) == "failed"
+            and _text(context[2]) == "failed"
+            and _text(context[3]) == "failed"
+            and _text(context[4]) == "provisional"
+            and not bool(context[5])
+            and current_epoch == working_base_epoch
+            and current_revision == working_base_revision
+            and int(context[15]) == working_base_epoch
+            and int(context[16]) == working_base_epoch
+            and int(context[17]) == working_base_revision
+        )
+    else:
+        pending_shape = (
+            runtime_state in {"structural_committed", "semantic_pending"}
+            and _text(context[1]) == "committed"
+            and _text(context[2]) == "pending"
+            and _text(context[3]) == "pending"
+        )
+        complete_shape = (
+            runtime_state == "semantic_complete"
+            and _text(context[1]) == "committed"
+            and _text(context[2]) == "complete"
+            and _text(context[3]) == "complete"
+        )
+        valid_terminal = (
+            (pending_shape or complete_shape)
+            and not bool(context[8])
+            and _text(context[4]) == "provisional"
+            and not bool(context[5])
+            and current_epoch == working_base_epoch
+            and current_revision == working_base_revision
+            and int(context[15]) == working_base_epoch
+            and int(context[16]) == working_base_epoch
+            and int(context[17]) == working_base_revision
+        )
+    if not valid_terminal:
+        raise ValidationError("persisted matching work terminal envelope is invalid")
+    return working_updated_revision
+
+
+def _read_matching_work_accumulator(
+    cursor: Cursor[Any], epoch_id: int
+) -> tuple[M5OverlayWork, int]:
     _require_positive_int("epoch_id", epoch_id)
     require_persisted_matching_bundle(cursor)
+    working_updated_revision = _matching_work_read_context(cursor, epoch_id)
     columns = sql.SQL(", ").join(
         sql.Identifier(name) for name in MATCHING_WORK_COUNTER_NAMES
     )
     row = cursor.execute(
         sql.SQL(
-            "SELECT {}, matching_work_digest FROM "
+            "SELECT {}, matching_work_digest, updated_revision FROM "
             "groundloop_m5_matching_work_accumulator WHERE epoch_id = %s FOR SHARE"
         ).format(columns),
         (epoch_id,),
     ).fetchone()
     if row is None:
         raise InvalidEventError("typed epoch has no persisted matching work")
-    work = _overlay_work_from_values(tuple(int(value) for value in row[:-1]))
-    digest = _text(row[-1])
+    work = _overlay_work_from_values(tuple(int(value) for value in row[:-2]))
+    digest = _sha256_text(row[-2])
+    updated_revision = int(row[-1])
     if digest != digests.matching_work_digest(m5_overlay_work_values(work)):
         raise ValidationError("persisted matching accumulator digest is inconsistent")
-    return work
+    if updated_revision != working_updated_revision:
+        raise ValidationError(
+            "persisted matching accumulator revision differs from its working image"
+        )
+    return work, updated_revision
+
+
+def current_matching_work(cursor: Cursor[Any], epoch_id: int) -> M5OverlayWork:
+    """Read checked retained work under the exact epoch and image lock scope."""
+
+    return _read_matching_work_accumulator(cursor, epoch_id)[0]
 
 
 def _empty_patch_artifact(
@@ -1019,6 +1405,18 @@ def _insert_contribution_and_accumulator(
     )
 
 
+def _digest_array(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise ValidationError("persisted digest array has an invalid shape")
+    return tuple(_sha256_text(item) for item in value)
+
+
+def _bytea_array(value: object) -> tuple[bytes, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise ValidationError("persisted preimage array has an invalid shape")
+    return tuple(bytes(item) for item in value)
+
+
 def _read_matching_transition_replay(
     cursor: Cursor[Any],
     intent: M5PersistedMatchingTransitionIntent,
@@ -1030,42 +1428,22 @@ def _read_matching_transition_replay(
     counter_columns = sql.SQL(", ").join(
         sql.Identifier(name) for name in MATCHING_WORK_COUNTER_NAMES
     )
-    row = cursor.execute(
+    contribution_row = cursor.execute(
         sql.SQL(
             """
-            SELECT contribution.source_identity_hash,
-                   contribution.before_epoch_id,
-                   contribution.before_revision,
-                   contribution.resulting_revision,
-                   contribution.patch_digest,
+            SELECT epoch_id, source_kind, source_id, source_identity_hash,
+                   before_epoch_id, before_revision, resulting_revision,
+                   patch_digest,
                    {},
-                   contribution.matching_work_digest,
-                   contribution.contribution_digest,
-                   artifact.group_shape_set_preimage,
-                   artifact.observation_change_digests,
-                   artifact.observation_change_preimages,
-                   artifact.edge_change_digests,
-                   artifact.edge_change_preimages,
-                   artifact.mask_change_digests,
-                   artifact.mask_change_preimages,
-                   artifact.hall_change_digests,
-                   artifact.hall_change_preimages,
-                   artifact.logical_overlay_patch_preimage,
-                   artifact.logical_output_preimage,
-                   artifact.canonical_patch_preimage,
-                   artifact.decision_policy_version
-            FROM groundloop_m5_matching_work_contribution AS contribution
-            JOIN groundloop_m5_matching_patch_artifact AS artifact
-              ON artifact.patch_digest = contribution.patch_digest
-            WHERE contribution.epoch_id = %s
-              AND contribution.source_kind = %s
-              AND contribution.source_id = %s
-            FOR SHARE OF contribution, artifact
+                   matching_work_digest, contribution_digest
+            FROM groundloop_m5_matching_work_contribution
+            WHERE epoch_id = %s AND source_kind = %s AND source_id = %s
+            FOR SHARE
             """
         ).format(counter_columns),
         (intent.resulting_epoch_id, intent.source_kind.value, intent.source_id),
     ).fetchone()
-    if row is None:
+    if contribution_row is None:
         conflict = cursor.execute(
             """
             SELECT source_kind, source_id
@@ -1080,48 +1458,103 @@ def _read_matching_transition_replay(
                 "matching resulting revision belongs to a different source"
             )
         return None
-    counter_start = 5
+    counter_start = 8
     counter_end = counter_start + len(MATCHING_WORK_COUNTER_NAMES)
     stored_work = _overlay_work_from_values(
-        tuple(int(value) for value in row[counter_start:counter_end])
+        tuple(int(value) for value in contribution_row[counter_start:counter_end])
     )
-    stored_work_digest = _text(row[counter_end])
-    contribution_digest = _text(row[counter_end + 1])
-    retained = row[counter_end + 2 :]
+    stored_work_digest = _sha256_text(contribution_row[counter_end])
+    contribution_digest = _sha256_text(contribution_row[counter_end + 1])
     expected_patch = expected.patch
     expected_contribution = _matching_contribution(expected)
     if (
-        _text(row[0]) != intent.source_identity_hash
-        or int(row[1]) != intent.before_epoch_id
-        or int(row[2]) != intent.before_revision
-        or int(row[3]) != intent.resulting_revision
-        or _text(row[4]) != expected_patch.patch_digest
+        int(contribution_row[0]) != intent.resulting_epoch_id
+        or _text(contribution_row[1]) != intent.source_kind.value
+        or _text(contribution_row[2]) != intent.source_id
+        or _sha256_text(contribution_row[3]) != intent.source_identity_hash
+        or int(contribution_row[4]) != intent.before_epoch_id
+        or int(contribution_row[5]) != intent.before_revision
+        or int(contribution_row[6]) != intent.resulting_revision
+        or _sha256_text(contribution_row[7]) != expected_patch.patch_digest
         or stored_work != expected.work
         or stored_work_digest != expected_patch.matching_work_digest
         or contribution_digest != expected_contribution.contribution_digest
-        or bytes(retained[0]) != expected.group_shape_set_preimage
-        or tuple(retained[1] or ())
-        or tuple(retained[2] or ())
-        or tuple(retained[3] or ())
-        or tuple(retained[4] or ())
-        or tuple(retained[5] or ())
-        or tuple(retained[6] or ())
-        or tuple(retained[7] or ())
-        or tuple(retained[8] or ())
-        or bytes(retained[9]) != expected.logical_patch.patch_preimage
-        or bytes(retained[10]) != expected.logical_patch.logical_output_preimage
-        or bytes(retained[11]) != expected.patch_preimage
-        or _text(retained[12]) != expected_patch.decision_policy_version
+    ):
+        raise EventConflictError(
+            "matching replay differs from retained contribution bytes"
+        )
+
+    artifact_row = cursor.execute(
+        """
+        SELECT patch_digest, source_kind, source_id, source_identity_hash,
+               before_epoch_id, before_revision, resulting_epoch_id,
+               resulting_revision, decision_policy_version,
+               group_shape_set_digest, group_shape_set_preimage,
+               observation_change_digests, observation_change_preimages,
+               edge_change_digests, edge_change_preimages,
+               mask_change_digests, mask_change_preimages,
+               hall_change_digests, hall_change_preimages,
+               logical_overlay_patch_digest, logical_overlay_patch_preimage,
+               logical_output_preimage, matching_work_digest,
+               canonical_patch_preimage
+        FROM groundloop_m5_matching_patch_artifact
+        WHERE patch_digest = %s
+        FOR SHARE
+        """,
+        (_sha256_text(contribution_row[7]),),
+    ).fetchone()
+    if artifact_row is None:
+        raise EventConflictError("matching replay lacks its retained patch artifact")
+    if (
+        _sha256_text(artifact_row[0]) != expected_patch.patch_digest
+        or _text(artifact_row[1]) != expected_patch.source_kind.value
+        or _text(artifact_row[2]) != expected_patch.source_id
+        or _sha256_text(artifact_row[3]) != expected_patch.source_identity_hash
+        or int(artifact_row[4]) != expected_patch.before_epoch_id
+        or int(artifact_row[5]) != expected_patch.before_revision
+        or int(artifact_row[6]) != expected_patch.resulting_epoch_id
+        or int(artifact_row[7]) != expected_patch.resulting_revision
+        or _text(artifact_row[8]) != expected_patch.decision_policy_version
+        or _sha256_text(artifact_row[9]) != expected_patch.group_shape_set_digest
+        or bytes(artifact_row[10]) != expected.group_shape_set_preimage
+        or _digest_array(artifact_row[11]) != expected_patch.observation_change_digests
+        or _bytea_array(artifact_row[12]) != expected.observation_change_preimages
+        or _digest_array(artifact_row[13]) != expected_patch.edge_change_digests
+        or _bytea_array(artifact_row[14]) != expected.edge_change_preimages
+        or _digest_array(artifact_row[15]) != expected_patch.mask_change_digests
+        or _bytea_array(artifact_row[16]) != expected.mask_change_preimages
+        or _digest_array(artifact_row[17]) != expected_patch.hall_change_digests
+        or _bytea_array(artifact_row[18]) != expected.hall_change_preimages
+        or _sha256_text(artifact_row[19]) != expected_patch.logical_overlay_patch_digest
+        or bytes(artifact_row[20]) != expected.logical_patch.patch_preimage
+        or bytes(artifact_row[21]) != expected.logical_patch.logical_output_preimage
+        or _sha256_text(artifact_row[22]) != expected_patch.matching_work_digest
+        or bytes(artifact_row[23]) != expected.patch_preimage
     ):
         raise EventConflictError("matching replay differs from retained patch bytes")
+
+    image = effective_matching_image(cursor, intent.resulting_epoch_id)
+    if (
+        image.current_decision_policy_version != intent.decision_policy_version
+        or image.current_installed_epoch_id != intent.before_epoch_id
+        or image.current_installed_revision != intent.before_revision
+        or image.working_epoch_id != intent.resulting_epoch_id
+        or image.working_base_epoch_id != intent.before_epoch_id
+        or image.working_base_revision != intent.before_revision
+        or image.working_decision_policy_version != intent.decision_policy_version
+        or image.working_updated_revision != intent.resulting_revision
+    ):
+        raise EventConflictError("matching replay differs from retained image bytes")
     if expected_patch_digest is not None and (
         expected_patch_digest != expected_patch.patch_digest
     ):
         raise EventConflictError("matching replay differs from expected patch digest")
     if expected_work is not None and expected_work != stored_work:
         raise EventConflictError("matching replay differs from expected work")
-    accumulated = current_matching_work(cursor, intent.resulting_epoch_id)
-    if accumulated != stored_work:
+    accumulated, accumulator_revision = _read_matching_work_accumulator(
+        cursor, intent.resulting_epoch_id
+    )
+    if accumulated != stored_work or accumulator_revision != intent.resulting_revision:
         raise ValidationError("structural matching accumulator changed after replay")
     return M5PersistedMatchingPatchReceipt(
         expected_patch,

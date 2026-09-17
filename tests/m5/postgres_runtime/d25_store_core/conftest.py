@@ -88,6 +88,37 @@ def empty_structural_database() -> Iterator[EmptyStructuralDatabase]:
 
 
 @pytest.fixture
+def whitespace_structural_database() -> Iterator[EmptyStructuralDatabase]:
+    with schema_fixture._pre017_schema() as (connection, _):
+        assert install_m5_persisted_matching_bundle(connection).applied
+        connection.commit()
+        base, policy = schema_fixture._seed_b2_runtime_base(
+            connection, "  d25-store-whitespace"
+        )
+        epoch, event, payload = schema_fixture._open_b2_runtime_epoch(
+            connection,
+            "  d25-store-whitespace-open",
+            base,
+            policy,
+            direct_bridge=True,
+            update_kind="document_insert",
+        )
+        _install_d24_open_accounting(
+            connection, epoch_id=epoch, event_id=event, payload_hash=payload
+        )
+        yield EmptyStructuralDatabase(
+            connection,
+            base,
+            0,
+            policy,
+            epoch,
+            event,
+            payload,
+        )
+        connection.rollback()
+
+
+@pytest.fixture
 def rich_structural_database() -> Iterator[RichStructuralDatabase]:
     with schema_fixture._pre017_schema() as (connection, _):
         snapshot = schema_fixture._seed_b3_activated_snapshot(
