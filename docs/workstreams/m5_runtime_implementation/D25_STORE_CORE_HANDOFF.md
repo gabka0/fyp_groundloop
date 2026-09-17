@@ -13,9 +13,9 @@ branch: workstream/m5-d25-store-core
 worktree: /home/kassym/Desktop/groundloop-worktrees/m5-d25-store-core
 activation base / pre-candidate HEAD: e3d83e36570efd65703472e3022c252c0d0fc008
 activation base tree: 9f98d9c84b01a21be8fd727eaca2930f26388aab
-prior scoped checkpoint / corrective-child parent:
-  6639c8fb9acf3ba92417e0d9c65cd42d6c88587c
-prior scoped checkpoint tree: 169cfa87182741dcf9da6c03c25480747ff5466b
+prior corrected checkpoint / corrective-child parent:
+  8ad7357b322ff4695ecc3d9246083f95f8c15ea0
+prior corrected checkpoint tree: ff0e6b538c311a8489b09aabedf4d555923d77b5
 ```
 
 The authority bytes used were:
@@ -38,19 +38,19 @@ The candidate adds only the six Lane-A-owned paths. The five internally
 pinned implementation/test files are:
 
 1. `src/groundloop/m5/runtime/postgres_matching.py`
-   `0d75e176562a0b346680d3a228b70cec26892e2c211e253ba71efa74448c7847`
+   `37a9ef132d7242ad974d07d500137d4b0fa48b3afe69d07ce476a3724ca5ecb0`
 2. `tests/m5/postgres_runtime/d25_store_core/conftest.py`
    `f46153a8169951afcee71ed1d7d0696abbb5a31e14e696d664c468131077051d`
 3. `tests/m5/postgres_runtime/d25_store_core/test_points.py`
-   `6661285a2add0051ff9ec1cae00b5751c4fd4b28d780c8bd5aea717c7df0ab0a`
+   `7a06d51ef9bfdee387fb5f1585c9f5d6e92c287cecc6dad43f5dccc46958e77c`
 4. `tests/m5/postgres_runtime/d25_store_core/test_transition_apply.py`
-   `096a33c039faee5b4636e173c4f8359a511b23efbd5f8b5d66941666622d96fe`
+   `779b7bde84e77ace440c6329df03c2b69f4921397bfc1c5096dd5d1a7c86e840`
 5. `tests/m5/postgres_runtime/d25_store_core/test_replay_work.py`
-   `31a26395570baaf276a71e9288f9abddfd3f41354372c23528326533b2d7bcce`
+   `81abc2c2e2d4e699cfc543b1652cd54a6869cac741763649b5333919466f0a84`
 6. `docs/workstreams/m5_runtime_implementation/D25_STORE_CORE_HANDOFF.md`
    (this handoff)
 
-The five pinned files total 3,112 lines and 116,653 bytes. This handoff cannot
+The five pinned files total 3,674 lines and 137,228 bytes. This handoff cannot
 contain its own final hash or the containing commit without a self-reference.
 The final handoff SHA-256, commit, tree, clean-state proof, and exact
 base-to-candidate name-status are therefore measured and reported externally
@@ -63,14 +63,20 @@ after the candidate commit.
 - lossless current/working image and observation/edge/mask/Hall point reads,
   including leading/trailing whitespace in text identities and validated
   fixed-width digest decoding;
-- transaction-local epoch/revision/backend/transaction scoping after the real
-  checked-transition authorizer, with cross-epoch use rejected before any
-  target-epoch or physical-image read;
+- transaction-local epoch/revision/backend/transaction scoping whose GUCs are
+  scope only: every scoped read re-enters the real checked-transition
+  authorizer, so a forged setting cannot substitute for the tier-5/tier-6
+  lock/CAS;
 - current-before-working locking for each image and physical point, followed
   by working-before-current resolution and only then effective filtering, so
   physical tombstones remain visible in every resolved API;
 - strict current-policy coverage plus runtime, typed-candidate and optional
   direct-candidate policy/base/manifest agreement before physical point reads;
+- numeric predecessor-before-target epoch locking, followed by the target
+  runtime and typed/direct update rows before the current image, with the
+  predecessor identity revalidated in the locked source query;
+- rejection of a working-image revision newer than the locked runtime revision
+  before any physical point read;
 - C-collated least-observation selection;
 - representative hashes with the exact `limit=requirement_count` rule and an
   invariant check for exactly `min(C[mask], requirement_count)` rows;
@@ -79,22 +85,29 @@ after the candidate commit.
 - store-derived transition intent, patch, 71-byte empty logical output, all
   37 work counters, artifact, contribution, and accumulator for the exact
   affected-key-empty `document_insert` structural-open shape;
-- exact pre-seal structural replay with every artifact scalar, physical child
-  array, logical/canonical preimage, contribution scalar and work counter,
-  working-image scalar, accumulator scalar/revision, policy, source and before
-  point validated before return;
+- exact pre-seal structural replay with every legally corruptible artifact
+  scalar, all four physical child digest/preimage arrays, every outer/logical/
+  canonical preimage, contribution scalar and work counter, working-image
+  scalar, accumulator scalar/revision, policy, source and before point
+  validated before return;
 - checked retained-accumulator reads for exact nonterminal, failed-terminal and
-  sealed-terminal header/image shapes without routing terminal reads through
-  the active-image precondition; and
+  sealed-terminal header/image shapes, including failed and sealed epochs after
+  a later publication-head advance, without routing terminal reads through the
+  active-image precondition; and
 - compare-only expected source hash, patch digest, and work checks before the
   first write.
 
 The write path calls the real migration-017 checked-transition and
-persisted-matching authorizers. It forces all deferred constraints immediate
-before first-apply return, restores them to deferred, owns no transaction,
-does not commit or roll back, and does not advance a runtime revision. It
-exposes no caller-authored patch/work/counter API and performs no model, cache,
-oracle, repository, or external call.
+persisted-matching authorizers. Both first apply and replay acquire the tier-11b
+current then working image rows, the global digest-derived artifact advisory/
+conflict key and insert-or-validate at tier 15i, both contribution keys at tier
+15j, and the accumulator at tier 15k. It forces all deferred constraints
+immediate before first-apply return and then sets them back to deferred. It does
+not preserve a caller-specific nondefault constraint mode, so composition must
+enter under the frozen initially-deferred regime. It owns no transaction, does
+not commit or roll back, and does not advance a runtime revision. It exposes no
+caller-authored patch/work/counter API and performs no model, cache, oracle,
+repository, or external call.
 
 These are cursor-local store primitives only. This checkpoint does not wire a
 public application/runtime composition path.
@@ -151,59 +164,59 @@ Final commands and outcomes on the five pinned Python/test bytes use
 
 ```text
 FILES='src/groundloop/m5/runtime/postgres_matching.py tests/m5/postgres_runtime/d25_store_core/conftest.py tests/m5/postgres_runtime/d25_store_core/test_points.py tests/m5/postgres_runtime/d25_store_core/test_transition_apply.py tests/m5/postgres_runtime/d25_store_core/test_replay_work.py'
-/home/kassym/Desktop/groundloop/.venv/bin/python -m ruff check $FILES
-  PASS; all checks passed; 0.02 s
-/home/kassym/Desktop/groundloop/.venv/bin/python -m ruff format --check $FILES
-  PASS; 5 files already formatted; 0.02 s
+/home/kassym/Desktop/groundloop/.venv/bin/python -m ruff check --no-cache $FILES
+  PASS; all checks passed; 0.03 s
+/home/kassym/Desktop/groundloop/.venv/bin/python -m ruff format --check --no-cache $FILES
+  PASS; 5 files already formatted; 0.03 s
 MYPYPATH=src /home/kassym/Desktop/groundloop/.venv/bin/python \
   -m mypy --strict src/groundloop/m5/runtime/postgres_matching.py
-  PASS; one source file, no issues; 0.18 s
-PYTHONPYCACHEPREFIX=/tmp/d25-store-core-p1-pycache-final2 \
+  PASS; one source file, no issues; 0.14 s
+PYTHONPYCACHEPREFIX=/tmp/d25-store-core-p2-pycache-final \
   /home/kassym/Desktop/groundloop/.venv/bin/python -m compileall -q $FILES
-  PASS; 0.20 s
+  PASS; 0.17 s
 PYTHONDONTWRITEBYTECODE=1 \
   /home/kassym/Desktop/groundloop/.venv/bin/python -m pytest -q \
   -p no:cacheprovider tests/m5/runtime/test_contracts.py \
   tests/m5/runtime/test_digests.py
-  PASS; 140 passed, 0 failed/errors/skipped; 0.94 s
+  PASS; 140 passed, 0 failed/errors/skipped; 0.86 s
 git diff --check
   PASS
-/usr/bin/time -f 'outer_wall=%e' docker exec \
-  -e PGOPTIONS='-c jit=off' \
+docker exec -e PGOPTIONS='-c jit=off' \
   -e 'GROUNDLOOP_TEST_DATABASE_URL=postgresql://groundloop:groundloop@127.0.0.1:5432/groundloop' \
   -e PYTHONDONTWRITEBYTECODE=1 d26-pytest-runner sh -lc \
-  'cd /tmp/d25-lane-a-p1.vyzBLs && python -m pytest -q \
+  'cd /tmp/d25-lane-a-corrective.ejZHe5 && python -m pytest -q \
   -p no:cacheprovider --import-mode=importlib \
-  --junitxml=/tmp/d25-store-core-p1-final2.xml \
+  --junitxml=/tmp/d25-lane-a-corrective-final.xml \
   tests/m5/postgres_runtime/d25_store_core'
-  PASS; 37 collected/passed, 0 failed, 0 errors, 0 skipped;
-  JUnit 57.654 s, outer wall 58.45 s
+  PASS; 49 collected/passed, 0 failed, 0 errors, 0 skipped;
+  JUnit 73.013 s
 docker exec d26-pytest-runner \
-  sha256sum /tmp/d25-store-core-p1-final2.xml
-  394a9e73175a907c58b085a71bc150bb17e782a3da4f845fcfa99b88da80943c
+  sha256sum /tmp/d25-lane-a-corrective-final.xml
+  437f81c38724e49ddadda2c0e1e5032fff95d2772b9bf9a19adfa1b69f0b183e
 ```
 
 The database tranche ran serially in `d26-pytest-runner`, sharing the
 qualified database-container network with `m5-d26-schema-017-db-1`. The runner
-copy's five SHA-256 values exactly matched Section 2 before collection. The
-pre-run inventory contained only `information_schema` and `public`, zero other
-database clients, and zero `groundloop_m5_%` disposable roles. Every per-test
-fixture inventory assertion passed. The first external post-run activity poll
-briefly observed one other client, while schemas and disposable roles were
-already clean; the immediate detailed follow-up returned zero clients. This
-transient is disclosed rather than reported as a zero-client post snapshot.
-No host-port result and no default-JIT result is pooled. The known default-JIT
-SIGSEGV was not rerun and remains unqualified.
+copy's five SHA-256 values exactly matched Section 2 before collection. Fresh
+pre-run and post-run inventories each contained exactly the four databases
+`groundloop`, `postgres`, `template0`, and `template1`; the four non-temporary
+schemas `information_schema`, `pg_catalog`, `pg_toast`, and `public`; zero
+other database clients; and zero `groundloop_m5_%` disposable roles. Every
+per-test fixture inventory assertion passed. No host-port result and no
+default-JIT result is pooled. The known default-JIT SIGSEGV was not rerun and
+remains unqualified.
 
-The 37 cases comprise nine point/representative cases, four transition cases
-(including two fail-closed semantic-source parameters), and 24 replay/work
-cases. They cover whitespace identities; three policy disagreement layers;
-cross-epoch reader scope; current-before-working point order; complete legal
-artifact-scalar, child/preimage, contribution, working-image and accumulator
-corruption; exact nonterminal/failed/sealed retained-work envelopes; and
-compare-only conflicts. Rich setup reuses accepted migration-017 fixture
-helpers as read-only evidence; no existing migration or migration-test byte
-changed.
+The 49 cases comprise 12 point/representative/lock-scope cases, five transition
+cases (including two fail-closed semantic-source parameters), and 32 replay/
+work cases. They cover whitespace identities; three policy disagreement
+layers; cross-epoch reader scope; forged reader GUCs; future working revision;
+predecessor/target and current/working lock statement order; global artifact
+advisory plus `11b -> 15i -> 15j -> 15k` apply/replay order; complete legal
+artifact-scalar and child/preimage mutation, contribution, working-image and
+accumulator corruption; exact nonterminal plus failed/sealed retained-work
+envelopes after a later head advance; and compare-only conflicts. Rich setup
+reuses accepted migration-017 fixture helpers as read-only evidence; no
+existing migration or migration-test byte changed.
 
 ## 6. D25 Section-13 inventory
 
@@ -227,7 +240,7 @@ runtime falsifier remains pending.
 | 12 | PARTIAL | Current fallback, all four tombstones, lossless whitespace identity, C order, exact limit and Hall-cardinality check pass; non-ASCII/prefix and positive different-mask adversaries remain pending. |
 | 13 | DEPENDENCY | Unchanged contract/digest suites pass 140/140; this lane adds the exact empty artifact bytes only. |
 | 14 | PARTIAL | Pre-seal empty structural replay validates all retained artifact scalars/preimages, contribution bytes, image coordinates and accumulator revision; requirement/direct and post-seal/head-advance replay remain pending. |
-| 15 | PARTIAL | One empty structural contribution with exact 71-byte output and 37 counters plus exact nonterminal/failed/sealed retained-work reads pass; active semantic/intervening revisions remain pending. |
+| 15 | PARTIAL | One empty structural contribution with exact 71-byte output and 37 counters plus exact nonterminal and failed/sealed retained-work reads after later head advance pass; active semantic/intervening revisions remain pending. |
 | 16 | PENDING | No completion crash matrix. |
 | 17 | PENDING | No failed-epoch isolation. |
 | 18 | PENDING | No next-epoch isolation. |
@@ -283,16 +296,34 @@ the following corrective dispositions before this final run:
 5. replay validated only a subset of artifact and accumulator state; it now
    compares every retained artifact scalar/array/preimage, the complete
    contribution, working-image coordinates, and accumulator revision;
-6. the migration authorizer's ambient checked Boolean was not epoch scoped;
-   the wrapper now binds and verifies exact transaction-local epoch, revision,
-   backend and transaction identity before reading the target epoch;
+6. the migration authorizer's ambient checked Boolean and reader GUCs were not
+   lock proof; the wrapper still binds exact transaction-local epoch, revision,
+   backend and transaction scope but now re-enters the real database authorizer
+   before every scoped epoch/image read;
 7. physical point readers locked working before current; all four now lock
    current before working while still resolving working before current;
 8. `current_matching_work` did not validate or lock the image envelope; it now
-   checks exact current-before-working locks, policy/base identity, strict
-   nonterminal state pairs, and failed/sealed terminal shapes, with dedicated
-   positive and negative cases; and
-9. post-seal/head-advance transition replay still depends on live intent
+   checks exact current-before-working locks, historical base/policy identity,
+   live-head integrity, strict nonterminal state pairs, and failed/sealed
+   terminal shapes even after a later head advance, with dedicated positive and
+   negative cases;
+9. image validation did not reject `working.updated_revision` beyond the locked
+   epoch/runtime revision; it now rejects that corruption before a physical
+   point read;
+10. structural intent derivation locked the target epoch/runtime before its
+    predecessor; it now discovers the predecessor without locking, locks both
+    tier-5 rows in numeric order, acquires tier 6, locks typed/direct updates,
+    and revalidates the exact predecessor in the source query;
+11. replay reached contribution tier 15j before artifact tier 15i and then
+    reacquired image tier 11b; first apply also lacked global artifact conflict
+    serialization. Both paths now use `11b -> 15i -> 15j -> 15k`, a
+    digest-derived transaction advisory key, artifact insert-or-validate, and
+    explicit source-key then resulting-revision contribution locks;
+12. prior evidence described complete child/preimage mutation coverage without
+    exercising those mutations. The suite now independently corrupts each of
+    the four physical child digest/preimage pairs plus group-shape, logical
+    patch, logical output, and canonical patch preimages; and
+13. post-seal/head-advance transition replay still depends on live intent
    derivation. It is explicitly retained as `HOLD`, not represented as fixed.
 
 The final bytes have not self-accepted. The activation-required independent

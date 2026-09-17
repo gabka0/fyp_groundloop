@@ -18,6 +18,16 @@ from groundloop.m5.runtime.postgres_matching import (
 )
 
 
+class _RecordingCursor:
+    def __init__(self, cursor: Any) -> None:
+        self.cursor = cursor
+        self.statements: list[str] = []
+
+    def execute(self, query: Any, params: Any = None) -> Any:
+        self.statements.append(str(query))
+        return self.cursor.execute(query, params)
+
+
 def _relation_counts(connection: Any) -> tuple[int, ...]:
     relations = (
         "groundloop_m5_matching_image_working",
@@ -111,6 +121,132 @@ def test_empty_structural_open_derives_and_applies_store_bytes(
     assert (
         tuple(int(value) for value in stored_counters) == (0,) * 30 + (71,) + (0,) * 6
     )
+
+
+def test_first_apply_and_replay_follow_image_artifact_contribution_accumulator_order(
+    empty_structural_database: Any,
+) -> None:
+    database = empty_structural_database
+    connection = database.connection
+    with connection.cursor() as cursor:
+        intent = derive_matching_transition_intent(
+            cursor,
+            database.epoch_id,
+            1,
+            1,
+            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
+            database.event_id,
+        )
+        first_recording = _RecordingCursor(cursor)
+        receipt = apply_matching_transition(first_recording, intent)
+
+    current_image = next(
+        index
+        for index, statement in enumerate(first_recording.statements)
+        if "FROM groundloop_m5_matching_image_current" in statement
+    )
+    working_image = next(
+        index
+        for index, statement in enumerate(first_recording.statements)
+        if "FROM groundloop_m5_matching_image_working" in statement
+    )
+    artifact_advisory = next(
+        index
+        for index, statement in enumerate(first_recording.statements)
+        if "pg_advisory_xact_lock" in statement
+    )
+    artifact_insert = next(
+        index
+        for index, statement in enumerate(first_recording.statements)
+        if "INSERT INTO groundloop_m5_matching_patch_artifact" in statement
+    )
+    contribution_lock = next(
+        index
+        for index, statement in enumerate(first_recording.statements)
+        if index > artifact_insert
+        and "FROM groundloop_m5_matching_work_contribution" in statement
+        and "FOR SHARE" in statement
+    )
+    contribution_insert = next(
+        index
+        for index, statement in enumerate(first_recording.statements)
+        if "INSERT INTO groundloop_m5_matching_work_contribution" in statement
+    )
+    accumulator_insert = next(
+        index
+        for index, statement in enumerate(first_recording.statements)
+        if "INSERT INTO groundloop_m5_matching_work_accumulator" in statement
+    )
+    assert (
+        current_image
+        < working_image
+        < artifact_advisory
+        < artifact_insert
+        < contribution_lock
+        < contribution_insert
+        < accumulator_insert
+    )
+    assert not any(
+        "groundloop_m5_matching_work_contribution" in statement
+        for statement in first_recording.statements[:artifact_advisory]
+    )
+
+    connection.commit()
+    with connection.cursor() as cursor:
+        replay_intent = derive_matching_transition_intent(
+            cursor,
+            database.epoch_id,
+            1,
+            1,
+            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
+            database.event_id,
+        )
+        replay_recording = _RecordingCursor(cursor)
+        replay = apply_matching_transition(replay_recording, replay_intent)
+    assert replay.exact_replay
+    replay_current = next(
+        index
+        for index, statement in enumerate(replay_recording.statements)
+        if "FROM groundloop_m5_matching_image_current" in statement
+    )
+    replay_working = next(
+        index
+        for index, statement in enumerate(replay_recording.statements)
+        if "FROM groundloop_m5_matching_image_working" in statement
+    )
+    replay_artifact = next(
+        index
+        for index, statement in enumerate(replay_recording.statements)
+        if "pg_advisory_xact_lock" in statement
+    )
+    replay_contribution = next(
+        index
+        for index, statement in enumerate(replay_recording.statements)
+        if index > replay_artifact
+        and "FROM groundloop_m5_matching_work_contribution" in statement
+        and "FOR SHARE" in statement
+    )
+    replay_accumulator = next(
+        index
+        for index, statement in enumerate(replay_recording.statements)
+        if "FROM groundloop_m5_matching_work_accumulator" in statement
+    )
+    assert (
+        replay_current
+        < replay_working
+        < replay_artifact
+        < replay_contribution
+        < replay_accumulator
+    )
+    assert not any(
+        "groundloop_m5_matching_work_contribution" in statement
+        for statement in replay_recording.statements[:replay_artifact]
+    )
+    assert not any(
+        "INSERT INTO groundloop_m5_matching_" in statement
+        for statement in replay_recording.statements
+    )
+    assert receipt.patch.patch_digest == replay.patch.patch_digest
 
 
 def test_compare_only_source_hash_and_patch_inputs_write_nothing(

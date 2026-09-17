@@ -52,6 +52,48 @@ def _retained_image(connection: Any, epoch_id: int) -> tuple[tuple[Any, ...], ..
     )
 
 
+def _advance_live_matching_head(database: Any, suffix: str) -> int:
+    connection = database.connection
+    event_id = f"{database.event_id}-{suffix}"
+    payload_hash = hashlib.sha256(event_id.encode()).hexdigest()
+    with schema_fixture._d26_replica_trigger_window(connection):
+        row = connection.execute(
+            """
+            INSERT INTO groundloop_epoch (
+              event_id, payload_hash, revision, structural_status,
+              semantic_status, evaluation_state, publication_mode, sealed_at
+            ) VALUES (%s,%s,0,'committed','sealed','complete','strict',now())
+            RETURNING epoch_id
+            """,
+            (event_id, payload_hash),
+        ).fetchone()
+        assert row is not None
+        epoch_id = int(row[0])
+        connection.execute(
+            """
+            UPDATE groundloop_m5_matching_image_current
+            SET installed_epoch_id=%s, installed_revision=0,
+                decision_policy_version=%s
+            WHERE singleton
+            """,
+            (epoch_id, database.policy_version),
+        )
+        connection.execute(
+            "UPDATE groundloop_m4_publication_head SET epoch_id=%s WHERE singleton",
+            (epoch_id,),
+        )
+        connection.execute(
+            """
+            UPDATE groundloop_m5_publication_head
+            SET epoch_id=%s, sealed_revision=0
+            WHERE singleton
+            """,
+            (epoch_id,),
+        )
+    connection.commit()
+    return epoch_id
+
+
 def test_exact_replay_returns_same_bytes_and_performs_zero_writes(
     empty_structural_database: Any,
 ) -> None:
@@ -237,6 +279,77 @@ def test_replay_validates_all_retained_byte_classes_before_return(
     ),
 )
 def test_replay_validates_every_mutable_artifact_scalar(
+    empty_structural_database: Any, statement: str
+) -> None:
+    database = empty_structural_database
+    connection = database.connection
+    with connection.cursor() as cursor:
+        intent = derive_matching_transition_intent(
+            cursor,
+            database.epoch_id,
+            1,
+            1,
+            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
+            database.event_id,
+        )
+        apply_matching_transition(cursor, intent)
+    connection.commit()
+    with schema_fixture._b3_user_triggers_disabled(
+        connection, "groundloop_m5_matching_patch_artifact"
+    ):
+        connection.execute(statement)
+    connection.commit()
+
+    with connection.cursor() as cursor:
+        replay_intent = derive_matching_transition_intent(
+            cursor,
+            database.epoch_id,
+            1,
+            1,
+            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
+            database.event_id,
+        )
+        with pytest.raises(EventConflictError, match="retained patch bytes"):
+            apply_matching_transition(cursor, replay_intent)
+
+
+@pytest.mark.parametrize(
+    "statement",
+    (
+        "UPDATE groundloop_m5_matching_patch_artifact "
+        "SET group_shape_set_preimage=group_shape_set_preimage || decode('00','hex')",
+        "UPDATE groundloop_m5_matching_patch_artifact SET "
+        "observation_change_digests=ARRAY[repeat('0',64)::char(64)], "
+        "observation_change_preimages=ARRAY[decode('00','hex')]",
+        "UPDATE groundloop_m5_matching_patch_artifact SET "
+        "edge_change_digests=ARRAY[repeat('0',64)::char(64)], "
+        "edge_change_preimages=ARRAY[decode('00','hex')]",
+        "UPDATE groundloop_m5_matching_patch_artifact SET "
+        "mask_change_digests=ARRAY[repeat('0',64)::char(64)], "
+        "mask_change_preimages=ARRAY[decode('00','hex')]",
+        "UPDATE groundloop_m5_matching_patch_artifact SET "
+        "hall_change_digests=ARRAY[repeat('0',64)::char(64)], "
+        "hall_change_preimages=ARRAY[decode('00','hex')]",
+        "UPDATE groundloop_m5_matching_patch_artifact SET "
+        "logical_overlay_patch_preimage="
+        "logical_overlay_patch_preimage || decode('00','hex')",
+        "UPDATE groundloop_m5_matching_patch_artifact SET "
+        "logical_output_preimage=logical_output_preimage || decode('00','hex')",
+        "UPDATE groundloop_m5_matching_patch_artifact SET "
+        "canonical_patch_preimage=canonical_patch_preimage || decode('00','hex')",
+    ),
+    ids=(
+        "group-shape-preimage",
+        "observation-children",
+        "edge-children",
+        "mask-children",
+        "hall-children",
+        "logical-patch-preimage",
+        "logical-output-preimage",
+        "canonical-patch-preimage",
+    ),
+)
+def test_replay_validates_every_artifact_child_and_preimage(
     empty_structural_database: Any, statement: str
 ) -> None:
     database = empty_structural_database
@@ -536,7 +649,7 @@ def test_current_matching_work_rejects_an_incoherent_nonterminal_header(
             current_matching_work(cursor, database.epoch_id)
 
 
-def test_current_matching_work_reads_a_retained_failed_epoch(
+def test_current_matching_work_reads_a_retained_failed_epoch_after_head_advance(
     empty_structural_database: Any,
 ) -> None:
     database = empty_structural_database
@@ -572,6 +685,8 @@ def test_current_matching_work_reads_a_retained_failed_epoch(
             (database.epoch_id,),
         )
     connection.commit()
+    later_epoch = _advance_live_matching_head(database, "later-after-failure")
+    assert later_epoch > database.epoch_id
 
     with connection.cursor() as cursor:
         _authorize_checked_prefix(
@@ -581,7 +696,7 @@ def test_current_matching_work_reads_a_retained_failed_epoch(
     assert retained == receipt.accumulated_work
 
 
-def test_current_matching_work_reads_a_retained_sealed_epoch(
+def test_current_matching_work_reads_a_retained_sealed_epoch_after_head_advance(
     empty_structural_database: Any,
 ) -> None:
     database = empty_structural_database
@@ -638,6 +753,8 @@ def test_current_matching_work_reads_a_retained_sealed_epoch(
             (database.epoch_id,),
         )
     connection.commit()
+    later_epoch = _advance_live_matching_head(database, "later-after-seal")
+    assert later_epoch > database.epoch_id
 
     with connection.cursor() as cursor:
         _authorize_checked_prefix(

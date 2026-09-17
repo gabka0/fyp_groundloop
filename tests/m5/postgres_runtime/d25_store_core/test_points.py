@@ -6,6 +6,7 @@ import hashlib
 from typing import Any
 
 import pytest
+from psycopg.errors import RaiseException
 
 from groundloop.errors import ValidationError
 from groundloop.m5.runtime.contracts import (
@@ -213,6 +214,116 @@ def test_reader_scope_rejects_a_different_epoch_before_acquiring_it(
         "FROM groundloop_epoch AS epoch" in statement
         for statement in recording.statements
     )
+
+
+def test_forged_reader_settings_cannot_bypass_the_real_authorizer(
+    empty_structural_database: Any,
+) -> None:
+    database = empty_structural_database
+    _apply_empty(database)
+    database.connection.commit()
+
+    with database.connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT set_config('groundloop.m5_checked_transition', 'on', true),
+                   set_config(
+                     'groundloop.m5_matching_reader_epoch_id', %s, true
+                   ),
+                   set_config(
+                     'groundloop.m5_matching_reader_revision', '2', true
+                   ),
+                   set_config(
+                     'groundloop.m5_matching_reader_backend_pid',
+                     pg_backend_pid()::text, true
+                   ),
+                   set_config(
+                     'groundloop.m5_matching_reader_transaction_id',
+                     pg_current_xact_id()::text, true
+                   )
+            """,
+            (str(database.epoch_id),),
+        )
+        recording = _RecordingCursor(cursor)
+        with pytest.raises(RaiseException, match="revision conflict"):
+            effective_matching_image(recording, database.epoch_id)
+    database.connection.rollback()
+    assert any(
+        "groundloop_m5_authorize_checked_transition" in statement
+        for statement in recording.statements
+    )
+
+
+def test_future_working_revision_fails_before_any_physical_point_read(
+    empty_structural_database: Any,
+) -> None:
+    database = empty_structural_database
+    _apply_empty(database)
+    database.connection.commit()
+    with schema_fixture._b3_user_triggers_disabled(
+        database.connection, "groundloop_m5_matching_image_working"
+    ):
+        database.connection.execute(
+            """
+            UPDATE groundloop_m5_matching_image_working
+            SET updated_revision = 2
+            WHERE epoch_id = %s
+            """,
+            (database.epoch_id,),
+        )
+    database.connection.commit()
+
+    with database.connection.cursor() as cursor:
+        _authorize_checked_prefix(
+            cursor, epoch_id=database.epoch_id, expected_revision=1
+        )
+        recording = _RecordingCursor(cursor)
+        with pytest.raises(ValidationError, match="image policy is inconsistent"):
+            resolved_matching_observation_point(
+                recording, database.epoch_id, "never-read-observation"
+            )
+    assert not any(
+        "groundloop_m5_matching_observation_" in statement
+        for statement in recording.statements
+    )
+
+
+def test_structural_derivation_locks_predecessor_before_target_runtime_and_source(
+    empty_structural_database: Any,
+) -> None:
+    database = empty_structural_database
+    with database.connection.cursor() as cursor:
+        recording = _RecordingCursor(cursor)
+        intent = derive_matching_transition_intent(
+            recording,
+            database.epoch_id,
+            1,
+            1,
+            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
+            database.event_id,
+        )
+    assert intent.before_epoch_id == database.base_epoch_id
+    epoch_prefix = next(
+        index
+        for index, statement in enumerate(recording.statements)
+        if "WHERE epoch_id IN" in statement and "ORDER BY epoch_id" in statement
+    )
+    runtime_prefix = next(
+        index
+        for index, statement in enumerate(recording.statements)
+        if "groundloop_m5_authorize_checked_transition" in statement
+    )
+    typed_update = next(
+        index
+        for index, statement in enumerate(recording.statements)
+        if "SELECT epoch_id FROM groundloop_m5_update" in statement
+    )
+    source = next(
+        index
+        for index, statement in enumerate(recording.statements)
+        if "FOR UPDATE OF epoch, runtime, typed_update" in statement
+    )
+    assert epoch_prefix < runtime_prefix < typed_update < source
 
 
 def test_point_locks_current_before_working_for_each_physical_key(
