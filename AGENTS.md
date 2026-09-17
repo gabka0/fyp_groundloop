@@ -61,6 +61,11 @@ order:
     (authoritative M5-D27 requirement-state counter-ownership correction)
 46. `docs/workstreams/m5_runtime_implementation/D27_CONTRACT_FREEZE_HANDOFF.md`
     (accepted D27 bytes, review evidence, and next implementation boundary)
+47. `docs/workstreams/m5_runtime_contract/PHASED_PERSISTED_MATCHING_COMPOSITION_AMENDMENT.md`
+    (authoritative M5-D28 phased persisted-matching composition and replay
+    projection correction)
+48. `docs/workstreams/m5_runtime_implementation/D28_CONTRACT_FREEZE_HANDOFF.md`
+    (accepted D28 bytes, review evidence, and next implementation boundary)
 
 `docs/initial_technical_design.md` (v0.1) is superseded and retained for audit
 only. The M0.5 design freeze and M1.1 amendments are complete; frozen decisions
@@ -189,7 +194,19 @@ M5-D27 and M5.0-27 are contract-`PASS` / implementation-`PENDING`. It adds no
 counter, DTO, digest, schema, migration, alias, replay field, or measurement.
 Requirement-state changes remain exact D25 patch/bijection evidence, while any
 transaction-local write count is diagnostic only. Runtime remains `v1_only`
-outside isolated fixtures. M5 is not complete until every remaining M5.4--M5.6
+outside isolated fixtures. M5-D28 is the frozen narrow correction for phased
+composition of D24 accounting with D25 persisted matching, including the
+direct path whose immutable M4 source is inserted at tier 15c, and for exact
+historical replay from the retained changed-key projection. Its authoritative
+SHA-256 is
+`8a2bafd3478cf2cac6ac7c8de7ca7779a6d9ace7fbbe98a7dc3ff08afdb67eae`;
+M5-D28 and M5.0-28 are contract-`PASS` / implementation-`PENDING`. It adds no
+public API, DTO, digest, schema, migration, source/reference kind, counter,
+measured value, or runtime-mode change. The public store/runtime composition
+requires a new path-exclusive D28 activation; prior Task-2 activation text is
+not authority for that composition. M5-D24 through M5-D28, Task 2, M5.4 and
+later gates, deployment, and AI-quality claims remain `PENDING`; runtime
+remains `v1_only`. M5 is not complete until every remaining M5.4--M5.6
 executable gate is recorded.
 
 A larger, independently adjudicated natural-history evaluation remains

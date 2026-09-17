@@ -1,16 +1,19 @@
 # GroundLoop M5 Implementation Plan
 
-Status: M5.0 contract accepted through M5-D27 and M5.1--M5.3 complete;
-M5.0-24 through M5.0-27 are contract-`PASS` /
+Status: M5.0 contract accepted through M5-D28 and M5.1--M5.3 complete;
+M5.0-24 through M5.0-28 are contract-`PASS` /
 implementation-`PENDING`; M5.4-01 through M5.4-04 are `PASS`, M5.4-05 through
-M5.4-09 remain `PENDING`; the Task-2 activation at `e3d83e3` is current, while
-its Lane-A/Lane-B implementation evidence remains unaccepted
+M5.4-09 remain `PENDING`; D28 freezes no implementation, the held D27 Task-2
+continuation draft and the original unstarted C lanes are not authority, and a
+new audited path-exclusive activation from the exact pushed D28 barrier is
+required before implementation continues
 
 Date: 2026-08-02; M5-D24 execution and R2e integration current through
 2026-08-19; M5.4-02/-03/-04 evidence integration current through 2026-09-02;
 M5-D25 contract acceptance current through 2026-09-03; M5-D26 contract
 acceptance current through 2026-09-07; M5-D27 erratum acceptance current
-through 2026-09-17
+through 2026-09-17; M5-D28 phased-composition acceptance current through
+2026-09-18
 
 Authority: `docs/m5_design_freeze.md` governs. M5-D24 recovery/accounting work
 also obeys
@@ -28,6 +31,10 @@ Requirement-state physical-write counter ownership also obeys
 `docs/workstreams/m5_runtime_contract/REQUIREMENT_STATE_COUNTER_ERRATUM.md` at
 accepted SHA-256
 `7a51afc1f1b6c249572222a023814de8b22220058e00f09564de64f552bd411c`.
+Phased persisted-matching composition also obeys
+`docs/workstreams/m5_runtime_contract/PHASED_PERSISTED_MATCHING_COMPOSITION_AMENDMENT.md`
+at accepted SHA-256
+`8a2bafd3478cf2cac6ac7c8de7ca7779a6d9ace7fbbe98a7dc3ff08afdb67eae`.
 Implementation stops on any conflict with those contracts rather than silently
 choosing new semantics.
 
@@ -706,11 +713,41 @@ reconstructed.
 
 The erratum changes no DTO, digest, schema, migration, source, test, database,
 provider, deployment, runtime mode, or AI-quality result. Requirement-state-
-writing Task-2 work may resume only under a separate path-exclusive activation
-based on the exact integrated freeze barrier. M5-D24 through M5-D27 and
-M5.0-24 through M5.0-27 remain implementation-`PENDING`; Task 2, M5.4-05
-through M5.4-09, and every M5.5/M5.6 gate remain `PENDING`; runtime remains
-`v1_only` outside isolated fixtures.
+writing Task-2 work could resume at that checkpoint only under a separate
+path-exclusive activation based on the exact integrated D27 freeze barrier;
+Section 7.9 now supersedes that continuation boundary with D28. M5-D24 through
+M5-D27 and M5.0-24 through M5.0-27 remained implementation-`PENDING` at that
+checkpoint; Task 2, M5.4-05 through M5.4-09, and every M5.5/M5.6 gate remained
+`PENDING`; runtime remained `v1_only` outside isolated fixtures.
+
+### 7.9 M5-D28 contract checkpoint
+
+M5-D28 is accepted on exact reviewed candidate commit
+`cc0b9cf25110992320dc0b7f81499a3930d1a565`, tree
+`760107f9b6cbd70d37839144980cf23b8f5859ea`, and 48,053-byte, 810-line
+content SHA-256
+`8a2bafd3478cf2cac6ac7c8de7ca7779a6d9ace7fbbe98a7dc3ff08afdb67eae`.
+Two independent same-byte audits both returned `GO` with `P0=0`, `P1=0`, and
+`P2=0`. Runtime-addendum revision 9 and acceptance row M5.0-28 freeze only the
+package-private phased composition needed to reconcile source-present and
+direct tier-15c transitions, accepted SQL revision/DML ordering, immutable
+per-transition replay, and the one current persisted accumulator.
+
+This is contract `PASS` / implementation `PENDING`. It changes no source,
+test, DTO, digest, schema, migration, database, provider, deployment, public
+API, runtime mode, or AI-quality result. The accepted Lane-A/Lane-B bytes on
+the D27 integration barrier remain bounded historical evidence; D28 does not
+promote them or complete Task 2. The held, uncommitted D27 Task-2 continuation
+draft and the original activation's unstarted C lanes are not implementation
+authority under D28 and must not be resumed, merged, or treated as inherited
+ownership.
+
+Implementation may continue only after this authority-freeze tranche is
+audited, integrated, and pushed, and then only under a new independently
+audited path-exclusive activation pinned to that exact pushed D28 barrier.
+M5-D24 through M5-D28 and M5.0-24 through M5.0-28 remain implementation-
+`PENDING`; Task 2, M5.4-05 through M5.4-09, and every M5.5/M5.6 gate remain
+`PENDING`; runtime remains `v1_only` outside isolated fixtures.
 
 M5.4 exit gate: deterministic fake-port path passes first, then a bounded
 maintained PostgreSQL history and frozen-model diagnostic pass with complete

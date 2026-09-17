@@ -236,7 +236,7 @@ is explicit pre-dissertation/M6 debt, not a hidden extension of M4.
 ## M5 — Bounded Evidence Groups
 
 Status: active. The M5.0 contract freeze is complete through accepted
-M5-D27; M5.1 pure reference semantics completed on 2026-08-03 after an
+M5-D28; M5.1 pure reference semantics completed on 2026-08-03 after an
 independent high-confidence audit GO. M5.2 and M5.3 are complete. M5.4-01
 through M5.4-04 pass; public activation and partial root/direct transitions have
 live evidence but do not independently close M5.4-05. M5-D24's R0 contracts and
@@ -313,6 +313,24 @@ migration, schema, source, test, database, provider, deployment, runtime mode,
 measured result, or AI-quality result. Task 2 and M5.4-05 through M5.4-09
 remain `PENDING`; runtime stays `v1_only`.
 
+The M5-D28 phased persisted-matching composition amendment is accepted at
+exact reviewed candidate commit
+`cc0b9cf25110992320dc0b7f81499a3930d1a565`, tree
+`760107f9b6cbd70d37839144980cf23b8f5859ea`, and content SHA-256
+`8a2bafd3478cf2cac6ac7c8de7ca7779a6d9ace7fbbe98a7dc3ff08afdb67eae`
+after independent same-byte semantic and direct-15c/PostgreSQL reviews each
+returned `GO`, `P0=0`, `P1=0`, `P2=0`. M5.0-28 is contract-`PASS` /
+implementation-`PENDING`, and runtime-addendum revision 9 is authoritative.
+The amendment freezes only the cursor-bound first-application phases, complete
+direct pre-15c reservation/evidence handoff, required header/DML placement,
+and canonical retained changed-key replay projection. It changes no public
+API, DTO, digest, schema, migration, counter, M4-v1 bytes, runtime mode,
+deployment, measured result, or AI-quality result. A new audited path-exclusive
+Task-2 activation must begin from the exact pushed D28 authority barrier; the
+held D27 continuation draft is not authority. M5-D24 through M5-D28, Task 2,
+and M5.4-05 through M5.4-09 remain implementation-`PENDING`; runtime stays
+`v1_only`.
+
 Deliverables:
 
 - Immutable versioned evidence requirements and groups with group-derived
@@ -331,7 +349,7 @@ Deliverables:
 Stages:
 
 - **M5.0:** design/theory/schema/data freeze. **Complete through accepted
-  M5-D27.** Contract rows pass; decision-row implementation halves remain
+  M5-D28.** Contract rows pass; decision-row implementation halves remain
   pending until the M5.6 cross-stage evidence mapping.
 - **M5.1:** pure records, history, structural events, and independent Python
   oracle. **Complete.**
@@ -349,7 +367,8 @@ Stages:
   promotes M5.4-02/-03/-04. M5.4-01 through M5.4-04 are `PASS`; M5.4-05 through
   M5.4-09 remain `PENDING`. Runtime stays `v1_only`; the accepted M5-D25 and
   M5-D26 contracts plus the M5-D27 counter correction govern the active
-  persisted store/runtime implementation boundary.
+  persisted store/runtime implementation boundary together with M5-D28's
+  phased composition and retained-replay correction.
 - **M5.5:** controlled dataset adapter, seven qualified baselines, and
   reproducible systems/semantic reports.
 - **M5.6:** full validation, evidence bundle, documentation and honest verdict.

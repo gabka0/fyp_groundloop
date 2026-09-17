@@ -1,5 +1,59 @@
 # GroundLoop Decision Log
 
+## 2026-09-18 — M5-D28 Phased Persisted-Matching Composition Accepted
+
+Decision status: **accepted authoritative wording-only amendment**. M5-D28
+and acceptance row M5.0-28 are contract-`PASS` /
+implementation-`PENDING`, and the M5.4 runtime addendum advances to revision
+9. The complete authoritative amendment is
+`docs/workstreams/m5_runtime_contract/PHASED_PERSISTED_MATCHING_COMPOSITION_AMENDMENT.md`
+at accepted content SHA-256
+`8a2bafd3478cf2cac6ac7c8de7ca7779a6d9ace7fbbe98a7dc3ff08afdb67eae`.
+
+The final reviewed candidate has exact commit
+`cc0b9cf25110992320dc0b7f81499a3930d1a565`, tree
+`760107f9b6cbd70d37839144980cf23b8f5859ea`, 810 lines, and 48,053 bytes on
+sole-parent ancestry from `8ecdc8e361cf4a8c055fa00e9916e1704cbb736d`.
+Two independent post-commit reviews examined those identical committed bytes
+and each returned `GO`, `P0=0`, `P1=0`, and `P2=0`.
+
+M5-D28 resolves the confirmed cycle between D25's exhaustive source-first,
+single-call persistence wording, D24's tier-15 accounting order, accepted SQL
+header/status-delta guards, and the direct path whose immutable M4 source is
+inserted only at tier 15c. Source-present transitions use the unchanged
+Section-8 derive signature once and carry a transaction-bound private prepared authority
+through lower-tier staging, exact D24 accounting, and D25 finalization. The
+direct path alone may reserve the complete store-derived joint key plan before
+15c, must receive explicit lexical M4 stage evidence, and must load and verify
+the persisted source before completing the official D25 intent and writing
+D25 state. For later transitions, base and typed-runtime headers advance once
+at the guard-compatible position; structural open remains at revision 1 with
+no second advance. Tier-16 status deltas and deferred validation remain
+mandatory.
+
+Exact historical replay now uses the unchanged intent type as a canonical
+retained changed-key projection decoded from the validated immutable patch. It
+does not invent persistence for no-op keys from the original transient lock
+plan. Replay validates the exact source closure, patch, historical
+contribution, and current retained cumulative accumulator, including all 37
+counters and retained-image revision, while performing no transition
+authorization, DML, regeneration, or aggregate scan.
+
+The correction adds no public API, DTO, digest, schema, migration, source or
+reference kind, semantic rule, counter, measured value, or runtime-mode
+change. The accepted migrations 013--017, D24 15a--15h and D25 15i--15k
+suborders, and prior M5-D24--D27 authority remain exact outside the narrow
+precedence clauses. The prior Task-2 continuation activation is not authority
+for this corrected public composition; a new path-exclusive D28 activation is
+required.
+
+Acceptance implements nothing. M5-D24 through M5-D28 and M5.0-24 through
+M5.0-28 remain implementation-`PENDING`; Task 2, runtime activation, M5.4 and
+later executable gates, deployment, performance, utility, and AI-quality
+claims remain `PENDING`; runtime remains `v1_only` outside isolated fixtures.
+No security, novelty, maintained-history, or named-system-superiority result
+follows.
+
 ## 2026-09-17 — M5-D27 Requirement-State Counter Ownership Accepted
 
 Decision status: **accepted authoritative wording-only amendment**. M5-D27 and

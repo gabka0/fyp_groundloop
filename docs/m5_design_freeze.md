@@ -1,18 +1,18 @@
 # GroundLoop M5 Bounded Evidence-Group Design Freeze
 
-Status: frozen M5.0 contract, amended through accepted M5-D27 and
-M5-D24-C1--C7; implementation evidence for M5-D24 through M5-D27 remains
+Status: frozen M5.0 contract, amended through accepted M5-D28 and
+M5-D24-C1--C7; implementation evidence for M5-D24 through M5-D28 remains
 pending
 
 Date: 2026-08-02; M5-D21 through M5-D24-C7 amendments 2026-08-06--2026-08-18;
 M5-D25 amendment 2026-09-03; M5-D26 amendment 2026-09-07; M5-D27 erratum
-2026-09-17
+2026-09-17; M5-D28 amendment 2026-09-18
 
 Authority: this document specializes `docs/technical_design.md` v0.2 for M5.
 It preserves original decisions D-1 through D-20 except where the earlier
 pseudocode is mathematically inconsistent with its own stated system-of-
 distinct-representatives semantics. Those corrections, the later runtime
-decisions M5-D21 through M5-D27, and accepted M5-D24-C1 through M5-D24-C7 are
+decisions M5-D21 through M5-D28, and accepted M5-D24-C1 through M5-D24-C7 are
 recorded in the decision log and frozen here. The byte-total M5-D24
 specialization is authoritative at
 `docs/workstreams/m5_runtime_contract/RECOVERY_WORK_AMENDMENT.md`.
@@ -32,6 +32,11 @@ The wording-only M5-D27 counter-ownership correction is authoritative at
 `docs/workstreams/m5_runtime_contract/REQUIREMENT_STATE_COUNTER_ERRATUM.md`;
 its independently accepted pre-freeze content SHA-256 is
 `7a51afc1f1b6c249572222a023814de8b22220058e00f09564de64f552bd411c`.
+The narrow M5-D28 phased-composition and retained-replay correction is
+authoritative at
+`docs/workstreams/m5_runtime_contract/PHASED_PERSISTED_MATCHING_COMPOSITION_AMENDMENT.md`;
+its independently accepted pre-freeze content SHA-256 is
+`8a2bafd3478cf2cac6ac7c8de7ca7779a6d9ace7fbbe98a7dc3ff08afdb67eae`.
 
 M5 implementation begins only after the M5.0 *contract* gate passes. Later
 implementation-evidence cells in the acceptance matrix remain `PENDING` until
@@ -1268,6 +1273,60 @@ migration, lock order, transition, reference recipe, measured value,
 deployment, or AI-quality claim. Runtime remains `v1_only` outside isolated
 fixtures.
 
+### M5-D28 -- phased persisted-matching composition and retained replay
+
+M5-D24 places durable work/timing accounting at tiers 15d--15h and M5-D25
+places its immutable patch, contribution, and accumulator at tiers 15i--15k,
+but D25's exhaustive one-call wording could not return a complete planned
+write vector to the outer transaction and then resume after D24 accounting.
+The direct path also creates its immutable source only at tier 15c, after the
+tier-11a--14 lock set that source-first derivation otherwise requires. The
+accepted migration guards additionally require the already-locked base and
+typed-runtime headers to name the resulting revision before guarded D25/D24
+rows, and migration 017 requires the exact tier-16 status-delta multiset.
+
+M5-D28 resolves only that composition contradiction. Source-present
+structural and requirement transitions use the unchanged Section-8 derive
+signature once to own complete pre-discovery gathering, bounded
+representative discovery, and tier-11a--14 locking. A cursor-, backend-,
+transaction-, context-, and phase-bound private prepared authority then
+separates lower-tier staging, exact D24 accounting, and D25 finalization while
+keeping the existing persistence-internal signatures, public M5/M4 APIs, and
+all locks in one caller-owned transaction. For a later transition, the complete planned base and runtime
+after-images advance once at the guard-compatible point; there is no revision-
+only intermediate. Structural open remains at its inserted revision 1 and
+performs no second advance.
+
+Only the direct path may form a store-derived pre-source reservation. It locks
+the complete joint M4/D25 plan through tier 15c, the private M4 stage returns
+explicit lexical stage evidence and inserts the exact immutable 15c source,
+and a reservation-consuming private completion then loads that source,
+derives the official D25 intent, proves complete-plan equality, and returns
+the prepared authority. D25 staging, D24 15d--15h accounting, D25 15i--15k
+finalization, tier-16 status deltas, and forced deferred validation follow in
+the accepted order. No reservation, prepared value, or stage result is public,
+persisted, serialized, or recoverable through implicit cursor or process
+state.
+
+Historical replay uses the unchanged intent type as a canonical retained
+changed-key projection decoded from the validated immutable patch. It does
+not claim that nonpersisted no-op lock-plan keys survived. Replay point-
+validates the exact source closure, patch, historical contribution, and the
+current retained accumulator, performs no transition authorization or DML,
+and may return an accumulator at a later semantic revision only when all 37
+counters dominate the historical contribution and its digest and retained-
+image revision agree exactly.
+
+The complete correction and mandatory falsifiers are authoritative in
+`docs/workstreams/m5_runtime_contract/PHASED_PERSISTED_MATCHING_COMPOSITION_AMENDMENT.md`
+at the accepted SHA-256 above. M5-D28 and M5.0-28 are contract-`PASS` /
+implementation-`PENDING`. It changes no public API, DTO, digest, schema,
+migration, source/reference kind, semantic rule, counter, measured value, or
+runtime mode. A new path-exclusive D28 activation is required before public
+store/runtime composition. M5-D24 through M5-D28, Task 2, M5.4 and later
+gates, deployment, and AI-quality claims remain `PENDING`; runtime remains
+`v1_only` outside isolated fixtures.
+
 ## 11. Dynamic M4 integration contract
 
 ### M5-D14 -- typed v2 runtime identity
@@ -1897,6 +1956,7 @@ regression evidence.
 | M5-D25 | Recoverable persisted matching image | PostgreSQL current/working Hall state, immutable patch/contribution history, durable work accumulators, scoped write authorization, seal promotion, and independent physical/provenance audit are byte-total; migration 017 is the separate implementation barrier |
 | M5-D26 | Changed-state absence artifact | Structural REPLACE/RETIRE removals use one typed non-null absence digest for three existing reference kinds, with exact D25 logical-change, predecessor-closure, successor-absence, event-payload and seal-coordinate validation; migration 017 may replace only the required migration-015 child validator under D26 |
 | M5-D27 | Requirement-state counter ownership | D24 owns no requirement-state physical row-count coordinate; no counter or alias is invented, while every requirement-state change remains exact D25 logical patch/output and transition-bijection evidence |
+| M5-D28 | Phased persisted-matching composition and retained replay | Cursor-local private phases reconcile D24/D25 write order and the direct tier-15c source without changing public signatures or frozen bytes; historical replay validates a canonical retained changed-key projection and the current cumulative accumulator without reconstructing nonpersisted no-op keys |
 
 ## 15. Release gate
 
@@ -1914,5 +1974,6 @@ that:
    identity, M5-D23 transition completeness, M5-D24 recoverable dispatch and
    durable accounting, the M5-D24-C1--C7 corrections, M5-D25 persisted
    matching, M5-D26 changed-state absence, and M5-D27 requirement-state
-   counter ownership; and
+   counter ownership, and M5-D28 phased persisted-matching composition and
+   retained replay; and
 7. path ownership prevents shared-schema or shared-contract collisions.

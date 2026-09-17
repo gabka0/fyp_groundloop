@@ -1,15 +1,16 @@
 # GroundLoop M5.4 Byte-Total Runtime Contract Addendum
 
-Status: frozen runtime contract revision 8; M5-D25 through M5-D27 contracts
+Status: frozen runtime contract revision 9; M5-D25 through M5-D28 contracts
 **GO** / implementation **PENDING**; full M5.4 remains blocked on executable
 runtime evidence
 
 Date: 2026-08-03; revision 5 / M5-D21 through M5-D24 amendments 2026-08-06;
 revision 6 / M5-D25 amendment 2026-09-03; revision 7 / M5-D26 amendment
-2026-09-07; revision 8 / M5-D27 erratum 2026-09-17
+2026-09-07; revision 8 / M5-D27 erratum 2026-09-17; revision 9 / M5-D28
+amendment 2026-09-18
 
 Authority: this addendum specializes `docs/m5_design_freeze.md` M5-D1 through
-M5-D27 and M5-T1/M5-T2. It does not change those decisions. The M5 design
+M5-D28 and M5-T1/M5-T2. It does not change those decisions. The M5 design
 freeze remains authoritative for semantic truth; this addendum is authoritative
 for M5.4 runtime DTOs, identities, transition boundaries, persistence
 ownership, replay, and acceptance tests.
@@ -21,7 +22,7 @@ start only after migration 014 and its SQL oracle bundle have passed the M5.3
 fresh-install, populated-upgrade, compatibility, and three-oracle gates.
 
 This addendum MUST NOT authorize a change to an M5.0 semantic decision. An
-implementation conflict with this addendum and M5-D1 through M5-D27 MUST stop
+implementation conflict with this addendum and M5-D1 through M5-D28 MUST stop
 M5.4 as **NO-GO**. The exact amendment procedure MUST be a new numbered M5
 decision in `docs/m5_design_freeze.md`, a matching acceptance-matrix row, and a
 new runtime-addendum revision before code resumes. The migration-014 M4-open
@@ -40,8 +41,10 @@ addendum for persisted matching, migration 017, matching-work ownership, and
 physical/provenance audit surfaces. There is no unresolved D25 contract
 blocker. Migration 017 and the initial Task-2 store/publication-helper paths
 were separately activated and integrated or opened under their exact grants;
-their implementation evidence remains pending. Full M5.4 completion remains
-blocked on that implementation and its executable evidence. The
+none constitutes accepted public store/runtime composition. Their
+implementation evidence remains pending, and that composition now requires a
+new path-exclusive M5-D28 activation. Full M5.4 completion remains blocked on
+that implementation and its executable evidence. The
 accepted M5-D26 contract at `CHANGED_STATE_ABSENCE_AMENDMENT.md` supersedes
 only the removed-predecessor changed-state-reference validation gap: it defines
 one typed absence artifact for three existing kinds and grants migration 017
@@ -53,6 +56,16 @@ The accepted M5-D27 wording-only erratum at
 Section-12 assignment of a nonexistent requirement-state physical write count
 to D24. It changes no D24 or D25 vector, digest, schema, migration, transition,
 lock order, replay field, or measured value.
+The accepted M5-D28 amendment at
+`PHASED_PERSISTED_MATCHING_COMPOSITION_AMENDMENT.md` supersedes only the D24,
+D25, and revision-8 sequencing/replay wording identified there. It freezes
+cursor-local prepared phases for source-present transitions, the direct-only
+pre-source reservation and explicit lexical stage evidence needed around the
+tier-15c immutable source, guard-compatible base/runtime header placement,
+and exact replay through the canonical retained changed-key projection and
+current cumulative accumulator. It changes no public signature, DTO, digest,
+schema, migration, source/reference kind, counter, measured value, or runtime
+mode.
 
 Normative wire values in backticks MUST be exact lowercase UTF-8. Every DTO in
 this document MUST be immutable. Every tuple MUST use the order stated here.
@@ -2166,6 +2179,7 @@ database I/O MUST remain explicit.
 | M5-D22 | Section 10.1 uses the four byte-total semantic-row artifact domains and immutable certificate digests for every changed-state reference. |
 | M5-D23 | Sections 8.3, 14.2, 14.4, 16, and 17 preserve exact retry-error, cancellation-plan, direct-payload, and cursor-local acquisition identities. |
 | M5-D24 | The authoritative recovery amendment replaces lease/acquisition, dispatch/evidence, durable work/timing, late-return, terminal replay, migration-016, and route-barrier details while preserving every semantic and M4-v1 identity. |
+| M5-D28 | The authoritative phased-composition amendment separates cursor-local plan/stage/account/finalize work, permits the direct-only pre-source lock reservation required by the tier-15c source, and defines retained changed-key replay against the current cumulative accumulator without changing public or persisted identities. |
 | M5-T1 | Section 18.6 requires incremental/Python/SQL equality after every relevant measured seal. |
 | M5-T2 | Sections 10 and 19 expose touched rows, bytes, model calls, and physical exclusions without hiding them in the affected-group bound. |
 
@@ -2241,15 +2255,45 @@ used only as nonpersisted diagnostic evidence. Stored D24 event-result
 hydration and the separate retained D25 accumulator/read surface remain
 unchanged; D25 work is not added to `M5EventRunResult` or its logical digest.
 
-## 25. Final decision
+## 25. M5-D28 amendment precedence
 
-**Decision: GO for the M5-D27 contract; the prior M5-D25 and M5-D26 GOs remain
-in force. Confidence: high.**
+The complete byte-total D28 correction is maintained separately at
+`PHASED_PERSISTED_MATCHING_COMPOSITION_AMENDMENT.md`. Its independently
+accepted pre-freeze content SHA-256 is
+`8a2bafd3478cf2cac6ac7c8de7ca7779a6d9ace7fbbe98a7dc3ff08afdb67eae`.
+Where D25 Section 8 required exhaustive source-first, single-call application
+or full-original-intent replay; D25 Section 9.2 grouped incompatible physical
+DML placement; D24 Sections 7.2 and 10 placed physical accounting before the
+guard-required header advance; or revision-8 Section 14.3 grouped
+terminalization and revision advance after state installation, M5-D28 governs
+only the corrected phased protocol and retained replay projection.
 
-Revision 8 freezes the reviewed M5-D27 bytes while leaving M5-D24 through
-M5-D27 implementation evidence `PENDING`. It authorizes no migration, schema,
-DTO, digest, source/test implementation, public runtime, or deployment and does
-not declare Task 2 or M5.4 complete. Full production runtime and measured
+Source-present transitions use the unchanged derive signature once and carry
+an explicit cursor-local prepared authority through lower-tier staging, D24
+15d--15h accounting, and D25 15i--15k finalization. The direct path alone may
+reserve its complete store-derived key plan before its immutable source exists
+at tier 15c, and must then consume explicit lexical M4 stage evidence to load
+that source and complete the official D25 intent before D25 DML. Historical
+replay validates the canonical changed-key projection reconstructed from the
+retained artifact, its exact historical contribution, and the current retained
+accumulator; it neither reconstructs nonpersisted no-op keys nor writes.
+
+M5-D28 grants no SQL or migration change. The Section-8 persistence-internal
+callable signatures, public M5/M4 APIs, frozen DTOs/digests, D24 15a--15h and D25 15i--15k suborders,
+migrations 013--017, source/reference kinds, counter vectors, semantic rules,
+and runtime mode remain exact. No public store/runtime implementation is
+accepted until a new path-exclusive D28 activation and its executable gates
+complete.
+
+## 26. Final decision
+
+**Decision: GO for the M5-D28 contract; the prior M5-D25 through M5-D27 GOs
+remain in force. Confidence: high.**
+
+Revision 9 freezes the reviewed M5-D28 bytes while leaving M5-D24 through
+M5-D28 implementation evidence `PENDING`. It authorizes no migration, schema,
+DTO, digest, source/test implementation, public runtime, or deployment and
+does not declare Task 2 or M5.4 complete. Full production runtime and measured
 history remain **NO-GO** until persisted matching/absence validation,
 store/runtime composition, and the executable M5.4 gates pass under later
 explicit manifests. Runtime remains `v1_only` outside isolated fixtures. This

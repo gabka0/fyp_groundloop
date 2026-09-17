@@ -12,13 +12,17 @@ inventory-location repair are integrated at `290dbb3`; M5.0-24 is
 contract-`PASS` / implementation-`PENDING`; M5-D25 and M5.0-25 are contract-
 `PASS` / implementation-`PENDING`; M5-D26 and M5.0-26 are contract-`PASS` /
 implementation-`PENDING`; M5-D27 and M5.0-27 are contract-`PASS` /
-implementation-`PENDING`; the Task-2 activation at `e3d83e3` owns its exact
-path-exclusive lanes, whose implementation evidence is not yet accepted
+implementation-`PENDING`; M5-D28 and M5.0-28 are contract-`PASS` /
+implementation-`PENDING`; D28 freezes no implementation, the held D27 Task-2
+continuation draft and the original unstarted C lanes are not authority, and a
+new audited path-exclusive activation must start from the exact pushed D28
+barrier
 
 Date: 2026-08-02; M5-D24 path amendments and integration records 2026-08-06
 through 2026-08-19; M5.4-02/-03/-04 integration record 2026-09-02; M5-D25
 contract freeze 2026-09-03; M5-D26 contract freeze 2026-09-07; Task-2
-activation and M5-D27 contract freeze 2026-09-17
+activation and M5-D27 contract freeze 2026-09-17; M5-D28 contract freeze
+2026-09-18
 
 Authority: `docs/m5_design_freeze.md` defines semantics and
 `docs/m5_implementation_plan.md` defines gates. This document defines only
@@ -29,6 +33,8 @@ M5-D26 implementation must additionally obey the exact accepted
 `docs/workstreams/m5_runtime_contract/CHANGED_STATE_ABSENCE_AMENDMENT.md`.
 M5-D27 implementation must additionally obey the exact accepted
 `docs/workstreams/m5_runtime_contract/REQUIREMENT_STATE_COUNTER_ERRATUM.md`.
+M5-D28 implementation must additionally obey the exact accepted
+`docs/workstreams/m5_runtime_contract/PHASED_PERSISTED_MATCHING_COMPOSITION_AMENDMENT.md`.
 
 The accepted C7 correction at
 `docs/workstreams/m5_runtime_contract/DIRECT_ACQUISITION_TERMINAL_CUTOFF_CORRECTION.md`
@@ -806,14 +812,48 @@ migration, source, test, database, provider, deployment, runtime-mode, or AI-
 quality path. The accepted D27 erratum and the active Task-2 implementation
 branches are immutable inputs to this tranche.
 
-The separately accepted Task-2 activation at `e3d83e3` remains the only
-implementation ownership grant. D27 neither accepts its current Lane-A/Lane-B
-candidates nor silently expands their paths. A requirement-state-writing
-continuation must start from the exact integrated D27 barrier under a new
-path-exclusive activation; no current lane may edit a contract, migration,
-DTO, digest, schema, or public result to invent the missing counter.
+At the Wave-R6 checkpoint, the separately accepted Task-2 activation at
+`e3d83e3` was the only implementation ownership grant. D27 neither accepted
+its then-current Lane-A/Lane-B candidates nor silently expanded their paths.
+Those candidates later integrated at `8ecdc8e`; Wave R7 below supersedes the
+unstarted continuation boundary and requires a new D28 activation. No lane may
+edit a contract, migration, DTO, digest, schema, or public result to invent the
+missing counter.
 
 M5-D24 through M5-D27 and M5.0-24 through M5.0-27 remain implementation-
+`PENDING`. Task 2, M5.4-05 through M5.4-09, and every M5.5/M5.6 gate remain
+`PENDING`; runtime stays `v1_only`; and no deployment, model-quality, utility,
+security, novelty, or superiority claim follows.
+
+### Wave R7 -- M5-D28 phased-composition authority freeze
+
+The D28 candidate resolves only the sequencing contradiction among D24 tier-
+15 accounting, D25 source-first/exhaustive composition, the frozen direct 15c
+source, accepted migration-016/017 revision guards, tier-16 status deltas, and
+replay against one retained current accumulator. It was accepted on exact
+commit `cc0b9cf25110992320dc0b7f81499a3930d1a565`, tree
+`760107f9b6cbd70d37839144980cf23b8f5859ea`, and exact 48,053-byte, 810-line
+content SHA-256
+`8a2bafd3478cf2cac6ac7c8de7ca7779a6d9ace7fbbe98a7dc3ff08afdb67eae`.
+Two independent same-byte audits each returned `GO`, `P0=0`, `P1=0`, and
+`P2=0`.
+
+The authority-freeze tranche owns only the exact paths recorded in
+`docs/workstreams/m5_runtime_implementation/D28_CONTRACT_FREEZE_HANDOFF.md`.
+It may freeze M5-D28, runtime-addendum revision 9, and M5.0-28. It owns no
+source, test, migration, schema, DTO, digest, database, provider, deployment,
+runtime-mode, or AI-quality path and grants no implementation ownership.
+
+The accepted Lane-A/Lane-B integration on the D27 barrier remains bounded
+historical implementation evidence, not Task-2 acceptance. The held,
+uncommitted D27 Task-2 continuation draft is not authority. Neither the
+original activation's unstarted C lanes nor any historical implementation
+branch may be resumed, merged, cherry-picked, or treated as inherited
+ownership. After this freeze is independently audited, integrated, and pushed,
+all further public-store/runtime composition requires a new independently
+audited path-exclusive activation pinned to that exact pushed D28 barrier.
+
+M5-D24 through M5-D28 and M5.0-24 through M5.0-28 remain implementation-
 `PENDING`. Task 2, M5.4-05 through M5.4-09, and every M5.5/M5.6 gate remain
 `PENDING`; runtime stays `v1_only`; and no deployment, model-quality, utility,
 security, novelty, or superiority claim follows.
