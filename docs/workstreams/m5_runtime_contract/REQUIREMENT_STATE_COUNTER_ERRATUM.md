@@ -35,9 +35,10 @@ M5-D25 Section 12 later says that corrected M5-D24 remains sole owner of
 actual `requirement/group/claim/answer/certificate/public-delta` SQL write
 counts in `M5RuntimeWork`. The word `requirement` has no corresponding frozen
 runtime field, digest position, database column, contribution coordinate, or
-accumulator coordinate. A nonempty persisted-matching transition cannot obey
-that sentence without either omitting a supposedly mandatory counter or
-silently charging a requirement-state write to an unrelated coordinate.
+accumulator coordinate. A persisted-matching transition that physically
+writes a requirement-state row cannot obey that sentence without either
+omitting a supposedly mandatory counter or silently charging that row write
+to an unrelated coordinate.
 
 M5-D24 is the earlier owner of `M5RuntimeWork`, and its exact type, digest, and
 migration bytes are already frozen. This erratum resolves only that conflict.
@@ -119,17 +120,20 @@ does not authorize that expansion.
 
 ## 5. Task-2 implementation consequence
 
-Before this erratum is frozen, the first nonempty D25 transition remains a
-hard stop because group registration already writes requirement state.
+Before this erratum is frozen, the first planned D25 transition that physically
+writes requirement state remains a hard stop. Group registration is the first
+such transition in the current Task-2 sequence; an empty/no-change structural
+patch with its mandatory `output_bytes=71` is not blocked by this erratum.
 
 After this erratum is frozen, the existing Task-2 path grants may implement
-nonempty transitions without inventing a D24 requirement-state counter. The
-transaction must still:
+transitions that physically write requirement state without inventing a D24
+requirement-state counter. The transaction must still:
 
 1. derive and validate every requirement-state row from persisted authority;
 2. bind every change into the exact D25 logical patch and output;
-3. count the existing D24 group/claim/answer/certificate/public writes exactly
-   once at the transaction that physically writes them;
+3. count the existing D24 group-state, claim-state, answer-state,
+   certificate-binding, and public-delta writes exactly once at the
+   transaction that physically writes them;
 4. persist the independently derived 37-counter D25 contribution exactly
    once; and
 5. report the absence of a dedicated requirement-state physical row-count
@@ -150,13 +154,16 @@ below pass with no skip or silent deselection:
    still contain the five exact state/certificate/delta coordinates listed in
    Section 1.
 2. A group registration that writes one or more requirement-state rows leaves
-   every unrelated D24 write counter unchanged except for actual
-   group/claim/answer/certificate/public writes performed by that transaction.
+   every unrelated D24 write counter unchanged except for actual group-state,
+   claim-state, answer-state, certificate-binding, and public-delta writes
+   performed by that transaction. Immutable certificate-artifact insertion is
+   not a certificate-binding write.
 3. Requirement-state writes are still present in the canonical D25 logical
    patch/output, guarded by the transition bijection, and replay exactly.
 4. Mutating `group_state_write_count`, `group_local_state_operations`, or
-   `requirement_state_only_changes` as a surrogate for the missing coordinate
-   fails an exact expected-work or digest comparison.
+   `requirement_state_only_changes` as a surrogate for the missing coordinate,
+   while recomputing every dependent digest consistently, still fails the
+   independently derived expected-work and counter-owner validation.
 5. Existing D24 runtime-work and D25 matching-work golden vectors remain
    byte-for-byte unchanged.
 6. Existing migration-016 and migration-017 fresh-install, rerun, conflict,
@@ -171,8 +178,8 @@ below pass with no skip or silent deselection:
 This candidate becomes authoritative only after two independent reviewers
 audit identical bytes and each returns `GO`, `P0=0`, and `P1=0`. Any byte
 change restarts both audits. Only the exact reviewed bytes may then be added
-to an authority-freeze/status tranche and used to resume nonempty Task-2
-implementation.
+to an authority-freeze/status tranche and used to resume the
+requirement-state-writing Task-2 paths.
 
 Acceptance would resolve one counter-ownership contradiction. It would not
 establish D24, D25, D26, Task 2, M5.4, M5.5, M5.6, deployment, performance, or
