@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from psycopg import Connection, IsolationLevel, sql
+from psycopg import Connection, Cursor, IsolationLevel, sql
 from psycopg.pq import TransactionStatus
 
 from groundloop.m5.digests import hash_field, stable_m5_digest, text_field
@@ -100,11 +100,46 @@ M5_PERSISTED_MATCHING_ORACLE_SHA256 = hashlib.sha256(b"").hexdigest()
 # first install.  Ledger-first replay still compares the caller-derived
 # identity so a conflicting replay reports the historical ledger conflict;
 # an absent ledger never turns arbitrary caller bytes into accepted authority.
+M5_ACCEPTED_PERSISTED_MATCHING_BUNDLE_ID = "m5-persisted-matching-schema-bundle-v1"
 M5_ACCEPTED_PERSISTED_MATCHING_MIGRATION_SHA256 = (
     "e387b01fa80145273ba40d2d83581bc54762d3a4a2edd34669c095076c52154c"
 )
 M5_ACCEPTED_PERSISTED_MATCHING_BUNDLE_SHA256 = (
     "52240e19968926d0c051fe6146b3c7d877cf582014341efbfcc78637f3ff5761"
+)
+M5_ACCEPTED_PERSISTED_MATCHING_ORACLE_SHA256 = (
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+)
+M5_ACCEPTED_PERSISTED_MATCHING_PREREQUISITE_SHA256 = (
+    "28a31f37c13cdaa2b89676e6279740a1f366e1acd16502c4fa722c2e0be21565"
+)
+
+M5_BOUNDED_DOCUMENT_WITHDRAWAL_BUNDLE_ID = (
+    "m5-bounded-document-withdrawal-schema-bundle-v1"
+)
+M5_BOUNDED_DOCUMENT_WITHDRAWAL_MIGRATION_LABEL = (
+    "migrations/018_m5_bounded_document_withdrawal.sql"
+)
+M5_BOUNDED_DOCUMENT_WITHDRAWAL_MIGRATION_PATH = (
+    ROOT / M5_BOUNDED_DOCUMENT_WITHDRAWAL_MIGRATION_LABEL
+)
+M5_BOUNDED_DOCUMENT_WITHDRAWAL_ORACLE_SHA256 = (
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+)
+
+# M5-D29 pins the only migration-018 bytes authorized for first installation.
+# Exact ledger replay compares the caller-derived identity first; absent-ledger
+# installation never derives authority from the current checkout.
+M5_ACCEPTED_BOUNDED_DOCUMENT_WITHDRAWAL_MIGRATION_SHA256 = (
+    "941bba975c12e9fb5ba4b4f75a82e59fa518b23eac34468ed2f8b15d1cd9ed90"
+)
+M5_ACCEPTED_BOUNDED_DOCUMENT_WITHDRAWAL_BUNDLE_SHA256 = (
+    "9c45e58fb5c61156d4d07aa0c9b767112bf285452664f39731d893445e7a9e4f"
+)
+
+M5_BOUNDED_DOCUMENT_WITHDRAWAL_INSTALL_LOCK_RELATIONS = (
+    "groundloop_m5_requirement_admitted_pair",
+    "groundloop_semantic_job",
 )
 
 M5_PERSISTED_MATCHING_INSTALL_LOCK_RELATIONS = (
@@ -457,6 +492,10 @@ class M5PersistedMatchingBundleError(M5RuntimeBundleError):
     """Migration 017 cannot be installed or replayed safely."""
 
 
+class M5BoundedDocumentWithdrawalBundleError(M5RuntimeBundleError):
+    """Migration 018 cannot be installed, replayed, or routed safely."""
+
+
 @dataclass(frozen=True, slots=True)
 class M5BundleIdentity:
     bundle_id: str
@@ -514,6 +553,21 @@ class M5PersistedMatchingBundleIdentity:
 @dataclass(frozen=True, slots=True)
 class M5PersistedMatchingBundleInstallResult:
     identity: M5PersistedMatchingBundleIdentity
+    applied: bool
+
+
+@dataclass(frozen=True, slots=True)
+class M5BoundedDocumentWithdrawalBundleIdentity:
+    bundle_id: str
+    bundle_sha256: str
+    migration_sha256: str
+    oracle_sha256: str
+    prerequisite_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class M5BoundedDocumentWithdrawalBundleInstallResult:
+    identity: M5BoundedDocumentWithdrawalBundleIdentity
     applied: bool
 
 
@@ -654,6 +708,32 @@ def m5_persisted_matching_bundle_identity(
         migration_sha256=migration_hash,
         oracle_sha256=M5_PERSISTED_MATCHING_ORACLE_SHA256,
         prerequisite_sha256=M5_ACCEPTED_RECOVERY_BUNDLE_SHA256,
+    )
+
+
+def m5_bounded_document_withdrawal_bundle_identity(
+    *, migration_bytes: bytes | None = None
+) -> M5BoundedDocumentWithdrawalBundleIdentity:
+    """Return migration 018's identity bound to the accepted migration 017."""
+
+    migration = (
+        M5_BOUNDED_DOCUMENT_WITHDRAWAL_MIGRATION_PATH.read_bytes()
+        if migration_bytes is None
+        else migration_bytes
+    )
+    migration_hash = _sha256(migration)
+    bundle_hash = stable_m5_digest(
+        M5_BOUNDED_DOCUMENT_WITHDRAWAL_BUNDLE_ID,
+        text_field(M5_BOUNDED_DOCUMENT_WITHDRAWAL_MIGRATION_LABEL),
+        hash_field(migration_hash),
+        hash_field(M5_ACCEPTED_PERSISTED_MATCHING_BUNDLE_SHA256),
+    )
+    return M5BoundedDocumentWithdrawalBundleIdentity(
+        bundle_id=M5_BOUNDED_DOCUMENT_WITHDRAWAL_BUNDLE_ID,
+        bundle_sha256=bundle_hash,
+        migration_sha256=migration_hash,
+        oracle_sha256=M5_BOUNDED_DOCUMENT_WITHDRAWAL_ORACLE_SHA256,
+        prerequisite_sha256=M5_ACCEPTED_PERSISTED_MATCHING_BUNDLE_SHA256,
     )
 
 
@@ -2523,6 +2603,295 @@ def install_m5_persisted_matching_bundle(
         return M5PersistedMatchingBundleInstallResult(identity, True)
 
 
+def _read_five_field_schema_bundle_row(
+    executor: Connection[Any] | Cursor[Any],
+    bundle_id: str,
+    *,
+    schema_name: str | None = None,
+) -> tuple[str, str, str, str, str] | None:
+    ledger_relation = (
+        sql.Identifier("groundloop_m5_schema_bundle")
+        if schema_name is None
+        else sql.Identifier(schema_name, "groundloop_m5_schema_bundle")
+    )
+    row = executor.execute(
+        sql.SQL(
+            """
+            SELECT bundle_id, bundle_sha256, migration_sha256,
+                   oracle_sha256, prerequisite_sha256
+            FROM {}
+            WHERE bundle_id = %s
+            """
+        ).format(ledger_relation),
+        (bundle_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return (
+        str(row[0]),
+        str(row[1]).rstrip(" "),
+        str(row[2]).rstrip(" "),
+        str(row[3]).rstrip(" "),
+        str(row[4]).rstrip(" "),
+    )
+
+
+def _verify_accepted_m5_persisted_matching_bundle_for_018(
+    connection: Connection[Any],
+) -> None:
+    expected = (
+        M5_ACCEPTED_PERSISTED_MATCHING_BUNDLE_ID,
+        M5_ACCEPTED_PERSISTED_MATCHING_BUNDLE_SHA256,
+        M5_ACCEPTED_PERSISTED_MATCHING_MIGRATION_SHA256,
+        M5_ACCEPTED_PERSISTED_MATCHING_ORACLE_SHA256,
+        M5_ACCEPTED_PERSISTED_MATCHING_PREREQUISITE_SHA256,
+    )
+    actual = _read_five_field_schema_bundle_row(
+        connection, M5_ACCEPTED_PERSISTED_MATCHING_BUNDLE_ID
+    )
+    if actual != expected:
+        raise M5PrerequisiteError(
+            "migration 018 requires the exact accepted five-field "
+            "migration-017 ledger row"
+        )
+
+
+def _verify_m5_bounded_document_withdrawal_environment(
+    connection: Connection[Any],
+) -> None:
+    row = connection.execute(
+        """
+        SELECT current_setting('server_encoding'),
+               namespace.nspname,
+               collation_row.collname,
+               collation_row.collprovider,
+               collation_row.collisdeterministic,
+               collation_row.collencoding,
+               to_regcollation('"C"') = collation_row.oid,
+               (
+                   SELECT array_agg(sample.value ORDER BY sample.value COLLATE "C")
+                          = array_agg(
+                                sample.value
+                                ORDER BY convert_to(sample.value, 'UTF8')
+                            )
+                   FROM (
+                       VALUES
+                           (''::text),
+                           ('A'::text),
+                           ('a'::text),
+                           ('~'::text),
+                           (convert_from(decode('65cc81', 'hex'), 'UTF8')),
+                           (convert_from(decode('c3a9', 'hex'), 'UTF8')),
+                           (convert_from(decode('e7958c', 'hex'), 'UTF8'))
+                   ) AS sample(value)
+               )
+        FROM pg_catalog.pg_collation AS collation_row
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = collation_row.collnamespace
+        WHERE collation_row.oid = to_regcollation('pg_catalog."C"')
+        """
+    ).fetchone()
+    if row != ("UTF8", "pg_catalog", "C", "c", True, -1, True, True):
+        raise M5BoundedDocumentWithdrawalBundleError(
+            "migration 018 requires UTF-8 and the visible deterministic "
+            "pg_catalog C collation"
+        )
+
+
+_M5_BOUNDED_DOCUMENT_WITHDRAWAL_STATEMENTS = (
+    """CREATE INDEX groundloop_m5_admitted_pair_by_chunk_edge
+    ON groundloop_m5_requirement_admitted_pair (
+        chunk_version_id COLLATE "C"
+    );""",
+    """CREATE INDEX groundloop_m4_job_by_epoch
+    ON groundloop_semantic_job (epoch_id);""",
+)
+
+
+def _m5_bounded_document_withdrawal_migration_statements(
+    migration: bytes,
+) -> tuple[str, str]:
+    try:
+        source = migration.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise M5BoundedDocumentWithdrawalBundleError(
+            "migration 018 bytes are not UTF-8"
+        ) from error
+    parts = source.split(";")
+    if len(parts) != 3 or parts[2].strip():
+        raise M5BoundedDocumentWithdrawalBundleError(
+            "migration 018 must contain exactly two SQL statements"
+        )
+    statements = (f"{parts[0].strip()};", f"{parts[1].strip()};")
+    if statements != _M5_BOUNDED_DOCUMENT_WITHDRAWAL_STATEMENTS:
+        raise M5BoundedDocumentWithdrawalBundleError(
+            "migration 018 statements do not match the frozen M5-D29 DDL"
+        )
+    return statements
+
+
+def _acquire_m5_bounded_document_withdrawal_install_locks(
+    connection: Connection[Any],
+) -> None:
+    connection.execute(
+        "LOCK TABLE groundloop_m5_requirement_admitted_pair,\n"
+        "           groundloop_semantic_job\n"
+        "    IN SHARE ROW EXCLUSIVE MODE NOWAIT"
+    )
+
+
+def _verify_m5_bounded_document_withdrawal_route_authority(
+    executor: Cursor[Any],
+) -> None:
+    """Require accepted migration 018 with no transaction control or explicit lock."""
+
+    schema_authority = executor.execute(
+        """
+        WITH selected_schema(schema_name) AS (
+            SELECT pg_catalog.current_schema()
+        )
+        SELECT selected_schema.schema_name,
+               EXISTS (
+                   SELECT 1
+                   FROM pg_catalog.pg_class AS relation_row
+                   JOIN pg_catalog.pg_namespace AS namespace_row
+                     ON namespace_row.oid = relation_row.relnamespace
+                   WHERE namespace_row.nspname = selected_schema.schema_name
+                     AND relation_row.relname = 'groundloop_m5_schema_bundle'
+                     AND relation_row.relkind = 'r'
+                     AND relation_row.relpersistence = 'p'
+               )
+        FROM selected_schema
+        """
+    ).fetchone()
+    if (
+        schema_authority is None
+        or schema_authority[0] is None
+        or schema_authority[1] is not True
+    ):
+        raise M5BoundedDocumentWithdrawalBundleError(
+            "D29 document routes require the exact accepted five-field "
+            "migration-018 ledger row"
+        )
+    schema_name = str(schema_authority[0])
+    expected = (
+        M5_BOUNDED_DOCUMENT_WITHDRAWAL_BUNDLE_ID,
+        M5_ACCEPTED_BOUNDED_DOCUMENT_WITHDRAWAL_BUNDLE_SHA256,
+        M5_ACCEPTED_BOUNDED_DOCUMENT_WITHDRAWAL_MIGRATION_SHA256,
+        M5_BOUNDED_DOCUMENT_WITHDRAWAL_ORACLE_SHA256,
+        M5_ACCEPTED_PERSISTED_MATCHING_BUNDLE_SHA256,
+    )
+    actual = _read_five_field_schema_bundle_row(
+        executor,
+        M5_BOUNDED_DOCUMENT_WITHDRAWAL_BUNDLE_ID,
+        schema_name=schema_name,
+    )
+    if actual != expected:
+        raise M5BoundedDocumentWithdrawalBundleError(
+            "D29 document routes require the exact accepted five-field "
+            "migration-018 ledger row"
+        )
+
+
+def install_m5_bounded_document_withdrawal_bundle(
+    connection: Connection[Any],
+    *,
+    failure_injector: Callable[[str], None] | None = None,
+    migration_bytes: bytes | None = None,
+) -> M5BoundedDocumentWithdrawalBundleInstallResult:
+    """Atomically install or ledger-first replay frozen migration 018."""
+
+    if connection.info.transaction_status != TransactionStatus.IDLE:
+        raise M5BoundedDocumentWithdrawalBundleError(
+            "migration 018 requires an idle connection and owns its "
+            "top-level transaction"
+        )
+    if connection.read_only is True or connection.isolation_level not in (
+        None,
+        IsolationLevel.READ_COMMITTED,
+    ):
+        raise M5BoundedDocumentWithdrawalBundleError(
+            "migration 018 requires a read-write READ COMMITTED connection"
+        )
+    identity = m5_bounded_document_withdrawal_bundle_identity(
+        migration_bytes=migration_bytes
+    )
+    migration = (
+        M5_BOUNDED_DOCUMENT_WITHDRAWAL_MIGRATION_PATH.read_bytes()
+        if migration_bytes is None
+        else migration_bytes
+    )
+    with connection.transaction():
+        connection.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED READ WRITE")
+        ledger = _read_ledger(connection, identity.bundle_id)
+        expected = (
+            identity.bundle_sha256,
+            identity.migration_sha256,
+            identity.oracle_sha256,
+            identity.prerequisite_sha256,
+        )
+        if ledger is not None:
+            if ledger != expected:
+                raise M5BundleHashConflictError(
+                    f"bundle {identity.bundle_id} is already ledgered with "
+                    "different content"
+                )
+            return M5BoundedDocumentWithdrawalBundleInstallResult(identity, False)
+        if failure_injector is not None:
+            failure_injector("after_initial_ledger")
+        if (
+            identity.migration_sha256
+            != M5_ACCEPTED_BOUNDED_DOCUMENT_WITHDRAWAL_MIGRATION_SHA256
+            or identity.bundle_sha256
+            != M5_ACCEPTED_BOUNDED_DOCUMENT_WITHDRAWAL_BUNDLE_SHA256
+        ):
+            raise M5BoundedDocumentWithdrawalBundleError(
+                "migration 018 first install bytes do not match the frozen "
+                "M5-D29 authority"
+            )
+        statements = _m5_bounded_document_withdrawal_migration_statements(migration)
+        _verify_accepted_m5_persisted_matching_bundle_for_018(connection)
+        _verify_m5_bounded_document_withdrawal_environment(connection)
+        if failure_injector is not None:
+            failure_injector("after_prerequisite")
+        _acquire_m5_bounded_document_withdrawal_install_locks(connection)
+        if failure_injector is not None:
+            failure_injector("after_install_locks")
+        ledger = _read_ledger(connection, identity.bundle_id)
+        if ledger is not None:
+            if ledger != expected:
+                raise M5BundleHashConflictError(
+                    f"bundle {identity.bundle_id} is already ledgered with "
+                    "different content"
+                )
+            return M5BoundedDocumentWithdrawalBundleInstallResult(identity, False)
+        if failure_injector is not None:
+            failure_injector("before_first_index")
+        connection.execute(statements[0])
+        if failure_injector is not None:
+            failure_injector("after_admitted_pair_index")
+        connection.execute(statements[1])
+        if failure_injector is not None:
+            failure_injector("after_m4_job_index")
+        if failure_injector is not None:
+            failure_injector("before_ledger")
+        connection.execute(
+            """INSERT INTO groundloop_m5_schema_bundle
+               (bundle_id,bundle_sha256,migration_sha256,oracle_sha256,
+                prerequisite_sha256,applied_at) VALUES (%s,%s,%s,%s,%s,now())""",
+            (
+                identity.bundle_id,
+                identity.bundle_sha256,
+                identity.migration_sha256,
+                identity.oracle_sha256,
+                identity.prerequisite_sha256,
+            ),
+        )
+        if failure_injector is not None:
+            failure_injector("after_ledger")
+        return M5BoundedDocumentWithdrawalBundleInstallResult(identity, True)
+
+
 __all__ = [
     "LEGACY_MIGRATION_NAMES",
     "LEGACY_MIGRATION_PATHS",
@@ -2540,8 +2909,18 @@ __all__ = [
     "M5_ACCEPTED_RECOVERY_MIGRATION_SHA256",
     "M5_ACCEPTED_RECOVERY_ORACLE_SHA256",
     "M5_ACCEPTED_RECOVERY_PREREQUISITE_SHA256",
+    "M5_ACCEPTED_PERSISTED_MATCHING_BUNDLE_ID",
     "M5_ACCEPTED_PERSISTED_MATCHING_BUNDLE_SHA256",
     "M5_ACCEPTED_PERSISTED_MATCHING_MIGRATION_SHA256",
+    "M5_ACCEPTED_PERSISTED_MATCHING_ORACLE_SHA256",
+    "M5_ACCEPTED_PERSISTED_MATCHING_PREREQUISITE_SHA256",
+    "M5_ACCEPTED_BOUNDED_DOCUMENT_WITHDRAWAL_BUNDLE_SHA256",
+    "M5_ACCEPTED_BOUNDED_DOCUMENT_WITHDRAWAL_MIGRATION_SHA256",
+    "M5_BOUNDED_DOCUMENT_WITHDRAWAL_BUNDLE_ID",
+    "M5_BOUNDED_DOCUMENT_WITHDRAWAL_INSTALL_LOCK_RELATIONS",
+    "M5_BOUNDED_DOCUMENT_WITHDRAWAL_MIGRATION_LABEL",
+    "M5_BOUNDED_DOCUMENT_WITHDRAWAL_MIGRATION_PATH",
+    "M5_BOUNDED_DOCUMENT_WITHDRAWAL_ORACLE_SHA256",
     "M5_PERSISTED_MATCHING_BUNDLE_ID",
     "M5_PERSISTED_MATCHING_INSTALL_LOCK_RELATIONS",
     "M5_PERSISTED_MATCHING_MIGRATION_LABEL",
@@ -2570,14 +2949,19 @@ __all__ = [
     "M5PersistedMatchingBundleError",
     "M5PersistedMatchingBundleIdentity",
     "M5PersistedMatchingBundleInstallResult",
+    "M5BoundedDocumentWithdrawalBundleError",
+    "M5BoundedDocumentWithdrawalBundleIdentity",
+    "M5BoundedDocumentWithdrawalBundleInstallResult",
     "apply_legacy_migrations",
     "install_m5_core_bundle",
     "install_m5_runtime_bundle",
     "install_m5_runtime_recovery_bundle",
     "install_m5_persisted_matching_bundle",
+    "install_m5_bounded_document_withdrawal_bundle",
     "legacy_prerequisite_source_sha256",
     "m5_bundle_identity",
     "m5_runtime_bundle_identity",
     "m5_runtime_recovery_bundle_identity",
     "m5_persisted_matching_bundle_identity",
+    "m5_bounded_document_withdrawal_bundle_identity",
 ]
