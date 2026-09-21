@@ -13,16 +13,17 @@ contract-`PASS` / implementation-`PENDING`; M5-D25 and M5.0-25 are contract-
 `PASS` / implementation-`PENDING`; M5-D26 and M5.0-26 are contract-`PASS` /
 implementation-`PENDING`; M5-D27 and M5.0-27 are contract-`PASS` /
 implementation-`PENDING`; M5-D28 and M5.0-28 are contract-`PASS` /
-implementation-`PENDING`; D28 freezes no implementation, the held D27 Task-2
-continuation draft and the original unstarted C lanes are not authority, and a
-new audited path-exclusive activation must start from the exact pushed D28
-barrier
+implementation-`PENDING`; M5-D29 and M5.0-29 are contract-`PASS` /
+implementation-`PENDING`; D29 freezes no implementation, the accepted D28
+activation is insufficient for the corrected scope, held Lane-P bytes are
+non-authority, and a new audited path-exclusive activation must start from the
+exact pushed D29 barrier
 
 Date: 2026-08-02; M5-D24 path amendments and integration records 2026-08-06
 through 2026-08-19; M5.4-02/-03/-04 integration record 2026-09-02; M5-D25
 contract freeze 2026-09-03; M5-D26 contract freeze 2026-09-07; Task-2
 activation and M5-D27 contract freeze 2026-09-17; M5-D28 contract freeze
-2026-09-18
+2026-09-18; M5-D29 contract freeze 2026-09-22
 
 Authority: `docs/m5_design_freeze.md` defines semantics and
 `docs/m5_implementation_plan.md` defines gates. This document defines only
@@ -35,6 +36,8 @@ M5-D27 implementation must additionally obey the exact accepted
 `docs/workstreams/m5_runtime_contract/REQUIREMENT_STATE_COUNTER_ERRATUM.md`.
 M5-D28 implementation must additionally obey the exact accepted
 `docs/workstreams/m5_runtime_contract/PHASED_PERSISTED_MATCHING_COMPOSITION_AMENDMENT.md`.
+M5-D29 implementation must additionally obey the exact accepted
+`docs/workstreams/m5_runtime_contract/BOUNDED_DOCUMENT_WITHDRAWAL_AMENDMENT.md`.
 
 The accepted C7 correction at
 `docs/workstreams/m5_runtime_contract/DIRECT_ACQUISITION_TERMINAL_CUTOFF_CORRECTION.md`
@@ -854,6 +857,43 @@ all further public-store/runtime composition requires a new independently
 audited path-exclusive activation pinned to that exact pushed D28 barrier.
 
 M5-D24 through M5-D28 and M5.0-24 through M5.0-28 remain implementation-
+`PENDING`. Task 2, M5.4-05 through M5.4-09, and every M5.5/M5.6 gate remain
+`PENDING`; runtime stays `v1_only`; and no deployment, model-quality, utility,
+security, novelty, or superiority claim follows.
+
+### Wave R8 -- M5-D29 bounded document-withdrawal authority freeze
+
+The D29 candidate resolves only the persisted legacy-source identity,
+reverse/current withdrawal enumeration, retained direct/M5 declaration
+completeness, same-policy admissibility, and hydration terminal-cut gaps in the
+D25/D28/revision-9 composition. It was accepted on exact commit
+`4667da0e230d2b52b3147d0ee771396b406ed1e9`, tree
+`5f7e69e6f2f503fc3a36691fee16afa40bc8a479`, and exact 81,878-byte,
+1,322-line content SHA-256
+`e05f159f98d5f282335a90d2e9db1a26f8d85560030314060d918df59ccc82fb`.
+Independent contract/runtime and PostgreSQL/schema audits each returned `GO`,
+`P0=0`, `P1=0`, `P2=0`, then independently confirmed the identical committed
+bytes and exact provenance.
+
+The authority-freeze tranche owns only the exact ten paths recorded in
+`docs/workstreams/m5_runtime_implementation/D29_CONTRACT_FREEZE_HANDOFF.md`.
+It may freeze M5-D29, runtime-addendum revision 10, M5.0-29, and the exact
+future migration-018 contract. It owns no migration, installer, source, test,
+schema, DTO, digest, database, provider, deployment, runtime-mode, or AI-
+quality path and grants no implementation ownership.
+
+The accepted D28 activation at `28a1392` remains historical authority but is
+insufficient for corrected D29 work. Its held Lane-P source/test bytes are
+read-only non-authority and may not be committed, merged, rebased,
+cherry-picked, copied, or represented as accepted. After this freeze is
+independently audited, integrated, and pushed, all migration-018 and public
+store/runtime work requires a new independently audited path-exclusive
+activation pinned to that exact pushed D29 barrier. That activation must
+allocate disjoint paths and sequential integration barriers and require two
+same-byte `GO`, `P0=0`, `P1=0` audits per lane before any lane edits
+implementation bytes.
+
+M5-D24 through M5-D29 and M5.0-24 through M5.0-29 remain implementation-
 `PENDING`. Task 2, M5.4-05 through M5.4-09, and every M5.5/M5.6 gate remain
 `PENDING`; runtime stays `v1_only`; and no deployment, model-quality, utility,
 security, novelty, or superiority claim follows.

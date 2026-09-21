@@ -1,16 +1,16 @@
 # GroundLoop M5.4 Byte-Total Runtime Contract Addendum
 
-Status: frozen runtime contract revision 9; M5-D25 through M5-D28 contracts
+Status: frozen runtime contract revision 10; M5-D25 through M5-D29 contracts
 **GO** / implementation **PENDING**; full M5.4 remains blocked on executable
 runtime evidence
 
 Date: 2026-08-03; revision 5 / M5-D21 through M5-D24 amendments 2026-08-06;
 revision 6 / M5-D25 amendment 2026-09-03; revision 7 / M5-D26 amendment
 2026-09-07; revision 8 / M5-D27 erratum 2026-09-17; revision 9 / M5-D28
-amendment 2026-09-18
+amendment 2026-09-18; revision 10 / M5-D29 amendment 2026-09-22
 
 Authority: this addendum specializes `docs/m5_design_freeze.md` M5-D1 through
-M5-D28 and M5-T1/M5-T2. It does not change those decisions. The M5 design
+M5-D29 and M5-T1/M5-T2. It does not change those decisions. The M5 design
 freeze remains authoritative for semantic truth; this addendum is authoritative
 for M5.4 runtime DTOs, identities, transition boundaries, persistence
 ownership, replay, and acceptance tests.
@@ -22,7 +22,7 @@ start only after migration 014 and its SQL oracle bundle have passed the M5.3
 fresh-install, populated-upgrade, compatibility, and three-oracle gates.
 
 This addendum MUST NOT authorize a change to an M5.0 semantic decision. An
-implementation conflict with this addendum and M5-D1 through M5-D28 MUST stop
+implementation conflict with this addendum and M5-D1 through M5-D29 MUST stop
 M5.4 as **NO-GO**. The exact amendment procedure MUST be a new numbered M5
 decision in `docs/m5_design_freeze.md`, a matching acceptance-matrix row, and a
 new runtime-addendum revision before code resumes. The migration-014 M4-open
@@ -42,9 +42,11 @@ physical/provenance audit surfaces. There is no unresolved D25 contract
 blocker. Migration 017 and the initial Task-2 store/publication-helper paths
 were separately activated and integrated or opened under their exact grants;
 none constitutes accepted public store/runtime composition. Their
-implementation evidence remains pending, and that composition now requires a
-new path-exclusive M5-D28 activation. Full M5.4 completion remains blocked on
-that implementation and its executable evidence. The
+implementation evidence remains pending. The accepted D28 activation at
+`28a1392` subsequently supplied a historical composition grant, but its held
+Lane-P bytes are non-authority and it is insufficient for corrected D29 work;
+a new path-exclusive D29 activation is required. Full M5.4 completion remains
+blocked on that implementation and its executable evidence. The
 accepted M5-D26 contract at `CHANGED_STATE_ABSENCE_AMENDMENT.md` supersedes
 only the removed-predecessor changed-state-reference validation gap: it defines
 one typed absence artifact for three existing kinds and grants migration 017
@@ -66,6 +68,18 @@ and exact replay through the canonical retained changed-key projection and
 current cumulative accumulator. It changes no public signature, DTO, digest,
 schema, migration, source/reference kind, counter, measured value, or runtime
 mode.
+The accepted M5-D29 amendment at
+`BOUNDED_DOCUMENT_WITHDRAWAL_AMENDMENT.md` supersedes only the persisted
+legacy-document source, reverse/current withdrawal enumeration, retained
+declaration completeness, same-policy admissibility, hydration terminal-cut,
+and migration-018 sentences identified there. It keeps every public API and
+frozen DTO/digest exact. It authorizes the contract for one future migration
+with exactly two locator indexes, but accepts no migration, installer, source,
+test, database, or runtime bytes. Its same-policy fail-closed rule is the sole
+semantic-admissibility supersession. Cross-policy withdrawal and typed rootless
+`ObserveRequirementEvent` remain `PENDING`; activation-bootstrap observations
+remain supported. Implementation requires a new path-exclusive D29 activation
+from the pushed authority barrier.
 
 Normative wire values in backticks MUST be exact lowercase UTF-8. Every DTO in
 this document MUST be immutable. Every tuple MUST use the order stated here.
@@ -2180,6 +2194,7 @@ database I/O MUST remain explicit.
 | M5-D23 | Sections 8.3, 14.2, 14.4, 16, and 17 preserve exact retry-error, cancellation-plan, direct-payload, and cursor-local acquisition identities. |
 | M5-D24 | The authoritative recovery amendment replaces lease/acquisition, dispatch/evidence, durable work/timing, late-return, terminal replay, migration-016, and route-barrier details while preserving every semantic and M4-v1 identity. |
 | M5-D28 | The authoritative phased-composition amendment separates cursor-local plan/stage/account/finalize work, permits the direct-only pre-source lock reservation required by the tier-15c source, and defines retained changed-key replay against the current cumulative accumulator without changing public or persisted identities. |
+| M5-D29 | The authoritative bounded-withdrawal amendment uses the locked epoch payload as persisted legacy source identity, exact bounded reverse/current and declaration locators, a same-policy supported form, ordinary pre-opener plus one checked post-open hydration-cut routing, and a two-index migration-018 barrier without changing public or digest identities. |
 | M5-T1 | Section 18.6 requires incremental/Python/SQL equality after every relevant measured seal. |
 | M5-T2 | Sections 10 and 19 expose touched rows, bytes, model calls, and physical exclusions without hiding them in the affected-group bound. |
 
@@ -2281,21 +2296,86 @@ accumulator; it neither reconstructs nonpersisted no-op keys nor writes.
 M5-D28 grants no SQL or migration change. The Section-8 persistence-internal
 callable signatures, public M5/M4 APIs, frozen DTOs/digests, D24 15a--15h and D25 15i--15k suborders,
 migrations 013--017, source/reference kinds, counter vectors, semantic rules,
-and runtime mode remain exact. No public store/runtime implementation is
-accepted until a new path-exclusive D28 activation and its executable gates
-complete.
+and runtime mode remain exact. At the D28 checkpoint no public store/runtime
+implementation was accepted until a new path-exclusive activation and its
+executable gates completed. The accepted D28 activation at `28a1392`
+subsequently supplied only that historical grant; D29 makes it insufficient
+for the corrected withdrawal scope.
 
-## 26. Final decision
+## 26. M5-D29 amendment precedence
 
-**Decision: GO for the M5-D28 contract; the prior M5-D25 through M5-D27 GOs
+The complete byte-total D29 correction is maintained separately at
+`BOUNDED_DOCUMENT_WITHDRAWAL_AMENDMENT.md`. Its independently accepted pre-
+freeze content SHA-256 is
+`e05f159f98d5f282335a90d2e9db1a26f8d85560030314060d918df59ccc82fb`.
+M5-D29 supersedes only:
+
+1. D25 Section 8's two-range-adapter limit and Sections 9.1 and 9.3, D28
+   Section 4's source-present derivation/lock wording, and revision-9 Sections
+   15 and 17.2 where they leave persisted legacy-document source validation,
+   exact reverse/current withdrawal enumeration, or retained root enumeration
+   under-specified;
+2. revision-9 Section 11.1's per-distinct-historical-policy fallback rule only
+   for supported typed document withdrawal: every qualifying historical
+   candidate and verifier-produced current observation must instead bind the
+   locked new-event policy; cross-policy withdrawal remains `PENDING` and no
+   historical policy is rebased;
+3. M5-D24-C5 Section 3's final checked-origin exclusion, M5-D24-C6 Section 3's
+   exactly-three-origin limit and Section 6's arbitrary-read exclusion, and
+   M5-D24-C7 Sections 7 and 9's unlisted-direct-origin exclusion only to add
+   D29 Section 4.1's exact hydration-cutoff origin;
+4. the two D28 sentences saying D28 grants no SQL or migration change, the
+   matching revision-9 Section-25 sentence, and D28 Sections 7/8 frozen-schema
+   inventory only to authorize D29 Section 7's separate migration 018, ledger
+   record, and exact two indexes; and
+5. the accepted D28 activation's prohibition on every migration/index edit
+   only after this D29 authority freeze and a new path-exclusive reactivation
+   explicitly replace that implementation boundary.
+
+Every other D24--D28, revision-9, migration-013--017, lock-order,
+source-first, phased-composition, replay, counter, and claim boundary remains
+exact.
+
+The locked epoch event ID and payload hash are the persisted source identity;
+all relational sidecars remain independent exact authority. For D29 documents
+the existing typed-update manifest has exactly one top-level
+`m5_d29_document_declaration_v1` key and exactly three nested sorted-unique
+text-array declaration sets. Persisted admitted pairs, current observations, direct jobs/dependencies/
+scopes, and M5 jobs/scopes/provenance are enumerated through the exact bounded
+routes in D29 and revalidated at their frozen authority tiers. Supported
+withdrawal is same-policy only; cross-policy history conflicts and remains
+`PENDING`; that fail-closed rule is D29's sole semantic-admissibility
+supersession. Activation-bootstrap current observations remain supported,
+typed rootless `ObserveRequirementEvent` remains fail-closed, and a D24-valid
+unresolved dispatch/attempt attached only to terminal predecessor authority
+remains permitted late-audit history. The private hydration-cutoff signal
+carries no authority. A pre-opener planner cut returns the ordinary terminal-
+known-at-entry envelope from the canonical durable result; the sole post-open
+checked cut uses that canonical result, the exact held nonterminal receipt,
+zero call work, and the existing active-terminal projection.
+
+Migration 018 may add exactly
+`groundloop_m5_admitted_pair_by_chunk_edge` on the one C-collated chunk key and
+`groundloop_m4_job_by_epoch` on `epoch_id`, in that order, plus its exact
+schema-ledger row. It may add no other object or backfill. Its future installer
+and route barrier must follow D29 Section 7 exactly. This revision accepts the
+contract only: no migration-018 hash, bundle hash, installer, source, test,
+database, or runtime byte exists as accepted implementation evidence. Every
+other D24--D28 rule, migration 013--017 byte, public M5/M4 API, frozen DTO/
+digest, counter vector, D28 phase order, replay projection, semantic rule, and
+runtime mode remains exact outside D29's narrow precedence.
+
+## 27. Final decision
+
+**Decision: GO for the M5-D29 contract; the prior M5-D25 through M5-D28 GOs
 remain in force. Confidence: high.**
 
-Revision 9 freezes the reviewed M5-D28 bytes while leaving M5-D24 through
-M5-D28 implementation evidence `PENDING`. It authorizes no migration, schema,
-DTO, digest, source/test implementation, public runtime, or deployment and
-does not declare Task 2 or M5.4 complete. Full production runtime and measured
-history remain **NO-GO** until persisted matching/absence validation,
-store/runtime composition, and the executable M5.4 gates pass under later
-explicit manifests. Runtime remains `v1_only` outside isolated fixtures. This
-sequencing boundary is an honest implementation dependency, not evidence of a
-semantic result, deployment, AI-quality improvement, or performance claim.
+Revision 10 freezes the reviewed M5-D29 bytes while leaving M5-D24 through
+M5-D29 implementation evidence `PENDING`. It authorizes the exact future
+migration-018 contract but accepts no migration, installer, source/test
+implementation, public runtime, database, or deployment and does not declare
+Task 2 or M5.4 complete. Full production runtime and measured history remain
+**NO-GO** until the new path-exclusive activation, migration/store/runtime
+implementation, and executable M5.4 gates pass. Runtime remains `v1_only`
+outside isolated fixtures. This boundary is not evidence of deployment,
+performance, utility, AI-quality improvement, or any broader semantic claim.

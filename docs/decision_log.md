@@ -1,5 +1,63 @@
 # GroundLoop Decision Log
 
+## 2026-09-22 — M5-D29 Bounded Document Withdrawal Accepted
+
+Decision status: **accepted authoritative narrow contract amendment**. M5-D29
+and acceptance row M5.0-29 are contract-`PASS` /
+implementation-`PENDING`, and the M5.4 runtime addendum advances to revision
+10. The complete authoritative amendment is
+`docs/workstreams/m5_runtime_contract/BOUNDED_DOCUMENT_WITHDRAWAL_AMENDMENT.md`
+at accepted content SHA-256
+`e05f159f98d5f282335a90d2e9db1a26f8d85560030314060d918df59ccc82fb`.
+
+The final reviewed candidate has exact commit
+`4667da0e230d2b52b3147d0ee771396b406ed1e9`, tree
+`5f7e69e6f2f503fc3a36691fee16afa40bc8a479`, 1,322 lines, and 81,878 bytes on
+sole-parent ancestry from `28a1392ccba9592ef41b1e51969c094f1f4b922a`.
+Independent contract/runtime and PostgreSQL/schema reviewers audited identical
+bytes and returned `GO`, `P0=0`, `P1=0`, `P2=0`; each then confirmed the exact
+committed identity, sole added path, unchanged hash/size, and clean worktree.
+
+M5-D29 makes the locked epoch event ID and payload hash the persisted legacy-
+document source identity while retaining exact independent validation of every
+relational sidecar. Exact bounded locators enumerate admitted-pair candidates,
+current observations, all-state direct jobs/dependencies/scopes, and all-state
+M5 jobs/scopes/provenance. The existing typed-update manifest contains exactly
+one top-level `m5_d29_document_declaration_v1` key and exactly three sorted-
+unique text-array fields committing direct roots, scoped impact roots, and
+fallback claim targets; caller previews and declarations remain compare-only.
+
+Supported document withdrawal is same-policy only. That fail-closed rule is
+D29's sole semantic-admissibility supersession; cross-policy history remains
+`PENDING` and is not rebased. Activation-bootstrap current observations remain
+supported, typed rootless `ObserveRequirementEvent` remains fail-closed and
+`PENDING`, and D24-valid unresolved dispatch/attempt history attached only to
+already-terminal authority remains late-audit ambiguity rather than a
+cancellation target. Pre-opener planner races use ordinary terminal-known-at-
+entry replay, while one exact post-open checked hydration-cutoff origin uses
+the held nonterminal receipt and canonical durable result under unchanged D24
+envelope, work, timing, and telemetry rules.
+
+M5-D29 authorizes the contract for migration 018 with exactly two locator
+indexes: the one-key C-collated admitted-pair-by-chunk index and the fixed-
+width direct-job-by-epoch index. It authorizes no third/wider object or
+backfill. The future installer must perform the exact migration-017 prerequisite,
+ledger-first, two-table `SHARE ROW EXCLUSIVE NOWAIT`, post-lock reread, atomic
+two-index-plus-ledger protocol; the future preview/open/hydration/direct routes
+must pass the exact migration-018 barrier except for initial exact terminal
+replay. No migration bytes, hashes, bundle, installer, source, test, database,
+or runtime implementation are accepted here.
+
+The accepted D28 activation remains historical authority but is insufficient
+for corrected D29 implementation. Its held Lane-P work is read-only non-
+authority. A new path-exclusive activation must start from the pushed D29
+authority barrier. Acceptance implements nothing: M5-D24 through M5-D29 and
+M5.0-24 through M5.0-29 remain implementation-`PENDING`; Task 2, M5.4 and later
+executable gates, deployment, performance, utility, and AI-quality claims
+remain `PENDING`; runtime remains `v1_only` outside isolated fixtures. No
+security, novelty, maintained-history, or named-system-superiority result
+follows.
+
 ## 2026-09-18 — M5-D28 Phased Persisted-Matching Composition Accepted
 
 Decision status: **accepted authoritative wording-only amendment**. M5-D28

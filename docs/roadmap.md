@@ -236,7 +236,7 @@ is explicit pre-dissertation/M6 debt, not a hidden extension of M4.
 ## M5 — Bounded Evidence Groups
 
 Status: active. The M5.0 contract freeze is complete through accepted
-M5-D28; M5.1 pure reference semantics completed on 2026-08-03 after an
+M5-D29; M5.1 pure reference semantics completed on 2026-08-03 after an
 independent high-confidence audit GO. M5.2 and M5.3 are complete. M5.4-01
 through M5.4-04 pass; public activation and partial root/direct transitions have
 live evidence but do not independently close M5.4-05. M5-D24's R0 contracts and
@@ -331,6 +331,32 @@ held D27 continuation draft is not authority. M5-D24 through M5-D28, Task 2,
 and M5.4-05 through M5.4-09 remain implementation-`PENDING`; runtime stays
 `v1_only`.
 
+The M5-D29 bounded document-withdrawal amendment is accepted at exact reviewed
+candidate commit `4667da0e230d2b52b3147d0ee771396b406ed1e9`, tree
+`5f7e69e6f2f503fc3a36691fee16afa40bc8a479`, and content SHA-256
+`e05f159f98d5f282335a90d2e9db1a26f8d85560030314060d918df59ccc82fb`.
+Three independent same-byte candidate audits returned `GO`, `P0=0`, `P1=0`,
+`P2=0`; two reviewers then confirmed the exact committed bytes and provenance.
+M5.0-29 is contract-`PASS` / implementation-`PENDING`, and runtime-addendum
+revision 10 is authoritative. The amendment freezes the persisted epoch hash
+as legacy source identity, exact bounded reverse/current and direct/M5
+declaration enumeration, an existing manifest with exactly one top-level D29
+key and exactly three nested arrays, the sole
+same-policy semantic-admissibility narrowing, and the checked hydration
+terminal cuts. Cross-policy and typed rootless requirement history remain
+`PENDING`; activation-bootstrap observations and terminal D24 ambiguity retain
+their exact supported audit routes.
+
+Migration 018 is only contract-authorized: exactly two locator indexes plus
+the exact ledger/install/route barrier. No migration bytes, hashes, bundle,
+installer, source, test, database, provider, deployment, runtime activation,
+measured result, or AI-quality result are accepted. The accepted D28 activation
+remains historical authority but is insufficient for the corrected scope; its
+held Lane-P bytes are non-authority. A new audited path-exclusive activation
+must begin from the exact pushed D29 authority barrier. M5-D24 through M5-D29,
+Task 2, and M5.4-05 through M5.4-09 remain implementation-`PENDING`; runtime
+stays `v1_only`.
+
 Deliverables:
 
 - Immutable versioned evidence requirements and groups with group-derived
@@ -349,7 +375,7 @@ Deliverables:
 Stages:
 
 - **M5.0:** design/theory/schema/data freeze. **Complete through accepted
-  M5-D28.** Contract rows pass; decision-row implementation halves remain
+  M5-D29.** Contract rows pass; decision-row implementation halves remain
   pending until the M5.6 cross-stage evidence mapping.
 - **M5.1:** pure records, history, structural events, and independent Python
   oracle. **Complete.**
@@ -368,7 +394,8 @@ Stages:
   M5.4-09 remain `PENDING`. Runtime stays `v1_only`; the accepted M5-D25 and
   M5-D26 contracts plus the M5-D27 counter correction govern the active
   persisted store/runtime implementation boundary together with M5-D28's
-  phased composition and retained-replay correction.
+  phased composition and retained-replay correction and M5-D29's bounded
+  document-withdrawal/migration-018 contract.
 - **M5.5:** controlled dataset adapter, seven qualified baselines, and
   reproducible systems/semantic reports.
 - **M5.6:** full validation, evidence bundle, documentation and honest verdict.

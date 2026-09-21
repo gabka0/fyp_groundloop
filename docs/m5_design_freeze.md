@@ -1,18 +1,18 @@
 # GroundLoop M5 Bounded Evidence-Group Design Freeze
 
-Status: frozen M5.0 contract, amended through accepted M5-D28 and
-M5-D24-C1--C7; implementation evidence for M5-D24 through M5-D28 remains
+Status: frozen M5.0 contract, amended through accepted M5-D29 and
+M5-D24-C1--C7; implementation evidence for M5-D24 through M5-D29 remains
 pending
 
 Date: 2026-08-02; M5-D21 through M5-D24-C7 amendments 2026-08-06--2026-08-18;
 M5-D25 amendment 2026-09-03; M5-D26 amendment 2026-09-07; M5-D27 erratum
-2026-09-17; M5-D28 amendment 2026-09-18
+2026-09-17; M5-D28 amendment 2026-09-18; M5-D29 amendment 2026-09-22
 
 Authority: this document specializes `docs/technical_design.md` v0.2 for M5.
 It preserves original decisions D-1 through D-20 except where the earlier
 pseudocode is mathematically inconsistent with its own stated system-of-
 distinct-representatives semantics. Those corrections, the later runtime
-decisions M5-D21 through M5-D28, and accepted M5-D24-C1 through M5-D24-C7 are
+decisions M5-D21 through M5-D29, and accepted M5-D24-C1 through M5-D24-C7 are
 recorded in the decision log and frozen here. The byte-total M5-D24
 specialization is authoritative at
 `docs/workstreams/m5_runtime_contract/RECOVERY_WORK_AMENDMENT.md`.
@@ -37,6 +37,10 @@ authoritative at
 `docs/workstreams/m5_runtime_contract/PHASED_PERSISTED_MATCHING_COMPOSITION_AMENDMENT.md`;
 its independently accepted pre-freeze content SHA-256 is
 `8a2bafd3478cf2cac6ac7c8de7ca7779a6d9ace7fbbe98a7dc3ff08afdb67eae`.
+The narrow M5-D29 bounded document-withdrawal correction is authoritative at
+`docs/workstreams/m5_runtime_contract/BOUNDED_DOCUMENT_WITHDRAWAL_AMENDMENT.md`;
+its independently accepted pre-freeze content SHA-256 is
+`e05f159f98d5f282335a90d2e9db1a26f8d85560030314060d918df59ccc82fb`.
 
 M5 implementation begins only after the M5.0 *contract* gate passes. Later
 implementation-evidence cells in the acceptance matrix remain `PENDING` until
@@ -1323,9 +1327,87 @@ at the accepted SHA-256 above. M5-D28 and M5.0-28 are contract-`PASS` /
 implementation-`PENDING`. It changes no public API, DTO, digest, schema,
 migration, source/reference kind, semantic rule, counter, measured value, or
 runtime mode. A new path-exclusive D28 activation is required before public
-store/runtime composition. M5-D24 through M5-D28, Task 2, M5.4 and later
-gates, deployment, and AI-quality claims remain `PENDING`; runtime remains
-`v1_only` outside isolated fixtures.
+store/runtime composition at this checkpoint. The accepted activation at
+`28a1392` subsequently supplied that historical grant; M5-D29 below makes it
+insufficient for the corrected withdrawal scope. M5-D24 through M5-D28, Task
+2, M5.4 and later gates, deployment, and AI-quality claims remained `PENDING`;
+runtime remained `v1_only` outside isolated fixtures.
+
+### M5-D29 -- bounded persisted document withdrawal
+
+The frozen D25/D28 source-first contract could not implement exact typed
+document delete/replace from persisted state. Normalized sidecars are not a
+second encoding of the admitted legacy payload; migration 015 has no
+chunk-leading admitted-pair locator; migration 003 has no total all-state
+job-by-epoch locator; and self-enumerated roots cannot prove their own
+completeness. Revision-9 runtime wording also required one fallback per
+historical policy although one typed event can bind only its single candidate
+policy, and it omitted the terminalization cuts inside post-open declaration
+hydration.
+
+M5-D29 resolves only those contradictions. For a typed legacy document event,
+the locked `groundloop_epoch.event_id` and immutable
+`groundloop_epoch.payload_hash` are the persisted source identity. Every M4/M5
+sidecar, snapshot, declaration, lifecycle, policy, scope, provenance, and
+deferred guard remains independently exact-validated; no legacy payload is
+reconstructed from relational rows. For D29 document events the existing
+`groundloop_m5_update.manifest` has exactly one top-level private typed key,
+`m5_d29_document_declaration_v1`, and exactly three nested sorted-unique text
+arrays that commit the direct root, direct scoped-root, and direct fallback-
+claim sets. Caller
+proposals remain compare-only. Existing M5 jobs, scopes, and provenance are
+enumerated across every frozen state and validated by point/range authority;
+direct jobs use total all-state event enumeration, the exact dependency range,
+and per-job scope points.
+
+Supported document withdrawal is same-policy only: every qualifying admitted
+pair and verifier-produced current observation must bind the locked new-event
+candidate policy. Qualifying cross-policy history conflicts and remains
+`PENDING`; no historical policy is rebased. This fail-closed same-policy rule
+is D29's sole semantic-admissibility supersession. Activation-bootstrap current
+observations remain supported, while typed rootless `ObserveRequirementEvent`
+remains fail-closed and `PENDING`. An unresolved D24-valid dispatch or attempt
+attached only to already-terminal predecessor authority remains historical
+late-audit ambiguity, not a cancellation target. A package-private no-payload
+hydration-cutoff signal carries no authority. At pre-opener planner cuts it
+routes through the ordinary terminal-known-at-entry envelope; at the sole
+post-open checked cut it uses the held nonterminal receipt, canonical durable
+result, exact zero call work, and existing active-terminal projection. It
+changes no public DTO, result, work, timing, or digest.
+
+Migration 018 is a separate implementation barrier and may create exactly two
+locator indexes, in order:
+
+```text
+groundloop_m5_admitted_pair_by_chunk_edge
+  ON groundloop_m5_requirement_admitted_pair(chunk_version_id COLLATE "C")
+groundloop_m4_job_by_epoch
+  ON groundloop_semantic_job(epoch_id)
+```
+
+No second/`INCLUDE`/predicate/expression attribute, third index, table, column,
+constraint, function, trigger, type, privilege, or backfill is authorized. Its
+installer is ledger-first in one top-level read-write `READ COMMITTED`
+transaction, validates the five exact accepted migration-017 literals, takes
+one canonical `LOCK TABLE groundloop_m5_requirement_admitted_pair,
+groundloop_semantic_job IN SHARE ROW EXCLUSIVE MODE NOWAIT` statement,
+rereads the ledger, and atomically creates both indexes then the ledger row.
+Exact rerun takes no target-table lock. Both D29 preview planners, first open,
+post-open requirement hydration, and direct runner/resume must pass the exact
+accepted migration-018 ledger barrier; only the initial exact terminal-result
+replay may precede it.
+
+The complete correction and mandatory falsifiers are authoritative in
+`docs/workstreams/m5_runtime_contract/BOUNDED_DOCUMENT_WITHDRAWAL_AMENDMENT.md`
+at the accepted SHA-256 above. M5-D29 and M5.0-29 are contract-`PASS` /
+implementation-`PENDING`. The contract freeze accepts no migration-018,
+installer, source, test, database, or runtime bytes. A new path-exclusive D29
+activation from the pushed authority barrier is required before implementation
+may resume; the accepted D28 activation remains historical authority but is
+insufficient for this corrected scope, and held Lane-P work grants no
+authority. M5-D24 through M5-D29, Task 2, M5.4 and later gates, deployment,
+performance, utility, and AI-quality claims remain `PENDING`; runtime remains `v1_only`
+outside isolated fixtures.
 
 ## 11. Dynamic M4 integration contract
 
@@ -1957,6 +2039,7 @@ regression evidence.
 | M5-D26 | Changed-state absence artifact | Structural REPLACE/RETIRE removals use one typed non-null absence digest for three existing reference kinds, with exact D25 logical-change, predecessor-closure, successor-absence, event-payload and seal-coordinate validation; migration 017 may replace only the required migration-015 child validator under D26 |
 | M5-D27 | Requirement-state counter ownership | D24 owns no requirement-state physical row-count coordinate; no counter or alias is invented, while every requirement-state change remains exact D25 logical patch/output and transition-bijection evidence |
 | M5-D28 | Phased persisted-matching composition and retained replay | Cursor-local private phases reconcile D24/D25 write order and the direct tier-15c source without changing public signatures or frozen bytes; historical replay validates a canonical retained changed-key projection and the current cumulative accumulator without reconstructing nonpersisted no-op keys |
+| M5-D29 | Bounded persisted document withdrawal | The locked epoch payload is the legacy source identity; persisted reverse/current edges and retained direct/M5 declarations are enumerated by exact bounded locators, same-policy history is the supported form, terminal cuts use ordinary pre-opener and one checked post-open route, and migration 018 adds only two locator indexes behind an exact ledger barrier |
 
 ## 15. Release gate
 
@@ -1974,6 +2057,6 @@ that:
    identity, M5-D23 transition completeness, M5-D24 recoverable dispatch and
    durable accounting, the M5-D24-C1--C7 corrections, M5-D25 persisted
    matching, M5-D26 changed-state absence, and M5-D27 requirement-state
-   counter ownership, and M5-D28 phased persisted-matching composition and
-   retained replay; and
+   counter ownership, M5-D28 phased persisted-matching composition and
+   retained replay, and M5-D29 bounded persisted document withdrawal; and
 7. path ownership prevents shared-schema or shared-contract collisions.

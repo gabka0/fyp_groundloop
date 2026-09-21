@@ -1,19 +1,20 @@
 # GroundLoop M5 Implementation Plan
 
-Status: M5.0 contract accepted through M5-D28 and M5.1--M5.3 complete;
-M5.0-24 through M5.0-28 are contract-`PASS` /
+Status: M5.0 contract accepted through M5-D29 and M5.1--M5.3 complete;
+M5.0-24 through M5.0-29 are contract-`PASS` /
 implementation-`PENDING`; M5.4-01 through M5.4-04 are `PASS`, M5.4-05 through
-M5.4-09 remain `PENDING`; D28 freezes no implementation, the held D27 Task-2
-continuation draft and the original unstarted C lanes are not authority, and a
-new audited path-exclusive activation from the exact pushed D28 barrier is
-required before implementation continues
+M5.4-09 remain `PENDING`; D29 freezes no implementation, leaves the accepted
+D28 activation as historical authority insufficient for the corrected scope,
+treats held Lane-P bytes as non-authority, and requires a new audited path-
+exclusive activation from the exact pushed D29 barrier before implementation
+continues
 
 Date: 2026-08-02; M5-D24 execution and R2e integration current through
 2026-08-19; M5.4-02/-03/-04 evidence integration current through 2026-09-02;
 M5-D25 contract acceptance current through 2026-09-03; M5-D26 contract
 acceptance current through 2026-09-07; M5-D27 erratum acceptance current
 through 2026-09-17; M5-D28 phased-composition acceptance current through
-2026-09-18
+2026-09-18; M5-D29 bounded-withdrawal acceptance current through 2026-09-22
 
 Authority: `docs/m5_design_freeze.md` governs. M5-D24 recovery/accounting work
 also obeys
@@ -35,6 +36,10 @@ Phased persisted-matching composition also obeys
 `docs/workstreams/m5_runtime_contract/PHASED_PERSISTED_MATCHING_COMPOSITION_AMENDMENT.md`
 at accepted SHA-256
 `8a2bafd3478cf2cac6ac7c8de7ca7779a6d9ace7fbbe98a7dc3ff08afdb67eae`.
+Persisted legacy-document withdrawal and migration 018 also obey
+`docs/workstreams/m5_runtime_contract/BOUNDED_DOCUMENT_WITHDRAWAL_AMENDMENT.md`
+at accepted SHA-256
+`e05f159f98d5f282335a90d2e9db1a26f8d85560030314060d918df59ccc82fb`.
 Implementation stops on any conflict with those contracts rather than silently
 choosing new semantics.
 
@@ -748,6 +753,52 @@ audited path-exclusive activation pinned to that exact pushed D28 barrier.
 M5-D24 through M5-D28 and M5.0-24 through M5.0-28 remain implementation-
 `PENDING`; Task 2, M5.4-05 through M5.4-09, and every M5.5/M5.6 gate remain
 `PENDING`; runtime remains `v1_only` outside isolated fixtures.
+
+### 7.10 M5-D29 contract checkpoint
+
+M5-D29 is accepted on exact reviewed candidate commit
+`4667da0e230d2b52b3147d0ee771396b406ed1e9`, tree
+`5f7e69e6f2f503fc3a36691fee16afa40bc8a479`, and 81,878-byte, 1,322-line
+content SHA-256
+`e05f159f98d5f282335a90d2e9db1a26f8d85560030314060d918df59ccc82fb`.
+Independent contract/runtime and PostgreSQL/schema audits examined identical
+bytes and returned `GO`, `P0=0`, `P1=0`, `P2=0`; both then confirmed the same
+commit, sole parent, tree, one added path, hash, size, and clean worktree.
+Runtime-addendum revision 10 and acceptance row M5.0-29 freeze only the bounded
+persisted document-withdrawal correction.
+
+This is contract `PASS` / implementation `PENDING`. The locked epoch payload
+is retained legacy source identity while all sidecars remain independent
+authority. Exact locators enumerate reverse candidates, current observations,
+all-state direct declarations, and M5 declarations; the existing typed-update
+manifest has exactly one top-level D29 key and exactly three nested arrays
+committing the exact direct root/scope/fallback sets. Same-policy
+fail-closed withdrawal is the sole semantic-admissibility supersession;
+cross-policy history and typed rootless `ObserveRequirementEvent` remain
+`PENDING`.
+Activation-bootstrap observations remain supported, and D24-valid unresolved
+dispatch/attempt history attached only to terminal authority is not cancelled.
+Pre-opener planner cuts return ordinary terminal-known-at-entry replay; one
+private post-open checked origin uses the held nonterminal receipt, canonical
+result, and zero call work without changing public result, receipt, work,
+timing, or digest authority.
+
+Migration 018 is authorized only as a future contract: exactly the one-key
+`groundloop_m5_admitted_pair_by_chunk_edge` and fixed-width
+`groundloop_m4_job_by_epoch` indexes, an exact ledger-first atomic installer,
+and the exact route barrier. No migration bytes, hashes, bundle, installer,
+source, test, database, provider, deployment, public runtime, measured result,
+or AI-quality result are accepted by this checkpoint.
+
+The accepted D28 activation remains historical authority but is insufficient
+for the corrected D29 scope. Its held Lane-P work must not continue, merge,
+rebase, cherry-pick, or become implementation evidence. Implementation may
+resume only after this authority-freeze tranche is audited, integrated, and
+pushed, and then only under a new independently audited path-exclusive
+activation pinned to that exact D29 barrier. M5-D24 through M5-D29 and
+M5.0-24 through M5.0-29 remain implementation-`PENDING`; Task 2, M5.4-05
+through M5.4-09, and every M5.5/M5.6 gate remain `PENDING`; runtime remains
+`v1_only` outside isolated fixtures.
 
 M5.4 exit gate: deterministic fake-port path passes first, then a bounded
 maintained PostgreSQL history and frozen-model diagnostic pass with complete

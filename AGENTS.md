@@ -66,6 +66,11 @@ order:
     projection correction)
 48. `docs/workstreams/m5_runtime_implementation/D28_CONTRACT_FREEZE_HANDOFF.md`
     (accepted D28 bytes, review evidence, and next implementation boundary)
+49. `docs/workstreams/m5_runtime_contract/BOUNDED_DOCUMENT_WITHDRAWAL_AMENDMENT.md`
+    (authoritative M5-D29 persisted-source and bounded document-withdrawal
+    correction)
+50. `docs/workstreams/m5_runtime_implementation/D29_CONTRACT_FREEZE_HANDOFF.md`
+    (accepted D29 bytes, review evidence, and next implementation boundary)
 
 `docs/initial_technical_design.md` (v0.1) is superseded and retained for audit
 only. The M0.5 design freeze and M1.1 amendments are complete; frozen decisions
@@ -202,12 +207,29 @@ SHA-256 is
 `8a2bafd3478cf2cac6ac7c8de7ca7779a6d9ace7fbbe98a7dc3ff08afdb67eae`;
 M5-D28 and M5.0-28 are contract-`PASS` / implementation-`PENDING`. It adds no
 public API, DTO, digest, schema, migration, source/reference kind, counter,
-measured value, or runtime-mode change. The public store/runtime composition
-requires a new path-exclusive D28 activation; prior Task-2 activation text is
-not authority for that composition. M5-D24 through M5-D28, Task 2, M5.4 and
-later gates, deployment, and AI-quality claims remain `PENDING`; runtime
-remains `v1_only`. M5 is not complete until every remaining M5.4--M5.6
-executable gate is recorded.
+measured value, or runtime-mode change. M5-D29 is the frozen narrow correction
+for persisted legacy-document source identity, bounded reverse/current
+withdrawal enumeration, retained declaration completeness, the checked
+hydration terminal cutoff, and supported same-policy withdrawal. Its
+authoritative SHA-256 is
+`e05f159f98d5f282335a90d2e9db1a26f8d85560030314060d918df59ccc82fb`;
+M5-D29 and M5.0-29 are contract-`PASS` / implementation-`PENDING`. It
+authorizes only the future migration-018 contract with exactly two locator
+indexes; no migration, installer, source, or test bytes are accepted by the
+contract freeze. Runtime-addendum revision 10 is authoritative. Cross-policy
+withdrawal remains `PENDING`. The same-policy
+fail-closed rule is D29's sole semantic-admissibility supersession;
+activation-bootstrap observations remain supported, typed rootless
+`ObserveRequirementEvent` remains `PENDING`, and terminal D24-valid unresolved
+dispatch history remains late-audit ambiguity. The public store/runtime
+composition requires a new path-exclusive D29 activation from
+the pushed D29 authority barrier; the accepted D28 activation remains
+historical authority but is insufficient for this corrected scope, and held
+Lane-P bytes are non-authority. M5-D24
+through M5-D29, Task 2, M5.4 and later gates,
+deployment, and AI-quality claims remain `PENDING`; runtime remains `v1_only`.
+M5 is not complete until every remaining M5.4--M5.6 executable gate is
+recorded.
 
 A larger, independently adjudicated natural-history evaluation remains
 mandatory before dissertation-level selective-maintenance or end-to-end
