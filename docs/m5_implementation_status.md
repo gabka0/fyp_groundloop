@@ -2,12 +2,14 @@
 
 Status date: 2026-09-22
 
-Milestone status: **M5.0 contract through accepted M5-D29 and M5.1--M5.3 are
+Milestone status: **M5.0 contract through accepted M5-D30 and M5.1--M5.3 are
 complete; M5.4 is partially complete.**
 M5.4-01 through M5.4-04 pass. M5.4-05 through M5.4-09 and every M5.5--M5.6
 implementation/evaluation closure remain pending. M5-D24-C1 through M5-D24-C7
-are accepted. M5.0-24 through M5.0-29 are each contract-`PASS` /
-implementation-`PENDING`. M5-D29's accepted candidate SHA-256 is
+are accepted. M5.0-24 through M5.0-30 are each contract-`PASS` /
+implementation-`PENDING`. M5-D30's accepted candidate SHA-256 is
+`db2568affc02cf1ca6f17a549029f31089cecd857debdedf2651e6aac6898fe4`.
+M5-D29's accepted candidate SHA-256 is
 `e05f159f98d5f282335a90d2e9db1a26f8d85560030314060d918df59ccc82fb`.
 M5-D28's accepted candidate SHA-256 is
 `8a2bafd3478cf2cac6ac7c8de7ca7779a6d9ace7fbbe98a7dc3ff08afdb67eae`.
@@ -172,7 +174,7 @@ m5_multiagent_execution_plan faffae5f839623efd9e387f63e951881cf1f46c5b66f37c3db6
 ```
 
 Those hashes identify the initial audited M5.0 semantic candidate. Later
-accepted amendments M5-D21 through M5-D29 extend or correct that contract
+accepted amendments M5-D21 through M5-D30 extend or correct that contract
 and are identified by their own decision and audit records below. Final
 implementation artifact hashes and the decision-row cross-stage mapping will
 be recorded at M5.6.
@@ -181,7 +183,7 @@ be recorded at M5.6.
 
 The accepted governing documents are:
 
-- `docs/m5_design_freeze.md` -- decisions M5-D1 through M5-D29 and theorems
+- `docs/m5_design_freeze.md` -- decisions M5-D1 through M5-D30 and theorems
   M5-T1/M5-T2;
 - `docs/workstreams/m5_runtime_contract/RECOVERY_WORK_AMENDMENT.md` -- exact
   M5-D24 lease, dispatch/evidence, work/timing, late-return, and migration-016
@@ -221,6 +223,8 @@ The accepted governing documents are:
 - `docs/workstreams/m5_runtime_contract/BOUNDED_DOCUMENT_WITHDRAWAL_AMENDMENT.md`
   -- accepted M5-D29 persisted legacy-source, bounded withdrawal/declaration,
   same-policy, terminal-cutoff, and migration-018 contract;
+- `docs/workstreams/m5_runtime_contract/DIRECT_M4_PROVENANCE_CLOSURE_AMENDMENT.md`
+  -- accepted M5-D30 total claim-current and direct-M4/M3 provenance closure;
 - `docs/m5_implementation_plan.md` -- stages M5.1 through M5.6;
 - `docs/m5_multiagent_execution_plan.md` -- path-exclusive ownership and
   integration order; and
@@ -294,11 +298,12 @@ The composed migration/failure/bundle-race gate passed 67/67 tests.
 M5.4-01 passes through the integrated byte-total contract, digest, direction,
 shape, nullability, F64, ordering, and pure-frontier suite. M5-D22 closes the
 previously undefined inner state-artifact identity without changing M4-v1 or
-M5 semantic state. Runtime-addendum revision 10, M5-D23 through M5-D29, and
+M5 semantic state. Runtime-addendum revision 11, M5-D23 through M5-D30, and
 their authoritative amendments now freeze retry/cancellation, recoverable
 dispatch/accounting, persisted-matching/reconnect, and changed-state absence
 contracts plus the requirement-state counter-ownership, phased-composition,
-and bounded document-withdrawal corrections; their complete implementation
+bounded document-withdrawal, and claim-current provenance corrections; their
+complete implementation
 evidence remains pending. Public
 activation is implemented and passes 8/8 live tests,
 including all six bootstrap reference kinds, cross-language SQL/Python hashes,
@@ -689,8 +694,9 @@ independent same-byte candidate audits returned `GO`, `P0=0`, `P1=0`, `P2=0`;
 two decisive reviewers then independently confirmed the exact 1,322-line,
 81,878-byte commit provenance and unchanged verdict.
 
-This closes only the D29 contract gate and advances the runtime addendum to
-revision 10. M5.0-29 is contract-`PASS` / implementation-`PENDING`. The locked
+At that D29 checkpoint, this closed only the contract gate and advanced the
+runtime addendum to revision 10. M5.0-29 was contract-`PASS` /
+implementation-`PENDING`. The locked
 epoch event ID and payload hash are persisted legacy source identity, while
 all sidecars remain independent exact authority. Exact bounded locators and
 the one-top-level-key typed manifest commitment close reverse/current and
@@ -702,17 +708,49 @@ dispatch/attempt history is preserved for late audit rather than recancelled.
 Pre-opener terminal races use ordinary canonical replay; the post-open private
 cutoff uses the existing checked active projection with exact zero call work.
 
-Migration 018 is contract-authorized with exactly two locator indexes and one
-atomic ledger-first install/barrier protocol, but no migration bytes, literal
-hashes, bundle, installer, source, test, database, provider, deployment,
-runtime activation, measured result, or AI-quality result is implemented or
-accepted. The accepted D28 activation remains historical authority but is
-insufficient for corrected D29 work; its held Lane-P bytes are read-only non-
-authority. A new separately reviewed path-exclusive activation must start from
-the exact pushed D29 authority barrier. M5-D24 through M5-D29 and M5.0-24
-through M5.0-29 remain implementation-`PENDING`; Task 2, M5.4-05 through
-M5.4-09, and every M5.5/M5.6 gate remain `PENDING`; runtime remains `v1_only`
-outside isolated fixtures.
+Migration 018 was then only contract-authorized with exactly two locator
+indexes and one atomic ledger-first install/barrier protocol; no migration or
+runtime bytes had yet been accepted, and a new D29 activation was still
+required. That activation, migration 018, and application routing later
+integrated at `8ed44a6`, `9c855b5`, and `8734162` as partial historical
+evidence. They did not close Task 2 or any decision-row implementation half;
+held Lane-P bytes remained read-only non-authority. M5-D24 through M5-D29 and
+M5.0-24 through M5.0-29 remained implementation-`PENDING`; Task 2, M5.4-05
+through M5.4-09, and every M5.5/M5.6 gate remained `PENDING`; runtime remained
+`v1_only` outside isolated fixtures.
+
+### 4.7 Accepted M5-D30 claim-current provenance contract
+
+The separately reviewed D30 candidate at commit
+`36998d1acf4d3f4248b7d1fdcad7ff939272dd21`, tree
+`048d55b49647e641735cb9c6a738c5a3c4a7290b`, sole parent
+`8734162f8578ac3105119789a8729fc662da575d`, and SHA-256
+`db2568affc02cf1ca6f17a549029f31089cecd857debdedf2651e6aac6898fe4`
+is accepted as the authoritative narrow total claim-current and direct-M4/M3
+provenance correction. Two independent same-byte candidate audits returned
+`GO`, `P0=0`, `P1=0`; both then confirmed the exact 647-line, 35,791-byte
+commit provenance and unchanged verdict.
+
+This closes only the D30 contract gate and advances the runtime addendum to
+revision 11. M5.0-30 is contract-`PASS` / implementation-`PENDING`. One total
+changed-chunk current-currency range now covers both subject kinds. Dynamic
+claims are authorized by exact working-delta, child/admission, complete owner,
+optional execution and currency closure; activation-base claims are authorized
+by exact M3 epoch/run/execution/candidate/artifact closure. The predecessor
+interval route is physically one-row bounded. No unavailable root membership,
+reason hit, sibling source, classic artifact, pair input, judgment, or
+aggregate preimage is reconstructed.
+
+D30 adds no schema or migration; migration 018 remains exact and no migration
+019 exists. The integrated D29 activation at `8ed44a6`, migration-018 tranche
+at `9c855b5`, and application-routing tranche at `8734162` are retained partial
+historical evidence, not D30 implementation acceptance. The 15-path Lane-P WIP
+is read-only non-authority until a new path-exclusive activation is audited,
+integrated, and pushed from the exact D30 barrier. No source, test, database,
+provider, deployment, runtime activation, measured result, or AI/model-quality
+result is accepted. M5-D24 through M5-D30 and M5.0-24 through M5.0-30 remain
+implementation-`PENDING`; Task 2, M5.4-05 through M5.4-09, and every M5.5/M5.6
+gate remain `PENDING`; runtime remains `v1_only` outside isolated fixtures.
 
 ## 5. Remaining closure boundary
 
@@ -722,7 +760,8 @@ enablement, sparse publication, lifecycle-head advancement and production
 seal, and the complete end-to-end crash/reconnect matrix; the accepted but
 unimplemented M5-D25/M5-D26 persisted-matching and absence-validation
 boundary plus the M5-D27 counter correction, M5-D28 phased composition, and
-M5-D29 bounded-withdrawal/migration-018 store/runtime boundary; a real
+M5-D29 bounded-withdrawal/migration-018 boundary and M5-D30 total claim-current
+provenance/store-runtime boundary; a real
 maintained-runtime M5.5 controlled WiCE execution; and M5.6 reproduction,
 artifact, documentation, and final acceptance audits.
 

@@ -14,16 +14,17 @@ contract-`PASS` / implementation-`PENDING`; M5-D25 and M5.0-25 are contract-
 implementation-`PENDING`; M5-D27 and M5.0-27 are contract-`PASS` /
 implementation-`PENDING`; M5-D28 and M5.0-28 are contract-`PASS` /
 implementation-`PENDING`; M5-D29 and M5.0-29 are contract-`PASS` /
-implementation-`PENDING`; D29 freezes no implementation, the accepted D28
-activation is insufficient for the corrected scope, held Lane-P bytes are
-non-authority, and a new audited path-exclusive activation must start from the
-exact pushed D29 barrier
+implementation-`PENDING`; M5-D30 and M5.0-30 are contract-`PASS` /
+implementation-`PENDING`; D30 freezes no implementation, the integrated D29
+activation/migration/routing tranches are partial historical evidence, held
+Lane-P bytes are non-authority, and a new audited path-exclusive activation
+must start from the exact pushed D30 barrier
 
 Date: 2026-08-02; M5-D24 path amendments and integration records 2026-08-06
 through 2026-08-19; M5.4-02/-03/-04 integration record 2026-09-02; M5-D25
 contract freeze 2026-09-03; M5-D26 contract freeze 2026-09-07; Task-2
 activation and M5-D27 contract freeze 2026-09-17; M5-D28 contract freeze
-2026-09-18; M5-D29 contract freeze 2026-09-22
+2026-09-18; M5-D29 and M5-D30 contract freezes 2026-09-22
 
 Authority: `docs/m5_design_freeze.md` defines semantics and
 `docs/m5_implementation_plan.md` defines gates. This document defines only
@@ -38,6 +39,8 @@ M5-D28 implementation must additionally obey the exact accepted
 `docs/workstreams/m5_runtime_contract/PHASED_PERSISTED_MATCHING_COMPOSITION_AMENDMENT.md`.
 M5-D29 implementation must additionally obey the exact accepted
 `docs/workstreams/m5_runtime_contract/BOUNDED_DOCUMENT_WITHDRAWAL_AMENDMENT.md`.
+M5-D30 implementation must additionally obey the exact accepted
+`docs/workstreams/m5_runtime_contract/DIRECT_M4_PROVENANCE_CLOSURE_AMENDMENT.md`.
 
 The accepted C7 correction at
 `docs/workstreams/m5_runtime_contract/DIRECT_ACQUISITION_TERMINAL_CUTOFF_CORRECTION.md`
@@ -897,3 +900,47 @@ M5-D24 through M5-D29 and M5.0-24 through M5.0-29 remain implementation-
 `PENDING`. Task 2, M5.4-05 through M5.4-09, and every M5.5/M5.6 gate remain
 `PENDING`; runtime stays `v1_only`; and no deployment, model-quality, utility,
 security, novelty, or superiority claim follows.
+
+### Wave R9 -- M5-D30 claim-current provenance authority freeze
+
+The D30 candidate resolves only D29's requirement-only current-currency
+projection and the unavailable/classic direct-M4 provenance assumptions. It
+was accepted on exact commit
+`36998d1acf4d3f4248b7d1fdcad7ff939272dd21`, tree
+`048d55b49647e641735cb9c6a738c5a3c4a7290b`, sole parent
+`8734162f8578ac3105119789a8729fc662da575d`, and exact 35,791-byte,
+647-line content SHA-256
+`db2568affc02cf1ca6f17a549029f31089cecd857debdedf2651e6aac6898fe4`.
+Independent semantic and PostgreSQL/concurrency audits each returned `GO`,
+`P0=0`, `P1=0`, then independently confirmed the identical committed bytes
+and exact provenance.
+
+The authority-freeze tranche owns only the exact ten paths recorded in
+`docs/workstreams/m5_runtime_implementation/D30_CONTRACT_FREEZE_HANDOFF.md`.
+It may freeze M5-D30, runtime-addendum revision 11, and M5.0-30. It owns no
+migration, installer, source, test, schema, DTO, digest, database, provider,
+deployment, runtime-mode, or AI-quality path and grants no implementation
+ownership. D30 authorizes no migration 019 and leaves migrations 001--018
+byte-identical.
+
+The D29 activation at `8ed44a6`, migration-018 tranche at `9c855b5`, and
+application-routing tranche at `8734162` remain partial historical evidence.
+The 15-path Lane-P WIP is read-only non-authority and may not be edited,
+committed, merged, rebased, cherry-picked, copied, stashed, staged, or
+represented as accepted before a new activation. After this freeze is
+independently audited, integrated, and pushed, implementation may resume only
+through a new independently audited path-exclusive D30 activation pinned to
+that exact pushed authority barrier.
+
+That activation must preserve the exact held-byte custody ledger and allocate
+disjoint ownership plus sequential barriers for matching-planner repair,
+structural composition, requirement composition, direct-M4 store composition,
+direct application composition, public composition, and clean integration.
+It may allocate no schema or migration-019 lane. Every implementation tranche
+requires fresh whole-byte precommit and postcommit audits; historical passing
+tests remain evidence, not acceptance.
+
+M5-D24 through M5-D30 and M5.0-24 through M5.0-30 remain implementation-
+`PENDING`. Task 2, M5.4-05 through M5.4-09, and every M5.5/M5.6 gate remain
+`PENDING`; runtime stays `v1_only`; and no deployment, model-quality, utility,
+security, novelty, maintained-history, or superiority claim follows.

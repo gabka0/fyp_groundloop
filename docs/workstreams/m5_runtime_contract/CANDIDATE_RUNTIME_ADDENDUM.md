@@ -1,16 +1,17 @@
 # GroundLoop M5.4 Byte-Total Runtime Contract Addendum
 
-Status: frozen runtime contract revision 10; M5-D25 through M5-D29 contracts
+Status: frozen runtime contract revision 11; M5-D25 through M5-D30 contracts
 **GO** / implementation **PENDING**; full M5.4 remains blocked on executable
 runtime evidence
 
 Date: 2026-08-03; revision 5 / M5-D21 through M5-D24 amendments 2026-08-06;
 revision 6 / M5-D25 amendment 2026-09-03; revision 7 / M5-D26 amendment
 2026-09-07; revision 8 / M5-D27 erratum 2026-09-17; revision 9 / M5-D28
-amendment 2026-09-18; revision 10 / M5-D29 amendment 2026-09-22
+amendment 2026-09-18; revision 10 / M5-D29 amendment 2026-09-22; revision 11 /
+M5-D30 amendment 2026-09-22
 
 Authority: this addendum specializes `docs/m5_design_freeze.md` M5-D1 through
-M5-D29 and M5-T1/M5-T2. It does not change those decisions. The M5 design
+M5-D30 and M5-T1/M5-T2. It does not change those decisions. The M5 design
 freeze remains authoritative for semantic truth; this addendum is authoritative
 for M5.4 runtime DTOs, identities, transition boundaries, persistence
 ownership, replay, and acceptance tests.
@@ -22,7 +23,7 @@ start only after migration 014 and its SQL oracle bundle have passed the M5.3
 fresh-install, populated-upgrade, compatibility, and three-oracle gates.
 
 This addendum MUST NOT authorize a change to an M5.0 semantic decision. An
-implementation conflict with this addendum and M5-D1 through M5-D29 MUST stop
+implementation conflict with this addendum and M5-D1 through M5-D30 MUST stop
 M5.4 as **NO-GO**. The exact amendment procedure MUST be a new numbered M5
 decision in `docs/m5_design_freeze.md`, a matching acceptance-matrix row, and a
 new runtime-addendum revision before code resumes. The migration-014 M4-open
@@ -43,11 +44,14 @@ blocker. Migration 017 and the initial Task-2 store/publication-helper paths
 were separately activated and integrated or opened under their exact grants;
 none constitutes accepted public store/runtime composition. Their
 implementation evidence remains pending. The accepted D28 activation at
-`28a1392` subsequently supplied a historical composition grant, but its held
-Lane-P bytes are non-authority and it is insufficient for corrected D29 work;
-a new path-exclusive D29 activation is required. Full M5.4 completion remains
-blocked on that implementation and its executable evidence. The
-accepted M5-D26 contract at `CHANGED_STATE_ABSENCE_AMENDMENT.md` supersedes
+`28a1392` subsequently supplied a historical composition grant. The later D29
+activation at `8ed44a6`, migration-018 integration at `9c855b5`, and bounded
+application routing at `8734162` are partial historical evidence, but held
+Lane-P bytes remain non-authority and those tranches are insufficient for
+corrected D30 work. A new path-exclusive D30 activation is required. Full M5.4
+completion remains blocked on that implementation and its executable
+evidence. The accepted M5-D26 contract at
+`CHANGED_STATE_ABSENCE_AMENDMENT.md` supersedes
 only the removed-predecessor changed-state-reference validation gap: it defines
 one typed absence artifact for three existing kinds and grants migration 017
 authority to replace only the necessary migration-015 child validator. It
@@ -73,13 +77,22 @@ The accepted M5-D29 amendment at
 legacy-document source, reverse/current withdrawal enumeration, retained
 declaration completeness, same-policy admissibility, hydration terminal-cut,
 and migration-018 sentences identified there. It keeps every public API and
-frozen DTO/digest exact. It authorizes the contract for one future migration
-with exactly two locator indexes, but accepts no migration, installer, source,
-test, database, or runtime bytes. Its same-policy fail-closed rule is the sole
+frozen DTO/digest exact. Its same-policy fail-closed rule is the sole
 semantic-admissibility supersession. Cross-policy withdrawal and typed rootless
 `ObserveRequirementEvent` remain `PENDING`; activation-bootstrap observations
-remain supported. Implementation requires a new path-exclusive D29 activation
-from the pushed authority barrier.
+remain supported. Its separately activated migration 018 is now installed
+unchanged with exactly the two authorized locator indexes.
+The accepted M5-D30 amendment at
+`DIRECT_M4_PROVENANCE_CLOSURE_AMENDMENT.md` supersedes only D29's requirement-
+only changed-chunk currency projection and overbroad direct-claim provenance
+wording. It freezes one total subject-kind-partitioned locator, exact dynamic
+working-delta/child/owner closure, exact activation-base M3 publication
+closure, and a physically one-row predecessor route without reconstructing
+unavailable root-local or classic-artifact preimages. It changes no public
+API, DTO, digest, counter, schema, migration, model/provider choice, replay
+identity, or runtime mode. Migration 018 remains byte-identical; D30
+authorizes no migration 019. Implementation requires a new path-exclusive D30
+activation from the pushed authority barrier.
 
 Normative wire values in backticks MUST be exact lowercase UTF-8. Every DTO in
 this document MUST be immutable. Every tuple MUST use the order stated here.
@@ -2195,6 +2208,7 @@ database I/O MUST remain explicit.
 | M5-D24 | The authoritative recovery amendment replaces lease/acquisition, dispatch/evidence, durable work/timing, late-return, terminal replay, migration-016, and route-barrier details while preserving every semantic and M4-v1 identity. |
 | M5-D28 | The authoritative phased-composition amendment separates cursor-local plan/stage/account/finalize work, permits the direct-only pre-source lock reservation required by the tier-15c source, and defines retained changed-key replay against the current cumulative accumulator without changing public or persisted identities. |
 | M5-D29 | The authoritative bounded-withdrawal amendment uses the locked epoch payload as persisted legacy source identity, exact bounded reverse/current and declaration locators, a same-policy supported form, ordinary pre-opener plus one checked post-open hydration-cut routing, and a two-index migration-018 barrier without changing public or digest identities. |
+| M5-D30 | The authoritative claim-current provenance amendment makes the changed-chunk currency locator total across subject kinds, validates dynamic claims through exact working-delta/child/owner closure and bootstrap claims through exact M3 publication closure, and forbids unavailable root/classic reconstruction without changing public, digest, schema, or migration identities. |
 | M5-T1 | Section 18.6 requires incremental/Python/SQL equality after every relevant measured seal. |
 | M5-T2 | Sections 10 and 19 expose touched rows, bytes, model calls, and physical exclusions without hiding them in the affected-group bound. |
 
@@ -2357,25 +2371,81 @@ zero call work, and the existing active-terminal projection.
 Migration 018 may add exactly
 `groundloop_m5_admitted_pair_by_chunk_edge` on the one C-collated chunk key and
 `groundloop_m4_job_by_epoch` on `epoch_id`, in that order, plus its exact
-schema-ledger row. It may add no other object or backfill. Its future installer
-and route barrier must follow D29 Section 7 exactly. This revision accepts the
-contract only: no migration-018 hash, bundle hash, installer, source, test,
-database, or runtime byte exists as accepted implementation evidence. Every
-other D24--D28 rule, migration 013--017 byte, public M5/M4 API, frozen DTO/
+schema-ledger row. It may add no other object or backfill. Its installer and
+route barrier follow D29 Section 7 exactly. At revision 10 this was a
+contract-only authority. Migration 018 and bounded routing were subsequently
+integrated at `9c855b5` and `8734162`; they remain partial historical evidence,
+not Task-2 or decision-row implementation acceptance. Every other D24--D28
+rule, migration 013--017 byte, public M5/M4 API, frozen DTO/
 digest, counter vector, D28 phase order, replay projection, semantic rule, and
 runtime mode remains exact outside D29's narrow precedence.
 
-## 27. Final decision
+## 27. M5-D30 amendment precedence
 
-**Decision: GO for the M5-D29 contract; the prior M5-D25 through M5-D28 GOs
+The complete byte-total D30 correction is maintained separately at
+`DIRECT_M4_PROVENANCE_CLOSURE_AMENDMENT.md`. Its independently accepted pre-
+freeze content SHA-256 is
+`db2568affc02cf1ca6f17a549029f31089cecd857debdedf2651e6aac6898fe4`.
+M5-D30 supersedes only:
+
+1. D29 Section 6's requirement-only changed-chunk currency locator, replacing
+   it with one total locator followed by exact requirement/claim partition;
+2. D29's complete-source wording where it would require unavailable direct-
+   root hit/admission membership, reason-hit or discovery-aggregate preimages,
+   classic verifier artifacts, judgments, or pair inputs for a claim holder;
+3. D29 Section 8's migration-018 all-job and dependency-range permission only
+   to reuse those existing routes once per distinct dynamic claim source epoch;
+4. tier 11a only to add exact working-delta point authority after semantic
+   observations and before current/published currency, without a new tier;
+5. D29 Section 11's held-WIP prohibition only through D30's later one-time
+   custody protocol after a D30 freeze and separate activation are pushed; and
+6. the first-application boundary only to require that PostgreSQL is already
+   at exact `READ COMMITTED` before the first D30 locator.
+
+Every other D24--D29 identity, same-policy rule, semantic rule, lock tier,
+source-first phase, counter, timing coordinate, replay rule, result byte, and
+migration remains exact. One changed-chunk current-currency range returns both
+subject kinds. Requirements retain D29 authority. Dynamic claims use the exact
+working delta, unique completed-active child, cited admission, complete sealed
+owner topology, optional execution, and current/published currency. Activation-
+base claims use exact M3 epoch/run/execution/candidate/artifact closure with
+installed revision zero and NULL M3 reuse; unrelated M4 history is
+nonauthority.
+
+At tier 10 the implementation unions dynamic and activation-M3 model keys per
+model-artifact relation and prompt keys per prompt-artifact relation,
+deduplicates and C-sorts each relation globally, and locks every shared row
+once in D29's inherited category order. It does not execute separate dynamic
+and M3 artifact batches or reacquire a shared row.
+
+The dynamic predecessor lookup is one backward exact-full-key primary-key
+probe with `valid_from_epoch <= previous_published_epoch_id`,
+`ORDER BY valid_from_epoch DESC LIMIT 1`, in-memory interval coverage
+validation, exact point authority, and a guarded identical rerun. Dynamic M4
+execution remains optional and may retain non-NULL reuse; legacy empty task
+text remains valid. D30 performs no raw root-set, sibling-source, classic-
+artifact, pair-input, judgment, or aggregate-preimage reconstruction.
+
+D30 authorizes no new index, table, column, constraint, trigger, function,
+backfill, DTO, digest, counter, source/reference kind, public API, or migration
+019. Migrations 001--018 remain byte-identical; migration 018 retains SHA-256
+`941bba975c12e9fb5ba4b4f75a82e59fa518b23eac34468ed2f8b15d1cd9ed90`.
+The integrated D29 activation/migration/routing tranches are partial historical
+evidence and do not authorize D30 implementation. Held Lane-P work remains
+read-only non-authority until the separately reviewed path-exclusive D30
+activation completes its exact custody protocol.
+
+## 28. Final decision
+
+**Decision: GO for the M5-D30 contract; the prior M5-D25 through M5-D29 GOs
 remain in force. Confidence: high.**
 
-Revision 10 freezes the reviewed M5-D29 bytes while leaving M5-D24 through
-M5-D29 implementation evidence `PENDING`. It authorizes the exact future
-migration-018 contract but accepts no migration, installer, source/test
-implementation, public runtime, database, or deployment and does not declare
-Task 2 or M5.4 complete. Full production runtime and measured history remain
-**NO-GO** until the new path-exclusive activation, migration/store/runtime
-implementation, and executable M5.4 gates pass. Runtime remains `v1_only`
-outside isolated fixtures. This boundary is not evidence of deployment,
-performance, utility, AI-quality improvement, or any broader semantic claim.
+Revision 11 freezes the reviewed M5-D30 bytes while leaving M5-D24 through
+M5-D30 implementation evidence `PENDING`. It accepts no schema/migration
+change, source/test implementation, public runtime, database execution,
+deployment, provider/model change, or Task-2/M5.4 completion. Full production
+runtime and measured history remain **NO-GO** until the new path-exclusive D30
+activation, store/runtime implementation, and executable M5.4 gates pass.
+Runtime remains `v1_only` outside isolated fixtures. This boundary is not
+evidence of deployment, performance, utility, AI/model-quality improvement,
+or any broader semantic claim.

@@ -1,20 +1,20 @@
 # GroundLoop M5 Implementation Plan
 
-Status: M5.0 contract accepted through M5-D29 and M5.1--M5.3 complete;
-M5.0-24 through M5.0-29 are contract-`PASS` /
+Status: M5.0 contract accepted through M5-D30 and M5.1--M5.3 complete;
+M5.0-24 through M5.0-30 are contract-`PASS` /
 implementation-`PENDING`; M5.4-01 through M5.4-04 are `PASS`, M5.4-05 through
-M5.4-09 remain `PENDING`; D29 freezes no implementation, leaves the accepted
-D28 activation as historical authority insufficient for the corrected scope,
-treats held Lane-P bytes as non-authority, and requires a new audited path-
-exclusive activation from the exact pushed D29 barrier before implementation
-continues
+M5.4-09 remain `PENDING`; D30 freezes no implementation, treats the integrated
+D29 activation/migration/routing tranches as partial historical evidence and
+held Lane-P bytes as non-authority, and requires a new audited path-exclusive
+activation from the exact pushed D30 barrier before implementation continues
 
 Date: 2026-08-02; M5-D24 execution and R2e integration current through
 2026-08-19; M5.4-02/-03/-04 evidence integration current through 2026-09-02;
 M5-D25 contract acceptance current through 2026-09-03; M5-D26 contract
 acceptance current through 2026-09-07; M5-D27 erratum acceptance current
 through 2026-09-17; M5-D28 phased-composition acceptance current through
-2026-09-18; M5-D29 bounded-withdrawal acceptance current through 2026-09-22
+2026-09-18; M5-D29 bounded-withdrawal and M5-D30 provenance-closure acceptance
+current through 2026-09-22
 
 Authority: `docs/m5_design_freeze.md` governs. M5-D24 recovery/accounting work
 also obeys
@@ -40,6 +40,10 @@ Persisted legacy-document withdrawal and migration 018 also obey
 `docs/workstreams/m5_runtime_contract/BOUNDED_DOCUMENT_WITHDRAWAL_AMENDMENT.md`
 at accepted SHA-256
 `e05f159f98d5f282335a90d2e9db1a26f8d85560030314060d918df59ccc82fb`.
+Total claim-current and direct-M4/M3 provenance closure also obeys
+`docs/workstreams/m5_runtime_contract/DIRECT_M4_PROVENANCE_CLOSURE_AMENDMENT.md`
+at accepted SHA-256
+`db2568affc02cf1ca6f17a549029f31089cecd857debdedf2651e6aac6898fe4`.
 Implementation stops on any conflict with those contracts rather than silently
 choosing new semantics.
 
@@ -783,22 +787,59 @@ private post-open checked origin uses the held nonterminal receipt, canonical
 result, and zero call work without changing public result, receipt, work,
 timing, or digest authority.
 
-Migration 018 is authorized only as a future contract: exactly the one-key
+At that D29 checkpoint, migration 018 was authorized only as a future
+contract: exactly the one-key
 `groundloop_m5_admitted_pair_by_chunk_edge` and fixed-width
 `groundloop_m4_job_by_epoch` indexes, an exact ledger-first atomic installer,
 and the exact route barrier. No migration bytes, hashes, bundle, installer,
 source, test, database, provider, deployment, public runtime, measured result,
 or AI-quality result are accepted by this checkpoint.
 
-The accepted D28 activation remains historical authority but is insufficient
-for the corrected D29 scope. Its held Lane-P work must not continue, merge,
-rebase, cherry-pick, or become implementation evidence. Implementation may
-resume only after this authority-freeze tranche is audited, integrated, and
-pushed, and then only under a new independently audited path-exclusive
-activation pinned to that exact D29 barrier. M5-D24 through M5-D29 and
-M5.0-24 through M5.0-29 remain implementation-`PENDING`; Task 2, M5.4-05
-through M5.4-09, and every M5.5/M5.6 gate remain `PENDING`; runtime remains
-`v1_only` outside isolated fixtures.
+The accepted D28 activation was historical authority but insufficient for the
+corrected D29 scope. Its held Lane-P work could not continue or become
+implementation evidence until a new audited D29 activation was pushed. That
+activation and the bounded migration/routing tranches later integrated at
+`8ed44a6`, `9c855b5`, and `8734162` as partial historical evidence; Task 2 and
+the decision-row implementation halves remained `PENDING`, and runtime
+remained `v1_only` outside isolated fixtures.
+
+### 7.11 M5-D30 contract checkpoint
+
+M5-D30 is accepted on exact reviewed candidate commit
+`36998d1acf4d3f4248b7d1fdcad7ff939272dd21`, tree
+`048d55b49647e641735cb9c6a738c5a3c4a7290b`, sole parent
+`8734162f8578ac3105119789a8729fc662da575d`, and 35,791-byte, 647-line
+content SHA-256
+`db2568affc02cf1ca6f17a549029f31089cecd857debdedf2651e6aac6898fe4`.
+Two independent same-byte audits returned `GO`, `P0=0`, `P1=0`; both then
+confirmed the committed bytes, provenance, one added path, and clean worktree.
+Runtime-addendum revision 11 and acceptance row M5.0-30 freeze only the total
+claim-current and direct-M4/M3 provenance correction.
+
+This is contract `PASS` / implementation `PENDING`. One existing chunk-index
+range must return both requirement and claim currency before partition.
+Dynamic claims use exact working-delta, verifier-child, admitted-pair, owner-
+topology and currency authority; activation-base claims use exact M3 epoch,
+published-run, verification-execution, candidate and artifact authority. The
+dynamic predecessor route is a backward full-key `LIMIT 1` probe plus coverage
+validation, point lock and guarded rerun. Optional M4 execution, arbitrary
+retained IDs/tasks, M4 reuse and legacy empty task remain supported; unavailable
+raw-root and classic-artifact preimages are not reconstructed.
+
+D30 adds no schema or migration. Migration 018 remains byte-identical at
+SHA-256
+`941bba975c12e9fb5ba4b4f75a82e59fa518b23eac34468ed2f8b15d1cd9ed90`;
+there is no migration 019. The integrated D29 activation (`8ed44a6`),
+migration-018 tranche (`9c855b5`), and application-routing tranche (`8734162`)
+are partial historical evidence, not D30 implementation acceptance. The held
+15-path Lane-P WIP remains read-only non-authority.
+
+Implementation may resume only after this authority-freeze tranche is audited,
+integrated, and pushed, and then only under a new independently audited path-
+exclusive activation pinned to that exact D30 barrier. M5-D24 through M5-D30
+and M5.0-24 through M5.0-30 remain implementation-`PENDING`; Task 2,
+M5.4-05 through M5.4-09, and every M5.5/M5.6 gate remain `PENDING`; runtime
+remains `v1_only` outside isolated fixtures.
 
 M5.4 exit gate: deterministic fake-port path passes first, then a bounded
 maintained PostgreSQL history and frozen-model diagnostic pass with complete

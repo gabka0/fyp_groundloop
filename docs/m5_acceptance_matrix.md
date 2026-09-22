@@ -1,9 +1,9 @@
 # GroundLoop M5 Acceptance Matrix
 
-Status: accepted M5 falsification contract through M5-D29; staged evidence
+Status: accepted M5 falsification contract through M5-D30; staged evidence
 is current through the integrated M5.4-02/-03/-04 late-result activity tranche;
 M5.4-01 through M5.4-04 are `PASS`, M5.4 remains partial, and M5.0-24 is
-`PASS / PENDING`; M5.0-25 through M5.0-29 are `PASS / PENDING`
+`PASS / PENDING`; M5.0-25 through M5.0-30 are `PASS / PENDING`
 
 Date: 2026-09-22
 
@@ -48,6 +48,7 @@ design freeze is reopened and the scope change is recorded.
 | M5.0-27 | M5-D27 requirement-state counter ownership | Invent a D24 requirement-state counter; omit one of the five existing D24-owned coordinates; alias a group/D25/byte counter; claim zero physical writes; omit requirement-state D25 patch/output evidence; reconstruct a count on replay; or change DTO/digest/schema/migration bytes | Static no-coordinate/five-owner inventory; group-registration actual-write accounting; D25 patch/bijection/replay checks; consistently rehashed surrogate-counter rejection; unchanged D24/D25 golden vectors and migration-016/017 regressions; report/nonclaim audit | PASS / PENDING |
 | M5.0-28 | M5-D28 phased persisted-matching composition | Use a monolithic first-apply path; derive or acquire an earlier lock after tier 15c; change either frozen Section-8 signature; let a caller author a reservation, patch, work, count, or header image; mismatch source-present or direct reservation/stage evidence; advance either header at the wrong point or more than once; let stage write 15i--15k or finalization acquire an earlier lock; alias requirement-state writes into a D24 counter; validate the accumulator against runtime rather than prewrite semantic revision; reconstruct an older accumulator snapshot or nonpersisted no-op lock-plan key; omit exact tier-16 status deltas; hide transaction authority in cursor/global state; or change DTO/digest/schema/migration/public/runtime bytes | All 15 D28 falsifier groups: frozen-byte inventory; structural/requirement/direct order traces; sole bounded representative discovery and complete-plan equality; no-reservation-authority and cursor/backend/transaction/context/single-use binding; stage/finalize separation; D24/D25 counter ownership and 15k accumulator position; full crash matrix; older-transition retained-projection replay with current cumulative accumulator; concurrency races; private-versus-SQL rejection boundaries; and no-hidden-expansion tripwires | PASS / PENDING |
 | M5.0-29 | M5-D29 bounded persisted document withdrawal | Reconstruct the legacy payload from sidecars; trust a caller preview/plan; miss or overinclude reverse candidates, observations, direct/M5 jobs, dependencies, scopes, roots, or provenance; accept malformed lineage, cross-policy history, typed rootless `ObserveRequirementEvent`, or a self-consistent wrong declaration; cancel a D24-valid unresolved attempt attached only to terminal authority; use an unlisted terminal origin; weaken canonical-result/envelope/work/telemetry validation; add a third or wider migration-018 object; accept a wrong 017 prerequisite, ledger identity, lock order, partial install, scan fallback, late route barrier, hidden hydration/cache/oracle, provider call in transaction, counter alias, or changed public/DTO/digest/runtime bytes | All 24 D29 falsifier groups: exact retained source and sidecar closure; lineage/dedup/policy/activity; candidate/observation independence including activation-bootstrap; terminal cancellation and typed-rootless fail-closed boundaries; exact insert/delete/replace forms; one-key/two-index catalog and plan shapes; complete all-state direct dependency/scope and M5 scope/provenance declaration proofs; ledger/install/rerun/rollback; oracle and frozen-byte inventory; crash/race/replay/lock-order/bounded-history/work; two-call compare-only authority and every terminalization cut; prospective reservation closure; sole timing ownership; and the migration-018 route barrier | PASS / PENDING |
+| M5.0-30 | M5-D30 total claim-current and direct-M4/M3 provenance closure | Filter changed-chunk currency to one subject kind; convert claim and requirement holders; infer a dynamic claim without its exact working delta, child revision, admitted pair, owner topology, currency, or predecessor; scan an unbounded interval prefix; require classic artifact/judgment/pair-input or raw root membership that was never persisted; reject valid optional execution, arbitrary retained IDs/tasks, M4 reuse, or legacy empty task; accept partial/cross-coordinate execution; treat unrelated M4 history as bootstrap authority or poison; omit or change the exact M3 epoch/run/execution/candidate/artifact closure; misorder locks; add migration 019; or change public/DTO/digest/counter/runtime bytes | All 15 D30 falsifier groups: total mixed-subject locator and partition; typed and legacy dynamic identity cases; optional three-coordinate execution; exact delta/predecessor/child injection with backward `LIMIT 1` long-history plans; exact M3 activation-base epoch/publication closure and NULL reuse; child/admission/parent/result/topology/owner mutations; retained discovery nonreconstruction; branch exclusivity; query-plan/cardinality/trace exclusions; both race orders and isolation rejection; unchanged outputs/digests/work/timing/replay; frozen migrations 001--018 and no migration 019 | PASS / PENDING |
 
 M5.0 originally froze after the contract side of every row passed, three
 independent audits reported no unresolved P0/P1, and the coordinator recorded
@@ -57,19 +58,20 @@ Accepted M5-D24-C5 resolves its successful-return active-cutoff invocation-
 work defect. Accepted M5-D24-C6 resolves the three additional checked origins
 outside C5, and accepted M5-D24-C7 closes the typed-direct acquisition/failure-
 closure provenance boundary. The current accepted contract set is M5-D21
-through M5-D29 plus runtime-addendum revision 10, the M5-D24 recovery amendment
+through M5-D30 plus runtime-addendum revision 11, the M5-D24 recovery amendment
 and accepted C1--C7 corrections, the M5-D25 persisted-matching amendment, the
 M5-D26 changed-state absence amendment, the M5-D27 counter-ownership erratum,
 the M5-D28 phased persisted-matching composition amendment, the M5-D29 bounded
-document-withdrawal amendment, and rows M5.0-21 through M5.0-29. M5.0-24
-through M5.0-29 are each contract-`PASS` /
+document-withdrawal amendment, the M5-D30 direct-M4 current-observation
+provenance amendment, and rows M5.0-21 through M5.0-30. M5.0-24
+through M5.0-30 are each contract-`PASS` /
 implementation-`PENDING`; the exact R2e C7
 implementation lane integrated at `2c2aed9` and its grant is closed. No D24
 lane is active. The later separately activated evidence tranche integrated at
 `290dbb3` and promotes only M5.4-02, M5.4-03, and M5.4-04 as recorded below.
 The decision-row implementation halves remain `PENDING` until the
 final cross-stage evidence mapping at M5.6; the stage tables below record the
-current executable evidence without silently remapping M5-D1 through M5-D29.
+current executable evidence without silently remapping M5-D1 through M5-D30.
 R1-D, R1-P, R2a, and R1-C are integrated at `1838316`, `56dd2d4`, `6f1ae89`,
 and `f5902ff`, respectively. The bounded R2b pure requirement-application and
 fake-seal orchestration tranche is integrated at `bfeef3f`; its 87/87 focused

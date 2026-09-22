@@ -1,5 +1,64 @@
 # GroundLoop Decision Log
 
+## 2026-09-22 — M5-D30 Direct-M4 Current-Observation Provenance Accepted
+
+Decision status: **accepted authoritative narrow contract amendment**. M5-D30
+and acceptance row M5.0-30 are contract-`PASS` /
+implementation-`PENDING`, and the M5.4 runtime addendum advances to revision
+11. The complete authoritative amendment is
+`docs/workstreams/m5_runtime_contract/DIRECT_M4_PROVENANCE_CLOSURE_AMENDMENT.md`
+at accepted content SHA-256
+`db2568affc02cf1ca6f17a549029f31089cecd857debdedf2651e6aac6898fe4`.
+
+The final reviewed candidate has exact commit
+`36998d1acf4d3f4248b7d1fdcad7ff939272dd21`, tree
+`048d55b49647e641735cb9c6a738c5a3c4a7290b`, sole parent
+`8734162f8578ac3105119789a8729fc662da575d`, one added mode-`100644` blob
+`60b2ca6609b31befb9caeb90a337fbbf0ff3a412`, 647 lines, and 35,791
+bytes. Two independent reviewers audited identical bytes and returned `GO`
+with `P0=0` and `P1=0`; the semantic review had `P2=0`, while the PostgreSQL
+review recorded one nonblocking wording note whose intended global shared-
+artifact order is already fixed by inherited D29 authority. Both reviewers
+then confirmed the exact committed identity, sole path, unchanged bytes, and
+clean worktree. The candidate branch was pushed unchanged.
+
+M5-D30 replaces D29's requirement-only changed-chunk current-currency
+projection with one total indexed projection followed by exact subject-kind
+partition. Requirement holders retain D29 authority. A claim holder is
+accepted only through one of two disjoint positive closures: an exact dynamic
+direct-M4 working-delta/job/admission/owner closure, or the exact published M3
+activation-base epoch/run/execution/candidate/artifact closure with installed
+revision zero. The dynamic branch retains arbitrary stored task and identity
+bytes, optional verification execution, non-NULL M4 reuse, and legacy empty
+task compatibility. The activation-base branch requires the frozen M3 NULL
+reuse form and does not infer or scan negative M4 provenance.
+
+The immutable working delta is the generic dynamic observation-to-child link.
+Its base observation uses one backward full-key primary-key probe ordered by
+`valid_from_epoch DESC LIMIT 1`, in-memory interval coverage validation, exact
+point authority, and a guarded one-row rerun. Direct-root hit/admission sets,
+reason-hit reconstruction, sibling source reconstruction, classic verifier
+artifacts, pair-input preimages, judgments, and root aggregate preimages are
+not reconstructed. The cited admitted pair, complete owner topology, retained
+parent result commitments, currency, and every named dynamic or M3 row remain
+exact authority.
+
+M5-D30 adds no public API, DTO, digest, counter, source/reference kind,
+present-state recipe, schema object, migration, backfill, or model/provider
+change. Migration 018 remains byte-identical at SHA-256
+`941bba975c12e9fb5ba4b4f75a82e59fa518b23eac34468ed2f8b15d1cd9ed90`;
+there is no migration 019. The installed D29 activation and migration work are
+historical evidence but are insufficient for D30 implementation. Held Lane-P
+work remains read-only non-authority until a separately committed, audited,
+path-exclusive D30 activation starts from the pushed D30 authority barrier.
+
+Acceptance implements nothing. M5-D24 through M5-D30 and M5.0-24 through
+M5.0-30 remain implementation-`PENDING`; Task 2, M5.4 and later executable
+gates, deployment, performance, utility, and AI/model-quality claims remain
+`PENDING`; runtime remains `v1_only` outside isolated fixtures. No security,
+novelty, maintained-history, objective-truth, or named-system-superiority
+result follows.
+
 ## 2026-09-22 — M5-D29 Bounded Document Withdrawal Accepted
 
 Decision status: **accepted authoritative narrow contract amendment**. M5-D29

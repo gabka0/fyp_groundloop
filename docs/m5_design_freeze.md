@@ -1,18 +1,19 @@
 # GroundLoop M5 Bounded Evidence-Group Design Freeze
 
-Status: frozen M5.0 contract, amended through accepted M5-D29 and
-M5-D24-C1--C7; implementation evidence for M5-D24 through M5-D29 remains
+Status: frozen M5.0 contract, amended through accepted M5-D30 and
+M5-D24-C1--C7; implementation evidence for M5-D24 through M5-D30 remains
 pending
 
 Date: 2026-08-02; M5-D21 through M5-D24-C7 amendments 2026-08-06--2026-08-18;
 M5-D25 amendment 2026-09-03; M5-D26 amendment 2026-09-07; M5-D27 erratum
-2026-09-17; M5-D28 amendment 2026-09-18; M5-D29 amendment 2026-09-22
+2026-09-17; M5-D28 amendment 2026-09-18; M5-D29 and M5-D30 amendments
+2026-09-22
 
 Authority: this document specializes `docs/technical_design.md` v0.2 for M5.
 It preserves original decisions D-1 through D-20 except where the earlier
 pseudocode is mathematically inconsistent with its own stated system-of-
 distinct-representatives semantics. Those corrections, the later runtime
-decisions M5-D21 through M5-D29, and accepted M5-D24-C1 through M5-D24-C7 are
+decisions M5-D21 through M5-D30, and accepted M5-D24-C1 through M5-D24-C7 are
 recorded in the decision log and frozen here. The byte-total M5-D24
 specialization is authoritative at
 `docs/workstreams/m5_runtime_contract/RECOVERY_WORK_AMENDMENT.md`.
@@ -41,6 +42,11 @@ The narrow M5-D29 bounded document-withdrawal correction is authoritative at
 `docs/workstreams/m5_runtime_contract/BOUNDED_DOCUMENT_WITHDRAWAL_AMENDMENT.md`;
 its independently accepted pre-freeze content SHA-256 is
 `e05f159f98d5f282335a90d2e9db1a26f8d85560030314060d918df59ccc82fb`.
+The narrow M5-D30 total claim-current and direct-M4/M3 provenance correction
+is authoritative at
+`docs/workstreams/m5_runtime_contract/DIRECT_M4_PROVENANCE_CLOSURE_AMENDMENT.md`;
+its independently accepted pre-freeze content SHA-256 is
+`db2568affc02cf1ca6f17a549029f31089cecd857debdedf2651e6aac6898fe4`.
 
 M5 implementation begins only after the M5.0 *contract* gate passes. Later
 implementation-evidence cells in the acceptance matrix remain `PENDING` until
@@ -1409,6 +1415,64 @@ authority. M5-D24 through M5-D29, Task 2, M5.4 and later gates, deployment,
 performance, utility, and AI-quality claims remain `PENDING`; runtime remains `v1_only`
 outside isolated fixtures.
 
+That was the exact D29 contract checkpoint. The D29 activation at `8ed44a6`,
+migration-018 tranche at `9c855b5`, and bounded application-routing tranche at
+`8734162` were subsequently integrated as partial historical evidence. They do
+not close Task 2 or any decision-row implementation half and are insufficient
+for the M5-D30 scope below.
+
+### M5-D30 -- total claim-current and direct-M4/M3 provenance closure
+
+D29 makes document withdrawal responsible for every current observation on a
+changed chunk, but its locator and provenance rules cover only requirement
+subjects. Claim observations cannot be omitted or reinterpreted as M5
+requirement observations. The accepted M4/D24 schema also does not persist a
+recoverable raw root-hit set or require every direct verifier completion to
+have a classic execution/artifact/pair-input shape.
+
+M5-D30 replaces only that incomplete projection and closure. One existing
+changed-chunk currency-index range returns both subject kinds and is then
+partitioned without conversion. Requirements retain D29 authority. Claims use
+exactly one positive branch: dynamic direct-M4 provenance through the immutable
+working delta, exact verifier child/admitted pair, complete sealed owner
+topology and current/published currency; or activation-base provenance through
+the exact frozen M3 epoch, published run, verification execution, retrieval
+candidate, model/prompt/embedding artifacts and named artifact uses. Installed
+revision zero distinguishes the M3 branch. It requires the frozen M3 NULL
+reuse form and does not infer or scan for negative M4 provenance.
+
+The dynamic task, observation ID, result ID and producer remain retained bytes.
+Typed D24 tasks remain nonempty, while accepted legacy history may retain an
+empty task. M4 verification execution remains optional; when present all three
+unique coordinates must resolve one exact row and non-NULL reuse is allowed.
+When absent, all exact coordinates are absent under their guards and the
+observation/result hash equality remains mandatory. No root hit/admission set,
+reason-hit relation, sibling source, discovery aggregate preimage, classic
+artifact, judgment, pair input, or semantic ID is reconstructed.
+
+Each dynamic delta's predecessor uses one exact-full-key backward primary-key
+probe with `valid_from_epoch <= previous_published_epoch_id`,
+`ORDER BY valid_from_epoch DESC LIMIT 1`, followed by in-memory interval
+coverage validation, exact point authority, and a guarded identical rerun.
+The D30 lock and query order is the authoritative specialization in the
+accepted amendment. It adds no table, column, index, function, trigger,
+backfill, DTO, digest, counter, public API, model/provider call, or migration
+019. Migrations 001--018, including accepted migration 018 SHA-256
+`941bba975c12e9fb5ba4b4f75a82e59fa518b23eac34468ed2f8b15d1cd9ed90`,
+remain exact.
+
+The complete correction and mandatory falsifiers are authoritative in
+`docs/workstreams/m5_runtime_contract/DIRECT_M4_PROVENANCE_CLOSURE_AMENDMENT.md`
+at the accepted SHA-256 above. M5-D30 and M5.0-30 are contract-`PASS` /
+implementation-`PENDING`. The freeze accepts no source, test, database,
+runtime, deployment, or model-quality evidence. The D29 activation,
+migration-018 integration, and held Lane-P work are historical evidence and
+insufficient for D30. Implementation may resume only through a new audited
+path-exclusive activation from the pushed D30 authority barrier. M5-D24
+through M5-D30, Task 2, M5.4 and later gates, deployment, performance,
+utility, and AI/model-quality claims remain `PENDING`; runtime remains
+`v1_only` outside isolated fixtures.
+
 ## 11. Dynamic M4 integration contract
 
 ### M5-D14 -- typed v2 runtime identity
@@ -2040,6 +2104,7 @@ regression evidence.
 | M5-D27 | Requirement-state counter ownership | D24 owns no requirement-state physical row-count coordinate; no counter or alias is invented, while every requirement-state change remains exact D25 logical patch/output and transition-bijection evidence |
 | M5-D28 | Phased persisted-matching composition and retained replay | Cursor-local private phases reconcile D24/D25 write order and the direct tier-15c source without changing public signatures or frozen bytes; historical replay validates a canonical retained changed-key projection and the current cumulative accumulator without reconstructing nonpersisted no-op keys |
 | M5-D29 | Bounded persisted document withdrawal | The locked epoch payload is the legacy source identity; persisted reverse/current edges and retained direct/M5 declarations are enumerated by exact bounded locators, same-policy history is the supported form, terminal cuts use ordinary pre-opener and one checked post-open route, and migration 018 adds only two locator indexes behind an exact ledger barrier |
+| M5-D30 | Total claim-current and direct-M4/M3 provenance closure | One changed-chunk currency range returns both subject kinds; dynamic claims validate through the working delta and exact sealed direct owner, activation-base claims validate through exact M3 publication closure, predecessor history uses a backward one-row PK route, and unavailable root/classic preimages are not reconstructed |
 
 ## 15. Release gate
 
@@ -2058,5 +2123,6 @@ that:
    durable accounting, the M5-D24-C1--C7 corrections, M5-D25 persisted
    matching, M5-D26 changed-state absence, and M5-D27 requirement-state
    counter ownership, M5-D28 phased persisted-matching composition and
-   retained replay, and M5-D29 bounded persisted document withdrawal; and
+   retained replay, M5-D29 bounded persisted document withdrawal, and M5-D30
+   total claim-current/direct-M4/M3 provenance closure; and
 7. path ownership prevents shared-schema or shared-contract collisions.

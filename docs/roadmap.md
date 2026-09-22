@@ -236,7 +236,7 @@ is explicit pre-dissertation/M6 debt, not a hidden extension of M4.
 ## M5 — Bounded Evidence Groups
 
 Status: active. The M5.0 contract freeze is complete through accepted
-M5-D29; M5.1 pure reference semantics completed on 2026-08-03 after an
+M5-D30; M5.1 pure reference semantics completed on 2026-08-03 after an
 independent high-confidence audit GO. M5.2 and M5.3 are complete. M5.4-01
 through M5.4-04 pass; public activation and partial root/direct transitions have
 live evidence but do not independently close M5.4-05. M5-D24's R0 contracts and
@@ -337,8 +337,9 @@ candidate commit `4667da0e230d2b52b3147d0ee771396b406ed1e9`, tree
 `e05f159f98d5f282335a90d2e9db1a26f8d85560030314060d918df59ccc82fb`.
 Three independent same-byte candidate audits returned `GO`, `P0=0`, `P1=0`,
 `P2=0`; two reviewers then confirmed the exact committed bytes and provenance.
-M5.0-29 is contract-`PASS` / implementation-`PENDING`, and runtime-addendum
-revision 10 is authoritative. The amendment freezes the persisted epoch hash
+At that D29 contract checkpoint, M5.0-29 was contract-`PASS` /
+implementation-`PENDING` and runtime-addendum revision 10 was authoritative.
+The amendment freezes the persisted epoch hash
 as legacy source identity, exact bounded reverse/current and direct/M5
 declaration enumeration, an existing manifest with exactly one top-level D29
 key and exactly three nested arrays, the sole
@@ -347,15 +348,35 @@ terminal cuts. Cross-policy and typed rootless requirement history remain
 `PENDING`; activation-bootstrap observations and terminal D24 ambiguity retain
 their exact supported audit routes.
 
-Migration 018 is only contract-authorized: exactly two locator indexes plus
-the exact ledger/install/route barrier. No migration bytes, hashes, bundle,
-installer, source, test, database, provider, deployment, runtime activation,
-measured result, or AI-quality result are accepted. The accepted D28 activation
-remains historical authority but is insufficient for the corrected scope; its
-held Lane-P bytes are non-authority. A new audited path-exclusive activation
-must begin from the exact pushed D29 authority barrier. M5-D24 through M5-D29,
-Task 2, and M5.4-05 through M5.4-09 remain implementation-`PENDING`; runtime
-stays `v1_only`.
+Migration 018 was later integrated unchanged at `9c855b5` after the D29
+activation at `8ed44a6`, and bounded application routing integrated at
+`8734162`; those are partial historical implementation evidence, not Task-2
+or decision-row acceptance. Held Lane-P bytes remain non-authority.
+
+The M5-D30 direct-M4 current-observation provenance amendment is accepted at
+exact reviewed candidate commit
+`36998d1acf4d3f4248b7d1fdcad7ff939272dd21`, tree
+`048d55b49647e641735cb9c6a738c5a3c4a7290b`, sole parent
+`8734162f8578ac3105119789a8729fc662da575d`, and content SHA-256
+`db2568affc02cf1ca6f17a549029f31089cecd857debdedf2651e6aac6898fe4`.
+Two independent same-byte audits returned `GO`, `P0=0`, `P1=0`; both then
+confirmed exact committed provenance. M5.0-30 is contract-`PASS` /
+implementation-`PENDING`, and runtime-addendum revision 11 is authoritative.
+
+D30 makes changed-chunk current-currency enumeration total across requirement
+and claim subjects. Dynamic claim holders use exact working-delta, child,
+admission, owner and currency closure; activation-base claim holders use exact
+M3 epoch/run/execution/candidate/artifact closure. It preserves optional M4
+execution and retained identity forms, uses one backward `LIMIT 1` predecessor
+route, and does not invent unavailable root-local or classic-artifact
+preimages. It adds no schema or migration: migration 018 remains byte-identical
+and there is no migration 019.
+
+A new audited path-exclusive activation must begin from the exact pushed D30
+authority barrier before the held 15-path Lane-P WIP or later public
+composition continues. M5-D24 through M5-D30, Task 2, and M5.4-05 through
+M5.4-09 remain implementation-`PENDING`; runtime stays `v1_only`. No
+deployment, performance, utility, or AI/model-quality result is promoted.
 
 Deliverables:
 
@@ -375,7 +396,7 @@ Deliverables:
 Stages:
 
 - **M5.0:** design/theory/schema/data freeze. **Complete through accepted
-  M5-D29.** Contract rows pass; decision-row implementation halves remain
+  M5-D30.** Contract rows pass; decision-row implementation halves remain
   pending until the M5.6 cross-stage evidence mapping.
 - **M5.1:** pure records, history, structural events, and independent Python
   oracle. **Complete.**
@@ -395,7 +416,8 @@ Stages:
   M5-D26 contracts plus the M5-D27 counter correction govern the active
   persisted store/runtime implementation boundary together with M5-D28's
   phased composition and retained-replay correction and M5-D29's bounded
-  document-withdrawal/migration-018 contract.
+  document-withdrawal/migration-018 contract plus M5-D30's total claim-current
+  provenance closure.
 - **M5.5:** controlled dataset adapter, seven qualified baselines, and
   reproducible systems/semantic reports.
 - **M5.6:** full validation, evidence bundle, documentation and honest verdict.
