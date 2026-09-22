@@ -21,6 +21,11 @@ from typing import Protocol
 
 from groundloop.domain import StatusDelta
 from groundloop.errors import GroundLoopError, ValidationError
+from groundloop.events import (
+    DeleteDocumentVersionEvent,
+    InsertDocumentEvent,
+    ReplaceDocumentVersionEvent,
+)
 from groundloop.m4.application import (
     ObservationCompletionReceipt,
     OpenEventReceipt,
@@ -483,6 +488,47 @@ class M5ExternalWorkFailure(GroundLoopError):
         super().__init__(reason.value)
 
 
+class _M5D29HydrationTerminalCutoff(ValidationError):
+    """Private, no-payload signal for one exact D29 hydration cutoff."""
+
+    __slots__ = ()
+
+
+def _is_m5_d29_legacy_document_event(event: M5TypedEventPlan) -> bool:
+    return type(event.event) in (
+        InsertDocumentEvent,
+        DeleteDocumentVersionEvent,
+        ReplaceDocumentVersionEvent,
+    )
+
+
+def _validate_m5_d29_hydration_terminal_cutoff(
+    signal: _M5D29HydrationTerminalCutoff,
+) -> None:
+    if (
+        type(signal) is not _M5D29HydrationTerminalCutoff
+        or signal.args != ()
+        or vars(signal)
+    ):
+        raise ValidationError("D29 hydration cutoff signal is not exact and empty")
+
+
+def _validate_m5_d29_trusted_event_binding(
+    event: M5TypedEventPlan,
+    trusted_structural_event_id: str,
+    trusted_payload_hash: str,
+) -> None:
+    if (
+        type(trusted_structural_event_id) is not str
+        or type(trusted_payload_hash) is not str
+        or type(event.structural_event_id) is not str
+        or event.structural_event_id != trusted_structural_event_id
+        or type(event.payload_hash) is not str
+        or event.payload_hash != trusted_payload_hash
+    ):
+        raise ValidationError("D29 hydration cutoff changed its event binding")
+
+
 @dataclass(frozen=True, slots=True)
 class M5TerminalInvocationTelemetry:
     """One fresh caller-owned identity and completed terminal-call timing."""
@@ -871,8 +917,10 @@ class M5TypedApplication:
     post_seal_audit: M5PostSealAuditPort | None = None
 
     def run_event(self, event: M5TypedEventPlan) -> M5EventRunResult:
+        trusted_structural_event_id = event.structural_event_id
+        trusted_payload_hash = event.payload_hash
         terminal = self.runtime.read_typed_event_result(
-            event.structural_event_id, event.payload_hash
+            trusted_structural_event_id, trusted_payload_hash
         )
         if terminal is not None:
             self._validate_terminal_replay(event, terminal)
@@ -885,26 +933,42 @@ class M5TypedApplication:
         ):
             raise ValidationError("typed event binds another candidate manifest")
 
-        requirement_withdrawal = self.structural.plan_exact_requirement_withdrawal(
-            event
-        )
-        if requirement_withdrawal.event_id != event.structural_event_id:
-            raise ValidationError("requirement withdrawal belongs to another event")
-        expected_deactivated_chunks = (
-            ()
-            if event.direct_plan is None
-            else event.direct_plan.deactivated_chunk_version_ids
-        )
-        if (
-            requirement_withdrawal.deactivated_chunk_version_ids
-            != expected_deactivated_chunks
-        ):
-            raise ValidationError("requirement withdrawal disagrees with direct plan")
-        direct_open = (
-            self.direct.plan_direct_open(event)
-            if event.direct_plan is not None
-            else M5DirectOpenPlan.empty()
-        )
+        is_d29_document_event = _is_m5_d29_legacy_document_event(event)
+        if is_d29_document_event != (event.direct_plan is not None):
+            raise ValidationError(
+                "D29 document routing disagrees with the typed direct plan"
+            )
+
+        if is_d29_document_event:
+            try:
+                requirement_withdrawal = (
+                    self.structural.plan_exact_requirement_withdrawal(event)
+                )
+            except _M5D29HydrationTerminalCutoff as signal:
+                return self._finish_d29_preopen_terminal_cutoff(
+                    event,
+                    trusted_structural_event_id,
+                    trusted_payload_hash,
+                    signal,
+                )
+        else:
+            requirement_withdrawal = self.structural.plan_exact_requirement_withdrawal(
+                event
+            )
+        self._validate_requirement_withdrawal(event, requirement_withdrawal)
+
+        if is_d29_document_event:
+            try:
+                direct_open = self.direct.plan_direct_open(event)
+            except _M5D29HydrationTerminalCutoff as signal:
+                return self._finish_d29_preopen_terminal_cutoff(
+                    event,
+                    trusted_structural_event_id,
+                    trusted_payload_hash,
+                    signal,
+                )
+        else:
+            direct_open = M5DirectOpenPlan.empty()
         if event.direct_plan is not None:
             if direct_open.withdrawal is None:
                 raise ValidationError("direct event lacks an exact M4 withdrawal")
@@ -954,8 +1018,34 @@ class M5TypedApplication:
             return self._finish_terminal_invocation(event, terminal)
 
         held_opened_snapshot = replace(opened)
-        revision = self.runtime_reads.current_revision(opened.epoch_id)
         call_work = M5RuntimeWork()
+        if is_d29_document_event and opened.replayed:
+            try:
+                hydrated_requirement_withdrawal = (
+                    self.structural.plan_exact_requirement_withdrawal(event)
+                )
+            except _M5D29HydrationTerminalCutoff as signal:
+                return self._finish_d29_post_open_terminal_cutoff(
+                    event,
+                    trusted_structural_event_id,
+                    trusted_payload_hash,
+                    opened,
+                    held_opened_snapshot,
+                    call_work,
+                    signal,
+                )
+            self._validate_requirement_withdrawal(
+                event, hydrated_requirement_withdrawal
+            )
+            requirement_withdrawal = hydrated_requirement_withdrawal
+            requirement_roots = self._requirement_roots(
+                event, manifest, requirement_withdrawal
+            )
+            root_set_hash = digests.requirement_root_set_digest(
+                declaration.job.logical_job_id for declaration in requirement_roots
+            )
+
+        revision = self.runtime_reads.current_revision(opened.epoch_id)
         if not opened.replayed:
             revision = self._append_transition_anchor(
                 M5TransitionTimingAnchor.build(
@@ -967,12 +1057,31 @@ class M5TypedApplication:
                 )
             )
 
-        direct_result = self.direct.run_pending_direct(
-            opened.epoch_id,
-            revision,
-            event,
-            opened,
-        )
+        if is_d29_document_event:
+            try:
+                direct_result = self.direct.run_pending_direct(
+                    opened.epoch_id,
+                    revision,
+                    event,
+                    opened,
+                )
+            except _M5D29HydrationTerminalCutoff as signal:
+                return self._finish_d29_post_open_terminal_cutoff(
+                    event,
+                    trusted_structural_event_id,
+                    trusted_payload_hash,
+                    opened,
+                    held_opened_snapshot,
+                    call_work,
+                    signal,
+                )
+        else:
+            direct_result = self.direct.run_pending_direct(
+                opened.epoch_id,
+                revision,
+                event,
+                opened,
+            )
         self._validate_direct_execution_receipt(direct_result)
         revision = direct_result.resulting_revision
         call_work = _sum_work(call_work, direct_result.call_work)
@@ -1206,6 +1315,123 @@ class M5TypedApplication:
         if sealed.state is M5RunState.SEALED and self.post_seal_audit is not None:
             self.post_seal_audit.audit_after_seal(event, sealed)
         return sealed
+
+    @staticmethod
+    def _validate_requirement_withdrawal(
+        event: M5TypedEventPlan,
+        withdrawal: M5RequirementWithdrawalPlan,
+    ) -> None:
+        if type(withdrawal) is not M5RequirementWithdrawalPlan:
+            raise ValidationError("requirement withdrawal plan must be exact")
+        replace(withdrawal)
+        if withdrawal.event_id != event.structural_event_id:
+            raise ValidationError("requirement withdrawal belongs to another event")
+        expected_deactivated_chunks = (
+            ()
+            if event.direct_plan is None
+            else event.direct_plan.deactivated_chunk_version_ids
+        )
+        if withdrawal.deactivated_chunk_version_ids != expected_deactivated_chunks:
+            raise ValidationError("requirement withdrawal disagrees with direct plan")
+
+    def _finish_d29_preopen_terminal_cutoff(
+        self,
+        event: M5TypedEventPlan,
+        trusted_structural_event_id: str,
+        trusted_payload_hash: str,
+        signal: _M5D29HydrationTerminalCutoff,
+    ) -> M5EventRunResult:
+        _validate_m5_d29_hydration_terminal_cutoff(signal)
+        _validate_m5_d29_trusted_event_binding(
+            event,
+            trusted_structural_event_id,
+            trusted_payload_hash,
+        )
+        terminal = self.runtime.read_typed_event_result(
+            trusted_structural_event_id,
+            trusted_payload_hash,
+        )
+        _validate_m5_d29_trusted_event_binding(
+            event,
+            trusted_structural_event_id,
+            trusted_payload_hash,
+        )
+        if terminal is None:
+            raise ValidationError(
+                "pre-open D29 hydration cutoff lacks a canonical terminal result"
+            )
+        self._validate_terminal_replay(event, terminal)
+        return self._finish_terminal_invocation(event, terminal)
+
+    def _finish_d29_post_open_terminal_cutoff(
+        self,
+        event: M5TypedEventPlan,
+        trusted_structural_event_id: str,
+        trusted_payload_hash: str,
+        opened: OpenEventReceipt,
+        held_opened_snapshot: OpenEventReceipt,
+        call_work: M5RuntimeWork,
+        signal: _M5D29HydrationTerminalCutoff,
+    ) -> M5EventRunResult:
+        _validate_m5_d29_hydration_terminal_cutoff(signal)
+        _validate_m5_d29_trusted_event_binding(
+            event,
+            trusted_structural_event_id,
+            trusted_payload_hash,
+        )
+        if (
+            type(held_opened_snapshot) is not OpenEventReceipt
+            or opened != held_opened_snapshot
+        ):
+            raise ValidationError(
+                "post-open D29 hydration cutoff changed its held open receipt"
+            )
+        trusted_opened_snapshot = replace(held_opened_snapshot)
+        self._validate_active_open_receipt(opened, trusted_opened_snapshot.epoch_id)
+        if opened.replayed is not True:
+            raise ValidationError(
+                "post-open D29 hydration cutoff requires an exact-existing receipt"
+            )
+        if type(call_work) is not M5RuntimeWork:
+            raise ValidationError(
+                "post-open D29 hydration cutoff requires exact call work"
+            )
+        _validate_exact_runtime_work(call_work)
+        canonical_zero = M5RuntimeWork()
+        if call_work != canonical_zero:
+            raise ValidationError(
+                "post-open D29 hydration cutoff requires canonical-zero call work"
+            )
+
+        terminal = self.runtime.read_typed_event_result(
+            trusted_structural_event_id,
+            trusted_payload_hash,
+        )
+        _validate_m5_d29_trusted_event_binding(
+            event,
+            trusted_structural_event_id,
+            trusted_payload_hash,
+        )
+        if terminal is None:
+            raise ValidationError(
+                "post-open D29 hydration cutoff lacks a canonical terminal result"
+            )
+        if (
+            opened != trusted_opened_snapshot
+            or held_opened_snapshot != trusted_opened_snapshot
+            or call_work != canonical_zero
+        ):
+            raise ValidationError(
+                "post-open D29 hydration cutoff changed held invocation state"
+            )
+        self._validate_active_open_receipt(opened, trusted_opened_snapshot.epoch_id)
+        _validate_exact_runtime_work(call_work)
+        return self._finish_active_terminal_projection(
+            event,
+            opened,
+            call_work,
+            terminal,
+        )
 
     @staticmethod
     def _require_acquisition_disposition(
