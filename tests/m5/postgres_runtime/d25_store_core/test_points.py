@@ -22,8 +22,6 @@ from groundloop.m5.runtime.contracts import (
 )
 from groundloop.m5.runtime.postgres_matching import (
     _authorize_checked_prefix,
-    apply_matching_transition,
-    derive_matching_transition_intent,
     effective_matching_edge,
     effective_matching_hall,
     effective_matching_image,
@@ -37,6 +35,10 @@ from groundloop.m5.runtime.postgres_matching import (
     resolved_matching_observation_point,
 )
 from tests.m5.postgres_runtime import test_migration_017 as schema_fixture
+from tests.m5.postgres_runtime.d25_store_core.conftest import (
+    authorize_and_derive_matching_transition,
+    prepare_stage_finalize_matching_transition,
+)
 
 
 class _RecordingCursor:
@@ -51,15 +53,15 @@ class _RecordingCursor:
 
 def _apply_empty(database: Any) -> None:
     with database.connection.cursor() as cursor:
-        intent = derive_matching_transition_intent(
+        intent = authorize_and_derive_matching_transition(
             cursor,
-            database.epoch_id,
-            1,
-            1,
-            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
-            database.event_id,
+            epoch_id=database.epoch_id,
+            expected_runtime_revision=1,
+            resulting_revision=1,
+            source_kind=M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
+            source_id=database.event_id,
         )
-        apply_matching_transition(cursor, intent)
+        prepare_stage_finalize_matching_transition(cursor, intent)
 
 
 def _authorize_read(database: Any) -> None:
@@ -144,15 +146,15 @@ def test_text_identities_preserve_leading_whitespace_without_normalization(
     assert database.policy_version.startswith("  ")
     assert database.event_id.startswith("  ")
     with database.connection.cursor() as cursor:
-        intent = derive_matching_transition_intent(
+        intent = authorize_and_derive_matching_transition(
             cursor,
-            database.epoch_id,
-            1,
-            1,
-            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
-            database.event_id,
+            epoch_id=database.epoch_id,
+            expected_runtime_revision=1,
+            resulting_revision=1,
+            source_kind=M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
+            source_id=database.event_id,
         )
-        receipt = apply_matching_transition(cursor, intent)
+        receipt = prepare_stage_finalize_matching_transition(cursor, intent)
         image = effective_matching_image(cursor, database.epoch_id)
     assert intent.source_id == database.event_id
     assert intent.decision_policy_version == database.policy_version
@@ -288,42 +290,136 @@ def test_future_working_revision_fails_before_any_physical_point_read(
     )
 
 
-def test_structural_derivation_locks_predecessor_before_target_runtime_and_source(
+def test_structural_prefix_precedes_one_authorizer_and_is_not_reacquired(
     empty_structural_database: Any,
 ) -> None:
     database = empty_structural_database
     with database.connection.cursor() as cursor:
         recording = _RecordingCursor(cursor)
-        intent = derive_matching_transition_intent(
+        intent = authorize_and_derive_matching_transition(
             recording,
-            database.epoch_id,
-            1,
-            1,
-            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
-            database.event_id,
+            epoch_id=database.epoch_id,
+            expected_runtime_revision=1,
+            resulting_revision=1,
+            source_kind=M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
+            source_id=database.event_id,
         )
     assert intent.before_epoch_id == database.base_epoch_id
-    epoch_prefix = next(
+    epoch_prefixes = tuple(
         index
         for index, statement in enumerate(recording.statements)
         if "WHERE epoch_id IN" in statement and "ORDER BY epoch_id" in statement
     )
-    runtime_prefix = next(
+    source_prefix = next(
+        index
+        for index, statement in enumerate(recording.statements)
+        if "FOR UPDATE OF epoch, runtime, typed_update, predecessor" in statement
+        and "current_image" not in statement
+    )
+    checked_prefix = next(
         index
         for index, statement in enumerate(recording.statements)
         if "groundloop_m5_authorize_checked_transition" in statement
     )
-    typed_update = next(
+    transition_authorizer = next(
         index
         for index, statement in enumerate(recording.statements)
-        if "SELECT epoch_id FROM groundloop_m5_update" in statement
+        if "groundloop_m5_authorize_persisted_matching_transition" in statement
     )
-    source = next(
+    current_image = next(
         index
         for index, statement in enumerate(recording.statements)
-        if "FOR UPDATE OF epoch, runtime, typed_update" in statement
+        if index > transition_authorizer
+        and "FROM groundloop_m5_matching_image_current" in statement
+        and "FOR UPDATE" in statement
     )
-    assert epoch_prefix < runtime_prefix < typed_update < source
+    assert len(epoch_prefixes) == 1
+    assert epoch_prefixes[0] < source_prefix < checked_prefix < transition_authorizer
+    assert transition_authorizer < current_image
+    assert (
+        sum(
+            "groundloop_m5_authorize_persisted_matching_transition" in statement
+            for statement in recording.statements
+        )
+        == 1
+    )
+    assert not any(
+        "SELECT epoch_id FROM groundloop_m5_update" in statement
+        or (
+            "FOR UPDATE OF epoch, runtime, typed_update" in statement
+            and index > transition_authorizer
+        )
+        for index, statement in enumerate(recording.statements)
+    )
+
+
+def test_nonempty_structural_derivation_locks_every_family_in_tier_order(
+    rich_retirement_planning_database: Any,
+) -> None:
+    database = rich_retirement_planning_database
+    with database.connection.cursor() as cursor:
+        recording = _RecordingCursor(cursor)
+        intent = authorize_and_derive_matching_transition(
+            recording,
+            epoch_id=database.epoch_id,
+            expected_runtime_revision=1,
+            resulting_revision=1,
+            source_kind=M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
+            source_id=database.event_id,
+            expected_source_identity_hash=database.payload_hash,
+        )
+    assert intent.observation_ids
+    assert intent.edge_keys
+    assert intent.mask_keys
+
+    authorizer = next(
+        index
+        for index, statement in enumerate(recording.statements)
+        if "groundloop_m5_authorize_persisted_matching_transition" in statement
+    )
+    ordered_relations = (
+        "groundloop_m5_matching_image_current",
+        "groundloop_m5_matching_image_working",
+        "groundloop_m5_matching_observation_current",
+        "groundloop_m5_matching_observation_working",
+        "groundloop_m5_matching_edge_current",
+        "groundloop_m5_matching_edge_working",
+        "groundloop_m5_matching_hash_mask_current",
+        "groundloop_m5_matching_hash_mask_working",
+        "groundloop_m5_matching_hall_current",
+        "groundloop_m5_matching_hall_working",
+        "groundloop_m5_published_requirement_state",
+        "groundloop_m5_working_requirement_state",
+        "groundloop_m5_published_group_state",
+        "groundloop_m5_working_group_state",
+        "groundloop_m5_published_group_certificate_binding",
+        "groundloop_m5_working_group_certificate_binding",
+        "groundloop_m5_published_claim_state",
+        "groundloop_m5_working_claim_state",
+        "groundloop_m5_published_claim_certificate_binding",
+        "groundloop_m5_working_claim_certificate_binding",
+        "groundloop_m5_claim_certificate_artifact",
+        "groundloop_m5_published_answer_state",
+        "groundloop_m5_working_answer_state",
+    )
+    lock_positions = tuple(
+        next(
+            index
+            for index, statement in enumerate(recording.statements)
+            if index > authorizer
+            and f"FROM {relation}" in statement
+            and "FOR UPDATE" in statement
+        )
+        for relation in ordered_relations
+    )
+    assert tuple(sorted(lock_positions)) == lock_positions
+    assert (
+        sum(
+            "groundloop_m5_authorize_persisted_matching_transition" in statement
+            for statement in recording.statements
+        )
+        == 1
+    )
 
 
 def test_point_locks_current_before_working_for_each_physical_key(

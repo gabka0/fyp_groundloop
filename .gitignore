@@ -17,6 +17,14 @@ build/
 # Local data, model weights, experiment products, and database volumes
 data/
 models/
+!/src/groundloop/m4/models/
+/src/groundloop/m4/models/*
+!/src/groundloop/m4/models/__init__.py
+!/src/groundloop/m4/models/config.py
+!/src/groundloop/m4/models/contracts.py
+!/src/groundloop/m4/models/embedding.py
+!/src/groundloop/m4/models/ports.py
+!/src/groundloop/m4/models/verification.py
 artifacts/
 results/
 postgres-data/

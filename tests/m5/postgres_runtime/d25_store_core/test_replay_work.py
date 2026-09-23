@@ -6,6 +6,7 @@ import hashlib
 from typing import Any
 
 import pytest
+from psycopg.errors import RaiseException
 
 from groundloop.errors import EventConflictError, ValidationError
 from groundloop.m5.incremental_overlay import M5OverlayWork
@@ -15,9 +16,59 @@ from groundloop.m5.runtime.postgres_matching import (
     _authorize_checked_prefix,
     apply_matching_transition,
     current_matching_work,
-    derive_matching_transition_intent,
 )
 from tests.m5.postgres_runtime import test_migration_017 as schema_fixture
+from tests.m5.postgres_runtime.d25_store_core.conftest import (
+    authorize_and_derive_matching_transition,
+    install_document_matching_foundation_retained_bytes,
+    prepare_stage_finalize_matching_transition,
+    retained_matching_replay_intent,
+)
+
+
+class _RecordingCursor:
+    def __init__(self, cursor: Any) -> None:
+        self.cursor = cursor
+        self.statements: list[str] = []
+
+    def execute(self, query: Any, params: Any = None) -> Any:
+        self.statements.append(str(query))
+        return self.cursor.execute(query, params)
+
+
+def _derive_first_application(cursor: Any, database: Any) -> Any:
+    return authorize_and_derive_matching_transition(
+        cursor,
+        epoch_id=database.epoch_id,
+        expected_runtime_revision=1,
+        resulting_revision=1,
+        source_kind=M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
+        source_id=database.event_id,
+    )
+
+
+def _derive_document_first_application(cursor: Any, database: Any) -> Any:
+    return authorize_and_derive_matching_transition(
+        cursor,
+        epoch_id=database.epoch_id,
+        expected_runtime_revision=1,
+        resulting_revision=1,
+        source_kind=M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
+        source_id=database.event_id,
+        expected_source_identity_hash=database.payload_hash,
+    )
+
+
+def _first_apply_and_replay_projection(cursor: Any, database: Any) -> tuple[Any, Any]:
+    intent = _derive_first_application(cursor, database)
+    receipt = prepare_stage_finalize_matching_transition(cursor, intent)
+    replay_intent = retained_matching_replay_intent(
+        cursor,
+        epoch_id=database.epoch_id,
+        source_kind=M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
+        source_id=database.event_id,
+    )
+    return receipt, replay_intent
 
 
 def _retained_image(connection: Any, epoch_id: int) -> tuple[tuple[Any, ...], ...]:
@@ -100,29 +151,12 @@ def test_exact_replay_returns_same_bytes_and_performs_zero_writes(
     database = empty_structural_database
     connection = database.connection
     with connection.cursor() as cursor:
-        intent = derive_matching_transition_intent(
-            cursor,
-            database.epoch_id,
-            1,
-            1,
-            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
-            database.event_id,
-        )
-        first = apply_matching_transition(cursor, intent)
+        first, replay_intent = _first_apply_and_replay_projection(cursor, database)
     connection.commit()
     before = _retained_image(connection, database.epoch_id)
     connection.commit()
 
     with connection.cursor() as cursor:
-        replay_intent = derive_matching_transition_intent(
-            cursor,
-            database.epoch_id,
-            1,
-            1,
-            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
-            database.event_id,
-            database.payload_hash,
-        )
         replay = apply_matching_transition(
             cursor,
             replay_intent,
@@ -146,30 +180,16 @@ def test_replay_compare_only_work_conflict_preserves_every_retained_row(
     database = empty_structural_database
     connection = database.connection
     with connection.cursor() as cursor:
-        intent = derive_matching_transition_intent(
-            cursor,
-            database.epoch_id,
-            1,
-            1,
-            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
-            database.event_id,
-        )
-        apply_matching_transition(cursor, intent)
+        _, replay_intent = _first_apply_and_replay_projection(cursor, database)
     connection.commit()
     before = _retained_image(connection, database.epoch_id)
     connection.commit()
 
     wrong_work = M5OverlayWork(matching=MatchingWorkCounters(output_bytes=72))
     with connection.cursor() as cursor:
-        replay_intent = derive_matching_transition_intent(
-            cursor,
-            database.epoch_id,
-            1,
-            1,
-            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
-            database.event_id,
-        )
-        with pytest.raises(EventConflictError, match="computed matching work"):
+        with pytest.raises(
+            EventConflictError, match="matching replay differs from expected work"
+        ):
             apply_matching_transition(cursor, replay_intent, expected_work=wrong_work)
     connection.rollback()
     assert _retained_image(connection, database.epoch_id) == before
@@ -184,8 +204,8 @@ def test_replay_compare_only_work_conflict_preserves_every_retained_row(
             UPDATE groundloop_m5_matching_patch_artifact
             SET canonical_patch_preimage = canonical_patch_preimage || E'\\\\x00'::bytea
             """,
-            EventConflictError,
-            "retained patch bytes",
+            ValidationError,
+            "retained matching outer patch digest changed",
         ),
         (
             "groundloop_m5_matching_work_contribution",
@@ -218,15 +238,7 @@ def test_replay_validates_all_retained_byte_classes_before_return(
     database = empty_structural_database
     connection = database.connection
     with connection.cursor() as cursor:
-        intent = derive_matching_transition_intent(
-            cursor,
-            database.epoch_id,
-            1,
-            1,
-            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
-            database.event_id,
-        )
-        apply_matching_transition(cursor, intent)
+        _, replay_intent = _first_apply_and_replay_projection(cursor, database)
     connection.commit()
     with schema_fixture._b3_user_triggers_disabled(connection, table):
         connection.execute(statement)
@@ -234,14 +246,6 @@ def test_replay_validates_all_retained_byte_classes_before_return(
     retained = _retained_image(connection, database.epoch_id)
 
     with connection.cursor() as cursor:
-        replay_intent = derive_matching_transition_intent(
-            cursor,
-            database.epoch_id,
-            1,
-            1,
-            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
-            database.event_id,
-        )
         with pytest.raises(error, match=message):
             apply_matching_transition(cursor, replay_intent)
     connection.rollback()
@@ -249,23 +253,48 @@ def test_replay_validates_all_retained_byte_classes_before_return(
 
 
 @pytest.mark.parametrize(
-    "statement",
+    ("statement", "message"),
     (
-        "UPDATE groundloop_m5_matching_patch_artifact SET source_id=source_id || '-x'",
-        "UPDATE groundloop_m5_matching_patch_artifact "
-        "SET source_identity_hash=repeat('0',64)::char(64)",
-        "UPDATE groundloop_m5_matching_patch_artifact "
-        "SET before_epoch_id=resulting_epoch_id",
-        "UPDATE groundloop_m5_matching_patch_artifact "
-        "SET before_revision=before_revision+1",
-        "UPDATE groundloop_m5_matching_patch_artifact "
-        "SET resulting_epoch_id=before_epoch_id",
-        "UPDATE groundloop_m5_matching_patch_artifact "
-        "SET group_shape_set_digest=repeat('0',64)::char(64)",
-        "UPDATE groundloop_m5_matching_patch_artifact "
-        "SET logical_overlay_patch_digest=repeat('0',64)::char(64)",
-        "UPDATE groundloop_m5_matching_patch_artifact "
-        "SET matching_work_digest=repeat('0',64)::char(64)",
+        (
+            "UPDATE groundloop_m5_matching_patch_artifact "
+            "SET source_id=source_id || '-x'",
+            "retained matching outer patch digest changed",
+        ),
+        (
+            "UPDATE groundloop_m5_matching_patch_artifact "
+            "SET source_identity_hash=repeat('0',64)::char(64)",
+            "retained matching outer patch digest changed",
+        ),
+        (
+            "UPDATE groundloop_m5_matching_patch_artifact "
+            "SET before_epoch_id=resulting_epoch_id",
+            "retained matching outer patch digest changed",
+        ),
+        (
+            "UPDATE groundloop_m5_matching_patch_artifact "
+            "SET before_revision=before_revision+1",
+            "retained matching outer patch digest changed",
+        ),
+        (
+            "UPDATE groundloop_m5_matching_patch_artifact "
+            "SET resulting_epoch_id=before_epoch_id",
+            "retained matching outer patch digest changed",
+        ),
+        (
+            "UPDATE groundloop_m5_matching_patch_artifact "
+            "SET group_shape_set_digest=repeat('0',64)::char(64)",
+            "retained matching group-shape digest changed",
+        ),
+        (
+            "UPDATE groundloop_m5_matching_patch_artifact "
+            "SET logical_overlay_patch_digest=repeat('0',64)::char(64)",
+            "retained logical patch digest changed",
+        ),
+        (
+            "UPDATE groundloop_m5_matching_patch_artifact "
+            "SET matching_work_digest=repeat('0',64)::char(64)",
+            "retained matching outer patch digest changed",
+        ),
     ),
     ids=(
         "source-id",
@@ -279,64 +308,86 @@ def test_replay_validates_all_retained_byte_classes_before_return(
     ),
 )
 def test_replay_validates_every_mutable_artifact_scalar(
-    empty_structural_database: Any, statement: str
+    empty_structural_database: Any, statement: str, message: str
 ) -> None:
     database = empty_structural_database
     connection = database.connection
     with connection.cursor() as cursor:
-        intent = derive_matching_transition_intent(
-            cursor,
-            database.epoch_id,
-            1,
-            1,
-            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
-            database.event_id,
-        )
-        apply_matching_transition(cursor, intent)
+        _, replay_intent = _first_apply_and_replay_projection(cursor, database)
     connection.commit()
     with schema_fixture._b3_user_triggers_disabled(
         connection, "groundloop_m5_matching_patch_artifact"
     ):
         connection.execute(statement)
     connection.commit()
+    retained = _retained_image(connection, database.epoch_id)
 
     with connection.cursor() as cursor:
-        replay_intent = derive_matching_transition_intent(
-            cursor,
-            database.epoch_id,
-            1,
-            1,
-            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
-            database.event_id,
-        )
-        with pytest.raises(EventConflictError, match="retained patch bytes"):
+        with pytest.raises(ValidationError, match=message):
             apply_matching_transition(cursor, replay_intent)
+    connection.rollback()
+    assert _retained_image(connection, database.epoch_id) == retained
 
 
 @pytest.mark.parametrize(
-    "statement",
+    ("statement", "error", "message"),
     (
-        "UPDATE groundloop_m5_matching_patch_artifact "
-        "SET group_shape_set_preimage=group_shape_set_preimage || decode('00','hex')",
-        "UPDATE groundloop_m5_matching_patch_artifact SET "
-        "observation_change_digests=ARRAY[repeat('0',64)::char(64)], "
-        "observation_change_preimages=ARRAY[decode('00','hex')]",
-        "UPDATE groundloop_m5_matching_patch_artifact SET "
-        "edge_change_digests=ARRAY[repeat('0',64)::char(64)], "
-        "edge_change_preimages=ARRAY[decode('00','hex')]",
-        "UPDATE groundloop_m5_matching_patch_artifact SET "
-        "mask_change_digests=ARRAY[repeat('0',64)::char(64)], "
-        "mask_change_preimages=ARRAY[decode('00','hex')]",
-        "UPDATE groundloop_m5_matching_patch_artifact SET "
-        "hall_change_digests=ARRAY[repeat('0',64)::char(64)], "
-        "hall_change_preimages=ARRAY[decode('00','hex')]",
-        "UPDATE groundloop_m5_matching_patch_artifact SET "
-        "logical_overlay_patch_preimage="
-        "logical_overlay_patch_preimage || decode('00','hex')",
-        "UPDATE groundloop_m5_matching_patch_artifact SET "
-        "logical_output_preimage=logical_output_preimage || decode('00','hex')",
-        "UPDATE groundloop_m5_matching_patch_artifact SET "
-        "canonical_patch_preimage=canonical_patch_preimage || decode('00','hex')",
+        (
+            "UPDATE groundloop_m5_matching_patch_artifact "
+            "SET group_shape_set_preimage="
+            "group_shape_set_preimage || decode('00','hex')",
+            RaiseException,
+            "truncated persisted-matching frame length",
+        ),
+        (
+            "UPDATE groundloop_m5_matching_patch_artifact SET "
+            "observation_change_digests=ARRAY[repeat('0',64)::char(64)], "
+            "observation_change_preimages=ARRAY[decode('00','hex')]",
+            ValidationError,
+            "retained matching child digest changed",
+        ),
+        (
+            "UPDATE groundloop_m5_matching_patch_artifact SET "
+            "edge_change_digests=ARRAY[repeat('0',64)::char(64)], "
+            "edge_change_preimages=ARRAY[decode('00','hex')]",
+            ValidationError,
+            "retained matching child digest changed",
+        ),
+        (
+            "UPDATE groundloop_m5_matching_patch_artifact SET "
+            "mask_change_digests=ARRAY[repeat('0',64)::char(64)], "
+            "mask_change_preimages=ARRAY[decode('00','hex')]",
+            ValidationError,
+            "retained matching child digest changed",
+        ),
+        (
+            "UPDATE groundloop_m5_matching_patch_artifact SET "
+            "hall_change_digests=ARRAY[repeat('0',64)::char(64)], "
+            "hall_change_preimages=ARRAY[decode('00','hex')]",
+            ValidationError,
+            "retained matching child digest changed",
+        ),
+        (
+            "UPDATE groundloop_m5_matching_patch_artifact SET "
+            "logical_overlay_patch_preimage="
+            "logical_overlay_patch_preimage || decode('00','hex')",
+            RaiseException,
+            "truncated persisted-matching frame length",
+        ),
+        (
+            "UPDATE groundloop_m5_matching_patch_artifact SET "
+            "logical_output_preimage="
+            "logical_output_preimage || decode('00','hex')",
+            RaiseException,
+            "logical tuple trailing byte",
+        ),
+        (
+            "UPDATE groundloop_m5_matching_patch_artifact SET "
+            "canonical_patch_preimage="
+            "canonical_patch_preimage || decode('00','hex')",
+            ValidationError,
+            "retained matching outer patch digest changed",
+        ),
     ),
     ids=(
         "group-shape-preimage",
@@ -350,38 +401,28 @@ def test_replay_validates_every_mutable_artifact_scalar(
     ),
 )
 def test_replay_validates_every_artifact_child_and_preimage(
-    empty_structural_database: Any, statement: str
+    empty_structural_database: Any,
+    statement: str,
+    error: type[Exception],
+    message: str,
 ) -> None:
     database = empty_structural_database
     connection = database.connection
     with connection.cursor() as cursor:
-        intent = derive_matching_transition_intent(
-            cursor,
-            database.epoch_id,
-            1,
-            1,
-            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
-            database.event_id,
-        )
-        apply_matching_transition(cursor, intent)
+        _, replay_intent = _first_apply_and_replay_projection(cursor, database)
     connection.commit()
     with schema_fixture._b3_user_triggers_disabled(
         connection, "groundloop_m5_matching_patch_artifact"
     ):
         connection.execute(statement)
     connection.commit()
+    retained = _retained_image(connection, database.epoch_id)
 
     with connection.cursor() as cursor:
-        replay_intent = derive_matching_transition_intent(
-            cursor,
-            database.epoch_id,
-            1,
-            1,
-            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
-            database.event_id,
-        )
-        with pytest.raises(EventConflictError, match="retained patch bytes"):
+        with pytest.raises(error, match=message):
             apply_matching_transition(cursor, replay_intent)
+    connection.rollback()
+    assert _retained_image(connection, database.epoch_id) == retained
 
 
 def test_replay_rejects_artifact_decision_policy_scalar_corruption(
@@ -390,15 +431,7 @@ def test_replay_rejects_artifact_decision_policy_scalar_corruption(
     database = empty_structural_database
     connection = database.connection
     with connection.cursor() as cursor:
-        intent = derive_matching_transition_intent(
-            cursor,
-            database.epoch_id,
-            1,
-            1,
-            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
-            database.event_id,
-        )
-        apply_matching_transition(cursor, intent)
+        _, replay_intent = _first_apply_and_replay_projection(cursor, database)
     connection.commit()
     boundary_id = f"{database.event_id}-artifact-policy-boundary"
     boundary = connection.execute(
@@ -431,18 +464,15 @@ def test_replay_rejects_artifact_decision_policy_scalar_corruption(
             (alternate_policy,),
         )
     connection.commit()
+    retained = _retained_image(connection, database.epoch_id)
 
     with connection.cursor() as cursor:
-        replay_intent = derive_matching_transition_intent(
-            cursor,
-            database.epoch_id,
-            1,
-            1,
-            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
-            database.event_id,
-        )
-        with pytest.raises(EventConflictError, match="retained patch bytes"):
+        with pytest.raises(
+            ValidationError, match="retained matching outer patch digest changed"
+        ):
             apply_matching_transition(cursor, replay_intent)
+    connection.rollback()
+    assert _retained_image(connection, database.epoch_id) == retained
 
 
 def test_replay_rejects_artifact_patch_digest_key_corruption(
@@ -451,15 +481,7 @@ def test_replay_rejects_artifact_patch_digest_key_corruption(
     database = empty_structural_database
     connection = database.connection
     with connection.cursor() as cursor:
-        intent = derive_matching_transition_intent(
-            cursor,
-            database.epoch_id,
-            1,
-            1,
-            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
-            database.event_id,
-        )
-        apply_matching_transition(cursor, intent)
+        _, replay_intent = _first_apply_and_replay_projection(cursor, database)
     connection.commit()
     with schema_fixture._d26_replica_trigger_window(connection):
         connection.execute(
@@ -467,73 +489,47 @@ def test_replay_rejects_artifact_patch_digest_key_corruption(
             "SET patch_digest=repeat('0',64)::char(64)"
         )
     connection.commit()
+    retained = _retained_image(connection, database.epoch_id)
 
     with connection.cursor() as cursor:
-        replay_intent = derive_matching_transition_intent(
-            cursor,
-            database.epoch_id,
-            1,
-            1,
-            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
-            database.event_id,
-        )
         with pytest.raises(EventConflictError, match="lacks its retained patch"):
             apply_matching_transition(cursor, replay_intent)
+    connection.rollback()
+    assert _retained_image(connection, database.epoch_id) == retained
 
 
 @pytest.mark.parametrize(
-    ("statement", "message"),
+    "statement",
     (
-        (
-            "UPDATE groundloop_m5_matching_image_working SET base_epoch_id=epoch_id",
-            "current image point|image policy|image bytes",
-        ),
-        (
-            "UPDATE groundloop_m5_matching_image_working "
-            "SET base_revision=base_revision+1",
-            "image policy|image bytes",
-        ),
-        (
-            "UPDATE groundloop_m5_matching_image_working "
-            "SET updated_revision=updated_revision+1",
-            "image bytes",
-        ),
+        "UPDATE groundloop_m5_matching_image_working SET base_epoch_id=epoch_id",
+        "UPDATE groundloop_m5_matching_image_working SET base_revision=base_revision+1",
+        "UPDATE groundloop_m5_matching_image_working "
+        "SET updated_revision=updated_revision+1",
     ),
     ids=("base-epoch", "base-revision", "updated-revision"),
 )
 def test_replay_rejects_corrupted_working_image_scalars(
-    empty_structural_database: Any, statement: str, message: str
+    empty_structural_database: Any, statement: str
 ) -> None:
     database = empty_structural_database
     connection = database.connection
     with connection.cursor() as cursor:
-        intent = derive_matching_transition_intent(
-            cursor,
-            database.epoch_id,
-            1,
-            1,
-            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
-            database.event_id,
-        )
-        apply_matching_transition(cursor, intent)
+        _, replay_intent = _first_apply_and_replay_projection(cursor, database)
     connection.commit()
     with schema_fixture._b3_user_triggers_disabled(
         connection, "groundloop_m5_matching_image_working"
     ):
         connection.execute(statement)
     connection.commit()
+    retained = _retained_image(connection, database.epoch_id)
 
     with connection.cursor() as cursor:
-        replay_intent = derive_matching_transition_intent(
-            cursor,
-            database.epoch_id,
-            1,
-            1,
-            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
-            database.event_id,
-        )
-        with pytest.raises((EventConflictError, ValidationError), match=message):
+        with pytest.raises(
+            ValidationError, match="persisted matching work envelope is inconsistent"
+        ):
             apply_matching_transition(cursor, replay_intent)
+    connection.rollback()
+    assert _retained_image(connection, database.epoch_id) == retained
 
 
 def test_replay_rejects_accumulator_updated_revision_corruption(
@@ -542,15 +538,7 @@ def test_replay_rejects_accumulator_updated_revision_corruption(
     database = empty_structural_database
     connection = database.connection
     with connection.cursor() as cursor:
-        intent = derive_matching_transition_intent(
-            cursor,
-            database.epoch_id,
-            1,
-            1,
-            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
-            database.event_id,
-        )
-        apply_matching_transition(cursor, intent)
+        _, replay_intent = _first_apply_and_replay_projection(cursor, database)
     connection.commit()
     with schema_fixture._b3_user_triggers_disabled(
         connection, "groundloop_m5_matching_work_accumulator"
@@ -560,18 +548,13 @@ def test_replay_rejects_accumulator_updated_revision_corruption(
             "SET updated_revision=updated_revision+1"
         )
     connection.commit()
+    retained = _retained_image(connection, database.epoch_id)
 
     with connection.cursor() as cursor:
-        replay_intent = derive_matching_transition_intent(
-            cursor,
-            database.epoch_id,
-            1,
-            1,
-            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
-            database.event_id,
-        )
         with pytest.raises(ValidationError, match="accumulator revision"):
             apply_matching_transition(cursor, replay_intent)
+    connection.rollback()
+    assert _retained_image(connection, database.epoch_id) == retained
 
 
 def test_current_matching_work_reads_the_digest_checked_retained_accumulator(
@@ -579,15 +562,8 @@ def test_current_matching_work_reads_the_digest_checked_retained_accumulator(
 ) -> None:
     database = empty_structural_database
     with database.connection.cursor() as cursor:
-        intent = derive_matching_transition_intent(
-            cursor,
-            database.epoch_id,
-            1,
-            1,
-            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
-            database.event_id,
-        )
-        receipt = apply_matching_transition(cursor, intent)
+        intent = _derive_first_application(cursor, database)
+        receipt = prepare_stage_finalize_matching_transition(cursor, intent)
         retained = current_matching_work(cursor, database.epoch_id)
     assert retained == receipt.accumulated_work
     assert retained.matching.output_bytes == 71
@@ -598,15 +574,8 @@ def test_current_matching_work_requires_the_exact_checked_image_scope(
 ) -> None:
     database = empty_structural_database
     with database.connection.cursor() as cursor:
-        intent = derive_matching_transition_intent(
-            cursor,
-            database.epoch_id,
-            1,
-            1,
-            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
-            database.event_id,
-        )
-        apply_matching_transition(cursor, intent)
+        intent = _derive_first_application(cursor, database)
+        prepare_stage_finalize_matching_transition(cursor, intent)
     database.connection.commit()
 
     with database.connection.cursor() as cursor:
@@ -620,15 +589,8 @@ def test_current_matching_work_rejects_an_incoherent_nonterminal_header(
     database = empty_structural_database
     connection = database.connection
     with connection.cursor() as cursor:
-        intent = derive_matching_transition_intent(
-            cursor,
-            database.epoch_id,
-            1,
-            1,
-            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
-            database.event_id,
-        )
-        apply_matching_transition(cursor, intent)
+        intent = _derive_first_application(cursor, database)
+        prepare_stage_finalize_matching_transition(cursor, intent)
     connection.commit()
     with schema_fixture._d26_replica_trigger_window(connection):
         connection.execute(
@@ -655,15 +617,8 @@ def test_current_matching_work_reads_a_retained_failed_epoch_after_head_advance(
     database = empty_structural_database
     connection = database.connection
     with connection.cursor() as cursor:
-        intent = derive_matching_transition_intent(
-            cursor,
-            database.epoch_id,
-            1,
-            1,
-            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
-            database.event_id,
-        )
-        receipt = apply_matching_transition(cursor, intent)
+        intent = _derive_first_application(cursor, database)
+        receipt = prepare_stage_finalize_matching_transition(cursor, intent)
     connection.commit()
     with schema_fixture._d26_replica_trigger_window(connection):
         connection.execute(
@@ -702,15 +657,8 @@ def test_current_matching_work_reads_a_retained_sealed_epoch_after_head_advance(
     database = empty_structural_database
     connection = database.connection
     with connection.cursor() as cursor:
-        intent = derive_matching_transition_intent(
-            cursor,
-            database.epoch_id,
-            1,
-            1,
-            M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
-            database.event_id,
-        )
-        receipt = apply_matching_transition(cursor, intent)
+        intent = _derive_first_application(cursor, database)
+        receipt = prepare_stage_finalize_matching_transition(cursor, intent)
     connection.commit()
     with schema_fixture._d26_replica_trigger_window(connection):
         connection.execute(
@@ -762,3 +710,60 @@ def test_current_matching_work_reads_a_retained_sealed_epoch_after_head_advance(
         )
         retained = current_matching_work(cursor, database.epoch_id)
     assert retained == receipt.accumulated_work
+
+
+def test_committed_nonterminal_document_replay_uses_only_retained_changed_key_bytes(
+    document_withdrawal_planning_database: Any,
+) -> None:
+    database = document_withdrawal_planning_database
+    connection = database.connection
+    with connection.cursor() as cursor:
+        intent = _derive_document_first_application(cursor, database)
+        # Foundation-only retained-byte setup; not D28/C1 application evidence.
+        first = install_document_matching_foundation_retained_bytes(cursor, intent)
+        replay_intent = retained_matching_replay_intent(
+            cursor,
+            epoch_id=database.epoch_id,
+            source_kind=M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
+            source_id=database.event_id,
+        )
+    connection.commit()
+    before = _retained_image(connection, database.epoch_id)
+    connection.commit()
+
+    # Legal terminalized later-head replay remains C1/D combined acceptance.
+    with connection.cursor() as raw_cursor:
+        cursor = _RecordingCursor(raw_cursor)
+        replay = apply_matching_transition(
+            cursor,
+            replay_intent,
+            expected_patch_digest=first.patch.patch_digest,
+            expected_work=first.accumulated_work,
+        )
+        statements = tuple(cursor.statements)
+    connection.commit()
+
+    assert replay.exact_replay
+    assert replay.patch == first.patch
+    assert replay.contribution_digest == first.contribution_digest
+    assert replay.accumulated_work == first.accumulated_work
+    assert _retained_image(connection, database.epoch_id) == before
+    assert all(
+        not statement.lstrip().upper().startswith(("INSERT ", "UPDATE ", "DELETE "))
+        for statement in statements
+    )
+    forbidden_live_sources = (
+        "groundloop_m4_structural_deactivation",
+        "groundloop_observation_currency",
+        "groundloop_published_observation_currency",
+        "groundloop_m5_requirement_admitted_pair",
+        "groundloop_m5_matching_observation_current",
+        "groundloop_m5_matching_edge_current",
+        "groundloop_m5_matching_hash_mask_current",
+        "groundloop_m5_matching_hall_current",
+    )
+    assert not any(
+        relation in statement
+        for relation in forbidden_live_sources
+        for statement in statements
+    )
