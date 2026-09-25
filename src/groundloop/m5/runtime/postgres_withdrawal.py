@@ -11,8 +11,10 @@ from __future__ import annotations
 import hashlib
 import struct
 from collections.abc import Iterable
+from copy import deepcopy
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime
+from enum import StrEnum
 from types import UnionType
 from typing import Any, TypeVar, cast, get_args, get_origin, get_type_hints
 
@@ -38,6 +40,7 @@ from groundloop.domain import (
     StatusDelta,
     SubjectKind,
     VerificationLabel,
+    normalized_text_hash,
 )
 from groundloop.errors import EventConflictError, ValidationError
 from groundloop.events import (
@@ -196,6 +199,15 @@ _ALL_JOB_STATES = (
 _NONTERMINAL_JOB_STATES = ("declared", "running", "retryable_failed")
 _D29_SCOPE_RESERVATION_NAMESPACE = 1_146_242_387  # signed int32 for b"D29S"
 _D29_JOB_RESERVATION_NAMESPACE = 1_146_242_378  # signed int32 for b"D29J"
+_D29_NORMALIZER_ID = "m5-normalize-text-v1"
+_D29_NORMALIZER_PROVENANCE_HASH = (
+    "d91b94f256f79c6bc7b29fafa41c7a608b90c17bd479b29a64be00fa538c49fb"
+)
+
+
+class _DocumentOpenPhase(StrEnum):
+    LOCATORS_GATHERED = "locators_gathered"
+    CONSUMED = "consumed"
 
 
 def _c_key(value: str) -> bytes:
@@ -440,6 +452,89 @@ class _DocumentClosure:
     direct_fallback_claim_ids: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _D29DocumentOpenBinding:
+    """Identity of the one cursor and outer transaction owning D29 authority."""
+
+    cursor_object_identity: int
+    backend_identity: int
+    transaction_identity: int
+    session_role: str
+    epoch_id: int
+    structural_event_id: str
+    source_identity_hash: str
+    predecessor_epoch_id: int
+    source_chunks: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _D29DirectClaimBeforeImage:
+    """Pre-tier-8 point image for one claim with withdrawn current evidence."""
+
+    claim_id: str
+    answer_version_id: str
+    required: bool
+    support_count: int
+    refute_count: int
+    best_support_score: float | None
+    best_refute_score: float | None
+    supporting_observation_ids: tuple[str, ...]
+    refuting_observation_ids: tuple[str, ...]
+    status: str
+    certificate_digest: str
+    state_valid_from_epoch: int
+    materialized_updated_epoch: int
+    materialized_updated_revision: int
+    certificate_support_observation_id: str | None
+    certificate_refute_observation_id: str | None
+    certificate_repaired_epoch: int
+    certificate_repaired_revision: int
+    withdrawn_observation_ids: tuple[str, ...]
+    remaining_support_observation_ids: tuple[str, ...]
+    remaining_refute_observation_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _D29DirectAnswerBeforeImage:
+    """Pre-tier-8 point image for one affected direct claim's answer."""
+
+    answer_version_id: str
+    required_claim_count: int
+    supported_count: int
+    unsupported_count: int
+    refuted_count: int
+    conflicted_count: int
+    status: str
+
+
+@dataclass(frozen=True, slots=True)
+class _D29DirectMatchingAuthoritySnapshot:
+    """Deep immutable self-image of cursor-local direct matching authority."""
+
+    snapshot_identity: int
+    binding: _D29DocumentOpenBinding
+    authority_identity: int
+    claim_before_images: tuple[_D29DirectClaimBeforeImage, ...]
+    answer_before_images: tuple[_D29DirectAnswerBeforeImage, ...]
+    withdrawn_observations: tuple[SemanticObservation, ...]
+    remaining_observations: tuple[SemanticObservation, ...]
+    observation_text_hashes: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _D29DirectMatchingAuthority:
+    """Locked D29/D30 direct-state evidence passed only to private D25 code."""
+
+    binding: _D29DocumentOpenBinding
+    authority_identity: int
+    claim_before_images: tuple[_D29DirectClaimBeforeImage, ...]
+    answer_before_images: tuple[_D29DirectAnswerBeforeImage, ...]
+    withdrawn_observations: tuple[SemanticObservation, ...]
+    remaining_observations: tuple[SemanticObservation, ...]
+    observation_text_hashes: tuple[tuple[str, str], ...]
+    authority_snapshot: _D29DirectMatchingAuthoritySnapshot | None = None
+
+
 def _load_candidate_policy(row: tuple[object, ...]) -> M5CandidatePolicyManifest:
     return M5CandidatePolicyManifest(
         candidate_policy_id=_strip(row[0]),
@@ -632,10 +727,15 @@ def _load_direct_candidate_policy(
 
 
 def _read_existing_document_closure(
-    cursor: Cursor[Any], event: M5TypedEventPlan
+    cursor: Cursor[Any],
+    event: M5TypedEventPlan,
+    *,
+    allow_missing_event_snapshots: bool = False,
 ) -> _DocumentClosure | None:
     """Read only event-local closure; never reconstruct the legacy payload."""
 
+    if type(allow_missing_event_snapshots) is not bool:
+        raise ValidationError("snapshot-read mode must be an exact boolean")
     checked = _document_event(event)
     row = cursor.execute(
         """
@@ -709,9 +809,14 @@ def _read_existing_document_closure(
         raise EventConflictError(
             "document event ID is already bound to another locked payload hash"
         )
-    # LEFT JOINs are intentional: any absent sidecar must conflict here rather
-    # than silently becoming an absent-event preview.
-    if any(row[index] is None for index in range(6, 48)):
+    # LEFT JOINs are intentional: every sidecar except the two content-addressed
+    # snapshot headers must already exist.  The private D29 prepare phase alone
+    # runs immediately before C1's tier-8 snapshot step, so it may tolerate
+    # either header being absent.  Every retained caller remains strict.
+    if any(row[index] is None for index in range(6, 46)) or (
+        not allow_missing_event_snapshots
+        and any(row[index] is None for index in (46, 47))
+    ):
         raise EventConflictError("existing document event lacks its typed closure")
     expected_kinds = {
         InsertDocumentEvent: ("document_insert", "insert"),
@@ -728,6 +833,10 @@ def _read_existing_document_closure(
     assert direct is not None
     expected_registry_count = len(checked.requirement_registry_snapshot.entries)
     expected_chunk_count = len(checked.active_chunk_snapshot.entries)
+    registry_count_matches = row[46] is not None and (
+        int(row[46]) == expected_registry_count
+    )
+    chunk_count_matches = row[47] is not None and (int(row[47]) == expected_chunk_count)
     if (
         row[3] not in {"committed", "failed"}
         or row[6] != typed_kind
@@ -753,8 +862,14 @@ def _read_existing_document_closure(
         or _strip(row[17])
         != checked.requirement_registry_snapshot.requirement_registry_snapshot_digest
         or _strip(row[18]) != checked.active_chunk_snapshot.active_chunk_snapshot_digest
-        or int(row[46]) != expected_registry_count
-        or int(row[47]) != expected_chunk_count
+        or (
+            not registry_count_matches
+            and not (allow_missing_event_snapshots and row[46] is None)
+        )
+        or (
+            not chunk_count_matches
+            and not (allow_missing_event_snapshots and row[47] is None)
+        )
     ):
         raise EventConflictError("existing document typed closure is inconsistent")
     runtime_state = str(row[21])
@@ -829,6 +944,113 @@ def _read_existing_document_closure(
         direct_scope_root_job_ids=manifest_scopes,
         direct_fallback_claim_ids=manifest_fallback,
     )
+
+
+def _validate_d29_event_snapshot_image(
+    cursor: Cursor[Any],
+    event: M5TypedEventPlan,
+    closure: _DocumentClosure,
+) -> None:
+    """Validate both exact new-event snapshot images before tier-8 locking."""
+
+    requirement = event.requirement_registry_snapshot
+    requirement_header = cursor.execute(
+        """
+        SELECT requirement_registry_snapshot_digest, requirement_count,
+               created_epoch_id, created_at
+        FROM groundloop_m5_requirement_registry_snapshot
+        WHERE requirement_registry_snapshot_digest = %s
+        """,
+        (requirement.requirement_registry_snapshot_digest,),
+    ).fetchone()
+    if (
+        requirement_header is None
+        or _strip(requirement_header[0])
+        != requirement.requirement_registry_snapshot_digest
+        or type(requirement_header[1]) is not int
+        or int(requirement_header[1]) != requirement.requirement_count
+        or type(requirement_header[2]) is not int
+        or not 0 < int(requirement_header[2]) <= closure.epoch_id
+        or not isinstance(requirement_header[3], datetime)
+    ):
+        raise EventConflictError("D29 requirement snapshot header changed")
+    requirement_rows = tuple(
+        (
+            int(row[0]),
+            str(row[1]),
+            str(row[2]),
+            str(row[3]),
+            str(row[4]),
+            str(row[5]),
+            _strip(row[6]),
+        )
+        for row in cursor.execute(
+            """
+            SELECT member_ordinal, requirement_version_id, group_version_id,
+                   group_family_id, owner_claim_id,
+                   normalized_requirement_text, requirement_text_hash
+            FROM groundloop_m5_requirement_registry_snapshot_member
+            WHERE requirement_registry_snapshot_digest = %s
+            ORDER BY member_ordinal
+            """,
+            (requirement.requirement_registry_snapshot_digest,),
+        ).fetchall()
+    )
+    expected_requirement_rows = tuple(
+        (
+            ordinal,
+            entry.requirement_version_id,
+            entry.group_version_id,
+            entry.group_family_id,
+            entry.owner_claim_id,
+            entry.normalized_requirement_text,
+            entry.requirement_text_hash,
+        )
+        for ordinal, entry in enumerate(requirement.entries)
+    )
+    if requirement_rows != expected_requirement_rows:
+        raise EventConflictError("D29 requirement snapshot members changed")
+
+    chunks = event.active_chunk_snapshot
+    chunk_header = cursor.execute(
+        """
+        SELECT active_chunk_snapshot_digest, chunk_count, created_epoch_id,
+               normalizer_id, normalizer_provenance_hash, created_at
+        FROM groundloop_m5_active_chunk_snapshot
+        WHERE active_chunk_snapshot_digest = %s
+        """,
+        (chunks.active_chunk_snapshot_digest,),
+    ).fetchone()
+    if (
+        chunk_header is None
+        or _strip(chunk_header[0]) != chunks.active_chunk_snapshot_digest
+        or type(chunk_header[1]) is not int
+        or int(chunk_header[1]) != chunks.chunk_count
+        or type(chunk_header[2]) is not int
+        or not 0 < int(chunk_header[2]) <= closure.epoch_id
+        or str(chunk_header[3]) != _D29_NORMALIZER_ID
+        or _strip(chunk_header[4]) != _D29_NORMALIZER_PROVENANCE_HASH
+        or not isinstance(chunk_header[5], datetime)
+    ):
+        raise EventConflictError("D29 active-chunk snapshot header changed")
+    chunk_rows = tuple(
+        (int(row[0]), str(row[1]), _strip(row[2]))
+        for row in cursor.execute(
+            """
+            SELECT member_ordinal, chunk_version_id, text_hash
+            FROM groundloop_m5_active_chunk_snapshot_member
+            WHERE active_chunk_snapshot_digest = %s
+            ORDER BY member_ordinal
+            """,
+            (chunks.active_chunk_snapshot_digest,),
+        ).fetchall()
+    )
+    expected_chunk_rows = tuple(
+        (ordinal, entry.chunk_version_id, entry.text_hash)
+        for ordinal, entry in enumerate(chunks.entries)
+    )
+    if chunk_rows != expected_chunk_rows:
+        raise EventConflictError("D29 active-chunk snapshot members changed")
 
 
 def _raise_if_terminal(
@@ -2592,6 +2814,10 @@ class _D29LocatorAuthority:
     touched_requirement_ids: tuple[str, ...]
     prospective_coordinates: _DocumentDeclarationCoordinates
     d30_claims: _D30ClaimLocatorAuthority
+    direct_claim_before_images: tuple[_D29DirectClaimBeforeImage, ...] = ()
+    direct_answer_before_images: tuple[_D29DirectAnswerBeforeImage, ...] = ()
+    direct_remaining_observation_rows: tuple[tuple[object, ...], ...] = ()
+    direct_observation_source_rows: tuple[tuple[str, str, str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -2760,6 +2986,50 @@ class _DirectScopeAuthority:
     candidate_policy_id: str
     scope_kind: str
     closed_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedDocumentOpenSnapshot:
+    """Deep immutable self-image of a pre-tier-8 D29 locator authority."""
+
+    snapshot_identity: int
+    binding: _D29DocumentOpenBinding
+    prepared_identity: int
+    event: M5TypedEventPlan
+    execution_policy: ApplicationExecutionPolicy
+    closure: _DocumentClosure
+    source_chunks: tuple[str, ...]
+    locator: _D29LocatorAuthority
+    located_observation_edges: tuple[M5WithdrawnObservationEdge, ...]
+    bootstrap_authority: tuple[tuple[str, _BootstrapObservationAuthority], ...]
+
+
+@dataclass(slots=True)
+class _PreparedDocumentOpen:
+    """Single-use cursor-local D29 authority at the pre-tier-8 cut."""
+
+    binding: _D29DocumentOpenBinding
+    prepared_identity: int
+    event: M5TypedEventPlan
+    execution_policy: ApplicationExecutionPolicy
+    closure: _DocumentClosure
+    source_chunks: tuple[str, ...]
+    locator: _D29LocatorAuthority
+    located_observation_edges: tuple[M5WithdrawnObservationEdge, ...]
+    bootstrap_authority: tuple[tuple[str, _BootstrapObservationAuthority], ...]
+    authority_snapshot: _PreparedDocumentOpenSnapshot | None = None
+    phase: _DocumentOpenPhase = _DocumentOpenPhase.LOCATORS_GATHERED
+
+
+@dataclass(frozen=True, slots=True)
+class _LockedDocumentOpenResult:
+    """Private continuation result; the retained wrapper projects four fields."""
+
+    direct_open: M5DirectOpenPlan
+    requirement_withdrawal: M5RequirementWithdrawalPlan
+    requirement_roots: tuple[M5RequirementRootDeclaration, ...]
+    requirement_root_set_hash: str
+    direct_matching_authority: _D29DirectMatchingAuthority
 
 
 def _prospective_requirement_withdrawal(
@@ -4187,6 +4457,457 @@ def _gather_d30_claim_authority(
     )
 
 
+def _semantic_observation_from_row(
+    row: tuple[object, ...], *, label: str
+) -> SemanticObservation:
+    """Construct the immutable semantic object from one exact point row."""
+
+    if len(row) != 15:
+        raise EventConflictError(f"{label} has the wrong row width")
+    try:
+        return SemanticObservation(
+            observation_id=str(row[0]),
+            subject_kind=SubjectKind(str(row[1])),
+            subject_id=str(row[2]),
+            chunk_version_id=str(row[3]),
+            task_type=str(row[4]),
+            support_score=float(str(row[5])),
+            refute_score=float(str(row[6])),
+            neutral_score=float(str(row[7])),
+            producer=ModelStamp(str(row[8]), str(row[9]), str(row[10])),
+            input_hash=_exact_digest(f"{label} input", row[11]),
+        )
+    except (TypeError, ValueError, ValidationError) as error:
+        raise EventConflictError(f"{label} bytes are malformed") from error
+
+
+def _direct_claim_status(*, supported: bool, refuted: bool) -> str:
+    if supported and refuted:
+        return "conflicted"
+    if supported:
+        return "supported"
+    if refuted:
+        return "refuted"
+    return "unsupported"
+
+
+def _direct_answer_status(
+    *,
+    required_claim_count: int,
+    supported_count: int,
+    refuted_count: int,
+    conflicted_count: int,
+) -> str:
+    if refuted_count > 0:
+        return "contradicted"
+    if conflicted_count > 0:
+        return "conflicted"
+    if required_claim_count > 0 and supported_count == required_claim_count:
+        return "valid"
+    if supported_count > 0:
+        return "partially_supported"
+    return "unsupported"
+
+
+def _gather_d29_direct_state_locators(
+    cursor: Cursor[Any],
+    d30_claims: _D30ClaimLocatorAuthority,
+    *,
+    predecessor_epoch_id: int,
+) -> tuple[
+    tuple[_D29DirectClaimBeforeImage, ...],
+    tuple[_D29DirectAnswerBeforeImage, ...],
+    tuple[tuple[object, ...], ...],
+    tuple[tuple[str, str, str, str], ...],
+    tuple[_D30CurrencyRow, ...],
+]:
+    """Gather bounded direct state and every remaining current-currency point."""
+
+    withdrawn_by_claim: dict[str, set[str]] = {}
+    preliminary_withdrawn_rows = {
+        item.currency.observation_id: item.observation_row
+        for item in d30_claims.dynamic
+    }
+    preliminary_withdrawn_rows.update(
+        {
+            item.currency.observation_id: item.observation_row
+            for item in d30_claims.bootstrap
+        }
+    )
+    for currency in d30_claims.currency_rows:
+        withdrawn_by_claim.setdefault(currency.subject_id, set()).add(
+            currency.observation_id
+        )
+    if set(preliminary_withdrawn_rows) != {
+        row.observation_id for row in d30_claims.currency_rows
+    }:
+        raise EventConflictError("D29 direct current-observation locators changed")
+
+    claim_images: list[_D29DirectClaimBeforeImage] = []
+    answer_images: dict[str, _D29DirectAnswerBeforeImage] = {}
+    remaining_rows: dict[str, tuple[object, ...]] = {}
+    for claim_id in sorted(withdrawn_by_claim, key=_c_key):
+        owners = cursor.execute(
+            """
+            SELECT claim_id, answer_version_id, required
+            FROM groundloop_claim
+            WHERE claim_id = %s
+            """,
+            (claim_id,),
+        ).fetchall()
+        states = cursor.execute(
+            """
+            SELECT support_count, refute_count, best_support_score,
+                   best_refute_score, supporting_observation_ids,
+                   refuting_observation_ids, status, certificate_digest,
+                   valid_from_epoch
+            FROM groundloop_published_claim_state
+            WHERE claim_id = %s AND valid_from_epoch <= %s
+              AND (valid_to_epoch IS NULL OR %s < valid_to_epoch)
+            """,
+            (claim_id, predecessor_epoch_id, predecessor_epoch_id),
+        ).fetchall()
+        materialized_rows = cursor.execute(
+            """
+            SELECT support_count, refute_count, best_support_score,
+                   best_refute_score, supporting_observation_ids,
+                   refuting_observation_ids, status, updated_epoch,
+                   updated_revision
+            FROM groundloop_claim_state_materialized
+            WHERE claim_id = %s
+            """,
+            (claim_id,),
+        ).fetchall()
+        certificate_rows = cursor.execute(
+            """
+            SELECT support_observation_id, refute_observation_id,
+                   repaired_epoch, repaired_revision
+            FROM groundloop_claim_certificate
+            WHERE claim_id = %s
+            """,
+            (claim_id,),
+        ).fetchall()
+        if (
+            len(owners) != 1
+            or len(states) != 1
+            or len(materialized_rows) != 1
+            or len(certificate_rows) != 1
+        ):
+            raise EventConflictError(
+                "D29 direct claim materialized certificate before image is not unique"
+            )
+        owner = owners[0]
+        state = states[0]
+        materialized = materialized_rows[0]
+        certificate = certificate_rows[0]
+        if str(owner[0]) != claim_id or type(owner[2]) is not bool:
+            raise EventConflictError("D29 direct claim ownership changed")
+        support_values = state[4]
+        refute_values = state[5]
+        if not isinstance(support_values, (list, tuple)) or not isinstance(
+            refute_values, (list, tuple)
+        ):
+            raise EventConflictError("D29 direct claim provenance is malformed")
+        supporting_ids = tuple(str(value) for value in support_values)
+        refuting_ids = tuple(str(value) for value in refute_values)
+        materialized_support_values = materialized[4]
+        materialized_refute_values = materialized[5]
+        if (
+            supporting_ids != tuple(sorted(set(supporting_ids), key=_c_key))
+            or refuting_ids != tuple(sorted(set(refuting_ids), key=_c_key))
+            or set(supporting_ids) & set(refuting_ids)
+            or type(state[0]) is not int
+            or type(state[1]) is not int
+            or int(state[0]) < 0
+            or int(state[1]) < 0
+            or type(state[8]) is not int
+            or int(state[8]) <= 0
+            or not isinstance(materialized_support_values, (list, tuple))
+            or not isinstance(materialized_refute_values, (list, tuple))
+            or type(materialized[0]) is not int
+            or type(materialized[1]) is not int
+            or type(materialized[7]) is not int
+            or type(materialized[8]) is not int
+            or type(certificate[2]) is not int
+            or type(certificate[3]) is not int
+        ):
+            raise EventConflictError("D29 direct claim provenance changed")
+        withdrawn_ids = tuple(sorted(withdrawn_by_claim[claim_id], key=_c_key))
+        remaining_support = tuple(
+            item for item in supporting_ids if item not in withdrawn_by_claim[claim_id]
+        )
+        remaining_refute = tuple(
+            item for item in refuting_ids if item not in withdrawn_by_claim[claim_id]
+        )
+        named_rows: dict[str, tuple[object, ...]] = {}
+        for observation_id in sorted(
+            set(supporting_ids) | set(refuting_ids), key=_c_key
+        ):
+            row = preliminary_withdrawn_rows.get(observation_id)
+            if row is None:
+                row = _d30_observation_row(cursor, observation_id)
+                existing = remaining_rows.get(observation_id)
+                if existing is not None and existing != row:
+                    raise EventConflictError(
+                        "D29 remaining direct observation locator changed"
+                    )
+                remaining_rows[observation_id] = row
+            if (
+                str(row[0]) != observation_id
+                or str(row[1]) != "claim"
+                or str(row[2]) != claim_id
+                or row[14] is not True
+            ):
+                raise EventConflictError(
+                    "D29 direct claim observation ownership changed"
+                )
+            named_rows[observation_id] = row
+        support_best = (
+            None
+            if not supporting_ids
+            else max(float(str(named_rows[item][5])) for item in supporting_ids)
+        )
+        refute_best = (
+            None
+            if not refuting_ids
+            else max(float(str(named_rows[item][6])) for item in refuting_ids)
+        )
+        best_support = None if state[2] is None else float(str(state[2]))
+        best_refute = None if state[3] is None else float(str(state[3]))
+        expected_status = _direct_claim_status(
+            supported=int(state[0]) > 0, refuted=int(state[1]) > 0
+        )
+        expected_certificate = stable_m4_digest(
+            "m4-claim-certificate-v1",
+            claim_id,
+            supporting_ids[0] if supporting_ids else "",
+            refuting_ids[0] if refuting_ids else "",
+        )
+        if (
+            best_support != support_best
+            or best_refute != refute_best
+            or str(state[6]) != expected_status
+            or _strip(state[7]) != expected_certificate
+        ):
+            raise EventConflictError("D29 direct claim state is inconsistent")
+        materialized_supporting_ids = tuple(
+            str(value) for value in materialized_support_values
+        )
+        materialized_refuting_ids = tuple(
+            str(value) for value in materialized_refute_values
+        )
+        materialized_best_support = (
+            None if materialized[2] is None else float(str(materialized[2]))
+        )
+        materialized_best_refute = (
+            None if materialized[3] is None else float(str(materialized[3]))
+        )
+        certificate_support_id = None if certificate[0] is None else str(certificate[0])
+        certificate_refute_id = None if certificate[1] is None else str(certificate[1])
+        expected_certificate_support = supporting_ids[0] if supporting_ids else None
+        expected_certificate_refute = refuting_ids[0] if refuting_ids else None
+        if (
+            int(materialized[0]) != int(state[0])
+            or int(materialized[1]) != int(state[1])
+            or materialized_best_support != best_support
+            or materialized_best_refute != best_refute
+            or materialized_supporting_ids != supporting_ids
+            or materialized_refuting_ids != refuting_ids
+            or str(materialized[6]) != str(state[6])
+            or int(materialized[7]) != int(state[8])
+            or int(materialized[8]) < 0
+            or certificate_support_id != expected_certificate_support
+            or certificate_refute_id != expected_certificate_refute
+            or int(certificate[2]) != int(materialized[7])
+            or int(certificate[3]) != int(materialized[8])
+        ):
+            raise EventConflictError(
+                "D29 direct claim materialized certificate closure changed"
+            )
+        answer_id = str(owner[1])
+        claim_images.append(
+            _D29DirectClaimBeforeImage(
+                claim_id=claim_id,
+                answer_version_id=answer_id,
+                required=owner[2],
+                support_count=int(state[0]),
+                refute_count=int(state[1]),
+                best_support_score=best_support,
+                best_refute_score=best_refute,
+                supporting_observation_ids=supporting_ids,
+                refuting_observation_ids=refuting_ids,
+                status=str(state[6]),
+                certificate_digest=_strip(state[7]),
+                state_valid_from_epoch=int(state[8]),
+                materialized_updated_epoch=int(materialized[7]),
+                materialized_updated_revision=int(materialized[8]),
+                certificate_support_observation_id=certificate_support_id,
+                certificate_refute_observation_id=certificate_refute_id,
+                certificate_repaired_epoch=int(certificate[2]),
+                certificate_repaired_revision=int(certificate[3]),
+                withdrawn_observation_ids=withdrawn_ids,
+                remaining_support_observation_ids=remaining_support,
+                remaining_refute_observation_ids=remaining_refute,
+            )
+        )
+        if answer_id in answer_images:
+            continue
+        answers = cursor.execute(
+            """
+            SELECT required_claim_count, supported_count, unsupported_count,
+                   refuted_count, conflicted_count, status
+            FROM groundloop_published_answer_state
+            WHERE answer_version_id = %s AND valid_from_epoch <= %s
+              AND (valid_to_epoch IS NULL OR %s < valid_to_epoch)
+            """,
+            (answer_id, predecessor_epoch_id, predecessor_epoch_id),
+        ).fetchall()
+        if len(answers) != 1 or any(
+            type(answers[0][index]) is not int for index in range(5)
+        ):
+            raise EventConflictError("D29 direct answer before image is not unique")
+        answer = answers[0]
+        (
+            required_count,
+            supported_count,
+            unsupported_count,
+            refuted_count,
+            conflicted_count,
+        ) = (int(answer[index]) for index in range(5))
+        if (
+            min(
+                required_count,
+                supported_count,
+                unsupported_count,
+                refuted_count,
+                conflicted_count,
+            )
+            < 0
+            or (
+                supported_count + unsupported_count + refuted_count + conflicted_count
+                != required_count
+            )
+            or str(answer[5])
+            != _direct_answer_status(
+                required_claim_count=required_count,
+                supported_count=supported_count,
+                refuted_count=refuted_count,
+                conflicted_count=conflicted_count,
+            )
+        ):
+            raise EventConflictError("D29 direct answer state is inconsistent")
+        answer_images[answer_id] = _D29DirectAnswerBeforeImage(
+            answer_version_id=answer_id,
+            required_claim_count=required_count,
+            supported_count=supported_count,
+            unsupported_count=unsupported_count,
+            refuted_count=refuted_count,
+            conflicted_count=conflicted_count,
+            status=str(answer[5]),
+        )
+
+    remaining_currency_rows: dict[str, _D30CurrencyRow] = {}
+    for observation_id, observation in sorted(
+        remaining_rows.items(), key=lambda item: _c_key(item[0])
+    ):
+        key = tuple(str(value) for value in observation[1:5])
+        current = cursor.execute(
+            """
+            SELECT subject_kind::text, subject_id, chunk_version_id,
+                   task_type, observation_id, installed_revision
+            FROM groundloop_observation_currency
+            WHERE subject_kind = %s AND subject_id = %s
+              AND chunk_version_id = %s AND task_type = %s
+            """,
+            key,
+        ).fetchone()
+        if (
+            current is None
+            or tuple(str(value) for value in current[:5]) != (*key, observation_id)
+            or type(current[5]) is not int
+            or int(current[5]) < 0
+        ):
+            raise EventConflictError("D29 remaining direct observation is not current")
+        remaining_currency_rows[observation_id] = _D30CurrencyRow(
+            subject_kind=key[0],
+            subject_id=key[1],
+            chunk_version_id=key[2],
+            task_type=key[3],
+            observation_id=observation_id,
+            installed_revision=int(current[5]),
+        )
+
+    all_observation_rows = {**preliminary_withdrawn_rows, **remaining_rows}
+    source_by_chunk: dict[str, tuple[str, str, str]] = {}
+    for chunk_id in sorted(
+        {str(row[3]) for row in all_observation_rows.values()}, key=_c_key
+    ):
+        row = cursor.execute(
+            """
+            SELECT chunk.chunk_version_id, chunk.text, chunk.text_hash,
+                   chunk.document_version_id, chunk.valid_from_epoch,
+                   chunk.valid_to_epoch, version.document_version_id,
+                   version.valid_from_epoch, version.valid_to_epoch
+            FROM groundloop_chunk_version AS chunk
+            JOIN groundloop_document_version AS version
+              ON version.document_version_id = chunk.document_version_id
+            WHERE chunk.chunk_version_id = %s
+            """,
+            (chunk_id,),
+        ).fetchone()
+        if (
+            row is None
+            or str(row[0]) != chunk_id
+            or _strip(row[2]) != normalized_text_hash(str(row[1]))
+            or str(row[3]) != str(row[6])
+            or int(str(row[4])) > predecessor_epoch_id
+            or (row[5] is not None and predecessor_epoch_id >= int(str(row[5])))
+            or int(str(row[7])) > predecessor_epoch_id
+            or (row[8] is not None and predecessor_epoch_id >= int(str(row[8])))
+        ):
+            raise EventConflictError("D29 direct observation source is inactive")
+        source_by_chunk[chunk_id] = (chunk_id, str(row[1]), _strip(row[2]))
+    observation_source_rows = tuple(
+        (
+            observation_id,
+            source_by_chunk[str(row[3])][0],
+            source_by_chunk[str(row[3])][1],
+            source_by_chunk[str(row[3])][2],
+        )
+        for observation_id, row in sorted(
+            all_observation_rows.items(), key=lambda item: _c_key(item[0])
+        )
+    )
+    text_hash_by_observation = {
+        observation_id: text_hash
+        for observation_id, _chunk_id, _text, text_hash in observation_source_rows
+    }
+    for claim in claim_images:
+        if claim.support_count != len(
+            {
+                text_hash_by_observation[observation_id]
+                for observation_id in claim.supporting_observation_ids
+            }
+        ) or claim.refute_count != len(
+            {
+                text_hash_by_observation[observation_id]
+                for observation_id in claim.refuting_observation_ids
+            }
+        ):
+            raise EventConflictError("D29 direct claim distinct-evidence count changed")
+
+    return (
+        tuple(claim_images),
+        tuple(answer_images[key] for key in sorted(answer_images, key=_c_key)),
+        tuple(remaining_rows[key] for key in sorted(remaining_rows, key=_c_key)),
+        observation_source_rows,
+        tuple(
+            remaining_currency_rows[key]
+            for key in sorted(remaining_currency_rows, key=_c_key)
+        ),
+    )
+
+
 def _gather_d29_locator_authority(
     cursor: Cursor[Any],
     event: M5TypedEventPlan,
@@ -4425,7 +5146,64 @@ def _gather_d29_locator_authority(
             claim_id = str(row[0])
             direct_claim_ids.add(claim_id)
             direct_frontier_keys.add((claim_id, chunk_id, str(row[1]), int(row[2])))
-    d30_claims = _gather_d30_claim_authority(cursor, d30_claim_currency_rows)
+    withdrawn_d30_claims = _gather_d30_claim_authority(cursor, d30_claim_currency_rows)
+    (
+        direct_claim_before_images,
+        direct_answer_before_images,
+        direct_remaining_observation_rows,
+        direct_observation_source_rows,
+        direct_remaining_currency_rows,
+    ) = _gather_d29_direct_state_locators(
+        cursor,
+        withdrawn_d30_claims,
+        predecessor_epoch_id=closure.previous_epoch_id,
+    )
+    d30_claims = withdrawn_d30_claims
+    if direct_remaining_currency_rows:
+        all_direct_currency_rows = tuple(
+            sorted(
+                (*d30_claim_currency_rows, *direct_remaining_currency_rows),
+                key=lambda row: (
+                    _c_key(row.subject_kind),
+                    _c_key(row.subject_id),
+                    _c_key(row.chunk_version_id),
+                    _c_key(row.task_type),
+                    _c_key(row.observation_id),
+                ),
+            )
+        )
+        if len({row.full_key for row in all_direct_currency_rows}) != len(
+            all_direct_currency_rows
+        ) or len({row.observation_id for row in all_direct_currency_rows}) != len(
+            all_direct_currency_rows
+        ):
+            raise EventConflictError("D29 direct state currency locators overlap")
+        d30_claims = _gather_d30_claim_authority(cursor, all_direct_currency_rows)
+        gathered_observations = {
+            item.currency.observation_id: item.observation_row
+            for item in d30_claims.dynamic
+        }
+        gathered_observations.update(
+            {
+                item.currency.observation_id: item.observation_row
+                for item in d30_claims.bootstrap
+            }
+        )
+        expected_observations = {
+            item.currency.observation_id: item.observation_row
+            for item in withdrawn_d30_claims.dynamic
+        }
+        expected_observations.update(
+            {
+                item.currency.observation_id: item.observation_row
+                for item in withdrawn_d30_claims.bootstrap
+            }
+        )
+        expected_observations.update(
+            {str(row[0]): row for row in direct_remaining_observation_rows}
+        )
+        if gathered_observations != expected_observations:
+            raise EventConflictError("D29 direct observation locators changed")
     for owner in d30_claims.owners:
         for row in owner.jobs:
             job_id = str(row[0])
@@ -4578,6 +5356,10 @@ def _gather_d29_locator_authority(
             prospective_direct, prospective_roots
         ),
         d30_claims=d30_claims,
+        direct_claim_before_images=direct_claim_before_images,
+        direct_answer_before_images=direct_answer_before_images,
+        direct_remaining_observation_rows=direct_remaining_observation_rows,
+        direct_observation_source_rows=direct_observation_source_rows,
     )
 
 
@@ -4821,6 +5603,7 @@ def _lock_d29_touched_membership(
                   ON creator.epoch_id = chunk.valid_from_epoch
                 WHERE member.active_chunk_snapshot_digest = %s
                   AND member.chunk_version_id = %s
+                FOR KEY SHARE OF chunk, version
                 """,
                 (chunk_digest, chunk_id, chunk_digest, chunk_id),
             ).fetchone()
@@ -9789,6 +10572,192 @@ def _lock_d30_dynamic_owner_topology(
     return authority
 
 
+def _lock_d29_direct_claim_before_images(
+    cursor: Cursor[Any],
+    claim_images: tuple[_D29DirectClaimBeforeImage, ...],
+    *,
+    predecessor_epoch_id: int,
+) -> None:
+    """Lock and revalidate the bounded legacy/current M4 before-image closure."""
+
+    claim_ids = tuple(image.claim_id for image in claim_images)
+    if claim_ids != tuple(sorted(set(claim_ids), key=_c_key)):
+        raise EventConflictError("D29 direct claim before-image keys changed")
+    for image in claim_images:
+        state_rows = cursor.execute(
+            """
+            SELECT support_count, refute_count, best_support_score,
+                   best_refute_score, supporting_observation_ids,
+                   refuting_observation_ids, status, certificate_digest,
+                   valid_from_epoch
+            FROM groundloop_published_claim_state
+            WHERE claim_id = %s AND valid_from_epoch <= %s
+              AND (valid_to_epoch IS NULL OR %s < valid_to_epoch)
+            FOR UPDATE
+            """,
+            (image.claim_id, predecessor_epoch_id, predecessor_epoch_id),
+        ).fetchall()
+        materialized_rows = cursor.execute(
+            """
+            SELECT support_count, refute_count, best_support_score,
+                   best_refute_score, supporting_observation_ids,
+                   refuting_observation_ids, status, updated_epoch,
+                   updated_revision
+            FROM groundloop_claim_state_materialized
+            WHERE claim_id = %s
+            FOR UPDATE
+            """,
+            (image.claim_id,),
+        ).fetchall()
+        certificate_rows = cursor.execute(
+            """
+            SELECT support_observation_id, refute_observation_id,
+                   repaired_epoch, repaired_revision
+            FROM groundloop_claim_certificate
+            WHERE claim_id = %s
+            FOR UPDATE
+            """,
+            (image.claim_id,),
+        ).fetchall()
+        if (
+            len(state_rows) != 1
+            or len(materialized_rows) != 1
+            or len(certificate_rows) != 1
+        ):
+            raise EventConflictError(
+                "D29 direct claim materialized certificate point changed"
+            )
+        state = state_rows[0]
+        materialized = materialized_rows[0]
+        certificate = certificate_rows[0]
+        try:
+            locked_state = (
+                int(state[0]),
+                int(state[1]),
+                None if state[2] is None else float(str(state[2])),
+                None if state[3] is None else float(str(state[3])),
+                tuple(str(value) for value in state[4]),
+                tuple(str(value) for value in state[5]),
+                str(state[6]),
+                _strip(state[7]),
+                int(state[8]),
+            )
+            locked_materialized = (
+                int(materialized[0]),
+                int(materialized[1]),
+                None if materialized[2] is None else float(str(materialized[2])),
+                None if materialized[3] is None else float(str(materialized[3])),
+                tuple(str(value) for value in materialized[4]),
+                tuple(str(value) for value in materialized[5]),
+                str(materialized[6]),
+                int(materialized[7]),
+                int(materialized[8]),
+            )
+            locked_certificate = (
+                None if certificate[0] is None else str(certificate[0]),
+                None if certificate[1] is None else str(certificate[1]),
+                int(certificate[2]),
+                int(certificate[3]),
+            )
+        except (TypeError, ValueError, ValidationError) as error:
+            raise EventConflictError(
+                "D29 direct claim materialized certificate point is malformed"
+            ) from error
+        expected_state = (
+            image.support_count,
+            image.refute_count,
+            image.best_support_score,
+            image.best_refute_score,
+            image.supporting_observation_ids,
+            image.refuting_observation_ids,
+            image.status,
+            image.certificate_digest,
+            image.state_valid_from_epoch,
+        )
+        expected_materialized = (
+            image.support_count,
+            image.refute_count,
+            image.best_support_score,
+            image.best_refute_score,
+            image.supporting_observation_ids,
+            image.refuting_observation_ids,
+            image.status,
+            image.materialized_updated_epoch,
+            image.materialized_updated_revision,
+        )
+        expected_certificate = (
+            image.certificate_support_observation_id,
+            image.certificate_refute_observation_id,
+            image.certificate_repaired_epoch,
+            image.certificate_repaired_revision,
+        )
+        if (
+            locked_state != expected_state
+            or locked_materialized != expected_materialized
+            or locked_certificate != expected_certificate
+            or image.materialized_updated_epoch != image.state_valid_from_epoch
+            or image.certificate_repaired_epoch != image.materialized_updated_epoch
+            or image.certificate_repaired_revision
+            != image.materialized_updated_revision
+        ):
+            raise EventConflictError(
+                "D29 direct claim materialized certificate closure changed"
+            )
+
+
+def _lock_d29_direct_answer_before_images(
+    cursor: Cursor[Any],
+    answer_images: tuple[_D29DirectAnswerBeforeImage, ...],
+    *,
+    predecessor_epoch_id: int,
+) -> None:
+    """Lock and revalidate the complete bounded direct-answer before images."""
+
+    answer_ids = tuple(image.answer_version_id for image in answer_images)
+    if answer_ids != tuple(sorted(set(answer_ids), key=_c_key)):
+        raise EventConflictError("D29 direct answer before-image keys changed")
+    for image in answer_images:
+        rows = cursor.execute(
+            """
+            SELECT required_claim_count, supported_count, unsupported_count,
+                   refuted_count, conflicted_count, status
+            FROM groundloop_published_answer_state
+            WHERE answer_version_id = %s AND valid_from_epoch <= %s
+              AND (valid_to_epoch IS NULL OR %s < valid_to_epoch)
+            FOR UPDATE
+            """,
+            (
+                image.answer_version_id,
+                predecessor_epoch_id,
+                predecessor_epoch_id,
+            ),
+        ).fetchall()
+        if len(rows) != 1:
+            raise EventConflictError("D29 direct answer point changed")
+        row = rows[0]
+        try:
+            locked = (
+                int(row[0]),
+                int(row[1]),
+                int(row[2]),
+                int(row[3]),
+                int(row[4]),
+                str(row[5]),
+            )
+        except (TypeError, ValueError) as error:
+            raise EventConflictError("D29 direct answer point is malformed") from error
+        expected = (
+            image.required_claim_count,
+            image.supported_count,
+            image.unsupported_count,
+            image.refuted_count,
+            image.conflicted_count,
+            image.status,
+        )
+        if locked != expected:
+            raise EventConflictError("D29 direct answer point changed")
+
+
 def _lock_d29_observation_authority(
     cursor: Cursor[Any],
     locator: _D29LocatorAuthority,
@@ -9804,7 +10773,7 @@ def _lock_d29_observation_authority(
 ]:
     """Acquire tier 11a in exact semantic-observation then currency order."""
 
-    typed_keys = tuple(
+    currency_typed_keys = tuple(
         sorted(
             {
                 ("requirement", requirement_id, chunk_id, task_type, observation_id)
@@ -9825,10 +10794,68 @@ def _lock_d29_observation_authority(
             key=lambda item: tuple(_c_key(value) for value in item),
         )
     )
-    if len(typed_keys) != (
+    if len(currency_typed_keys) != (
         len(locator.requirement_currency_keys) + len(locator.d30_claims.currency_rows)
     ):
         raise EventConflictError("D30 typed observation locator is ambiguous")
+    explicit_withdrawn_typed_keys = tuple(
+        ("claim", claim_id, chunk_id, task_type, observation_id)
+        for claim_id, chunk_id, task_type, observation_id in (
+            locator.direct_currency_keys
+        )
+    )
+    remaining_typed_keys = tuple(
+        (
+            str(row[1]),
+            str(row[2]),
+            str(row[3]),
+            str(row[4]),
+            str(row[0]),
+        )
+        for row in locator.direct_remaining_observation_rows
+    )
+    direct_currency_typed_keys = tuple(
+        (
+            row.subject_kind,
+            row.subject_id,
+            row.chunk_version_id,
+            row.task_type,
+            row.observation_id,
+        )
+        for row in locator.d30_claims.currency_rows
+    )
+    retained_unpartitioned_direct_state = not any(
+        (
+            locator.direct_currency_keys,
+            locator.direct_claim_before_images,
+            locator.direct_answer_before_images,
+            locator.direct_remaining_observation_rows,
+            locator.direct_observation_source_rows,
+        )
+    )
+    withdrawn_typed_keys = (
+        direct_currency_typed_keys
+        if retained_unpartitioned_direct_state
+        else explicit_withdrawn_typed_keys
+    )
+    withdrawn_direct_observation_ids = {item[4] for item in withdrawn_typed_keys}
+    remaining_direct_observation_ids = {item[4] for item in remaining_typed_keys}
+    direct_currency_observation_ids = {item[4] for item in direct_currency_typed_keys}
+    if (
+        len(set(withdrawn_typed_keys)) != len(withdrawn_typed_keys)
+        or len(withdrawn_direct_observation_ids) != len(withdrawn_typed_keys)
+        or len(set(remaining_typed_keys)) != len(remaining_typed_keys)
+        or len(remaining_direct_observation_ids) != len(remaining_typed_keys)
+        or len(set(direct_currency_typed_keys)) != len(direct_currency_typed_keys)
+        or len(direct_currency_observation_ids) != len(direct_currency_typed_keys)
+        or not set(remaining_typed_keys) <= set(currency_typed_keys)
+        or set(withdrawn_typed_keys) & set(remaining_typed_keys)
+        or withdrawn_direct_observation_ids & remaining_direct_observation_ids
+        or set(direct_currency_typed_keys)
+        != set(withdrawn_typed_keys) | set(remaining_typed_keys)
+    ):
+        raise EventConflictError("D29 direct observation currency partition changed")
+    semantic_typed_keys = currency_typed_keys
     locked_observations: dict[str, tuple[object, ...]] = {}
     preliminary_claim_observations = {
         claim.currency.observation_id: claim.observation_row
@@ -9840,7 +10867,23 @@ def _lock_d29_observation_authority(
             for claim in locator.d30_claims.bootstrap
         }
     )
-    for subject_kind, subject_id, chunk_id, task_type, observation_id in typed_keys:
+    remaining_preliminary_observations = {
+        str(row[0]): row for row in locator.direct_remaining_observation_rows
+    }
+    if len(preliminary_claim_observations) != len(
+        locator.d30_claims.currency_rows
+    ) or any(
+        preliminary_claim_observations.get(observation_id) != row
+        for observation_id, row in remaining_preliminary_observations.items()
+    ):
+        raise EventConflictError("D29 preliminary direct observations are ambiguous")
+    for (
+        subject_kind,
+        subject_id,
+        chunk_id,
+        task_type,
+        observation_id,
+    ) in semantic_typed_keys:
         row = cursor.execute(
             """
             SELECT observation_id, subject_kind::text, subject_id,
@@ -9867,6 +10910,45 @@ def _lock_d29_observation_authority(
         ):
             raise EventConflictError("observation locator disappeared")
         locked_observations[observation_id] = tuple(row)
+
+    direct_sources_by_chunk: dict[str, tuple[str, str, str]] = {}
+    for (
+        observation_id,
+        chunk_id,
+        text,
+        text_hash,
+    ) in locator.direct_observation_source_rows:
+        if (
+            observation_id not in locked_observations
+            or str(locked_observations[observation_id][3]) != chunk_id
+        ):
+            raise EventConflictError("D29 direct observation source locator changed")
+        source_row = (chunk_id, text, text_hash)
+        existing = direct_sources_by_chunk.get(chunk_id)
+        if existing is not None and existing != source_row:
+            raise EventConflictError("D29 direct observation source is ambiguous")
+        direct_sources_by_chunk[chunk_id] = source_row
+    for chunk_id in sorted(direct_sources_by_chunk, key=_c_key):
+        row = cursor.execute(
+            """
+            SELECT chunk_version_id, text, text_hash
+            FROM groundloop_chunk_version
+            WHERE chunk_version_id = %s
+            """,
+            (chunk_id,),
+        ).fetchone()
+        if (
+            row is None
+            or (
+                str(row[0]),
+                str(row[1]),
+                _strip(row[2]),
+            )
+            != direct_sources_by_chunk[chunk_id]
+        ):
+            raise EventConflictError(
+                "D29 direct observation source changed before lock"
+            )
 
     locked_deltas: dict[str, tuple[object, ...]] = {}
     for claim in sorted(
@@ -9898,7 +10980,13 @@ def _lock_d29_observation_authority(
         locked_deltas[claim.currency.observation_id] = tuple(row)
 
     locked_current: dict[tuple[str, str, str, str], tuple[object, ...]] = {}
-    for subject_kind, subject_id, chunk_id, task_type, _observation_id in typed_keys:
+    for (
+        subject_kind,
+        subject_id,
+        chunk_id,
+        task_type,
+        _observation_id,
+    ) in currency_typed_keys:
         key = (subject_kind, subject_id, chunk_id, task_type)
         row = cursor.execute(
             """
@@ -9920,7 +11008,13 @@ def _lock_d29_observation_authority(
     }
     locked_published: dict[tuple[str, str, str, str], tuple[object, ...]] = {}
     locked_predecessors: dict[str, tuple[object, ...] | None] = {}
-    for subject_kind, subject_id, chunk_id, task_type, _observation_id in typed_keys:
+    for (
+        subject_kind,
+        subject_id,
+        chunk_id,
+        task_type,
+        _observation_id,
+    ) in currency_typed_keys:
         key = (subject_kind, subject_id, chunk_id, task_type)
         row = cursor.execute(
             """
@@ -10148,9 +11242,10 @@ def _lock_d29_observation_authority(
                 activation_base_epoch_id=activation_base,
                 predecessor_epoch_id=predecessor_epoch_id,
             )
-        direct_dependencies.append(
-            ObservationDependency(observation_id, PairKey(claim_id, chunk_id))
-        )
+        if observation_id in withdrawn_direct_observation_ids:
+            direct_dependencies.append(
+                ObservationDependency(observation_id, PairKey(claim_id, chunk_id))
+            )
     canonical_requirement_edges = tuple(
         sorted(
             set(requirement_edges),
@@ -10172,6 +11267,41 @@ def _lock_d29_observation_authority(
             ),
         )
     )
+    locked_withdrawn_ids = {
+        item.observation_id for item in canonical_direct_dependencies
+    }
+    locked_remaining_ids = {
+        str(row[0]) for row in locator.direct_remaining_observation_rows
+    }
+    if (
+        locked_withdrawn_ids != withdrawn_direct_observation_ids
+        or set(locked_observations) != {item[4] for item in currency_typed_keys}
+        or (
+            not retained_unpartitioned_direct_state
+            and {
+                observation_id
+                for observation_id, _chunk_id, _text, _text_hash in (
+                    locator.direct_observation_source_rows
+                )
+            }
+            != locked_withdrawn_ids | locked_remaining_ids
+        )
+    ):
+        raise EventConflictError("D29 locked direct observation partition changed")
+    for direct_claim_image in locator.direct_claim_before_images:
+        expected_remaining = (
+            set(direct_claim_image.supporting_observation_ids)
+            | set(direct_claim_image.refuting_observation_ids)
+        ) - set(direct_claim_image.withdrawn_observation_ids)
+        if (
+            set(direct_claim_image.remaining_support_observation_ids)
+            | set(direct_claim_image.remaining_refute_observation_ids)
+            != expected_remaining
+            or not set(direct_claim_image.withdrawn_observation_ids)
+            <= locked_withdrawn_ids
+            or not expected_remaining <= locked_remaining_ids
+        ):
+            raise EventConflictError("D29 direct claim partition changed before lock")
     return canonical_requirement_edges, canonical_direct_dependencies
 
 
@@ -11762,6 +12892,251 @@ def _direct_open_from_withdrawal(
     )
 
 
+def _capture_d29_document_open_binding(
+    cursor: Cursor[Any],
+    event: M5TypedEventPlan,
+    closure: _DocumentClosure,
+    source_chunks: tuple[str, ...],
+) -> _D29DocumentOpenBinding:
+    row = cursor.execute(
+        "SELECT pg_backend_pid(), pg_current_xact_id()::text, session_user"
+    ).fetchone()
+    if row is None or type(row[0]) is not int or not str(row[2]).strip():
+        raise EventConflictError("D29 document transaction identity is unavailable")
+    try:
+        transaction_identity = int(str(row[1]))
+    except (TypeError, ValueError) as error:
+        raise EventConflictError(
+            "D29 document transaction identity is malformed"
+        ) from error
+    return _D29DocumentOpenBinding(
+        cursor_object_identity=id(cursor),
+        backend_identity=row[0],
+        transaction_identity=transaction_identity,
+        session_role=str(row[2]),
+        epoch_id=closure.epoch_id,
+        structural_event_id=event.structural_event_id,
+        source_identity_hash=event.payload_hash,
+        predecessor_epoch_id=closure.previous_epoch_id,
+        source_chunks=source_chunks,
+    )
+
+
+def _seal_prepared_document_open(prepared: _PreparedDocumentOpen) -> None:
+    if prepared.authority_snapshot is not None:
+        raise EventConflictError("D29 document locator authority was already sealed")
+    snapshot = _PreparedDocumentOpenSnapshot(
+        snapshot_identity=0,
+        binding=deepcopy(prepared.binding),
+        prepared_identity=prepared.prepared_identity,
+        event=deepcopy(prepared.event),
+        execution_policy=deepcopy(prepared.execution_policy),
+        closure=deepcopy(prepared.closure),
+        source_chunks=deepcopy(prepared.source_chunks),
+        locator=deepcopy(prepared.locator),
+        located_observation_edges=deepcopy(prepared.located_observation_edges),
+        bootstrap_authority=deepcopy(prepared.bootstrap_authority),
+    )
+    object.__setattr__(snapshot, "snapshot_identity", id(snapshot))
+    prepared.authority_snapshot = snapshot
+
+
+def _validate_prepared_document_open(
+    cursor: Cursor[Any],
+    event: M5TypedEventPlan,
+    prepared: _PreparedDocumentOpen,
+    *,
+    execution_policy: ApplicationExecutionPolicy,
+    phase: _DocumentOpenPhase,
+) -> None:
+    checked = _document_event(event)
+    if type(prepared) is not _PreparedDocumentOpen:
+        raise ValidationError("D29 prepared authority has another concrete type")
+    if prepared.prepared_identity != id(prepared):
+        raise ValidationError("D29 prepared authority was copied or replaced")
+    snapshot = prepared.authority_snapshot
+    if type(snapshot) is not _PreparedDocumentOpenSnapshot or (
+        snapshot.snapshot_identity != id(snapshot)
+    ):
+        raise ValidationError("D29 prepared authority snapshot was replaced")
+    if (
+        prepared.binding != snapshot.binding
+        or prepared.prepared_identity != snapshot.prepared_identity
+        or prepared.event != snapshot.event
+        or prepared.execution_policy != snapshot.execution_policy
+        or prepared.closure != snapshot.closure
+        or prepared.source_chunks != snapshot.source_chunks
+        or prepared.locator != snapshot.locator
+        or prepared.located_observation_edges != snapshot.located_observation_edges
+        or prepared.bootstrap_authority != snapshot.bootstrap_authority
+    ):
+        raise EventConflictError("D29 prepared locator authority changed")
+    if (
+        prepared.phase is not phase
+        or checked != prepared.event
+        or type(execution_policy) is not ApplicationExecutionPolicy
+        or execution_policy != prepared.execution_policy
+    ):
+        raise ValidationError("D29 prepared locator phase or input changed")
+    current_binding = _capture_d29_document_open_binding(
+        cursor,
+        checked,
+        prepared.closure,
+        prepared.source_chunks,
+    )
+    if current_binding != prepared.binding:
+        raise ValidationError("D29 prepared authority changed transaction context")
+
+
+def _build_d29_direct_matching_authority(
+    binding: _D29DocumentOpenBinding,
+    locator: _D29LocatorAuthority,
+) -> _D29DirectMatchingAuthority:
+    withdrawn_ids_from_currency = {
+        observation_id
+        for _claim_id, _chunk_id, _task_type, observation_id in (
+            locator.direct_currency_keys
+        )
+    }
+    withdrawn_rows = {
+        item.currency.observation_id: item.observation_row
+        for item in locator.d30_claims.dynamic
+        if item.currency.observation_id in withdrawn_ids_from_currency
+    }
+    withdrawn_rows.update(
+        {
+            item.currency.observation_id: item.observation_row
+            for item in locator.d30_claims.bootstrap
+            if item.currency.observation_id in withdrawn_ids_from_currency
+        }
+    )
+    withdrawn = tuple(
+        _semantic_observation_from_row(
+            withdrawn_rows[key], label="D29 withdrawn direct observation"
+        )
+        for key in sorted(withdrawn_rows, key=_c_key)
+    )
+    remaining = tuple(
+        _semantic_observation_from_row(row, label="D29 remaining direct observation")
+        for row in locator.direct_remaining_observation_rows
+    )
+    withdrawn_ids = {item.observation_id for item in withdrawn}
+    remaining_ids = {item.observation_id for item in remaining}
+    observation_text_hashes = tuple(
+        (observation_id, text_hash)
+        for observation_id, _chunk_id, _text, text_hash in (
+            locator.direct_observation_source_rows
+        )
+    )
+    if (
+        len(withdrawn_ids) != len(withdrawn)
+        or len(remaining_ids) != len(remaining)
+        or withdrawn_ids & remaining_ids
+        or withdrawn_ids != withdrawn_ids_from_currency
+        or len({item[0] for item in observation_text_hashes})
+        != len(observation_text_hashes)
+        or {item[0] for item in observation_text_hashes}
+        != withdrawn_ids | remaining_ids
+    ):
+        raise EventConflictError("D29 direct matching observation partition changed")
+    for claim in locator.direct_claim_before_images:
+        state_ids = set(claim.supporting_observation_ids) | set(
+            claim.refuting_observation_ids
+        )
+        claim_withdrawn = set(claim.withdrawn_observation_ids)
+        claim_remaining = set(claim.remaining_support_observation_ids) | set(
+            claim.remaining_refute_observation_ids
+        )
+        if (
+            claim_remaining != state_ids - claim_withdrawn
+            or not claim_withdrawn <= withdrawn_ids
+            or not claim_remaining <= remaining_ids
+        ):
+            raise EventConflictError("D29 direct matching claim partition changed")
+    authority = _D29DirectMatchingAuthority(
+        binding=deepcopy(binding),
+        authority_identity=0,
+        claim_before_images=deepcopy(locator.direct_claim_before_images),
+        answer_before_images=deepcopy(locator.direct_answer_before_images),
+        withdrawn_observations=deepcopy(withdrawn),
+        remaining_observations=deepcopy(remaining),
+        observation_text_hashes=deepcopy(observation_text_hashes),
+    )
+    object.__setattr__(authority, "authority_identity", id(authority))
+    snapshot = _D29DirectMatchingAuthoritySnapshot(
+        snapshot_identity=0,
+        binding=deepcopy(authority.binding),
+        authority_identity=authority.authority_identity,
+        claim_before_images=deepcopy(authority.claim_before_images),
+        answer_before_images=deepcopy(authority.answer_before_images),
+        withdrawn_observations=deepcopy(authority.withdrawn_observations),
+        remaining_observations=deepcopy(authority.remaining_observations),
+        observation_text_hashes=deepcopy(authority.observation_text_hashes),
+    )
+    object.__setattr__(snapshot, "snapshot_identity", id(snapshot))
+    object.__setattr__(authority, "authority_snapshot", snapshot)
+    return authority
+
+
+def _validate_d29_direct_matching_authority(
+    cursor: Cursor[Any],
+    *,
+    epoch_id: int,
+    source_id: str,
+    source_identity_hash: str,
+    authority: _D29DirectMatchingAuthority,
+) -> None:
+    """Validate private D29 direct evidence without rediscovering any key."""
+
+    if type(authority) is not _D29DirectMatchingAuthority or (
+        authority.authority_identity != id(authority)
+    ):
+        raise ValidationError("D29 direct matching authority was copied or replaced")
+    snapshot = authority.authority_snapshot
+    if type(snapshot) is not _D29DirectMatchingAuthoritySnapshot or (
+        snapshot.snapshot_identity != id(snapshot)
+    ):
+        raise ValidationError("D29 direct matching authority snapshot was replaced")
+    if (
+        authority.binding != snapshot.binding
+        or authority.authority_identity != snapshot.authority_identity
+        or authority.claim_before_images != snapshot.claim_before_images
+        or authority.answer_before_images != snapshot.answer_before_images
+        or authority.withdrawn_observations != snapshot.withdrawn_observations
+        or authority.remaining_observations != snapshot.remaining_observations
+        or authority.observation_text_hashes != snapshot.observation_text_hashes
+    ):
+        raise EventConflictError("D29 direct matching authority changed")
+    binding = authority.binding
+    if (
+        type(epoch_id) is not int
+        or type(source_id) is not str
+        or type(source_identity_hash) is not str
+        or binding.cursor_object_identity != id(cursor)
+        or binding.epoch_id != epoch_id
+        or binding.structural_event_id != source_id
+        or binding.source_identity_hash != source_identity_hash
+    ):
+        raise ValidationError("D29 direct matching source binding changed")
+    row = cursor.execute(
+        "SELECT pg_backend_pid(), pg_current_xact_id()::text, session_user"
+    ).fetchone()
+    if row is None:
+        raise ValidationError("D29 direct matching transaction is unavailable")
+    try:
+        current = (int(row[0]), int(str(row[1])), str(row[2]))
+    except (TypeError, ValueError) as error:
+        raise ValidationError(
+            "D29 direct matching transaction identity is malformed"
+        ) from error
+    if current != (
+        binding.backend_identity,
+        binding.transaction_identity,
+        binding.session_role,
+    ):
+        raise ValidationError("D29 direct matching transaction context changed")
+
+
 def _preview_document_direct_open(
     cursor: Cursor[Any],
     event: M5TypedEventPlan,
@@ -11789,26 +13164,23 @@ def _preview_document_direct_open(
     return _direct_open_from_withdrawal(checked, execution_policy, withdrawal)
 
 
-def _derive_locked_document_open(
+def _prepare_locked_document_open(
     cursor: Cursor[Any],
     event: M5TypedEventPlan,
     *,
     execution_policy: ApplicationExecutionPolicy,
-    supplied_direct_open: M5DirectOpenPlan,
-    supplied_requirement_withdrawal: M5RequirementWithdrawalPlan,
-    supplied_requirement_roots: tuple[M5RequirementRootDeclaration, ...],
-    supplied_requirement_root_set_hash: str,
-) -> tuple[
-    M5DirectOpenPlan,
-    M5RequirementWithdrawalPlan,
-    tuple[M5RequirementRootDeclaration, ...],
-    str,
-]:
-    """Recompute a first application from cursor-held source authority."""
+) -> _PreparedDocumentOpen:
+    """Gather and bind every D29 locator after tier 7 and before tier 8."""
 
     _require_d29_document_route_authority(cursor)
     checked = _document_event(event)
-    closure = _read_existing_document_closure(cursor, checked)
+    if type(execution_policy) is not ApplicationExecutionPolicy:
+        raise ValidationError("D29 prepare requires exact execution policy")
+    closure = _read_existing_document_closure(
+        cursor,
+        checked,
+        allow_missing_event_snapshots=True,
+    )
     if closure is None:
         raise EventConflictError("locked D29 document source epoch is absent")
     source_chunks = _validated_structural_source_chunks(
@@ -11825,7 +13197,6 @@ def _derive_locked_document_open(
         execution_policy=execution_policy,
         source_chunks=source_chunks,
     )
-    snapshots = locator.predecessor_snapshots
     located_observation_edges = tuple(
         sorted(
             {
@@ -11856,12 +13227,82 @@ def _derive_locked_document_open(
         locator,
         predecessor_epoch_id=closure.previous_epoch_id,
     )
+    binding = _capture_d29_document_open_binding(
+        cursor, checked, closure, source_chunks
+    )
+    prepared = _PreparedDocumentOpen(
+        binding=binding,
+        prepared_identity=0,
+        event=checked,
+        execution_policy=execution_policy,
+        closure=closure,
+        source_chunks=source_chunks,
+        locator=locator,
+        located_observation_edges=located_observation_edges,
+        bootstrap_authority=tuple(
+            sorted(bootstrap_authority.items(), key=lambda item: _c_key(item[0]))
+        ),
+    )
+    prepared.prepared_identity = id(prepared)
+    _seal_prepared_document_open(prepared)
+    return prepared
+
+
+def _continue_locked_document_open(
+    cursor: Cursor[Any],
+    event: M5TypedEventPlan,
+    prepared: _PreparedDocumentOpen,
+    *,
+    execution_policy: ApplicationExecutionPolicy,
+    supplied_direct_open: M5DirectOpenPlan,
+    supplied_requirement_withdrawal: M5RequirementWithdrawalPlan,
+    supplied_requirement_roots: tuple[M5RequirementRootDeclaration, ...],
+    supplied_requirement_root_set_hash: str,
+) -> _LockedDocumentOpenResult:
+    """Consume one D29 locator image and finish the held tier-8--11a path."""
+
+    checked = _document_event(event)
+    _validate_prepared_document_open(
+        cursor,
+        checked,
+        prepared,
+        execution_policy=execution_policy,
+        phase=_DocumentOpenPhase.LOCATORS_GATHERED,
+    )
+    closure = _read_existing_document_closure(cursor, checked)
+    if closure is None or closure != prepared.closure:
+        raise EventConflictError("D29 prepared document closure changed")
+    source_chunks = _validated_structural_source_chunks(
+        cursor,
+        checked,
+        lock_authority=False,
+        closure=closure,
+    )
+    if source_chunks != prepared.source_chunks:
+        raise EventConflictError("D29 prepared structural source changed")
+    _validate_d29_event_snapshot_image(cursor, checked, closure)
+    prepared.phase = _DocumentOpenPhase.CONSUMED
+    locator = prepared.locator
+    snapshots = locator.predecessor_snapshots
+    bootstrap_authority = dict(prepared.bootstrap_authority)
+    touched_direct_chunk_ids = tuple(
+        sorted(
+            set(source_chunks)
+            | {
+                chunk_id
+                for _observation_id, chunk_id, _text, _text_hash in (
+                    locator.direct_observation_source_rows
+                )
+            },
+            key=_c_key,
+        )
+    )
     _lock_d29_touched_membership(
         cursor,
         locator,
         predecessor_epoch_id=closure.previous_epoch_id,
         snapshots=snapshots,
-        source_chunks=source_chunks,
+        source_chunks=touched_direct_chunk_ids,
     )
     direct_scopes = _lock_d29_scopes_and_reserve(cursor, locator)
     _lock_d29_jobs_and_reserve(cursor, locator)
@@ -11904,8 +13345,12 @@ def _derive_locked_document_open(
         bootstrap_authority=bootstrap_authority,
         d30_dynamic_authority=d30_dynamic_authority,
     )
-    if observation_edges != located_observation_edges:
+    if observation_edges != prepared.located_observation_edges:
         raise EventConflictError("requirement observation locators changed before lock")
+    direct_matching_authority = _build_d29_direct_matching_authority(
+        prepared.binding,
+        locator,
+    )
     active_requirement_ids = {
         edge.requirement_version_id for edge in candidate_edges
     } | {edge.requirement_version_id for edge in observation_edges}
@@ -11958,7 +13403,55 @@ def _derive_locked_document_open(
         or closure.requirement_root_set_hash != root_set_hash
     ):
         raise EventConflictError("D29 compare-only open proposal changed")
-    return direct_open, requirement_withdrawal, requirement_roots, root_set_hash
+    return _LockedDocumentOpenResult(
+        direct_open=direct_open,
+        requirement_withdrawal=requirement_withdrawal,
+        requirement_roots=requirement_roots,
+        requirement_root_set_hash=root_set_hash,
+        direct_matching_authority=direct_matching_authority,
+    )
+
+
+def _derive_locked_document_open(
+    cursor: Cursor[Any],
+    event: M5TypedEventPlan,
+    *,
+    execution_policy: ApplicationExecutionPolicy,
+    supplied_direct_open: M5DirectOpenPlan,
+    supplied_requirement_withdrawal: M5RequirementWithdrawalPlan,
+    supplied_requirement_roots: tuple[M5RequirementRootDeclaration, ...],
+    supplied_requirement_root_set_hash: str,
+) -> tuple[
+    M5DirectOpenPlan,
+    M5RequirementWithdrawalPlan,
+    tuple[M5RequirementRootDeclaration, ...],
+    str,
+]:
+    """Retained monolithic projection over the two private D29 phases."""
+
+    _require_d29_document_route_authority(cursor)
+    checked = _document_event(event)
+    prepared = _prepare_locked_document_open(
+        cursor,
+        checked,
+        execution_policy=execution_policy,
+    )
+    result = _continue_locked_document_open(
+        cursor,
+        checked,
+        prepared,
+        execution_policy=execution_policy,
+        supplied_direct_open=supplied_direct_open,
+        supplied_requirement_withdrawal=supplied_requirement_withdrawal,
+        supplied_requirement_roots=supplied_requirement_roots,
+        supplied_requirement_root_set_hash=supplied_requirement_root_set_hash,
+    )
+    return (
+        result.direct_open,
+        result.requirement_withdrawal,
+        result.requirement_roots,
+        result.requirement_root_set_hash,
+    )
 
 
 def _load_retained_document_open(

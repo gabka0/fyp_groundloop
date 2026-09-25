@@ -148,6 +148,11 @@ def test_one_live_chunk_range_returns_claim_and_requirement_without_conversion(
             "_gather_d30_claim_authority",
             capture_claims,
         )
+        monkeypatch.setattr(
+            postgres_withdrawal,
+            "_gather_d29_direct_state_locators",
+            lambda *_args, **_kwargs: ((), (), (), (), ()),
+        )
         statements: list[str] = []
 
         class _TracingCursor:
@@ -200,13 +205,14 @@ def test_one_live_chunk_range_returns_claim_and_requirement_without_conversion(
 def test_claim_and_requirement_outputs_remain_independent(
     function_source: Callable[[str], str],
 ) -> None:
-    derive = function_source("_derive_locked_document_open")
+    prepare = function_source("_prepare_locked_document_open")
+    continuation = function_source("_continue_locked_document_open")
     gather = function_source("_gather_d29_locator_authority")
-    assert "locator.requirement_currency_keys" in derive
+    assert "locator.requirement_currency_keys" in prepare
     assert "_gather_d30_claim_authority" in gather
-    assert "plan_requirement_withdrawal" in derive
-    assert "_locked_direct_withdrawal" in derive
-    assert derive.index("plan_requirement_withdrawal") < derive.index(
+    assert "plan_requirement_withdrawal" in continuation
+    assert "_locked_direct_withdrawal" in continuation
+    assert continuation.index("plan_requirement_withdrawal") < continuation.index(
         "_locked_direct_withdrawal"
     )
     dynamic = function_source("_validate_d30_dynamic_claim")

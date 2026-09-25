@@ -38,6 +38,7 @@ from groundloop.domain import (
     StatusDelta,
     SubjectKind,
     VerificationLabel,
+    normalized_text_hash,
 )
 from groundloop.errors import EventConflictError, InvalidEventError, ValidationError
 from groundloop.m4.contracts import (
@@ -139,6 +140,8 @@ _MATCHING_ABSENCE_LOCK_NAMESPACE = 1_295_338_833
 
 class _MatchingPhase(StrEnum):
     READY_TO_ADVANCE = "ready_to_advance"
+    STAGED_THROUGH_TIER_12 = "staged_through_tier_12"
+    STAGED_THROUGH_TIER_13 = "staged_through_tier_13"
     STAGED = "staged"
     CONSUMED = "consumed"
 
@@ -190,6 +193,9 @@ class _MatchingWritePlan:
     claim_certificate_artifact_rows: tuple[ClaimCertificateArtifact, ...] = ()
     group_binding_rows: tuple[WorkingGroupCertificateBinding, ...] = ()
     claim_binding_rows: tuple[WorkingClaimCertificateBinding, ...] = ()
+    document_direct_plan: _DocumentDirectPlan | None = None
+    expected_direct_m4_claim_after_images: tuple[_DirectStageImage, ...] = ()
+    expected_direct_m4_answer_after_images: tuple[_DirectStageImage, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -375,6 +381,63 @@ class _DocumentWithdrawalPreview:
     edge_transitions: tuple[_DocumentEdgeTransition, ...]
     mask_transitions: tuple[_DocumentMaskTransition, ...]
     groups: tuple[_DocumentGroupPreview, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _DocumentDirectClaimBefore:
+    """One exact published M4 direct claim point and its owner metadata."""
+
+    claim_id: str
+    answer_version_id: str
+    required: bool
+    support_count: int
+    refute_count: int
+    best_support_score: float | None
+    best_refute_score: float | None
+    supporting_observation_ids: tuple[str, ...]
+    refuting_observation_ids: tuple[str, ...]
+    status: ClaimStatus
+    certificate_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class _DocumentDirectAnswerBefore:
+    """One exact published M4 direct answer point."""
+
+    state: CombinedAnswerState
+
+
+@dataclass(frozen=True, slots=True)
+class _DocumentDirectClaimPlan:
+    """Exact current-direct claim before/after image for one withdrawal."""
+
+    claim_id: str
+    answer_version_id: str
+    required: bool
+    before_state: CombinedClaimState
+    before_certificate_digest: str
+    after_state: CombinedClaimState
+    after_certificate_digest: str
+    withdrawn_observation_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _DocumentDirectAnswerPlan:
+    """Exact direct-M4 answer before/after image after coalesced claim removal."""
+
+    before_state: CombinedAnswerState
+    after_state: CombinedAnswerState
+
+
+@dataclass(frozen=True, slots=True)
+class _DocumentDirectPlan:
+    """Bounded point-derived direct state affected by one document withdrawal."""
+
+    claims: tuple[_DocumentDirectClaimPlan, ...] = ()
+    answers: tuple[_DocumentDirectAnswerPlan, ...] = ()
+    withdrawn_observations: tuple[SemanticObservation, ...] = ()
+    remaining_observations: tuple[SemanticObservation, ...] = ()
+    observation_text_hashes: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -5008,13 +5071,705 @@ def _document_withdrawal_preview(
     )
 
 
+def _document_direct_policy(
+    cursor: Cursor[Any], decision_policy_version: str
+) -> DecisionPolicy:
+    row = cursor.execute(
+        """
+        SELECT policy_version, support_threshold, refute_threshold,
+               tie_rule_version
+        FROM groundloop_decision_policy
+        WHERE policy_version = %s
+        """,
+        (decision_policy_version,),
+    ).fetchone()
+    if row is None:
+        raise EventConflictError("document direct decision policy disappeared")
+    try:
+        policy = DecisionPolicy(
+            _text(row[0]), float(row[1]), float(row[2]), _text(row[3])
+        )
+    except (TypeError, ValueError, ValidationError) as error:
+        raise EventConflictError("document direct decision policy changed") from error
+    if policy.policy_version != decision_policy_version:
+        raise EventConflictError("document direct decision policy changed")
+    return policy
+
+
+def _document_direct_plan_from_points(
+    *,
+    claim_points: tuple[_DocumentDirectClaimBefore, ...],
+    answer_points: tuple[_DocumentDirectAnswerBefore, ...],
+    observations: tuple[SemanticObservation, ...],
+    observation_text_hashes: tuple[tuple[str, str], ...],
+    deactivated_chunks: tuple[str, ...],
+    policy: DecisionPolicy,
+) -> _DocumentDirectPlan:
+    """Derive direct M4 after-state from a bounded, exact point closure."""
+
+    claim_ids = tuple(point.claim_id for point in claim_points)
+    if claim_ids != tuple(sorted(set(claim_ids))):
+        raise EventConflictError("document direct claim authority is not canonical")
+    answer_ids = tuple(point.state.answer_version_id for point in answer_points)
+    if answer_ids != tuple(sorted(set(answer_ids))):
+        raise EventConflictError("document direct answer authority is not canonical")
+    observation_ids = tuple(observation.observation_id for observation in observations)
+    if observation_ids != tuple(sorted(set(observation_ids))):
+        raise EventConflictError(
+            "document direct observation authority is not canonical"
+        )
+    observation_by_id = {
+        observation.observation_id: observation for observation in observations
+    }
+    if type(observation_text_hashes) is not tuple or any(
+        type(item) is not tuple or len(item) != 2 for item in observation_text_hashes
+    ):
+        raise EventConflictError("document direct observation text hash changed")
+    if observation_text_hashes != tuple(
+        sorted(observation_text_hashes, key=lambda item: item[0])
+    ) or len({item[0] for item in observation_text_hashes}) != len(
+        observation_text_hashes
+    ):
+        raise EventConflictError(
+            "document direct observation text hashes are not canonical"
+        )
+    text_hash_by_observation: dict[str, str] = {}
+    for item in observation_text_hashes:
+        observation_id, text_hash = item
+        if type(observation_id) is not str or type(text_hash) is not str:
+            raise EventConflictError("document direct observation text hash changed")
+        try:
+            normalized_hash = _sha256_text(text_hash)
+        except ValidationError as error:
+            raise EventConflictError(
+                "document direct observation text hash changed"
+            ) from error
+        text_hash_by_observation[observation_id] = normalized_hash
+    if set(text_hash_by_observation) != set(observation_by_id):
+        raise EventConflictError(
+            "document direct observation text hash closure changed"
+        )
+    named_observation_ids = {
+        observation_id
+        for point in claim_points
+        for observation_id in (
+            *point.supporting_observation_ids,
+            *point.refuting_observation_ids,
+        )
+    }
+    if not named_observation_ids.issubset(observation_by_id):
+        raise EventConflictError("document direct observation closure changed")
+    claim_id_set = set(claim_ids)
+    for observation in observations:
+        if (
+            observation.subject_kind is not SubjectKind.CLAIM
+            or observation.subject_id not in claim_id_set
+        ):
+            raise EventConflictError("document direct observation owner changed")
+
+    deactivated = frozenset(deactivated_chunks)
+    claim_plans: list[_DocumentDirectClaimPlan] = []
+    for point in claim_points:
+        support_ids = point.supporting_observation_ids
+        refute_ids = point.refuting_observation_ids
+        if (
+            support_ids != tuple(sorted(set(support_ids)))
+            or refute_ids != tuple(sorted(set(refute_ids)))
+            or set(support_ids) & set(refute_ids)
+            or point.support_count
+            != len({text_hash_by_observation[value] for value in support_ids})
+            or point.refute_count
+            != len({text_hash_by_observation[value] for value in refute_ids})
+        ):
+            raise EventConflictError("document direct claim provenance changed")
+        for observation_id in (*support_ids, *refute_ids):
+            located_observation = observation_by_id.get(observation_id)
+            if located_observation is None or (
+                located_observation.subject_kind is not SubjectKind.CLAIM
+                or located_observation.subject_id != point.claim_id
+            ):
+                raise EventConflictError("document direct observation owner changed")
+            label = _direct_operational_label(
+                support_score=located_observation.support_score,
+                refute_score=located_observation.refute_score,
+                neutral_score=located_observation.neutral_score,
+                support_threshold=policy.support_threshold,
+                refute_threshold=policy.refute_threshold,
+            )
+            expected_label = (
+                VerificationLabel.SUPPORT
+                if observation_id in support_ids
+                else VerificationLabel.REFUTE
+            )
+            if label is not expected_label:
+                raise EventConflictError(
+                    "document direct observation policy label changed"
+                )
+        best_support = max(
+            (observation_by_id[value].support_score for value in support_ids),
+            default=None,
+        )
+        best_refute = max(
+            (observation_by_id[value].refute_score for value in refute_ids),
+            default=None,
+        )
+        status = _claim_status(supported=bool(support_ids), refuted=bool(refute_ids))
+        certificate_digest = _stable_m4_digest(
+            "m4-claim-certificate-v1",
+            point.claim_id,
+            support_ids[0] if support_ids else "",
+            refute_ids[0] if refute_ids else "",
+        )
+        if (
+            point.best_support_score != best_support
+            or point.best_refute_score != best_refute
+            or point.status is not status
+            or point.certificate_digest != certificate_digest
+        ):
+            raise EventConflictError("document direct claim before-image changed")
+        direct_ids = set((*support_ids, *refute_ids))
+        claim_observations = tuple(
+            observation
+            for observation in observations
+            if observation.subject_id == point.claim_id
+        )
+        for observation in claim_observations:
+            if observation.observation_id in direct_ids:
+                continue
+            label = _direct_operational_label(
+                support_score=observation.support_score,
+                refute_score=observation.refute_score,
+                neutral_score=observation.neutral_score,
+                support_threshold=policy.support_threshold,
+                refute_threshold=policy.refute_threshold,
+            )
+            if (
+                observation.chunk_version_id not in deactivated
+                or label is not VerificationLabel.NEUTRAL
+            ):
+                raise EventConflictError("document direct observation closure changed")
+        withdrawn_ids = tuple(
+            sorted(
+                observation.observation_id
+                for observation in claim_observations
+                if observation.chunk_version_id in deactivated
+            )
+        )
+        if not withdrawn_ids:
+            continue
+        withdrawn_set = set(withdrawn_ids)
+        support_after = tuple(
+            value for value in support_ids if value not in withdrawn_set
+        )
+        refute_after = tuple(
+            value for value in refute_ids if value not in withdrawn_set
+        )
+        after_state = CombinedClaimState(
+            point.claim_id,
+            len({text_hash_by_observation[value] for value in support_after}),
+            len({text_hash_by_observation[value] for value in refute_after}),
+            max(
+                (observation_by_id[value].support_score for value in support_after),
+                default=None,
+            ),
+            max(
+                (observation_by_id[value].refute_score for value in refute_after),
+                default=None,
+            ),
+            support_after,
+            refute_after,
+            0,
+            (),
+            _claim_status(supported=bool(support_after), refuted=bool(refute_after)),
+        )
+        claim_plans.append(
+            _DocumentDirectClaimPlan(
+                point.claim_id,
+                point.answer_version_id,
+                point.required,
+                CombinedClaimState(
+                    point.claim_id,
+                    point.support_count,
+                    point.refute_count,
+                    point.best_support_score,
+                    point.best_refute_score,
+                    support_ids,
+                    refute_ids,
+                    0,
+                    (),
+                    point.status,
+                ),
+                point.certificate_digest,
+                after_state,
+                _stable_m4_digest(
+                    "m4-claim-certificate-v1",
+                    point.claim_id,
+                    support_after[0] if support_after else "",
+                    refute_after[0] if refute_after else "",
+                ),
+                withdrawn_ids,
+            )
+        )
+
+    answers_by_id = {
+        point.state.answer_version_id: point.state for point in answer_points
+    }
+    affected_answer_ids = tuple(
+        sorted({plan.answer_version_id for plan in claim_plans})
+    )
+    if answer_ids != affected_answer_ids:
+        raise EventConflictError("document direct answer closure changed")
+    answer_plans: list[_DocumentDirectAnswerPlan] = []
+    for answer_id in affected_answer_ids:
+        before = answers_by_id[answer_id]
+        counts: Counter[ClaimStatus] = Counter(
+            {
+                ClaimStatus.SUPPORTED: before.supported_count,
+                ClaimStatus.UNSUPPORTED: before.unsupported_count,
+                ClaimStatus.REFUTED: before.refuted_count,
+                ClaimStatus.CONFLICTED: before.conflicted_count,
+            }
+        )
+        if (
+            sum(counts.values()) != before.required_claim_count
+            or _answer_status(counts, before.required_claim_count) is not before.status
+        ):
+            raise EventConflictError("document direct answer before-image changed")
+        for claim in claim_plans:
+            if claim.answer_version_id != answer_id or not claim.required:
+                continue
+            if claim.before_state.status is not claim.after_state.status:
+                counts[claim.before_state.status] -= 1
+                counts[claim.after_state.status] += 1
+        if min(counts.values(), default=0) < 0:
+            raise EventConflictError("document direct answer aggregation changed")
+        after = CombinedAnswerState(
+            answer_id,
+            before.required_claim_count,
+            counts[ClaimStatus.SUPPORTED],
+            counts[ClaimStatus.UNSUPPORTED],
+            counts[ClaimStatus.REFUTED],
+            counts[ClaimStatus.CONFLICTED],
+            _answer_status(counts, before.required_claim_count),
+        )
+        answer_plans.append(_DocumentDirectAnswerPlan(before, after))
+
+    remaining_observation_ids = {
+        observation_id
+        for claim in claim_plans
+        for observation_id in (
+            *claim.after_state.supporting_observation_ids,
+            *claim.after_state.refuting_observation_ids,
+        )
+    }
+    withdrawn_observation_ids = {
+        observation_id
+        for claim in claim_plans
+        for observation_id in claim.withdrawn_observation_ids
+    }
+    return _DocumentDirectPlan(
+        claims=tuple(claim_plans),
+        answers=tuple(answer_plans),
+        withdrawn_observations=tuple(
+            observation_by_id[value] for value in sorted(withdrawn_observation_ids)
+        ),
+        remaining_observations=tuple(
+            observation_by_id[value] for value in sorted(remaining_observation_ids)
+        ),
+        observation_text_hashes=observation_text_hashes,
+    )
+
+
+def _document_direct_plan_from_database(
+    cursor: Cursor[Any],
+    *,
+    epoch_id: int,
+    before_epoch_id: int,
+    source_id: str,
+    update_kind: str,
+    decision_policy_version: str,
+    candidate_claim_ids: tuple[str, ...],
+    expected_plan: _DocumentDirectPlan | None = None,
+) -> _DocumentDirectPlan:
+    """Point-read the exact published direct state named by a locator set."""
+
+    if candidate_claim_ids != tuple(sorted(set(candidate_claim_ids))):
+        raise ValidationError("document direct claim locator is not canonical")
+    deactivated_chunks = _document_deactivated_chunks(
+        cursor,
+        epoch_id=epoch_id,
+        source_id=source_id,
+        update_kind=update_kind,
+    )
+    policy = _document_direct_policy(cursor, decision_policy_version)
+    claim_points: list[_DocumentDirectClaimBefore] = []
+    for claim_id in candidate_claim_ids:
+        rows = cursor.execute(
+            """
+            SELECT claim.claim_id, claim.answer_version_id, claim.required,
+                   state.support_count, state.refute_count,
+                   state.best_support_score, state.best_refute_score,
+                   state.supporting_observation_ids,
+                   state.refuting_observation_ids, state.status,
+                   state.certificate_digest
+            FROM groundloop_claim AS claim
+            JOIN groundloop_published_claim_state AS state USING (claim_id)
+            WHERE claim.claim_id = %s
+              AND state.valid_from_epoch <= %s
+              AND (state.valid_to_epoch IS NULL OR %s < state.valid_to_epoch)
+            """,
+            (claim_id, before_epoch_id, before_epoch_id),
+        ).fetchall()
+        if len(rows) != 1:
+            raise EventConflictError("document direct claim point changed")
+        row = rows[0]
+        claim_points.append(
+            _DocumentDirectClaimBefore(
+                _text(row[0]),
+                _text(row[1]),
+                bool(row[2]),
+                int(row[3]),
+                int(row[4]),
+                None if row[5] is None else float(row[5]),
+                None if row[6] is None else float(row[6]),
+                tuple(_text(value) for value in row[7]),
+                tuple(_text(value) for value in row[8]),
+                ClaimStatus(_text(row[9])),
+                _sha256_text(row[10]),
+            )
+        )
+    named_observation_id_set = {
+        observation_id
+        for point in claim_points
+        for observation_id in (
+            *point.supporting_observation_ids,
+            *point.refuting_observation_ids,
+        )
+    }
+    if expected_plan is not None:
+        named_observation_id_set.update(
+            observation.observation_id
+            for observation in (
+                *expected_plan.withdrawn_observations,
+                *expected_plan.remaining_observations,
+            )
+        )
+    named_observation_ids = tuple(sorted(named_observation_id_set))
+    observations: list[SemanticObservation] = []
+    observation_text_hashes: list[tuple[str, str]] = []
+    if named_observation_ids:
+        rows = cursor.execute(
+            """
+            SELECT observation.observation_id,
+                   observation.subject_kind::text, observation.subject_id,
+                   observation.chunk_version_id, observation.task_type,
+                   observation.support_score, observation.refute_score,
+                   observation.neutral_score, observation.model_id,
+                   observation.model_version, observation.prompt_version,
+                   observation.input_hash, observation.eligible_for_currency,
+                   chunk.text, chunk.text_hash
+            FROM groundloop_semantic_observation AS observation
+            JOIN groundloop_chunk_version AS chunk USING (chunk_version_id)
+            WHERE observation.observation_id = ANY(%s)
+            ORDER BY observation.observation_id COLLATE "C"
+            """,
+            (list(named_observation_ids),),
+        ).fetchall()
+        if tuple(_text(row[0]) for row in rows) != named_observation_ids:
+            raise EventConflictError("document direct observation point changed")
+        for row in rows:
+            if row[12] is not True:
+                raise EventConflictError("document direct observation is ineligible")
+            try:
+                text_hash = _sha256_text(row[14])
+            except ValidationError as error:
+                raise EventConflictError(
+                    "document direct observation source changed"
+                ) from error
+            if text_hash != normalized_text_hash(_text(row[13])):
+                raise EventConflictError("document direct observation source changed")
+            try:
+                observation = SemanticObservation(
+                    observation_id=_text(row[0]),
+                    subject_kind=SubjectKind(_text(row[1])),
+                    subject_id=_text(row[2]),
+                    chunk_version_id=_text(row[3]),
+                    task_type=_text(row[4]),
+                    support_score=float(row[5]),
+                    refute_score=float(row[6]),
+                    neutral_score=float(row[7]),
+                    producer=ModelStamp(_text(row[8]), _text(row[9]), _text(row[10])),
+                    input_hash=_sha256_text(row[11]),
+                )
+            except (TypeError, ValueError, ValidationError) as error:
+                raise EventConflictError(
+                    "document direct observation point changed"
+                ) from error
+            observation_text_hashes.append((observation.observation_id, text_hash))
+            current = cursor.execute(
+                """
+                SELECT subject_kind::text, subject_id, chunk_version_id,
+                       task_type, observation_id, installed_revision
+                FROM groundloop_observation_currency
+                WHERE subject_kind = %s AND subject_id = %s
+                  AND chunk_version_id = %s AND task_type = %s
+                """,
+                observation.key,
+            ).fetchall()
+            published = cursor.execute(
+                """
+                SELECT subject_kind::text, subject_id, chunk_version_id,
+                       task_type, observation_id, valid_from_epoch,
+                       valid_to_epoch
+                FROM groundloop_published_observation_currency
+                WHERE subject_kind = %s AND subject_id = %s
+                  AND chunk_version_id = %s AND task_type = %s
+                  AND valid_from_epoch <= %s
+                  AND (valid_to_epoch IS NULL OR %s < valid_to_epoch)
+                """,
+                (*observation.key, before_epoch_id, before_epoch_id),
+            ).fetchall()
+            expected_key = tuple(
+                value.value if isinstance(value, SubjectKind) else value
+                for value in observation.key
+            )
+            if (
+                len(current) != 1
+                or len(published) != 1
+                or tuple(_text(value) for value in current[0][:4]) != expected_key
+                or _text(current[0][4]) != observation.observation_id
+                or isinstance(current[0][5], bool)
+                or int(current[0][5]) < 0
+                or tuple(_text(value) for value in published[0][:4]) != expected_key
+                or _text(published[0][4]) != observation.observation_id
+            ):
+                raise EventConflictError("document direct observation currency changed")
+            observations.append(observation)
+
+    answer_ids = tuple(sorted({point.answer_version_id for point in claim_points}))
+    answer_points: list[_DocumentDirectAnswerBefore] = []
+    for answer_id in answer_ids:
+        rows = cursor.execute(
+            """
+            SELECT required_claim_count, supported_count, unsupported_count,
+                   refuted_count, conflicted_count, status
+            FROM groundloop_published_answer_state
+            WHERE answer_version_id = %s AND valid_from_epoch <= %s
+              AND (valid_to_epoch IS NULL OR %s < valid_to_epoch)
+            """,
+            (answer_id, before_epoch_id, before_epoch_id),
+        ).fetchall()
+        if len(rows) != 1:
+            raise EventConflictError("document direct answer point changed")
+        row = rows[0]
+        answer_points.append(
+            _DocumentDirectAnswerBefore(
+                CombinedAnswerState(
+                    answer_id,
+                    int(row[0]),
+                    int(row[1]),
+                    int(row[2]),
+                    int(row[3]),
+                    int(row[4]),
+                    AnswerStatus(_text(row[5])),
+                )
+            )
+        )
+    direct_plan = _document_direct_plan_from_points(
+        claim_points=tuple(claim_points),
+        answer_points=tuple(answer_points),
+        observations=tuple(observations),
+        observation_text_hashes=tuple(observation_text_hashes),
+        deactivated_chunks=deactivated_chunks,
+        policy=policy,
+    )
+    if expected_plan is not None and direct_plan != expected_plan:
+        raise EventConflictError("document direct matching authority changed")
+    return direct_plan
+
+
+def _document_direct_plan_from_d29_authority(
+    cursor: Cursor[Any],
+    *,
+    authority: object,
+    epoch_id: int,
+    before_epoch_id: int,
+    source_id: str,
+    source_identity_hash: str,
+    update_kind: str,
+    decision_policy_version: str,
+) -> _DocumentDirectPlan:
+    """Validate and project the exact private D29 direct matching authority."""
+
+    from groundloop.m5.runtime.postgres_withdrawal import (
+        _D29DirectMatchingAuthority,
+        _validate_d29_direct_matching_authority,
+    )
+
+    if type(authority) is not _D29DirectMatchingAuthority:
+        raise ValidationError("document matching requires exact D29 direct authority")
+    _validate_d29_direct_matching_authority(
+        cursor,
+        epoch_id=epoch_id,
+        source_id=source_id,
+        source_identity_hash=source_identity_hash,
+        authority=authority,
+    )
+    try:
+        claim_points = tuple(
+            _DocumentDirectClaimBefore(
+                image.claim_id,
+                image.answer_version_id,
+                image.required,
+                image.support_count,
+                image.refute_count,
+                image.best_support_score,
+                image.best_refute_score,
+                image.supporting_observation_ids,
+                image.refuting_observation_ids,
+                ClaimStatus(image.status),
+                image.certificate_digest,
+            )
+            for image in authority.claim_before_images
+        )
+        answer_points = tuple(
+            _DocumentDirectAnswerBefore(
+                CombinedAnswerState(
+                    image.answer_version_id,
+                    image.required_claim_count,
+                    image.supported_count,
+                    image.unsupported_count,
+                    image.refuted_count,
+                    image.conflicted_count,
+                    AnswerStatus(image.status),
+                )
+            )
+            for image in authority.answer_before_images
+        )
+    except (TypeError, ValueError, ValidationError) as error:
+        raise EventConflictError("document direct authority state changed") from error
+    observations = tuple(
+        sorted(
+            (*authority.withdrawn_observations, *authority.remaining_observations),
+            key=lambda observation: observation.observation_id,
+        )
+    )
+    deactivated_chunks = _document_deactivated_chunks(
+        cursor,
+        epoch_id=epoch_id,
+        source_id=source_id,
+        update_kind=update_kind,
+    )
+    direct_plan = _document_direct_plan_from_points(
+        claim_points=claim_points,
+        answer_points=answer_points,
+        observations=observations,
+        observation_text_hashes=authority.observation_text_hashes,
+        deactivated_chunks=deactivated_chunks,
+        policy=_document_direct_policy(cursor, decision_policy_version),
+    )
+    claims_by_id = {claim.claim_id: claim for claim in direct_plan.claims}
+    if set(claims_by_id) != {image.claim_id for image in authority.claim_before_images}:
+        raise EventConflictError("document direct affected claims changed")
+    for image in authority.claim_before_images:
+        claim = claims_by_id[image.claim_id]
+        if (
+            claim.withdrawn_observation_ids != image.withdrawn_observation_ids
+            or claim.after_state.supporting_observation_ids
+            != image.remaining_support_observation_ids
+            or claim.after_state.refuting_observation_ids
+            != image.remaining_refute_observation_ids
+        ):
+            raise EventConflictError("document direct claim partition changed")
+    if (
+        direct_plan.withdrawn_observations != authority.withdrawn_observations
+        or direct_plan.remaining_observations != authority.remaining_observations
+        or direct_plan.observation_text_hashes != authority.observation_text_hashes
+    ):
+        raise EventConflictError("document direct observation partition changed")
+    return _document_direct_plan_from_database(
+        cursor,
+        epoch_id=epoch_id,
+        before_epoch_id=before_epoch_id,
+        source_id=source_id,
+        update_kind=update_kind,
+        decision_policy_version=decision_policy_version,
+        candidate_claim_ids=tuple(claim.claim_id for claim in direct_plan.claims),
+        expected_plan=direct_plan,
+    )
+
+
+def _document_direct_expected_claim_images(
+    intent: M5PersistedMatchingTransitionIntent,
+    direct_plan: _DocumentDirectPlan,
+) -> tuple[_DirectStageImage, ...]:
+    return tuple(
+        _DirectStageImage(
+            _DirectStageCoordinate(
+                "groundloop_m4_working_claim_state",
+                ("epoch_id", "claim_id"),
+                (intent.resulting_epoch_id, claim.claim_id),
+            ),
+            {
+                "epoch_id": intent.resulting_epoch_id,
+                "claim_id": claim.claim_id,
+                "support_count": claim.after_state.support_count,
+                "refute_count": claim.after_state.refute_count,
+                "best_support_score": claim.after_state.best_support_score,
+                "best_refute_score": claim.after_state.best_refute_score,
+                "supporting_observation_ids": list(
+                    claim.after_state.supporting_observation_ids
+                ),
+                "refuting_observation_ids": list(
+                    claim.after_state.refuting_observation_ids
+                ),
+                "status": claim.after_state.status.value,
+                "certificate_digest": claim.after_certificate_digest,
+                "updated_revision": intent.resulting_revision,
+            },
+        )
+        for claim in direct_plan.claims
+    )
+
+
+def _document_direct_expected_answer_images(
+    intent: M5PersistedMatchingTransitionIntent,
+    direct_plan: _DocumentDirectPlan,
+) -> tuple[_DirectStageImage, ...]:
+    return tuple(
+        _DirectStageImage(
+            _DirectStageCoordinate(
+                "groundloop_m4_working_answer_state",
+                ("epoch_id", "answer_version_id"),
+                (intent.resulting_epoch_id, answer.after_state.answer_version_id),
+            ),
+            {
+                "epoch_id": intent.resulting_epoch_id,
+                "answer_version_id": answer.after_state.answer_version_id,
+                "required_claim_count": answer.after_state.required_claim_count,
+                "supported_count": answer.after_state.supported_count,
+                "unsupported_count": answer.after_state.unsupported_count,
+                "refuted_count": answer.after_state.refuted_count,
+                "conflicted_count": answer.after_state.conflicted_count,
+                "status": answer.after_state.status.value,
+                "updated_revision": intent.resulting_revision,
+            },
+        )
+        for answer in direct_plan.answers
+    )
+
+
 def _document_affected_projection(
     cursor: Cursor[Any],
     *,
     before_epoch_id: int,
     preview: _DocumentWithdrawalPreview,
+    direct_claim_ids: tuple[str, ...] = (),
 ) -> dict[str, object]:
     """Build the complete transient D25 lock plan, including no-op reps."""
+
+    if direct_claim_ids != tuple(sorted(set(direct_claim_ids))):
+        raise ValidationError("document direct claim projection is not canonical")
 
     removed_ids = {row.observation_id for row in preview.removed_observations}
     selected_ids = {
@@ -5070,8 +5825,38 @@ def _document_affected_projection(
         or tuple(_text(row[0]) for row in owner_rows) != group_ids
     ):
         raise EventConflictError("document withdrawal group owner changed")
-    claim_ids = tuple(sorted({_text(row[1]) for row in owner_rows}))
-    answer_ids = tuple(sorted({_text(row[2]) for row in owner_rows}))
+    direct_owner_rows: tuple[tuple[object, ...], ...] = ()
+    if direct_claim_ids:
+        direct_owner_rows = tuple(
+            tuple(row)
+            for row in cursor.execute(
+                """
+                SELECT claim_id, answer_version_id, required
+                FROM groundloop_claim
+                WHERE claim_id = ANY(%s)
+                ORDER BY claim_id COLLATE "C"
+                """,
+                (list(direct_claim_ids),),
+            ).fetchall()
+        )
+        if tuple(_text(row[0]) for row in direct_owner_rows) != direct_claim_ids:
+            raise EventConflictError("document direct claim ownership changed")
+    claim_ids = tuple(
+        sorted(
+            {
+                *(_text(row[1]) for row in owner_rows),
+                *(_text(row[0]) for row in direct_owner_rows),
+            }
+        )
+    )
+    answer_ids = tuple(
+        sorted(
+            {
+                *(_text(row[2]) for row in owner_rows),
+                *(_text(row[1]) for row in direct_owner_rows),
+            }
+        )
+    )
     complete_after = {
         group.shape.group_version_id: group.hall_after.complete
         for group in preview.groups
@@ -5308,6 +6093,98 @@ def _lock_structural_matching_image(
         raise EventConflictError("structural matching working image already exists")
 
 
+def _document_direct_m4_target_ids(
+    intent: M5PersistedMatchingTransitionIntent,
+    images: tuple[_DirectStageImage, ...],
+    *,
+    relation_name: str,
+    key_columns: tuple[str, str],
+    label: str,
+) -> tuple[str, ...]:
+    """Pure-validate one exact direct-M4 target family before any SQL."""
+
+    object_ids: list[str] = []
+    for image in images:
+        if type(image) is not _DirectStageImage:
+            raise ValidationError(f"document direct {label} image has another key")
+        coordinate = image.coordinate
+        if (
+            type(coordinate) is not _DirectStageCoordinate
+            or coordinate.relation_name != relation_name
+            or coordinate.key_columns != key_columns
+            or type(coordinate.key_parts) is not tuple
+            or len(coordinate.key_parts) != 2
+            or type(coordinate.key_parts[0]) is not int
+            or coordinate.key_parts[0] != intent.resulting_epoch_id
+            or type(coordinate.key_parts[1]) is not str
+            or not coordinate.key_parts[1].strip()
+        ):
+            raise ValidationError(f"document direct {label} image has another key")
+        object_ids.append(coordinate.key_parts[1])
+    result = tuple(object_ids)
+    if result != tuple(sorted(set(result))):
+        raise ValidationError(f"document direct {label} image repeats a key")
+    return result
+
+
+def _lock_expected_document_direct_m4_claims(
+    cursor: Cursor[Any],
+    intent: M5PersistedMatchingTransitionIntent,
+    images: tuple[_DirectStageImage, ...],
+) -> None:
+    """Acquire expected direct-M4 claim target absences at tier 13."""
+
+    _document_direct_m4_target_ids(
+        intent,
+        images,
+        relation_name="groundloop_m4_working_claim_state",
+        key_columns=("epoch_id", "claim_id"),
+        label="claim",
+    )
+    for image in images:
+        coordinate = image.coordinate
+        _reserve_structural_working_absence(
+            cursor,
+            relation_name=coordinate.relation_name,
+            key_parts=coordinate.key_parts,
+            query="""
+                SELECT 1 FROM groundloop_m4_working_claim_state
+                WHERE epoch_id = %s AND claim_id = %s
+                FOR UPDATE
+            """,
+            parameters=coordinate.key_parts,
+        )
+
+
+def _lock_expected_document_direct_m4_answers(
+    cursor: Cursor[Any],
+    intent: M5PersistedMatchingTransitionIntent,
+    images: tuple[_DirectStageImage, ...],
+) -> None:
+    """Acquire expected direct-M4 answer target absences at tier 14."""
+
+    _document_direct_m4_target_ids(
+        intent,
+        images,
+        relation_name="groundloop_m4_working_answer_state",
+        key_columns=("epoch_id", "answer_version_id"),
+        label="answer",
+    )
+    for image in images:
+        coordinate = image.coordinate
+        _reserve_structural_working_absence(
+            cursor,
+            relation_name=coordinate.relation_name,
+            key_parts=coordinate.key_parts,
+            query="""
+                SELECT 1 FROM groundloop_m4_working_answer_state
+                WHERE epoch_id = %s AND answer_version_id = %s
+                FOR UPDATE
+            """,
+            parameters=coordinate.key_parts,
+        )
+
+
 def _lock_structural_intent_rows(
     cursor: Cursor[Any],
     intent: M5PersistedMatchingTransitionIntent,
@@ -5315,6 +6192,8 @@ def _lock_structural_intent_rows(
     update_kind: str,
     *,
     image_already_locked: bool = False,
+    document_direct_plan: _DocumentDirectPlan | None = None,
+    document_direct_authority: object | None = None,
 ) -> None:
     """Acquire structural D25 tiers 11b--14 from a pre-gathered intent."""
 
@@ -5557,6 +6436,103 @@ def _lock_structural_intent_rows(
             (intent.resulting_epoch_id, group_id),
         )
 
+    preview_plan = _MatchingWritePlan()
+    if update_kind in {"replace_group", "retire_group"}:
+        preview_plan = _structural_retirement_plan(cursor, intent)[1]
+    elif update_kind in {"document_delete", "document_replace"}:
+        preview_plan = _document_first_application_plan(
+            cursor,
+            intent,
+            update_kind=update_kind,
+            document_direct_plan=document_direct_plan,
+        )[1]
+    planned_group_artifacts = {
+        artifact.certificate_digest: artifact
+        for artifact in preview_plan.group_certificate_artifact_rows
+    }
+    planned_group_binding_digests = {
+        binding.certificate_digest for binding in preview_plan.group_binding_rows
+    }
+    for digest in sorted(planned_group_artifacts):
+        if _lock_or_reserve_group_certificate_artifact(
+            cursor, planned_group_artifacts[digest]
+        ):
+            raise EventConflictError(
+                "matching planned group certificate insertion already exists"
+            )
+    for digest in sorted(planned_group_binding_digests - set(planned_group_artifacts)):
+        artifact = _stored_group_certificate_artifact(cursor, digest, lock=True)
+        if artifact is None or artifact.certificate_digest != digest:
+            raise EventConflictError("matching group certificate authority changed")
+
+    direct_answer_before_images: tuple[Any, ...] = ()
+    if document_direct_authority is not None:
+        direct_claim_target_ids = _document_direct_m4_target_ids(
+            intent,
+            preview_plan.expected_direct_m4_claim_after_images,
+            relation_name="groundloop_m4_working_claim_state",
+            key_columns=("epoch_id", "claim_id"),
+            label="claim",
+        )
+        direct_answer_target_ids = _document_direct_m4_target_ids(
+            intent,
+            preview_plan.expected_direct_m4_answer_after_images,
+            relation_name="groundloop_m4_working_answer_state",
+            key_columns=("epoch_id", "answer_version_id"),
+            label="answer",
+        )
+        from groundloop.m5.runtime.postgres_withdrawal import (
+            _D29DirectMatchingAuthority,
+            _lock_d29_direct_answer_before_images,
+            _lock_d29_direct_claim_before_images,
+            _validate_d29_direct_matching_authority,
+        )
+
+        if (
+            type(document_direct_authority) is not _D29DirectMatchingAuthority
+            or document_direct_plan is None
+            or preview_plan.document_direct_plan is None
+        ):
+            raise ValidationError("document matching requires exact D29 authority")
+        direct_claim_before_images = document_direct_authority.claim_before_images
+        direct_answer_before_images = document_direct_authority.answer_before_images
+        if (
+            tuple(image.claim_id for image in direct_claim_before_images)
+            != direct_claim_target_ids
+            or direct_claim_target_ids
+            != tuple(
+                claim.claim_id for claim in preview_plan.document_direct_plan.claims
+            )
+            or tuple(image.answer_version_id for image in direct_answer_before_images)
+            != direct_answer_target_ids
+            or direct_answer_target_ids
+            != tuple(
+                answer.before_state.answer_version_id
+                for answer in preview_plan.document_direct_plan.answers
+            )
+        ):
+            raise EventConflictError("document direct M4 authority changed")
+        _validate_d29_direct_matching_authority(
+            cursor,
+            epoch_id=intent.resulting_epoch_id,
+            source_id=intent.source_id,
+            source_identity_hash=intent.source_identity_hash,
+            authority=document_direct_authority,
+        )
+        _lock_d29_direct_claim_before_images(
+            cursor,
+            direct_claim_before_images,
+            predecessor_epoch_id=intent.before_epoch_id,
+        )
+    elif document_direct_plan is not None:
+        raise ValidationError("document direct plan lacks D29 authority")
+
+    _lock_expected_document_direct_m4_claims(
+        cursor,
+        intent,
+        preview_plan.expected_direct_m4_claim_after_images,
+    )
+
     _lock_structural_logical_family(
         cursor,
         relation_name="groundloop_m5_published_claim_state",
@@ -5625,33 +6601,6 @@ def _lock_structural_intent_rows(
             (intent.resulting_epoch_id, claim_id),
         )
 
-    preview_plan = _MatchingWritePlan()
-    if update_kind in {"replace_group", "retire_group"}:
-        preview_plan = _structural_retirement_plan(cursor, intent)[1]
-    elif update_kind in {"document_delete", "document_replace"}:
-        preview_plan = _document_first_application_plan(
-            cursor,
-            intent,
-            update_kind=update_kind,
-        )[1]
-    planned_group_artifacts = {
-        artifact.certificate_digest: artifact
-        for artifact in preview_plan.group_certificate_artifact_rows
-    }
-    planned_group_binding_digests = {
-        binding.certificate_digest for binding in preview_plan.group_binding_rows
-    }
-    for digest in sorted(planned_group_artifacts):
-        if _lock_or_reserve_group_certificate_artifact(
-            cursor, planned_group_artifacts[digest]
-        ):
-            raise EventConflictError(
-                "matching planned group certificate insertion already exists"
-            )
-    for digest in sorted(planned_group_binding_digests - set(planned_group_artifacts)):
-        artifact = _stored_group_certificate_artifact(cursor, digest, lock=True)
-        if artifact is None or artifact.certificate_digest != digest:
-            raise EventConflictError("matching group certificate authority changed")
     planned_artifacts = {
         artifact.certificate_digest: artifact
         for artifact in preview_plan.claim_certificate_artifact_rows
@@ -5683,6 +6632,18 @@ def _lock_structural_intent_rows(
         ).fetchone()
         if artifact_row is None or _sha256_text(artifact_row[0]) != digest:
             raise EventConflictError("matching claim certificate authority changed")
+
+    if document_direct_authority is not None:
+        _lock_d29_direct_answer_before_images(
+            cursor,
+            direct_answer_before_images,
+            predecessor_epoch_id=intent.before_epoch_id,
+        )
+    _lock_expected_document_direct_m4_answers(
+        cursor,
+        intent,
+        preview_plan.expected_direct_m4_answer_after_images,
+    )
 
     _lock_structural_logical_family(
         cursor,
@@ -5786,6 +6747,13 @@ def _require_structural_absence_plan(
             (relation_name, (intent.resulting_epoch_id, object_id))
             for object_id in object_ids
         )
+    coordinates.extend(
+        (image.coordinate.relation_name, image.coordinate.key_parts)
+        for image in (
+            *plan.expected_direct_m4_claim_after_images,
+            *plan.expected_direct_m4_answer_after_images,
+        )
+    )
     for group_id in intent.group_certificate_ids:
         coordinates.extend(
             (
@@ -5895,6 +6863,12 @@ def _require_structural_absence_plan(
         )
     if len(set(coordinates)) != len(coordinates):
         raise ValidationError("structural absence plan repeats a coordinate")
+    for image in (
+        *plan.expected_direct_m4_claim_after_images,
+        *plan.expected_direct_m4_answer_after_images,
+    ):
+        if _direct_stage_row(cursor, image.coordinate, lock=False) is not None:
+            raise EventConflictError("document direct M4 target appeared")
     for relation_name, key_parts in coordinates:
         _require_matching_absence_reservation(cursor, relation_name, key_parts)
 
@@ -5956,7 +6930,7 @@ def _candidate_retained_replay_intent(
     return intent
 
 
-def derive_matching_transition_intent(
+def _derive_matching_transition_intent_core(
     cursor: Cursor[Any],
     epoch_id: int,
     expected_runtime_revision: int,
@@ -5964,6 +6938,8 @@ def derive_matching_transition_intent(
     source_kind: M5PersistedMatchingSourceKind,
     source_id: str,
     expected_source_identity_hash: str | None = None,
+    *,
+    document_direct_authority: object | None,
 ) -> M5PersistedMatchingTransitionIntent:
     """Derive one source-present intent while retaining every frozen lock."""
 
@@ -5975,6 +6951,11 @@ def derive_matching_transition_intent(
     _require_text("source_id", source_id)
     if expected_source_identity_hash is not None:
         _require_sha256("expected_source_identity_hash", expected_source_identity_hash)
+    if (
+        document_direct_authority is not None
+        and source_kind is not M5PersistedMatchingSourceKind.STRUCTURAL_OPEN
+    ):
+        raise ValidationError("direct document authority requires structural_open")
     require_persisted_matching_bundle(cursor)
     transition_mode = cursor.execute(
         "SELECT current_setting('groundloop.m5_matching_mode', true)"
@@ -6168,8 +7149,14 @@ def derive_matching_transition_intent(
     ):
         raise EventConflictError("structural matching predecessor point changed")
     update_kind = _text(source[4])
+    if document_direct_authority is not None and update_kind not in {
+        "document_delete",
+        "document_replace",
+    }:
+        raise ValidationError("direct document authority requires delete or replace")
     affected_values: dict[str, object]
     structural_image_already_locked = False
+    document_direct_plan: _DocumentDirectPlan | None = None
     if update_kind == "document_insert":
         affected_values = {
             "group_shapes": (),
@@ -6204,10 +7191,26 @@ def derive_matching_transition_intent(
             reserve_currency_targets=True,
             lock_image_before_discovery=True,
         )
+        direct_claim_ids: tuple[str, ...] = ()
+        if document_direct_authority is not None:
+            document_direct_plan = _document_direct_plan_from_d29_authority(
+                cursor,
+                authority=document_direct_authority,
+                epoch_id=epoch_id,
+                before_epoch_id=int(source[1]),
+                source_id=source_id,
+                source_identity_hash=source_identity_hash,
+                update_kind=update_kind,
+                decision_policy_version=_text(source[3]),
+            )
+            direct_claim_ids = tuple(
+                claim.claim_id for claim in document_direct_plan.claims
+            )
         affected_values = _document_affected_projection(
             cursor,
             before_epoch_id=int(source[1]),
             preview=document_preview,
+            direct_claim_ids=direct_claim_ids,
         )
         structural_image_already_locked = True
     else:
@@ -6241,8 +7244,57 @@ def derive_matching_transition_intent(
         logical_presence,
         update_kind,
         image_already_locked=structural_image_already_locked,
+        document_direct_plan=document_direct_plan,
+        document_direct_authority=document_direct_authority,
     )
     return intent
+
+
+def derive_matching_transition_intent(
+    cursor: Cursor[Any],
+    epoch_id: int,
+    expected_runtime_revision: int,
+    resulting_revision: int,
+    source_kind: M5PersistedMatchingSourceKind,
+    source_id: str,
+    expected_source_identity_hash: str | None = None,
+) -> M5PersistedMatchingTransitionIntent:
+    """Retained public derivation with no hidden document authority channel."""
+
+    return _derive_matching_transition_intent_core(
+        cursor,
+        epoch_id,
+        expected_runtime_revision,
+        resulting_revision,
+        source_kind,
+        source_id,
+        expected_source_identity_hash,
+        document_direct_authority=None,
+    )
+
+
+def _derive_matching_transition_intent_with_document_authority(
+    cursor: Cursor[Any],
+    epoch_id: int,
+    expected_runtime_revision: int,
+    resulting_revision: int,
+    source_kind: M5PersistedMatchingSourceKind,
+    source_id: str,
+    document_direct_authority: object,
+    expected_source_identity_hash: str | None = None,
+) -> M5PersistedMatchingTransitionIntent:
+    """Private structural derivation bound to D29's consumed direct authority."""
+
+    return _derive_matching_transition_intent_core(
+        cursor,
+        epoch_id,
+        expected_runtime_revision,
+        resulting_revision,
+        source_kind,
+        source_id,
+        expected_source_identity_hash,
+        document_direct_authority=document_direct_authority,
+    )
 
 
 def _overlay_work_from_values(values: Sequence[int]) -> M5OverlayWork:
@@ -9799,6 +10851,7 @@ def _document_first_application_plan(
     intent: M5PersistedMatchingTransitionIntent,
     *,
     update_kind: str,
+    document_direct_plan: _DocumentDirectPlan | None = None,
 ) -> tuple[
     M5PersistedMatchingPatchArtifact,
     _MatchingWritePlan,
@@ -9820,10 +10873,27 @@ def _document_first_application_plan(
         lock_image_before_discovery=False,
         intent=intent,
     )
+    direct_plan = (
+        _DocumentDirectPlan()
+        if document_direct_plan is None
+        else _document_direct_plan_from_database(
+            cursor,
+            epoch_id=intent.resulting_epoch_id,
+            before_epoch_id=intent.before_epoch_id,
+            source_id=intent.source_id,
+            update_kind=update_kind,
+            decision_policy_version=intent.decision_policy_version,
+            candidate_claim_ids=tuple(
+                claim.claim_id for claim in document_direct_plan.claims
+            ),
+            expected_plan=document_direct_plan,
+        )
+    )
     projected = _document_affected_projection(
         cursor,
         before_epoch_id=intent.before_epoch_id,
         preview=preview,
+        direct_claim_ids=tuple(claim.claim_id for claim in direct_plan.claims),
     )
     official = {
         "group_shapes": intent.group_shapes,
@@ -10098,6 +11168,28 @@ def _document_first_application_plan(
     }
     if set(owners) != set(intent.group_state_ids):
         raise EventConflictError("document group ownership changed")
+    direct_claims = {claim.claim_id: claim for claim in direct_plan.claims}
+    affected_claim_owners: dict[str, tuple[str, bool]] = {}
+    for owner_claim_id, owner_answer_id, owner_required in owners.values():
+        existing_owner = affected_claim_owners.setdefault(
+            owner_claim_id, (owner_answer_id, owner_required)
+        )
+        if existing_owner != (owner_answer_id, owner_required):
+            raise EventConflictError("document claim ownership changed")
+    for direct_claim in direct_plan.claims:
+        existing_owner = affected_claim_owners.setdefault(
+            direct_claim.claim_id,
+            (direct_claim.answer_version_id, direct_claim.required),
+        )
+        if existing_owner != (
+            direct_claim.answer_version_id,
+            direct_claim.required,
+        ):
+            raise EventConflictError("document direct claim ownership changed")
+    if set(affected_claim_owners) != set(intent.claim_state_ids) or {
+        value[0] for value in affected_claim_owners.values()
+    } != set(intent.answer_state_ids):
+        raise EventConflictError("document affected owner projection changed")
     claim_before: dict[str, _ClaimStateWrite] = {}
     claim_after: dict[str, _ClaimStateWrite] = {}
     claim_artifacts: dict[str, ClaimCertificateArtifact] = {}
@@ -10113,6 +11205,22 @@ def _document_first_application_plan(
             or claim_binding.certificate_digest != claim_prior.certificate_digest
         ):
             raise EventConflictError("document claim binding/state changed")
+        direct_claim_plan = direct_claims.get(claim_id)
+        if direct_claim_plan is not None and (
+            claim_prior.state.support_count
+            != direct_claim_plan.before_state.support_count
+            or claim_prior.state.refute_count
+            != direct_claim_plan.before_state.refute_count
+            or claim_prior.state.best_support_score
+            != direct_claim_plan.before_state.best_support_score
+            or claim_prior.state.best_refute_score
+            != direct_claim_plan.before_state.best_refute_score
+            or claim_prior.state.supporting_observation_ids
+            != direct_claim_plan.before_state.supporting_observation_ids
+            or claim_prior.state.refuting_observation_ids
+            != direct_claim_plan.before_state.refuting_observation_ids
+        ):
+            raise EventConflictError("document direct and combined claim states differ")
         complete_groups = set(claim_prior.state.complete_group_ids)
         for group_id, (owner_claim_id, _, _) in owners.items():
             if owner_claim_id != claim_id:
@@ -10126,18 +11234,23 @@ def _document_first_application_plan(
             else:
                 complete_groups.discard(group_id)
         complete_group_ids = tuple(sorted(complete_groups))
+        direct_after_state = (
+            claim_prior.state
+            if direct_claim_plan is None
+            else direct_claim_plan.after_state
+        )
         claim_result_status = _claim_status(
-            supported=bool(claim_prior.state.support_count or complete_group_ids),
-            refuted=bool(claim_prior.state.refute_count),
+            supported=bool(direct_after_state.support_count or complete_group_ids),
+            refuted=bool(direct_after_state.refute_count),
         )
         claim_result_state = CombinedClaimState(
             claim_id,
-            claim_prior.state.support_count,
-            claim_prior.state.refute_count,
-            claim_prior.state.best_support_score,
-            claim_prior.state.best_refute_score,
-            claim_prior.state.supporting_observation_ids,
-            claim_prior.state.refuting_observation_ids,
+            direct_after_state.support_count,
+            direct_after_state.refute_count,
+            direct_after_state.best_support_score,
+            direct_after_state.best_refute_score,
+            direct_after_state.supporting_observation_ids,
+            direct_after_state.refuting_observation_ids,
             len(complete_group_ids),
             complete_group_ids,
             claim_result_status,
@@ -10170,8 +11283,9 @@ def _document_first_application_plan(
                 ClaimStatus.CONFLICTED: answer_prior.conflicted_count,
             }
         )
-        affected_claim_owners = sorted(set(owners.values()))
-        for claim_id, owner_answer_id, required in affected_claim_owners:
+        for claim_id, (owner_answer_id, required) in sorted(
+            affected_claim_owners.items()
+        ):
             if owner_answer_id != answer_id or not required:
                 continue
             old_status = claim_before[claim_id].state.status
@@ -10521,6 +11635,17 @@ def _document_first_application_plan(
         claim_certificate_artifact_rows=tuple(claim_artifact_writes),
         group_binding_rows=tuple(group_binding_writes),
         claim_binding_rows=tuple(claim_binding_writes),
+        document_direct_plan=(None if document_direct_plan is None else direct_plan),
+        expected_direct_m4_claim_after_images=(
+            ()
+            if document_direct_plan is None
+            else _document_direct_expected_claim_images(intent, direct_plan)
+        ),
+        expected_direct_m4_answer_after_images=(
+            ()
+            if document_direct_plan is None
+            else _document_direct_expected_answer_images(intent, direct_plan)
+        ),
     )
     document_write_counts = _D24OwnedWriteCounts(
         group_state_write_count=len(group_writes),
@@ -10570,7 +11695,11 @@ def _document_currency_before_images_for_intent(
 
 
 def _structural_first_application_plan(
-    cursor: Cursor[Any], intent: M5PersistedMatchingTransitionIntent
+    cursor: Cursor[Any],
+    intent: M5PersistedMatchingTransitionIntent,
+    *,
+    document_direct_authority: object | None = None,
+    expected_document_direct_plan: _DocumentDirectPlan | None = None,
 ) -> tuple[
     M5PersistedMatchingPatchArtifact,
     _MatchingWritePlan,
@@ -10605,11 +11734,30 @@ def _structural_first_application_plan(
         raise EventConflictError("structural matching source changed after intent")
     update_kind = _text(row[0])
     if update_kind in {"document_delete", "document_replace"}:
+        if document_direct_authority is not None:
+            if expected_document_direct_plan is not None:
+                raise ValidationError("document direct authority is duplicated")
+            expected_document_direct_plan = _document_direct_plan_from_d29_authority(
+                cursor,
+                authority=document_direct_authority,
+                epoch_id=intent.resulting_epoch_id,
+                before_epoch_id=intent.before_epoch_id,
+                source_id=intent.source_id,
+                source_identity_hash=intent.source_identity_hash,
+                update_kind=update_kind,
+                decision_policy_version=intent.decision_policy_version,
+            )
         return _document_first_application_plan(
             cursor,
             intent,
             update_kind=update_kind,
+            document_direct_plan=expected_document_direct_plan,
         )
+    if (
+        document_direct_authority is not None
+        or expected_document_direct_plan is not None
+    ):
+        raise ValidationError("non-document matching received direct authority")
     if update_kind in {"register_group", "replace_group", "retire_group"}:
         expected_projection = _structural_group_projection(
             cursor,
@@ -10790,6 +11938,28 @@ def _matching_stage_coordinates(
                 claim_binding.valid_from_revision,
             ),
         )
+    family_order = {
+        "groundloop_m5_matching_image_working": 0,
+        "groundloop_m5_matching_observation_working": 1,
+        "groundloop_m5_matching_edge_working": 2,
+        "groundloop_m5_matching_hash_mask_working": 3,
+        "groundloop_m5_matching_hall_working": 4,
+        "groundloop_m5_working_requirement_state": 5,
+        "groundloop_m5_working_group_state": 6,
+        "groundloop_m5_group_certificate_artifact": 7,
+        "groundloop_m5_group_certificate_artifact_row": 8,
+        "groundloop_m5_working_group_certificate_binding": 9,
+        "groundloop_m5_working_claim_state": 10,
+        "groundloop_m5_claim_certificate_artifact": 11,
+        "groundloop_m5_working_claim_certificate_binding": 12,
+        "groundloop_m5_working_answer_state": 13,
+    }
+    coordinates.sort(
+        key=lambda coordinate: (
+            family_order[coordinate.relation_name],
+            coordinate.journal_key[1],
+        )
+    )
     journal_keys = tuple(coordinate.journal_key for coordinate in coordinates)
     if len(set(journal_keys)) != len(journal_keys):
         raise ValidationError("matching stage plan repeats a journal key")
@@ -10837,11 +12007,13 @@ def _matching_stage_before_map(
     return before
 
 
-def _prepare_matching_transition(
+def _prepare_matching_transition_core(
     cursor: Cursor[Any],
     intent: M5PersistedMatchingTransitionIntent,
     expected_patch_digest: str | None = None,
     expected_work: M5OverlayWork | None = None,
+    *,
+    document_direct_authority: object | None,
 ) -> _PreparedMatchingTransition:
     """Bind a complete prewrite plan to the exact authorised cursor."""
 
@@ -10869,7 +12041,11 @@ def _prepare_matching_transition(
     currency_before_images: tuple[_ObservationCurrencyBeforeImage, ...] = ()
     if intent.source_kind is M5PersistedMatchingSourceKind.STRUCTURAL_OPEN:
         artifact, plan, d24_counts, requirement_count = (
-            _structural_first_application_plan(cursor, intent)
+            _structural_first_application_plan(
+                cursor,
+                intent,
+                document_direct_authority=document_direct_authority,
+            )
         )
         if plan.observation_currency_rows:
             currency_before_images = _document_currency_before_images_for_intent(
@@ -10878,6 +12054,8 @@ def _prepare_matching_transition(
         _require_structural_absence_plan(cursor, intent, plan)
         base_header, runtime_header = _header_images(cursor, intent.resulting_epoch_id)
     elif intent.source_kind is M5PersistedMatchingSourceKind.REQUIREMENT_COMPLETION:
+        if document_direct_authority is not None:
+            raise ValidationError("direct document authority requires structural_open")
         (
             artifact,
             plan,
@@ -10923,6 +12101,41 @@ def _prepare_matching_transition(
     prepared.prepared_identity = id(prepared)
     _seal_prepared_authority(prepared)
     return prepared
+
+
+def _prepare_matching_transition(
+    cursor: Cursor[Any],
+    intent: M5PersistedMatchingTransitionIntent,
+    expected_patch_digest: str | None = None,
+    expected_work: M5OverlayWork | None = None,
+) -> _PreparedMatchingTransition:
+    """Retained prepare path with no hidden document authority channel."""
+
+    return _prepare_matching_transition_core(
+        cursor,
+        intent,
+        expected_patch_digest,
+        expected_work,
+        document_direct_authority=None,
+    )
+
+
+def _prepare_matching_transition_with_document_authority(
+    cursor: Cursor[Any],
+    intent: M5PersistedMatchingTransitionIntent,
+    document_direct_authority: object,
+    expected_patch_digest: str | None = None,
+    expected_work: M5OverlayWork | None = None,
+) -> _PreparedMatchingTransition:
+    """Private prepare path for one validated D29 direct authority."""
+
+    return _prepare_matching_transition_core(
+        cursor,
+        intent,
+        expected_patch_digest,
+        expected_work,
+        document_direct_authority=document_direct_authority,
+    )
 
 
 def _stage_before_row(
@@ -11218,7 +12431,7 @@ def _validate_staged_observation_currency(
         )
 
 
-def _stage_matching_write_plan(
+def _stage_matching_write_plan_fragment(
     cursor: Cursor[Any],
     intent: M5PersistedMatchingTransitionIntent,
     plan: _MatchingWritePlan,
@@ -11612,8 +12825,6 @@ def _stage_matching_write_plan(
         if inserted is None or _text(inserted[0]) != claim_state.claim_id:
             raise EventConflictError("matching claim-state stage changed")
     for answer_state in plan.answer_state_rows:
-        if not plan.claim_state_rows:
-            raise ValidationError("answer-state plan lacks its claim-state owner")
         key_parts = (intent.resulting_epoch_id, answer_state.answer_version_id)
         before = _stage_before_row(
             before_images, "groundloop_m5_working_answer_state", key_parts
@@ -11876,6 +13087,58 @@ def _stage_matching_write_plan(
             int(inserted[1]),
         ) != (claim_binding.claim_id, claim_binding.valid_from_revision):
             raise EventConflictError("matching claim-binding stage changed")
+
+
+def _matching_tier_12_write_plan(plan: _MatchingWritePlan) -> _MatchingWritePlan:
+    """Project exactly the tier-11c--12b families from one sealed plan."""
+
+    return _MatchingWritePlan(
+        observation_rows=plan.observation_rows,
+        edge_rows=plan.edge_rows,
+        mask_rows=plan.mask_rows,
+        hall_rows=plan.hall_rows,
+        requirement_state_rows=plan.requirement_state_rows,
+        group_state_rows=plan.group_state_rows,
+        group_certificate_artifact_rows=plan.group_certificate_artifact_rows,
+        group_binding_rows=plan.group_binding_rows,
+    )
+
+
+def _matching_tier_13_write_plan(plan: _MatchingWritePlan) -> _MatchingWritePlan:
+    """Project exactly the tier-13 claim/certificate/binding families."""
+
+    return _MatchingWritePlan(
+        claim_state_rows=plan.claim_state_rows,
+        claim_certificate_artifact_rows=plan.claim_certificate_artifact_rows,
+        claim_binding_rows=plan.claim_binding_rows,
+    )
+
+
+def _matching_tier_14_write_plan(plan: _MatchingWritePlan) -> _MatchingWritePlan:
+    """Project exactly the tier-14 answer-state family."""
+
+    if plan.answer_state_rows and not plan.claim_state_rows:
+        raise ValidationError("answer-state plan lacks its claim-state owner")
+    return _MatchingWritePlan(answer_state_rows=plan.answer_state_rows)
+
+
+def _stage_matching_write_plan(
+    cursor: Cursor[Any],
+    intent: M5PersistedMatchingTransitionIntent,
+    plan: _MatchingWritePlan,
+    before_images: dict[tuple[str, bytes], object | None],
+) -> None:
+    """Retained monolithic wrapper over the exact tier-12/13/14 fragments."""
+
+    _stage_matching_write_plan_fragment(
+        cursor, intent, _matching_tier_12_write_plan(plan), before_images
+    )
+    _stage_matching_write_plan_fragment(
+        cursor, intent, _matching_tier_13_write_plan(plan), before_images
+    )
+    _stage_matching_write_plan_fragment(
+        cursor, intent, _matching_tier_14_write_plan(plan), before_images
+    )
 
 
 _STAGE_JOURNAL_RELATIONS = (
@@ -12438,7 +13701,11 @@ def _validate_prepared_matching_write_plan(
             recomputed_plan,
             recomputed_counts,
             recomputed_requirement_count,
-        ) = _structural_first_application_plan(cursor, intent)
+        ) = _structural_first_application_plan(
+            cursor,
+            intent,
+            expected_document_direct_plan=plan.document_direct_plan,
+        )
         if recomputed_artifact != artifact:
             raise EventConflictError(
                 "matching prepared patch or held before image changed"
@@ -12573,28 +13840,13 @@ def _validate_prepared_matching_write_plan(
         raise EventConflictError("matching staged before image changed")
 
 
-def _stage_prepared_matching_transition(
+def _stage_matching_image(
     cursor: Cursor[Any],
     intent: M5PersistedMatchingTransitionIntent,
     prepared: _PreparedMatchingTransition,
-) -> _PreparedMatchingTransition:
-    """Write only the already-planned tier-11b--14 D25 rows."""
+) -> None:
+    """Write the one tier-11b matching-image row from sealed authority."""
 
-    _validate_prepared_identity(
-        cursor, intent, prepared, phase=_MatchingPhase.READY_TO_ADVANCE
-    )
-    _validate_prepared_matching_write_plan(cursor, intent, prepared)
-    if _header_images(cursor, intent.resulting_epoch_id) != (
-        prepared.base_header_after_image,
-        prepared.runtime_header_after_image,
-    ):
-        raise EventConflictError("matching header after-image changed before stage")
-    _stage_observation_currency_plan(
-        cursor,
-        intent,
-        prepared.physical_and_logical_write_plan,
-        prepared.observation_currency_before_images,
-    )
     before_images = _matching_stage_before_map(prepared)
     image_before = _stage_before_row(
         before_images,
@@ -12637,14 +13889,169 @@ def _stage_prepared_matching_transition(
         ).fetchone()
         if updated is None:
             raise EventConflictError("matching image changed before stage")
-    _stage_matching_write_plan(
+
+
+def _validate_expected_document_direct_m4_images(
+    cursor: Cursor[Any],
+    images: tuple[_DirectStageImage, ...],
+    *,
+    relation_name: str,
+    epoch_id: int,
+) -> None:
+    """Require one epoch-wide M4 family to equal its sealed after-images."""
+
+    if relation_name == "groundloop_m4_working_claim_state":
+        key_columns = ("epoch_id", "claim_id")
+        rows = cursor.execute(
+            """
+            SELECT epoch_id, claim_id, to_jsonb(row_value)
+            FROM groundloop_m4_working_claim_state AS row_value
+            WHERE epoch_id = %s
+            """,
+            (epoch_id,),
+        ).fetchall()
+    elif relation_name == "groundloop_m4_working_answer_state":
+        key_columns = ("epoch_id", "answer_version_id")
+        rows = cursor.execute(
+            """
+            SELECT epoch_id, answer_version_id, to_jsonb(row_value)
+            FROM groundloop_m4_working_answer_state AS row_value
+            WHERE epoch_id = %s
+            """,
+            (epoch_id,),
+        ).fetchall()
+    else:
+        raise EventConflictError("document direct M4 after-image changed")
+
+    actual: dict[tuple[object, ...], object] = {}
+    for row in rows:
+        actual_key = (int(row[0]), _text(row[1]))
+        if actual_key in actual:
+            raise EventConflictError("document direct M4 staged keys repeat")
+        actual[actual_key] = row[2]
+
+    expected: dict[tuple[object, ...], object] = {}
+    for image in images:
+        if (
+            type(image) is not _DirectStageImage
+            or type(image.coordinate) is not _DirectStageCoordinate
+            or image.coordinate.relation_name != relation_name
+            or image.coordinate.key_columns != key_columns
+            or len(image.coordinate.key_parts) != 2
+            or image.coordinate.key_parts[0] != epoch_id
+            or not isinstance(image.row_json, dict)
+        ):
+            raise EventConflictError("document direct M4 after-image changed")
+        expected_key = image.coordinate.key_parts
+        if expected_key in expected:
+            raise EventConflictError("document direct M4 after-image keys repeat")
+        expected[expected_key] = image.row_json
+
+    if set(actual) != set(expected):
+        raise EventConflictError("document direct M4 staged keys differ")
+    if actual != expected:
+        raise EventConflictError("document direct M4 staged row differs")
+
+
+def _stage_prepared_matching_transition_through_tier_12(
+    cursor: Cursor[Any],
+    intent: M5PersistedMatchingTransitionIntent,
+    prepared: _PreparedMatchingTransition,
+) -> _PreparedMatchingTransition:
+    """Validate originals once, then write exact D25 tiers 11a--12b."""
+
+    _validate_prepared_identity(
+        cursor, intent, prepared, phase=_MatchingPhase.READY_TO_ADVANCE
+    )
+    _validate_prepared_matching_write_plan(cursor, intent, prepared)
+    if _header_images(cursor, intent.resulting_epoch_id) != (
+        prepared.base_header_after_image,
+        prepared.runtime_header_after_image,
+    ):
+        raise EventConflictError("matching header after-image changed before stage")
+    _stage_observation_currency_plan(
         cursor,
         intent,
         prepared.physical_and_logical_write_plan,
-        before_images,
+        prepared.observation_currency_before_images,
+    )
+    _stage_matching_image(cursor, intent, prepared)
+    _stage_matching_write_plan_fragment(
+        cursor,
+        intent,
+        _matching_tier_12_write_plan(prepared.physical_and_logical_write_plan),
+        _matching_stage_before_map(prepared),
+    )
+    prepared.phase = _MatchingPhase.STAGED_THROUGH_TIER_12
+    return prepared
+
+
+def _stage_prepared_matching_transition_through_tier_13(
+    cursor: Cursor[Any],
+    intent: M5PersistedMatchingTransitionIntent,
+    prepared: _PreparedMatchingTransition,
+) -> _PreparedMatchingTransition:
+    """Write only exact D25 tier-13 claim/certificate/binding rows."""
+
+    _validate_prepared_identity(
+        cursor, intent, prepared, phase=_MatchingPhase.STAGED_THROUGH_TIER_12
+    )
+    plan = prepared.physical_and_logical_write_plan
+    if plan.document_direct_plan is not None:
+        _validate_expected_document_direct_m4_images(
+            cursor,
+            plan.expected_direct_m4_claim_after_images,
+            relation_name="groundloop_m4_working_claim_state",
+            epoch_id=intent.resulting_epoch_id,
+        )
+    _stage_matching_write_plan_fragment(
+        cursor,
+        intent,
+        _matching_tier_13_write_plan(plan),
+        _matching_stage_before_map(prepared),
+    )
+    prepared.phase = _MatchingPhase.STAGED_THROUGH_TIER_13
+    return prepared
+
+
+def _stage_prepared_matching_transition_through_tier_14(
+    cursor: Cursor[Any],
+    intent: M5PersistedMatchingTransitionIntent,
+    prepared: _PreparedMatchingTransition,
+) -> _PreparedMatchingTransition:
+    """Write only exact D25 tier-14 answer rows and expose STAGED."""
+
+    _validate_prepared_identity(
+        cursor, intent, prepared, phase=_MatchingPhase.STAGED_THROUGH_TIER_13
+    )
+    plan = prepared.physical_and_logical_write_plan
+    if plan.document_direct_plan is not None:
+        _validate_expected_document_direct_m4_images(
+            cursor,
+            plan.expected_direct_m4_answer_after_images,
+            relation_name="groundloop_m4_working_answer_state",
+            epoch_id=intent.resulting_epoch_id,
+        )
+    _stage_matching_write_plan_fragment(
+        cursor,
+        intent,
+        _matching_tier_14_write_plan(plan),
+        _matching_stage_before_map(prepared),
     )
     prepared.phase = _MatchingPhase.STAGED
     return prepared
+
+
+def _stage_prepared_matching_transition(
+    cursor: Cursor[Any],
+    intent: M5PersistedMatchingTransitionIntent,
+    prepared: _PreparedMatchingTransition,
+) -> _PreparedMatchingTransition:
+    """Retained wrapper that advances the exact D25 tier phases in order."""
+
+    _stage_prepared_matching_transition_through_tier_12(cursor, intent, prepared)
+    _stage_prepared_matching_transition_through_tier_13(cursor, intent, prepared)
+    return _stage_prepared_matching_transition_through_tier_14(cursor, intent, prepared)
 
 
 def _finalize_prepared_matching_transition(

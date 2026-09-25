@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from copy import deepcopy
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from groundloop.domain import SubjectKind
-from groundloop.errors import EventConflictError
+from groundloop.errors import EventConflictError, ValidationError
 from groundloop.m4.application import ApplicationExecutionPolicy
 from groundloop.m4.contracts import stable_m4_digest
 from groundloop.m5.runtime import digests as runtime_digests
 from groundloop.m5.runtime import postgres_withdrawal
 from groundloop.m5.runtime.contracts import (
+    ActiveChunkSnapshot,
     M5AttemptDisposition,
     M5AttemptOutput,
     M5AttemptResultArtifact,
@@ -25,9 +28,14 @@ from groundloop.m5.runtime.contracts import (
     M5RequirementAdmittedPair,
     M5RequirementAdmittedPairSource,
     M5RequirementFallbackKey,
+    M5TypedEventPlan,
     SemanticPairKey,
 )
 from groundloop.m5.runtime.frontier import plan_requirement_withdrawal
+from groundloop.m5.runtime.persistence import (
+    _persist_active_chunk_snapshot,
+    _persist_requirement_snapshot,
+)
 from groundloop.m5.runtime.postgres_withdrawal import (
     _assert_zero_cancellation_authority,
     _candidate_edges,
@@ -267,11 +275,19 @@ def test_lineage_owner_excludes_valid_open_and_failed_but_rejects_malformed(
 def test_locked_derivation_uses_frozen_tier_sequence(
     function_source: Callable[[str], str],
 ) -> None:
-    source = function_source("_derive_locked_document_open")
-    ordered_calls = (
+    prepare = function_source("_prepare_locked_document_open")
+    prepare_calls = (
         "_validated_structural_source_chunks",
+        "_require_d30_read_committed",
         "_gather_d29_locator_authority",
+        "_assert_zero_cancellation_authority",
         "_lock_d29_bootstrap_provenance",
+    )
+    prepare_positions = tuple(prepare.index(call) for call in prepare_calls)
+    assert prepare_positions == tuple(sorted(prepare_positions))
+    continuation = function_source("_continue_locked_document_open")
+    continuation_calls = (
+        "_validate_d29_event_snapshot_image",
         "_lock_d29_touched_membership",
         "_lock_d29_scopes_and_reserve",
         "_lock_d29_jobs_and_reserve",
@@ -286,13 +302,20 @@ def test_locked_derivation_uses_frozen_tier_sequence(
         "_locked_direct_withdrawal",
         "_require_coordinate_subset",
     )
-    positions = tuple(source.index(call) for call in ordered_calls)
-    assert positions == tuple(sorted(positions))
-    assert "_direct_withdrawal_preview" not in source
-    assert "_bounded_requirement_plan" not in source
-    assert "_observation_edges(" not in source
-    assert "locator.predecessor_snapshots" in source
-    assert "locator.requirement_currency_keys" in source
+    continuation_positions = tuple(
+        continuation.index(call) for call in continuation_calls
+    )
+    assert continuation_positions == tuple(sorted(continuation_positions))
+    wrapper = function_source("_derive_locked_document_open")
+    assert wrapper.index("_prepare_locked_document_open") < wrapper.index(
+        "_continue_locked_document_open"
+    )
+    for source in (prepare, continuation, wrapper):
+        assert "_direct_withdrawal_preview" not in source
+        assert "_bounded_requirement_plan" not in source
+        assert "_observation_edges(" not in source
+    assert "locator.predecessor_snapshots" in continuation
+    assert "locator.requirement_currency_keys" in prepare
     locator_source = function_source("_gather_d29_locator_authority")
     assert locator_source.count("FROM groundloop_observation_currency") == 1
     observation_locator = locator_source.split("current_rows =", maxsplit=1)[1].split(
@@ -322,6 +345,981 @@ def test_locked_derivation_uses_frozen_tier_sequence(
     )
     relation_positions = tuple(tier_10.index(item) for item in tier_10_relations)
     assert relation_positions == tuple(sorted(relation_positions))
+
+
+def test_document_locator_authority_rejects_copy_reuse_and_changed_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = object()
+    event = SimpleNamespace(structural_event_id="event-1", payload_hash="a" * 64)
+    execution_policy = ApplicationExecutionPolicy("b" * 64, "c" * 64, "d" * 64)
+    binding = postgres_withdrawal._D29DocumentOpenBinding(
+        cursor_object_identity=id(cursor),
+        backend_identity=7,
+        transaction_identity=11,
+        session_role="groundloop",
+        epoch_id=13,
+        structural_event_id=event.structural_event_id,
+        source_identity_hash=event.payload_hash,
+        predecessor_epoch_id=12,
+        source_chunks=("chunk-1",),
+    )
+
+    monkeypatch.setattr(postgres_withdrawal, "_document_event", lambda value: value)
+    monkeypatch.setattr(
+        postgres_withdrawal,
+        "_capture_d29_document_open_binding",
+        lambda current_cursor, *_args: replace(
+            binding, cursor_object_identity=id(current_cursor)
+        ),
+    )
+
+    def prepared_authority() -> postgres_withdrawal._PreparedDocumentOpen:
+        prepared = postgres_withdrawal._PreparedDocumentOpen(
+            binding=binding,
+            prepared_identity=0,
+            event=event,  # type: ignore[arg-type]
+            execution_policy=execution_policy,
+            closure=SimpleNamespace(),  # type: ignore[arg-type]
+            source_chunks=("chunk-1",),
+            locator=SimpleNamespace(),  # type: ignore[arg-type]
+            located_observation_edges=(),
+            bootstrap_authority=(),
+        )
+        prepared.prepared_identity = id(prepared)
+        postgres_withdrawal._seal_prepared_document_open(prepared)
+        return prepared
+
+    prepared = prepared_authority()
+    postgres_withdrawal._validate_prepared_document_open(
+        cursor,  # type: ignore[arg-type]
+        event,  # type: ignore[arg-type]
+        prepared,
+        execution_policy=execution_policy,
+        phase=postgres_withdrawal._DocumentOpenPhase.LOCATORS_GATHERED,
+    )
+
+    with pytest.raises(ValidationError, match="copied|replaced"):
+        postgres_withdrawal._validate_prepared_document_open(
+            cursor,  # type: ignore[arg-type]
+            event,  # type: ignore[arg-type]
+            deepcopy(prepared),
+            execution_policy=execution_policy,
+            phase=postgres_withdrawal._DocumentOpenPhase.LOCATORS_GATHERED,
+        )
+
+    copied_snapshot = prepared_authority()
+    copied_snapshot.authority_snapshot = deepcopy(copied_snapshot.authority_snapshot)
+    with pytest.raises(ValidationError, match="snapshot was replaced"):
+        postgres_withdrawal._validate_prepared_document_open(
+            cursor,  # type: ignore[arg-type]
+            event,  # type: ignore[arg-type]
+            copied_snapshot,
+            execution_policy=execution_policy,
+            phase=postgres_withdrawal._DocumentOpenPhase.LOCATORS_GATHERED,
+        )
+
+    changed = prepared_authority()
+    changed.source_chunks = ("chunk-2",)
+    with pytest.raises(EventConflictError, match="locator authority changed"):
+        postgres_withdrawal._validate_prepared_document_open(
+            cursor,  # type: ignore[arg-type]
+            event,  # type: ignore[arg-type]
+            changed,
+            execution_policy=execution_policy,
+            phase=postgres_withdrawal._DocumentOpenPhase.LOCATORS_GATHERED,
+        )
+
+    wrong_event = SimpleNamespace(
+        structural_event_id="event-2", payload_hash=event.payload_hash
+    )
+    with pytest.raises(ValidationError, match="phase or input changed"):
+        postgres_withdrawal._validate_prepared_document_open(
+            cursor,  # type: ignore[arg-type]
+            wrong_event,  # type: ignore[arg-type]
+            prepared_authority(),
+            execution_policy=execution_policy,
+            phase=postgres_withdrawal._DocumentOpenPhase.LOCATORS_GATHERED,
+        )
+
+    for field_name, changed_value in (
+        ("backend_identity", binding.backend_identity + 1),
+        ("transaction_identity", binding.transaction_identity + 1),
+        ("session_role", f"{binding.session_role}-changed"),
+    ):
+        monkeypatch.setattr(
+            postgres_withdrawal,
+            "_capture_d29_document_open_binding",
+            lambda *_args, field_name=field_name, changed_value=changed_value: replace(
+                binding, **{field_name: changed_value}
+            ),
+        )
+        with pytest.raises(ValidationError, match="changed transaction context"):
+            postgres_withdrawal._validate_prepared_document_open(
+                cursor,  # type: ignore[arg-type]
+                event,  # type: ignore[arg-type]
+                prepared_authority(),
+                execution_policy=execution_policy,
+                phase=postgres_withdrawal._DocumentOpenPhase.LOCATORS_GATHERED,
+            )
+
+    consumed = prepared_authority()
+    consumed.phase = postgres_withdrawal._DocumentOpenPhase.CONSUMED
+    with pytest.raises(ValidationError, match="phase or input changed"):
+        postgres_withdrawal._validate_prepared_document_open(
+            cursor,  # type: ignore[arg-type]
+            event,  # type: ignore[arg-type]
+            consumed,
+            execution_policy=execution_policy,
+            phase=postgres_withdrawal._DocumentOpenPhase.LOCATORS_GATHERED,
+        )
+
+    with pytest.raises(ValidationError, match="changed transaction context"):
+        postgres_withdrawal._validate_prepared_document_open(
+            object(),  # type: ignore[arg-type]
+            event,  # type: ignore[arg-type]
+            prepared_authority(),
+            execution_policy=execution_policy,
+            phase=postgres_withdrawal._DocumentOpenPhase.LOCATORS_GATHERED,
+        )
+
+
+def test_document_phase_cut_requires_exact_snapshot_before_tier_8_locks(
+    function_source: Callable[[str], str],
+) -> None:
+    prepare = function_source("_prepare_locked_document_open")
+    continuation = function_source("_continue_locked_document_open")
+    snapshot = function_source("_validate_d29_event_snapshot_image")
+    closure = function_source("_read_existing_document_closure")
+
+    assert "allow_missing_event_snapshots=True" in prepare
+    assert "_validate_d29_event_snapshot_image" not in prepare
+    assert continuation.index("_validate_d29_event_snapshot_image") < (
+        continuation.index("_lock_d29_touched_membership")
+    )
+    assert "touched_direct_chunk_ids" in continuation
+    assert "locator.direct_observation_source_rows" in continuation
+    assert "_gather_d29_locator_authority" not in continuation
+    for relation in (
+        "groundloop_m5_requirement_registry_snapshot",
+        "groundloop_m5_requirement_registry_snapshot_member",
+        "groundloop_m5_active_chunk_snapshot",
+        "groundloop_m5_active_chunk_snapshot_member",
+    ):
+        assert relation in snapshot
+    assert "allow_missing_event_snapshots: bool = False" in closure
+    assert "not allow_missing_event_snapshots" in closure
+
+
+def _fresh_active_member_snapshot(database: Any) -> ActiveChunkSnapshot:
+    """Build one absent snapshot whose member names a real predecessor chunk."""
+
+    connection = database.connection
+    for entry in database.database.chunk_snapshot.entries:
+        snapshot = ActiveChunkSnapshot.build((entry,))
+        existing = connection.execute(
+            """
+            SELECT 1
+            FROM groundloop_m5_active_chunk_snapshot
+            WHERE active_chunk_snapshot_digest = %s
+            """,
+            (snapshot.active_chunk_snapshot_digest,),
+        ).fetchone()
+        if existing is None:
+            return snapshot
+    raise AssertionError("reservation fixture has no fresh active-member snapshot")
+
+
+def _persist_d29_event_snapshots(
+    cursor: Any,
+    event: M5TypedEventPlan,
+    *,
+    epoch_id: int,
+) -> None:
+    _persist_requirement_snapshot(
+        cursor,
+        snapshot=event.requirement_registry_snapshot,
+        epoch_id=epoch_id,
+    )
+    _persist_active_chunk_snapshot(
+        cursor,
+        snapshot=event.active_chunk_snapshot,
+        epoch_id=epoch_id,
+    )
+
+
+def _assert_d29_event_snapshots_absent(
+    cursor: Any,
+    event: M5TypedEventPlan,
+) -> None:
+    assert (
+        cursor.execute(
+            """
+            SELECT 1
+            FROM groundloop_m5_requirement_registry_snapshot
+            WHERE requirement_registry_snapshot_digest = %s
+            """,
+            (event.requirement_registry_snapshot.requirement_registry_snapshot_digest,),
+        ).fetchone()
+        is None
+    )
+    assert (
+        cursor.execute(
+            """
+            SELECT 1
+            FROM groundloop_m5_active_chunk_snapshot
+            WHERE active_chunk_snapshot_digest = %s
+            """,
+            (event.active_chunk_snapshot.active_chunk_snapshot_digest,),
+        ).fetchone()
+        is None
+    )
+
+
+def _reservation_phase_case(
+    d29_database: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    tag: str,
+    nonempty_active_snapshot: bool,
+) -> tuple[
+    M5TypedEventPlan,
+    ApplicationExecutionPolicy,
+    tuple[Any, Any, tuple[Any, ...], str],
+    postgres_withdrawal._DocumentClosure,
+    tuple[str, ...],
+]:
+    """Prepare the retained reservation fixture for the real two-phase route."""
+
+    connection = d29_database.connection
+    base = d29_database.database.base
+    manifest = d29_database.database.manifest
+    event = d29_database.document_plan("delete", tag=tag)
+    if nonempty_active_snapshot:
+        event = replace(
+            event,
+            active_chunk_snapshot=_fresh_active_member_snapshot(d29_database),
+        )
+    direct = event.direct_plan
+    assert direct is not None
+    source_chunks = tuple(sorted(direct.deactivated_chunk_version_ids))
+
+    # The retained fixture's synthetic claim currents predate both valid D30
+    # provenance branches.  This is the same narrow cleanup used by the
+    # prospective-reservation test; D30 covers valid mixed claim/requirement
+    # location separately.
+    connection.execute(
+        """
+        DELETE FROM groundloop_observation_currency
+        WHERE subject_kind = 'claim' AND chunk_version_id = ANY(%s)
+        """,
+        (list(source_chunks),),
+    )
+    execution_policy = ApplicationExecutionPolicy(
+        "a" * 64,
+        "b" * 64,
+        manifest.verifier_execution_spec_hash,
+    )
+    qualifying_owner = int(str(d29_database.first_m5["epoch_id"]))
+    excluded_owner = int(str(d29_database.excluded_m5["epoch_id"]))
+    assert qualifying_owner != excluded_owner
+    monkeypatch.setattr(
+        postgres_withdrawal,
+        "_is_sealed_lineage_owner",
+        lambda _cursor, owner, _predecessor: owner == qualifying_owner,
+    )
+
+    with connection.cursor() as cursor:
+        requirement_withdrawal = _plan_document_requirement_withdrawal(cursor, event)
+        direct_open = _preview_document_direct_open(
+            cursor,
+            event,
+            execution_policy=execution_policy,
+        )
+    requirement_roots = postgres_withdrawal._document_requirement_roots(
+        event,
+        manifest,
+        requirement_withdrawal,
+    )
+    root_set_hash = runtime_digests.requirement_root_set_digest(
+        root.job.logical_job_id for root in requirement_roots
+    )
+    proposal = (
+        direct_open,
+        requirement_withdrawal,
+        requirement_roots,
+        root_set_hash,
+    )
+    manifest_arrays = postgres_withdrawal._validate_document_manifest(
+        postgres_withdrawal._document_declaration_manifest(direct_open)
+    )
+    closure = postgres_withdrawal._DocumentClosure(
+        epoch_id=qualifying_owner,
+        epoch_revision=1,
+        update_kind="document_delete",
+        previous_epoch_id=base.epoch_id,
+        runtime_revision=1,
+        runtime_state="structural_committed",
+        open_work_count=0,
+        open_scope_count=0,
+        blocking_failure_count=0,
+        candidate_policy=manifest,
+        requirement_snapshot_digest=(
+            event.requirement_registry_snapshot.requirement_registry_snapshot_digest
+        ),
+        chunk_snapshot_digest=(
+            event.active_chunk_snapshot.active_chunk_snapshot_digest
+        ),
+        requirement_root_set_hash=root_set_hash,
+        direct_root_job_ids=manifest_arrays[0],
+        direct_scope_root_job_ids=manifest_arrays[1],
+        direct_fallback_claim_ids=manifest_arrays[2],
+    )
+    monkeypatch.setattr(
+        postgres_withdrawal,
+        "_read_existing_document_closure",
+        lambda *_args, **_kwargs: closure,
+    )
+    monkeypatch.setattr(
+        postgres_withdrawal,
+        "_validated_structural_source_chunks",
+        lambda *_args, **_kwargs: source_chunks,
+    )
+    return event, execution_policy, proposal, closure, source_chunks
+
+
+def _d29_reservation_row_image(
+    cursor: Any, proposal: tuple[Any, ...]
+) -> tuple[Any, ...]:
+    coordinates = postgres_withdrawal._document_declaration_coordinates(
+        proposal[0], proposal[2]
+    )
+    images: list[tuple[str, tuple[Any, ...]]] = []
+    for label, relation, identifier, values in (
+        (
+            "direct-job",
+            "groundloop_semantic_job",
+            "job_id",
+            coordinates.direct_job_ids,
+        ),
+        (
+            "direct-scope",
+            "groundloop_discovery_scope",
+            "root_job_id",
+            coordinates.direct_scope_root_job_ids,
+        ),
+        (
+            "requirement-job",
+            "groundloop_m5_semantic_job",
+            "logical_job_id",
+            coordinates.requirement_job_ids,
+        ),
+        (
+            "requirement-scope",
+            "groundloop_m5_discovery_scope",
+            "root_job_id",
+            coordinates.requirement_scope_root_job_ids,
+        ),
+    ):
+        rows = cursor.execute(
+            f"SELECT to_jsonb(item) FROM {relation} AS item "
+            f'WHERE {identifier} = ANY(%s) ORDER BY {identifier} COLLATE "C"',
+            (list(values),),
+        ).fetchall()
+        images.append((label, tuple(row[0] for row in rows)))
+    return tuple(images)
+
+
+def test_live_split_allowed_snapshot_step_and_wrapper_are_byte_equivalent(
+    d29_reservation_database: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = d29_reservation_database
+    connection = database.connection
+    event, execution_policy, proposal, closure, _source_chunks = (
+        _reservation_phase_case(
+            database,
+            monkeypatch,
+            tag="real-phase-equivalence",
+            nonempty_active_snapshot=False,
+        )
+    )
+
+    def run_route(*, split: bool) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
+        name = "d29_live_split" if split else "d29_live_wrapper"
+        connection.execute(f"SAVEPOINT {name}")
+        try:
+            with connection.cursor() as cursor:
+                _assert_d29_event_snapshots_absent(cursor, event)
+                before_rows = _d29_reservation_row_image(cursor, proposal)
+                if split:
+                    prepared = postgres_withdrawal._prepare_locked_document_open(
+                        cursor,
+                        event,
+                        execution_policy=execution_policy,
+                    )
+                    assert (
+                        prepared.phase
+                        is postgres_withdrawal._DocumentOpenPhase.LOCATORS_GATHERED
+                    )
+                    _assert_d29_event_snapshots_absent(cursor, event)
+                    _persist_d29_event_snapshots(
+                        cursor,
+                        event,
+                        epoch_id=closure.epoch_id,
+                    )
+                    result = postgres_withdrawal._continue_locked_document_open(
+                        cursor,
+                        event,
+                        prepared,
+                        execution_policy=execution_policy,
+                        supplied_direct_open=proposal[0],
+                        supplied_requirement_withdrawal=proposal[1],
+                        supplied_requirement_roots=proposal[2],
+                        supplied_requirement_root_set_hash=proposal[3],
+                    )
+                    output = (
+                        result.direct_open,
+                        result.requirement_withdrawal,
+                        result.requirement_roots,
+                        result.requirement_root_set_hash,
+                    )
+                else:
+                    _persist_d29_event_snapshots(
+                        cursor,
+                        event,
+                        epoch_id=closure.epoch_id,
+                    )
+                    output = postgres_withdrawal._derive_locked_document_open(
+                        cursor,
+                        event,
+                        execution_policy=execution_policy,
+                        supplied_direct_open=proposal[0],
+                        supplied_requirement_withdrawal=proposal[1],
+                        supplied_requirement_roots=proposal[2],
+                        supplied_requirement_root_set_hash=proposal[3],
+                    )
+                after_rows = _d29_reservation_row_image(cursor, proposal)
+            assert after_rows == before_rows
+            return output, after_rows
+        finally:
+            connection.execute(f"ROLLBACK TO SAVEPOINT {name}")
+            connection.execute(f"RELEASE SAVEPOINT {name}")
+
+    wrapper_output, wrapper_rows = run_route(split=False)
+    split_output, split_rows = run_route(split=True)
+    assert wrapper_output == split_output == proposal
+    assert wrapper_rows == split_rows
+    with connection.cursor() as cursor:
+        _assert_d29_event_snapshots_absent(cursor, event)
+
+
+class _Tier8QueryProbe:
+    """Record the first tier-8 membership query without replacing the phase."""
+
+    def __init__(self, cursor: Any) -> None:
+        self.cursor = cursor
+        self.tier_8_queries: list[str] = []
+
+    def execute(self, statement: Any, *args: Any, **kwargs: Any) -> Any:
+        source = str(statement)
+        if (
+            "WITH member_point AS MATERIALIZED" in source
+            and "FOR KEY SHARE OF member" in source
+        ):
+            self.tier_8_queries.append(source)
+        return self.cursor.execute(statement, *args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.cursor, name)
+
+
+def test_live_prepared_authority_cannot_cross_a_real_rollback(
+    d29_database: Any,
+) -> None:
+    connection = d29_database.connection
+    event = d29_database.document_plan("delete", tag="real-rollback-reuse")
+    execution_policy = ApplicationExecutionPolicy(
+        "a" * 64,
+        "b" * 64,
+        d29_database.database.manifest.verifier_execution_spec_hash,
+    )
+    epoch_row = connection.execute(
+        "SELECT max(epoch_id) FROM groundloop_epoch"
+    ).fetchone()
+    assert epoch_row is not None and epoch_row[0] is not None
+    closure = SimpleNamespace(
+        epoch_id=int(epoch_row[0]),
+        previous_epoch_id=d29_database.database.base.epoch_id,
+    )
+    source_chunks = tuple(sorted(d29_database.database.base.chunk_ids))
+    with connection.cursor() as cursor:
+        binding = postgres_withdrawal._capture_d29_document_open_binding(
+            cursor,
+            event,
+            closure,  # type: ignore[arg-type]
+            source_chunks,
+        )
+        prepared = postgres_withdrawal._PreparedDocumentOpen(
+            binding=binding,
+            prepared_identity=0,
+            event=event,
+            execution_policy=execution_policy,
+            closure=closure,  # type: ignore[arg-type]
+            source_chunks=source_chunks,
+            locator=SimpleNamespace(),  # type: ignore[arg-type]
+            located_observation_edges=(),
+            bootstrap_authority=(),
+        )
+        prepared.prepared_identity = id(prepared)
+        postgres_withdrawal._seal_prepared_document_open(prepared)
+        postgres_withdrawal._validate_prepared_document_open(
+            cursor,
+            event,
+            prepared,
+            execution_policy=execution_policy,
+            phase=postgres_withdrawal._DocumentOpenPhase.LOCATORS_GATHERED,
+        )
+
+        connection.rollback()
+        cursor.execute("SELECT 1")
+        with pytest.raises(ValidationError, match="changed transaction context"):
+            postgres_withdrawal._validate_prepared_document_open(
+                cursor,
+                event,
+                prepared,
+                execution_policy=execution_policy,
+                phase=postgres_withdrawal._DocumentOpenPhase.LOCATORS_GATHERED,
+            )
+    connection.rollback()
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    (
+        "requirement-header",
+        "active-chunk-header",
+        "requirement-member",
+        "active-chunk-member",
+    ),
+)
+def test_live_new_event_snapshot_conflicts_before_tier_8(
+    d29_reservation_database: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    corruption: str,
+) -> None:
+    database = d29_reservation_database
+    connection = database.connection
+    event, execution_policy, proposal, closure, _source_chunks = (
+        _reservation_phase_case(
+            database,
+            monkeypatch,
+            tag=f"real-snapshot-{corruption}",
+            nonempty_active_snapshot=True,
+        )
+    )
+    later_owner = int(str(database.excluded_m5["epoch_id"]))
+    assert later_owner > closure.epoch_id
+    savepoint = f"d29_snapshot_{corruption.replace('-', '_')}"
+    connection.execute(f"SAVEPOINT {savepoint}")
+    try:
+        with connection.cursor() as raw_cursor:
+            cursor = _Tier8QueryProbe(raw_cursor)
+            _assert_d29_event_snapshots_absent(cursor, event)
+            prepared = postgres_withdrawal._prepare_locked_document_open(
+                cursor,  # type: ignore[arg-type]
+                event,
+                execution_policy=execution_policy,
+            )
+            assert (
+                prepared.phase
+                is postgres_withdrawal._DocumentOpenPhase.LOCATORS_GATHERED
+            )
+            _assert_d29_event_snapshots_absent(cursor, event)
+            _persist_d29_event_snapshots(
+                cursor,
+                event,
+                epoch_id=closure.epoch_id,
+            )
+            cursor.execute("SET LOCAL session_replication_role = 'replica'")
+            try:
+                if corruption == "requirement-header":
+                    changed = cursor.execute(
+                        """
+                        UPDATE groundloop_m5_requirement_registry_snapshot
+                        SET created_epoch_id = %s
+                        WHERE requirement_registry_snapshot_digest = %s
+                        """,
+                        (
+                            later_owner,
+                            event.requirement_registry_snapshot.requirement_registry_snapshot_digest,
+                        ),
+                    ).rowcount
+                elif corruption == "active-chunk-header":
+                    changed = cursor.execute(
+                        """
+                        UPDATE groundloop_m5_active_chunk_snapshot
+                        SET created_epoch_id = %s
+                        WHERE active_chunk_snapshot_digest = %s
+                        """,
+                        (
+                            later_owner,
+                            event.active_chunk_snapshot.active_chunk_snapshot_digest,
+                        ),
+                    ).rowcount
+                elif corruption == "requirement-member":
+                    changed = cursor.execute(
+                        """
+                        UPDATE groundloop_m5_requirement_registry_snapshot_member
+                        SET normalized_requirement_text =
+                                normalized_requirement_text || ' corrupted',
+                            requirement_text_hash = encode(
+                                digest(
+                                    convert_to(
+                                        normalized_requirement_text || ' corrupted',
+                                        'UTF8'
+                                    ),
+                                    'sha256'
+                                ),
+                                'hex'
+                            )
+                        WHERE requirement_registry_snapshot_digest = %s
+                          AND member_ordinal = 0
+                        """,
+                        (
+                            event.requirement_registry_snapshot.requirement_registry_snapshot_digest,
+                        ),
+                    ).rowcount
+                else:
+                    assert corruption == "active-chunk-member"
+                    entry = event.active_chunk_snapshot.entries[0]
+                    changed_hash = "0" * 64 if entry.text_hash != "0" * 64 else "1" * 64
+                    changed = cursor.execute(
+                        """
+                        UPDATE groundloop_m5_active_chunk_snapshot_member
+                        SET text_hash = %s
+                        WHERE active_chunk_snapshot_digest = %s
+                          AND member_ordinal = 0
+                        """,
+                        (
+                            changed_hash,
+                            event.active_chunk_snapshot.active_chunk_snapshot_digest,
+                        ),
+                    ).rowcount
+            finally:
+                cursor.execute("SET LOCAL session_replication_role = 'origin'")
+            assert changed == 1
+
+            cursor.tier_8_queries.clear()
+            message = {
+                "requirement-header": "D29 requirement snapshot header changed",
+                "active-chunk-header": "D29 active-chunk snapshot header changed",
+                "requirement-member": "D29 requirement snapshot members changed",
+                "active-chunk-member": "D29 active-chunk snapshot members changed",
+            }[corruption]
+            with pytest.raises(EventConflictError, match=message):
+                postgres_withdrawal._continue_locked_document_open(
+                    cursor,  # type: ignore[arg-type]
+                    event,
+                    prepared,
+                    execution_policy=execution_policy,
+                    supplied_direct_open=proposal[0],
+                    supplied_requirement_withdrawal=proposal[1],
+                    supplied_requirement_roots=proposal[2],
+                    supplied_requirement_root_set_hash=proposal[3],
+                )
+            assert cursor.tier_8_queries == []
+            assert (
+                prepared.phase
+                is postgres_withdrawal._DocumentOpenPhase.LOCATORS_GATHERED
+            )
+    finally:
+        connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+
+
+def test_direct_state_locator_uses_m4_distinct_text_hash_authority(
+    function_source: Callable[[str], str],
+) -> None:
+    source = function_source("_gather_d29_direct_state_locators")
+
+    for relation in (
+        "groundloop_published_claim_state",
+        "groundloop_claim_state_materialized",
+        "groundloop_claim_certificate",
+        "groundloop_published_answer_state",
+        "groundloop_observation_currency",
+        "groundloop_chunk_version",
+        "groundloop_document_version",
+    ):
+        assert relation in source
+    assert "WHERE subject_kind = %s AND subject_id = %s" in source
+    assert "D29 remaining direct observation is not current" in source
+    assert "normalized_text_hash(str(row[1]))" in source
+    assert "normalized_text_hash_v1" not in source
+    assert "text_hash_by_observation" in source
+    assert "D29 direct claim distinct-evidence count changed" in source
+
+    locked = function_source("_lock_d29_direct_claim_before_images")
+    for relation in (
+        "groundloop_published_claim_state",
+        "groundloop_claim_state_materialized",
+        "groundloop_claim_certificate",
+    ):
+        assert relation in locked
+    assert locked.count("FOR UPDATE") == 3
+    assert "materialized_updated_epoch != image.state_valid_from_epoch" in locked
+    assert (
+        "image.certificate_repaired_revision"
+        "\n            != image.materialized_updated_revision"
+    ) in locked
+    tier_11a = function_source("_lock_d29_observation_authority")
+    assert "_lock_d29_direct_claim_before_images" not in tier_11a
+    for relation in (
+        "groundloop_published_claim_state",
+        "groundloop_claim_state_materialized",
+        "groundloop_claim_certificate",
+    ):
+        assert relation not in tier_11a
+
+
+def _one_direct_claim_before_image(
+    d29_database: Any,
+) -> tuple[postgres_withdrawal._D29DirectClaimBeforeImage, ...]:
+    connection = d29_database.connection
+    row = connection.execute(
+        """
+        SELECT currency.subject_kind::text, currency.subject_id,
+               currency.chunk_version_id, currency.task_type,
+               currency.observation_id, currency.installed_revision
+        FROM groundloop_observation_currency AS currency
+        WHERE currency.subject_kind = 'claim'
+        ORDER BY currency.installed_revision DESC,
+                 currency.subject_id COLLATE "C",
+                 currency.chunk_version_id COLLATE "C",
+                 currency.task_type COLLATE "C",
+                 currency.observation_id COLLATE "C"
+        LIMIT 1
+        """
+    ).fetchone()
+    assert row is not None
+    currency = postgres_withdrawal._D30CurrencyRow(
+        subject_kind=str(row[0]),
+        subject_id=str(row[1]),
+        chunk_version_id=str(row[2]),
+        task_type=str(row[3]),
+        observation_id=str(row[4]),
+        installed_revision=int(row[5]),
+    )
+    with connection.cursor() as cursor:
+        observation_row = postgres_withdrawal._d30_observation_row(
+            cursor, currency.observation_id
+        )
+        authority = SimpleNamespace(
+            currency_rows=(currency,),
+            dynamic=(),
+            bootstrap=(
+                SimpleNamespace(
+                    currency=currency,
+                    observation_row=observation_row,
+                ),
+            ),
+        )
+        claim_images, _answers, _remaining, _sources, _currency = (
+            postgres_withdrawal._gather_d29_direct_state_locators(
+                cursor,
+                authority,  # type: ignore[arg-type]
+                predecessor_epoch_id=d29_database.database.base.epoch_id,
+            )
+        )
+    assert len(claim_images) == 1
+    return claim_images
+
+
+def _one_direct_answer_before_image(
+    d29_database: Any,
+) -> tuple[postgres_withdrawal._D29DirectAnswerBeforeImage, ...]:
+    claim = _one_direct_claim_before_image(d29_database)[0]
+    row = d29_database.connection.execute(
+        """
+        SELECT required_claim_count, supported_count, unsupported_count,
+               refuted_count, conflicted_count, status
+        FROM groundloop_published_answer_state
+        WHERE answer_version_id = %s AND valid_from_epoch <= %s
+          AND (valid_to_epoch IS NULL OR %s < valid_to_epoch)
+        """,
+        (
+            claim.answer_version_id,
+            d29_database.database.base.epoch_id,
+            d29_database.database.base.epoch_id,
+        ),
+    ).fetchone()
+    assert row is not None
+    return (
+        postgres_withdrawal._D29DirectAnswerBeforeImage(
+            answer_version_id=claim.answer_version_id,
+            required_claim_count=int(row[0]),
+            supported_count=int(row[1]),
+            unsupported_count=int(row[2]),
+            refuted_count=int(row[3]),
+            conflicted_count=int(row[4]),
+            status=str(row[5]),
+        ),
+    )
+
+
+def test_live_direct_answer_complete_before_image_fails_closed(
+    d29_database: Any,
+) -> None:
+    connection = d29_database.connection
+    answer_images = _one_direct_answer_before_image(d29_database)
+    image = answer_images[0]
+    savepoint = "d29_direct_answer_complete_before_image"
+    connection.execute(f"SAVEPOINT {savepoint}")
+    try:
+        if image.supported_count > 0:
+            supported_delta, unsupported_delta = -1, 1
+        else:
+            assert image.unsupported_count > 0
+            supported_delta, unsupported_delta = 1, -1
+        assert (
+            connection.execute(
+                """
+                UPDATE groundloop_published_answer_state
+                SET supported_count = supported_count + %s,
+                    unsupported_count = unsupported_count + %s
+                WHERE answer_version_id = %s AND valid_from_epoch <= %s
+                  AND (valid_to_epoch IS NULL OR %s < valid_to_epoch)
+                """,
+                (
+                    supported_delta,
+                    unsupported_delta,
+                    image.answer_version_id,
+                    d29_database.database.base.epoch_id,
+                    d29_database.database.base.epoch_id,
+                ),
+            ).rowcount
+            == 1
+        )
+        with connection.cursor() as cursor:
+            with pytest.raises(EventConflictError, match="answer point changed"):
+                postgres_withdrawal._lock_d29_direct_answer_before_images(
+                    cursor,
+                    answer_images,
+                    predecessor_epoch_id=d29_database.database.base.epoch_id,
+                )
+    finally:
+        connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+
+
+@pytest.mark.parametrize(
+    ("corruption", "revalidate_existing"),
+    (
+        ("missing", False),
+        ("wrong-support-id", False),
+        ("wrong-refute-id", True),
+        ("wrong-repaired-epoch", False),
+        ("wrong-repaired-revision", True),
+        ("stale-materialized-coordinate", True),
+    ),
+)
+def test_live_direct_claim_certificate_closure_fails_closed(
+    d29_database: Any,
+    corruption: str,
+    revalidate_existing: bool,
+) -> None:
+    connection = d29_database.connection
+    claim_images = _one_direct_claim_before_image(d29_database)
+    image = claim_images[0]
+    savepoint = f"d29_claim_certificate_{corruption.replace('-', '_')}"
+    connection.execute(f"SAVEPOINT {savepoint}")
+    try:
+        if corruption == "missing":
+            assert (
+                connection.execute(
+                    "DELETE FROM groundloop_claim_certificate WHERE claim_id = %s",
+                    (image.claim_id,),
+                ).rowcount
+                == 1
+            )
+        elif corruption in {"wrong-support-id", "wrong-refute-id"}:
+            named = (
+                image.certificate_support_observation_id
+                if corruption == "wrong-support-id"
+                else image.certificate_refute_observation_id
+            )
+            alternate = connection.execute(
+                """
+                SELECT observation_id FROM groundloop_semantic_observation
+                WHERE observation_id <> COALESCE(%s, '')
+                ORDER BY observation_id COLLATE "C"
+                LIMIT 1
+                """,
+                (named,),
+            ).fetchone()
+            assert alternate is not None
+            column = (
+                "support_observation_id"
+                if corruption == "wrong-support-id"
+                else "refute_observation_id"
+            )
+            connection.execute(
+                f"UPDATE groundloop_claim_certificate SET {column} = %s "
+                "WHERE claim_id = %s",
+                (str(alternate[0]), image.claim_id),
+            )
+        elif corruption == "wrong-repaired-epoch":
+            alternate_epoch = connection.execute(
+                """
+                SELECT epoch_id FROM groundloop_epoch
+                WHERE epoch_id <> %s
+                ORDER BY epoch_id
+                LIMIT 1
+                """,
+                (image.certificate_repaired_epoch,),
+            ).fetchone()
+            assert alternate_epoch is not None
+            connection.execute(
+                """
+                UPDATE groundloop_claim_certificate SET repaired_epoch = %s
+                WHERE claim_id = %s
+                """,
+                (int(alternate_epoch[0]), image.claim_id),
+            )
+        elif corruption == "wrong-repaired-revision":
+            connection.execute(
+                """
+                UPDATE groundloop_claim_certificate
+                SET repaired_revision = repaired_revision + 1
+                WHERE claim_id = %s
+                """,
+                (image.claim_id,),
+            )
+        else:
+            assert corruption == "stale-materialized-coordinate"
+            connection.execute(
+                """
+                UPDATE groundloop_claim_state_materialized
+                SET updated_revision = updated_revision + 1
+                WHERE claim_id = %s
+                """,
+                (image.claim_id,),
+            )
+
+        with connection.cursor() as cursor:
+            with pytest.raises(EventConflictError, match="certificate"):
+                if revalidate_existing:
+                    postgres_withdrawal._lock_d29_direct_claim_before_images(
+                        cursor,
+                        claim_images,
+                        predecessor_epoch_id=d29_database.database.base.epoch_id,
+                    )
+                else:
+                    _one_direct_claim_before_image(d29_database)
+    finally:
+        connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        connection.execute(f"RELEASE SAVEPOINT {savepoint}")
 
 
 def test_direct_verifier_requires_exact_parent_scope_topology(
@@ -371,6 +1369,79 @@ def test_tier_11a_locks_all_observations_before_currency(
     published_currency = source.index("FROM groundloop_published_observation_currency")
     assert semantic_lock < requirement_currency < published_currency
     assert "valid_to_epoch IS NULL" in source
+    assert "not set(remaining_typed_keys) <= set(currency_typed_keys)" in source
+    assert "D29 direct observation currency partition changed" in source
+
+
+def test_tier_11a_preserves_the_retained_empty_partition_authority(
+    function_source: Callable[[str], str],
+) -> None:
+    source = function_source("_lock_d29_observation_authority")
+    retained = source.index("retained_unpartitioned_direct_state = not any(")
+    fallback = source.index(
+        "direct_currency_typed_keys\n        if retained_unpartitioned_direct_state"
+    )
+    source_closure = source.index("not retained_unpartitioned_direct_state")
+    assert retained < fallback < source_closure
+    for field in (
+        "locator.direct_currency_keys",
+        "locator.direct_claim_before_images",
+        "locator.direct_answer_before_images",
+        "locator.direct_remaining_observation_rows",
+        "locator.direct_observation_source_rows",
+    ):
+        assert field in source[retained:fallback]
+
+
+@pytest.mark.parametrize("corruption", ("claim", "chunk", "task", "duplicate"))
+def test_tier_11a_rejects_nonexact_withdrawn_coordinates_before_sql(
+    corruption: str,
+) -> None:
+    currency = postgres_withdrawal._D30CurrencyRow(
+        subject_kind="claim",
+        subject_id="claim-a",
+        chunk_version_id="chunk-a",
+        task_type="verify-pair",
+        observation_id="observation-a",
+        installed_revision=0,
+    )
+    direct_key = (
+        currency.subject_id,
+        currency.chunk_version_id,
+        currency.task_type,
+        currency.observation_id,
+    )
+    if corruption == "claim":
+        direct_keys = (("claim-b", *direct_key[1:]),)
+    elif corruption == "chunk":
+        direct_keys = ((direct_key[0], "chunk-b", *direct_key[2:]),)
+    elif corruption == "task":
+        direct_keys = ((*direct_key[:2], "other-task", direct_key[3]),)
+    else:
+        assert corruption == "duplicate"
+        direct_keys = (direct_key, direct_key)
+    locator = SimpleNamespace(
+        requirement_currency_keys=(),
+        direct_currency_keys=direct_keys,
+        direct_claim_before_images=(),
+        direct_answer_before_images=(),
+        direct_remaining_observation_rows=(),
+        direct_observation_source_rows=(),
+        d30_claims=SimpleNamespace(currency_rows=(currency,)),
+    )
+    with pytest.raises(
+        EventConflictError,
+        match="D29 direct observation currency partition changed",
+    ):
+        postgres_withdrawal._lock_d29_observation_authority(
+            object(),  # type: ignore[arg-type]
+            locator,  # type: ignore[arg-type]
+            predecessor_epoch_id=1,
+            candidate_policy_id="policy-a",
+            verifier_authority={},
+            bootstrap_authority={},
+            d30_dynamic_authority={},
+        )
 
 
 def test_tier_8_membership_point_validates_immutable_core_rows(
@@ -402,7 +1473,7 @@ def test_tier_8_membership_point_validates_immutable_core_rows(
     assert "FOR KEY SHARE OF requirement, group_version" in source
     assert "FOR KEY SHARE OF member" in source
     assert "FOR KEY SHARE OF requirement, group_version, family, validity" in source
-    assert "FOR KEY SHARE OF chunk, version" in source
+    assert source.count("FOR KEY SHARE OF chunk, version") == 2
 
 
 def test_zero_cancellation_probes_cover_direct_and_m5_authority(
@@ -670,7 +1741,7 @@ def test_direct_attempts_are_locked_and_byte_validated_not_discarded(
     assert '"leased" in states[:-1]' in source
     assert 'job_state is M4JobState.CANCELLED and "completed" in states' in source
     assert "direct attempt state disagrees with its job" in source
-    derivation = function_source("_derive_locked_document_open")
+    derivation = function_source("_continue_locked_document_open")
     assert (
         "direct_attempts, direct_candidates = _lock_d29_tier_10_authority" in derivation
     )

@@ -356,12 +356,29 @@ def test_live_filtered_admitted_locators_reserve_unused_requirement_coordinates(
             direct_fallback_claim_ids=manifest_arrays[2],
         )
         timeline: list[tuple[str, str]] = []
+        snapshot_validation_calls: list[None] = []
         original_reserve = postgres_withdrawal._reserve_d29_coordinate
         original_tier_10 = postgres_withdrawal._lock_d29_direct_attempts
+
+        def validate_synthetic_event_snapshot(
+            _cursor: Any, checked_event: Any, closure: Any
+        ) -> None:
+            assert checked_event is event
+            assert closure is locked_closure
+            assert closure.epoch_id == qualifying_owner
+            assert closure.requirement_snapshot_digest == (
+                event.requirement_registry_snapshot.requirement_registry_snapshot_digest
+            )
+            assert closure.chunk_snapshot_digest == (
+                event.active_chunk_snapshot.active_chunk_snapshot_digest
+            )
+            assert timeline == []
+            snapshot_validation_calls.append(None)
 
         def record_reservation(
             cursor: Any, *, namespace: int, kind: str, object_id: str
         ) -> None:
+            assert snapshot_validation_calls == [None]
             timeline.append((kind, object_id))
             original_reserve(
                 cursor,
@@ -383,6 +400,11 @@ def test_live_filtered_admitted_locators_reserve_unused_requirement_coordinates(
             postgres_withdrawal,
             "_validated_structural_source_chunks",
             lambda *_args, **_kwargs: source_chunks,
+        )
+        monkeypatch.setattr(
+            postgres_withdrawal,
+            "_validate_d29_event_snapshot_image",
+            validate_synthetic_event_snapshot,
         )
         monkeypatch.setattr(
             postgres_withdrawal,
@@ -410,6 +432,7 @@ def test_live_filtered_admitted_locators_reserve_unused_requirement_coordinates(
             exact_roots,
             exact_root_set_hash,
         )
+        assert snapshot_validation_calls == [None]
         tier_10_index = timeline.index(("tier-10", ""))
         assert timeline[:tier_10_index] == expected_reservations
         assert len(timeline[:tier_10_index]) == len(expected_reservations)

@@ -2455,7 +2455,7 @@ def test_exact_read_committed_is_accepted_by_one_setting_point() -> None:
 def test_isolation_guard_precedes_first_total_currency_locator(
     function_source: Callable[[str], str],
 ) -> None:
-    source = function_source("_derive_locked_document_open")
+    source = function_source("_prepare_locked_document_open")
     assert source.index("_require_d30_read_committed") < source.index(
         "_gather_d29_locator_authority"
     )
@@ -3153,6 +3153,19 @@ def test_dynamic_f13_default_plans_trace_and_cardinality_ledger(
                 sequence_trace,  # type: ignore[arg-type]
                 (currency,),
             )
+            (
+                direct_claim_before_images,
+                direct_answer_before_images,
+                direct_remaining_observation_rows,
+                direct_observation_source_rows,
+                direct_remaining_currency_rows,
+            ) = postgres_withdrawal._gather_d29_direct_state_locators(
+                sequence_trace,  # type: ignore[arg-type]
+                d30_claims,
+                predecessor_epoch_id=authority_predecessor_epoch_id,
+            )
+            assert direct_remaining_observation_rows == ()
+            assert direct_remaining_currency_rows == ()
             gather_boundary = len(sequence_trace.entries)
             assert len(d30_claims.dynamic) == len(d30_claims.owners) == 1
             gathered_owner = d30_claims.owners[0]
@@ -3198,6 +3211,10 @@ def test_dynamic_f13_default_plans_trace_and_cardinality_ledger(
                     )
                 ),
                 d30_claims=d30_claims,
+                direct_claim_before_images=direct_claim_before_images,
+                direct_answer_before_images=direct_answer_before_images,
+                direct_remaining_observation_rows=(direct_remaining_observation_rows),
+                direct_observation_source_rows=direct_observation_source_rows,
             )
             direct_scopes = postgres_withdrawal._lock_d29_scopes_and_reserve(
                 sequence_trace,  # type: ignore[arg-type]
@@ -3253,7 +3270,7 @@ def test_dynamic_f13_default_plans_trace_and_cardinality_ledger(
             tier10_boundary,
             topology_boundary,
             observation_boundary,
-        ) == (28, 32, 39, 58, 61, 68)
+        ) == (34, 38, 45, 64, 67, 75)
         assert all(
             entry["returned_rows"] is not None for entry in sequence_trace.entries
         )
@@ -3271,6 +3288,13 @@ def test_dynamic_f13_default_plans_trace_and_cardinality_ledger(
             "groundloop_admitted_pair",
             "groundloop_m4_verification_execution",
             "groundloop_semantic_observation",
+            "groundloop_claim",
+            "groundloop_published_claim_state",
+            "groundloop_claim_state_materialized",
+            "groundloop_claim_certificate",
+            "groundloop_published_answer_state",
+            "groundloop_chunk_version",
+            "groundloop_document_version",
             "groundloop_working_observation_delta",
             "groundloop_observation_currency",
             "groundloop_published_observation_currency",
@@ -3316,6 +3340,63 @@ def test_dynamic_f13_default_plans_trace_and_cardinality_ledger(
                     "groundloop_semantic_observation_pkey",
                     "groundloop_semantic_observati_observation_id_subject_kind_s_key",
                 ),
+                1,
+            ),
+            "direct claim owner point": (
+                (1,),
+                frozenset({"groundloop_claim"}),
+                ("groundloop_claim_pkey",),
+                (),
+                1,
+            ),
+            "direct published claim point": (
+                (1,),
+                frozenset({"groundloop_published_claim_state"}),
+                ("groundloop_published_claim_state_no_overlap",),
+                (),
+                1,
+            ),
+            "direct materialized claim point": (
+                (1,),
+                frozenset({"groundloop_claim_state_materialized"}),
+                ("groundloop_claim_state_materialized_pkey",),
+                (),
+                1,
+            ),
+            "direct claim certificate point": (
+                (1,),
+                frozenset({"groundloop_claim_certificate"}),
+                ("groundloop_claim_certificate_pkey",),
+                (),
+                1,
+            ),
+            "direct published answer point": (
+                (1,),
+                frozenset({"groundloop_published_answer_state"}),
+                ("groundloop_published_answer_state_pkey",),
+                (),
+                1,
+            ),
+            "direct source closure point": (
+                (1,),
+                frozenset(
+                    {
+                        "groundloop_chunk_version",
+                        "groundloop_document_version",
+                    }
+                ),
+                (
+                    "groundloop_chunk_version_pkey",
+                    "groundloop_document_version_pkey",
+                ),
+                (),
+                1,
+            ),
+            "source chunk point": (
+                (1,),
+                frozenset({"groundloop_chunk_version"}),
+                ("groundloop_chunk_version_pkey",),
+                (),
                 1,
             ),
             "working delta point": (
@@ -3513,6 +3594,20 @@ def test_dynamic_f13_default_plans_trace_and_cardinality_ledger(
                 return "scope lock points"
             if "from groundloop_semantic_observation" in compact:
                 return "observation point"
+            if "from groundloop_claim where" in compact:
+                return "direct claim owner point"
+            if "from groundloop_published_claim_state" in compact:
+                return "direct published claim point"
+            if "from groundloop_claim_state_materialized" in compact:
+                return "direct materialized claim point"
+            if "from groundloop_claim_certificate" in compact:
+                return "direct claim certificate point"
+            if "from groundloop_published_answer_state" in compact:
+                return "direct published answer point"
+            if "from groundloop_chunk_version as chunk" in compact:
+                return "direct source closure point"
+            if "from groundloop_chunk_version" in compact:
+                return "source chunk point"
             if "from groundloop_working_observation_delta" in compact:
                 return "working delta point"
             if "from groundloop_m4_update" in compact:
@@ -3628,7 +3723,7 @@ def test_dynamic_f13_default_plans_trace_and_cardinality_ledger(
             assert tuple(entry["returned_rows"] for entry in family_entries) == (
                 expected_rows
             ), label
-        assert sum(len(entries) for entries in entries_by_family.values()) == 68
+        assert sum(len(entries) for entries in entries_by_family.values()) == 75
 
         actual_owner_formula = {
             "K": 1,

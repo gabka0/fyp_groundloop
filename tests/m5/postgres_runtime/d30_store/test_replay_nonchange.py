@@ -186,24 +186,26 @@ def test_retained_replay_never_reconstructs_current_claim_provenance(
 def test_first_application_keeps_existing_withdrawal_dto_boundary(
     function_source: Callable[[str], str],
 ) -> None:
-    source = function_source("_derive_locked_document_open")
+    wrapper = function_source("_derive_locked_document_open")
+    continuation = function_source("_continue_locked_document_open")
     for output in (
         "direct_open",
         "requirement_withdrawal",
         "requirement_roots",
         "root_set_hash",
     ):
-        assert output in source
-    assert "_locked_direct_withdrawal" in source
-    assert "plan_requirement_withdrawal" in source
-    assert "_direct_open_from_withdrawal" in source
+        assert output in wrapper
+    assert "_locked_direct_withdrawal" in continuation
+    assert "plan_requirement_withdrawal" in continuation
+    assert "_direct_open_from_withdrawal" in continuation
     for forbidden_output in (
         "verification_execution=",
         "working_delta=",
         "source_epoch=",
         "provenance=",
     ):
-        assert forbidden_output not in source
+        assert forbidden_output not in wrapper
+        assert forbidden_output not in continuation
 
 
 def test_claim_provenance_fields_do_not_enter_withdrawal_or_result_digests(
@@ -251,7 +253,7 @@ def test_d30_planning_adds_no_work_counter_or_digest_recipe(
 def test_candidate_and_observation_outcome_matrix_remains_separate(
     function_source: Callable[[str], str],
 ) -> None:
-    source = function_source("_derive_locked_document_open")
+    source = function_source("_continue_locked_document_open")
     assert "candidate_edges" in source
     assert "observation_edges" in source
     assert "direct_observations" in source

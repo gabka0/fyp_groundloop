@@ -1772,12 +1772,14 @@ def test_expired_preterminal_locator_uses_only_late_return_timing_anchor(
 def test_locked_orchestration_finalizes_owner_before_tier_11a(
     function_source: Callable[[str], str],
 ) -> None:
-    source = function_source("_derive_locked_document_open")
-    gather = source.index("_gather_d29_locator_authority")
-    topology = source.index("_lock_d30_dynamic_owner_topology")
-    tier_11a = source.index("_lock_d29_observation_authority")
-    dml_boundary = source.index("plan_requirement_withdrawal")
-    assert gather < topology < tier_11a < dml_boundary
+    prepare = function_source("_prepare_locked_document_open")
+    continuation = function_source("_continue_locked_document_open")
+    assert "_gather_d29_locator_authority" in prepare
+    assert "_gather_d29_locator_authority" not in continuation
+    topology = continuation.index("_lock_d30_dynamic_owner_topology")
+    tier_11a = continuation.index("_lock_d29_observation_authority")
+    dml_boundary = continuation.index("plan_requirement_withdrawal")
+    assert topology < tier_11a < dml_boundary
 
 
 def test_owner_headers_are_nonlocking_reread_before_held_row_validation(
