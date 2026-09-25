@@ -236,7 +236,7 @@ is explicit pre-dissertation/M6 debt, not a hidden extension of M4.
 ## M5 — Bounded Evidence Groups
 
 Status: active. The M5.0 contract freeze is complete through accepted
-M5-D30; M5.1 pure reference semantics completed on 2026-08-03 after an
+M5-D31; M5.1 pure reference semantics completed on 2026-08-03 after an
 independent high-confidence audit GO. M5.2 and M5.3 are complete. M5.4-01
 through M5.4-04 pass; public activation and partial root/direct transitions have
 live evidence but do not independently close M5.4-05. M5-D24's R0 contracts and
@@ -378,6 +378,31 @@ composition continues. M5-D24 through M5-D30, Task 2, and M5.4-05 through
 M5.4-09 remain implementation-`PENDING`; runtime stays `v1_only`. No
 deployment, performance, utility, or AI/model-quality result is promoted.
 
+The M5-D31 preterminal context-access amendment is accepted at exact reviewed
+candidate commit `abce709d25e00c5774ac1b49cf046f2783e5fb2c`, tree
+`2ab0a97206a486cd07f0308116ef8e1059eec514`, sole parent
+`ee14d697dd2dbf68b33e9a6c0e3d76791afc5520`, blob
+`8ed4e8e451f21fce5685efc07eb272a4df680885`, and content SHA-256
+`6331c8149e38031c51cb22b6a9dc2d49d30d27df67d25b5fae24b00c52058dc9`.
+Two independent audits of the identical 424-line, 21,523-byte candidate
+returned `GO`, `P0=0`, `P1=0`, `P2=0`. M5.0-31 is contract-`PASS` /
+implementation-`PENDING`, and runtime-addendum revision 12 is authoritative.
+
+D31 resolves only the non-owner preterminal context-access contradiction. It
+keeps migrations 001--018 exact and narrowly authorizes one future additive
+migration 019 containing exactly one trusted, read-only
+`groundloop_m5_matching_read_preterminal_seal_context(bigint,bigint,bigint)`
+function plus explicit `PUBLIC EXECUTE`; no other schema object or privilege
+is authorized. The contract installs nothing. After the pushed D31 authority
+barrier, implementation requires a separate path-exclusive activation and
+strict sequencing: schema 019 first, revised C1-R second, then resumed C1
+structural composition. The current C1-R candidate remains read-only evidence
+until the schema lane integrates.
+
+M5-D24 through M5-D31, Task 2, and M5.4-05 through M5.4-09 remain
+implementation-`PENDING`; runtime stays `v1_only`. No deployment, performance,
+security, utility, or AI/model-quality result is promoted.
+
 Deliverables:
 
 - Immutable versioned evidence requirements and groups with group-derived
@@ -396,7 +421,7 @@ Deliverables:
 Stages:
 
 - **M5.0:** design/theory/schema/data freeze. **Complete through accepted
-  M5-D30.** Contract rows pass; decision-row implementation halves remain
+  M5-D31.** Contract rows pass; decision-row implementation halves remain
   pending until the M5.6 cross-stage evidence mapping.
 - **M5.1:** pure records, history, structural events, and independent Python
   oracle. **Complete.**
@@ -417,7 +442,9 @@ Stages:
   persisted store/runtime implementation boundary together with M5-D28's
   phased composition and retained-replay correction and M5-D29's bounded
   document-withdrawal/migration-018 contract plus M5-D30's total claim-current
-  provenance closure.
+  provenance closure and M5-D31's exact migration-019/trusted-accessor
+  correction. Schema 019, revised C1-R, and resumed C1 must execute
+  sequentially under a later path-exclusive activation.
 - **M5.5:** controlled dataset adapter, seven qualified baselines, and
   reproducible systems/semantic reports.
 - **M5.6:** full validation, evidence bundle, documentation and honest verdict.

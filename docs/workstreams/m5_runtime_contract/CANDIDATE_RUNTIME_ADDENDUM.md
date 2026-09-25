@@ -1,6 +1,6 @@
 # GroundLoop M5.4 Byte-Total Runtime Contract Addendum
 
-Status: frozen runtime contract revision 11; M5-D25 through M5-D30 contracts
+Status: frozen runtime contract revision 12; M5-D25 through M5-D31 contracts
 **GO** / implementation **PENDING**; full M5.4 remains blocked on executable
 runtime evidence
 
@@ -8,10 +8,10 @@ Date: 2026-08-03; revision 5 / M5-D21 through M5-D24 amendments 2026-08-06;
 revision 6 / M5-D25 amendment 2026-09-03; revision 7 / M5-D26 amendment
 2026-09-07; revision 8 / M5-D27 erratum 2026-09-17; revision 9 / M5-D28
 amendment 2026-09-18; revision 10 / M5-D29 amendment 2026-09-22; revision 11 /
-M5-D30 amendment 2026-09-22
+M5-D30 amendment 2026-09-22; revision 12 / M5-D31 amendment 2026-09-25
 
 Authority: this addendum specializes `docs/m5_design_freeze.md` M5-D1 through
-M5-D30 and M5-T1/M5-T2. It does not change those decisions. The M5 design
+M5-D31 and M5-T1/M5-T2. It does not change those decisions. The M5 design
 freeze remains authoritative for semantic truth; this addendum is authoritative
 for M5.4 runtime DTOs, identities, transition boundaries, persistence
 ownership, replay, and acceptance tests.
@@ -23,7 +23,7 @@ start only after migration 014 and its SQL oracle bundle have passed the M5.3
 fresh-install, populated-upgrade, compatibility, and three-oracle gates.
 
 This addendum MUST NOT authorize a change to an M5.0 semantic decision. An
-implementation conflict with this addendum and M5-D1 through M5-D30 MUST stop
+implementation conflict with this addendum and M5-D1 through M5-D31 MUST stop
 M5.4 as **NO-GO**. The exact amendment procedure MUST be a new numbered M5
 decision in `docs/m5_design_freeze.md`, a matching acceptance-matrix row, and a
 new runtime-addendum revision before code resumes. The migration-014 M4-open
@@ -93,6 +93,16 @@ API, DTO, digest, counter, schema, migration, model/provider choice, replay
 identity, or runtime mode. Migration 018 remains byte-identical; D30
 authorizes no migration 019. Implementation requires a new path-exclusive D30
 activation from the pushed authority barrier.
+The accepted M5-D31 amendment at
+`PRETERMINAL_CONTEXT_ACCESS_AMENDMENT.md` supersedes only D30's complete-
+migration-inventory, migration-019-falsifier, and no-new-function statements.
+It authorizes one additive migration and one read-only trusted accessor for the
+genuine migration-017 preterminal promotion context. It changes no D30 locator
+or provenance rule and no D25/D26 matching, result, child, certificate,
+changed-state-reference, absence-artifact, work, timing, replay, failure,
+digest, DTO, counter, public Python API, provider/model choice, or runtime mode.
+Migrations 001--018 remain byte-identical. Implementation requires a new path-
+exclusive D31 activation from the pushed authority barrier.
 
 Normative wire values in backticks MUST be exact lowercase UTF-8. Every DTO in
 this document MUST be immutable. Every tuple MUST use the order stated here.
@@ -2209,6 +2219,7 @@ database I/O MUST remain explicit.
 | M5-D28 | The authoritative phased-composition amendment separates cursor-local plan/stage/account/finalize work, permits the direct-only pre-source lock reservation required by the tier-15c source, and defines retained changed-key replay against the current cumulative accumulator without changing public or persisted identities. |
 | M5-D29 | The authoritative bounded-withdrawal amendment uses the locked epoch payload as persisted legacy source identity, exact bounded reverse/current and declaration locators, a same-policy supported form, ordinary pre-opener plus one checked post-open hydration-cut routing, and a two-index migration-018 barrier without changing public or digest identities. |
 | M5-D30 | The authoritative claim-current provenance amendment makes the changed-chunk currency locator total across subject kinds, validates dynamic claims through exact working-delta/child/owner closure and bootstrap claims through exact M3 publication closure, and forbids unavailable root/classic reconstruction without changing public, digest, schema, or migration identities. |
+| M5-D31 | The authoritative preterminal-context amendment adds one argument-bound, read-only trusted accessor in migration 019 so a distinct non-owner runtime can attest the genuine migration-017 promotion context while preserving one-schema binding, unchanged D25/D26 derivation, result-bound child authority and exact seal order. |
 | M5-T1 | Section 18.6 requires incremental/Python/SQL equality after every relevant measured seal. |
 | M5-T2 | Sections 10 and 19 expose touched rows, bytes, model calls, and physical exclusions without hiding them in the affected-group bound. |
 
@@ -2435,17 +2446,80 @@ evidence and do not authorize D30 implementation. Held Lane-P work remains
 read-only non-authority until the separately reviewed path-exclusive D30
 activation completes its exact custody protocol.
 
-## 28. Final decision
+## 28. M5-D31 amendment precedence
 
-**Decision: GO for the M5-D30 contract; the prior M5-D25 through M5-D29 GOs
+The complete byte-total D31 correction is maintained separately at
+`PRETERMINAL_CONTEXT_ACCESS_AMENDMENT.md`. Its independently accepted pre-
+freeze content SHA-256 is
+`6331c8149e38031c51cb22b6a9dc2d49d30d27df67d25b5fae24b00c52058dc9`.
+M5-D31 supersedes only D30's statements that migrations 001--018 are the
+complete inventory, migration 019 is a falsifier, and no new SQL function or
+schema object may be introduced. The supersession is exactly one additive
+`migrations/019_m5_preterminal_seal_context.sql` and one function:
+
+```text
+groundloop_m5_matching_read_preterminal_seal_context(bigint, bigint, bigint)
+```
+
+The function is `plpgsql`, `STABLE`, `CALLED ON NULL INPUT`, `SECURITY
+DEFINER`, and pinned to the trusted installation schema plus `pg_catalog`. It
+has exactly the eight-field return row frozen in D31, explicit `PUBLIC EXECUTE`,
+and no overload or companion object. It returns that one row or raises. Raw
+promotion-table access and every migration-017 private helper remain revoked.
+
+The accessor proves the checked seal mode; exact argument/GUC coordinates;
+absence of the transition triplet; the genuine distinct trusted-owner
+promotion triplet and OID GUCs; one row bound to the current backend,
+transaction and `session_user`; exact policy and seal coordinates; and both
+validation flags false. All returned values come from the same row. NULL or
+malformed input and every missing, duplicate, substituted, wrong-owner,
+wrong-OID, wrong-identity, wrong-coordinate or wrong-flag state fail closed.
+The accessor performs no write, DDL, lock, GUC or constraint mutation,
+journal/expected-set read, validation or transaction control.
+
+Migration 019 depends on the exact accepted migration-018 five-field ledger
+row, bundle SHA-256
+`9c45e58fb5c61156d4d07aa0c9b767112bf285452664f39731d893445e7a9e4f`,
+and migration SHA-256
+`941bba975c12e9fb5ba4b4f75a82e59fa518b23eac34468ed2f8b15d1cd9ed90`.
+Its ledger identity uses the exact
+`m5-preterminal-seal-context-schema-bundle-v1` recipe in D31. The ledger-first
+installer owns one `READ COMMITTED` transaction, creates no other object or
+backfill, verifies the exact catalog/owner/definition/flags/ACL, and writes the
+ledger row last. Migrations 001--018 remain byte-identical.
+
+The package-private helper retains its accepted signature, captures
+`pg_catalog.current_schema()` once, proves the exact permanent ledger and row,
+invokes the safely schema-qualified accessor exactly once, and binds every
+persistent read to that same namespace without fallback or mixed-schema
+composition. The accessor supplies only context anchors. The unchanged D25/D26
+body remains the sole derivation, and the unchanged result-bound builder
+remains the sole child-insertion authority after runtime/accounting
+terminalization and immutable result creation. Seal order remains authorize/
+promote/publish; advance base, heads and current image while nonterminal;
+prepare; contribute; terminalize runtime and accumulators; insert work, timing
+and result; then require builder equality, insert children, force deferred
+constraints and commit.
+
+Every other D24--D30 identity, semantic/provenance rule, lock/query order,
+result, digest, DTO, counter, public behavior and runtime mode remains exact.
+The contract freeze implements no migration, installer, source, test, schema,
+runtime or deployment byte. A separately reviewed and pushed path-exclusive
+D31 implementation activation is required before code work resumes.
+
+## 29. Final decision
+
+**Decision: GO for the M5-D31 contract; the prior M5-D25 through M5-D30 GOs
 remain in force. Confidence: high.**
 
-Revision 11 freezes the reviewed M5-D30 bytes while leaving M5-D24 through
-M5-D30 implementation evidence `PENDING`. It accepts no schema/migration
+Revision 12 freezes the reviewed M5-D31 bytes while leaving M5-D24 through
+M5-D31 implementation evidence `PENDING`. It installs no schema/migration
 change, source/test implementation, public runtime, database execution,
 deployment, provider/model change, or Task-2/M5.4 completion. Full production
-runtime and measured history remain **NO-GO** until the new path-exclusive D30
-activation, store/runtime implementation, and executable M5.4 gates pass.
+runtime and measured history remain **NO-GO** until the new path-exclusive D31
+activation, migration/store/runtime implementation, and executable M5.4 gates
+pass.
 Runtime remains `v1_only` outside isolated fixtures. This boundary is not
-evidence of deployment, performance, utility, AI/model-quality improvement,
-or any broader semantic claim.
+evidence of deployment, performance, scalability, utility, security, privacy,
+novelty, objective truth, maintained history, named-system superiority,
+AI/model-quality improvement, or any broader semantic claim.

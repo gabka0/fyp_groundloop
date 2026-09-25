@@ -76,6 +76,11 @@ order:
     closure correction)
 52. `docs/workstreams/m5_runtime_implementation/D30_CONTRACT_FREEZE_HANDOFF.md`
     (accepted D30 bytes, review evidence, and next implementation boundary)
+53. `docs/workstreams/m5_runtime_contract/PRETERMINAL_CONTEXT_ACCESS_AMENDMENT.md`
+    (authoritative M5-D31 trusted preterminal context-access correction)
+54. `docs/workstreams/m5_runtime_implementation/D31_CONTRACT_FREEZE_HANDOFF.md`
+    (accepted D31 bytes, review evidence, and sequential implementation
+    boundary)
 
 `docs/initial_technical_design.md` (v0.1) is superseded and retained for audit
 only. The M0.5 design freeze and M1.1 amendments are complete; frozen decisions
@@ -246,6 +251,24 @@ path-exclusive D30 activation from the pushed D30 authority barrier; every
 earlier activation is historical and insufficient for this corrected scope.
 M5-D24 through M5-D30, Task 2, M5.4 and later gates,
 deployment, and AI-quality claims remain `PENDING`; runtime remains `v1_only`.
+M5-D31 is the frozen narrow correction for the genuine migration-017
+preterminal promotion context when the supported runtime role is not the
+trusted temporary-table owner. Its authoritative SHA-256 is
+`6331c8149e38031c51cb22b6a9dc2d49d30d27df67d25b5fae24b00c52058dc9`;
+M5-D31 and M5.0-31 are contract-`PASS` / implementation-`PENDING`, and
+runtime-addendum revision 12 is authoritative. D31 supersedes only D30's
+negative migration-019/schema-function boundary: migrations 001--018 remain
+exact, while one future additive migration 019 may create exactly the trusted,
+read-only
+`groundloop_m5_matching_read_preterminal_seal_context(bigint,bigint,bigint)`
+function and explicit `PUBLIC EXECUTE`, with no other schema object or
+privilege. Acceptance implements neither the migration nor the accessor. Only
+after the pushed D31 authority barrier may a separate path-exclusive
+activation allocate the required sequential schema-019, revised C1-R, and
+resumed C1 lanes; the current C1-R candidate remains read-only evidence until
+the schema lane integrates. M5-D24 through M5-D31, Task 2, M5.4 and later
+gates, deployment, security, utility, and AI-quality claims remain `PENDING`;
+runtime remains `v1_only`.
 M5 is not complete until every remaining M5.4--M5.6 executable gate is
 recorded.
 

@@ -1,19 +1,19 @@
 # GroundLoop M5 Bounded Evidence-Group Design Freeze
 
-Status: frozen M5.0 contract, amended through accepted M5-D30 and
-M5-D24-C1--C7; implementation evidence for M5-D24 through M5-D30 remains
+Status: frozen M5.0 contract, amended through accepted M5-D31 and
+M5-D24-C1--C7; implementation evidence for M5-D24 through M5-D31 remains
 pending
 
 Date: 2026-08-02; M5-D21 through M5-D24-C7 amendments 2026-08-06--2026-08-18;
 M5-D25 amendment 2026-09-03; M5-D26 amendment 2026-09-07; M5-D27 erratum
 2026-09-17; M5-D28 amendment 2026-09-18; M5-D29 and M5-D30 amendments
-2026-09-22
+2026-09-22; M5-D31 amendment 2026-09-25
 
 Authority: this document specializes `docs/technical_design.md` v0.2 for M5.
 It preserves original decisions D-1 through D-20 except where the earlier
 pseudocode is mathematically inconsistent with its own stated system-of-
 distinct-representatives semantics. Those corrections, the later runtime
-decisions M5-D21 through M5-D30, and accepted M5-D24-C1 through M5-D24-C7 are
+decisions M5-D21 through M5-D31, and accepted M5-D24-C1 through M5-D24-C7 are
 recorded in the decision log and frozen here. The byte-total M5-D24
 specialization is authoritative at
 `docs/workstreams/m5_runtime_contract/RECOVERY_WORK_AMENDMENT.md`.
@@ -47,6 +47,10 @@ is authoritative at
 `docs/workstreams/m5_runtime_contract/DIRECT_M4_PROVENANCE_CLOSURE_AMENDMENT.md`;
 its independently accepted pre-freeze content SHA-256 is
 `db2568affc02cf1ca6f17a549029f31089cecd857debdedf2651e6aac6898fe4`.
+The narrow M5-D31 preterminal-context access correction is authoritative at
+`docs/workstreams/m5_runtime_contract/PRETERMINAL_CONTEXT_ACCESS_AMENDMENT.md`;
+its independently accepted pre-freeze content SHA-256 is
+`6331c8149e38031c51cb22b6a9dc2d49d30d27df67d25b5fae24b00c52058dc9`.
 
 M5 implementation begins only after the M5.0 *contract* gate passes. Later
 implementation-evidence cells in the acceptance matrix remain `PENDING` until
@@ -1473,6 +1477,81 @@ through M5-D30, Task 2, M5.4 and later gates, deployment, performance,
 utility, and AI/model-quality claims remain `PENDING`; runtime remains
 `v1_only` outside isolated fixtures.
 
+### M5-D31 -- trusted preterminal context access
+
+The accepted D25/D26 seal requires the package-private preterminal helper to
+validate the genuine migration-017 promotion context before it derives any
+publication child. That context is deliberately created by a trusted
+`SECURITY DEFINER` function and owned by the trusted definer, so a distinct
+non-owner runtime can neither pass a caller-owner check nor read the temporary
+table directly. Weakening the owner boundary, trusting only caller-visible
+settings, or starting deferred validation early would violate the accepted
+seal contract.
+
+M5-D31 resolves only that permission contradiction. Additive migration 019 may
+create exactly one internal, read-only SQL function:
+
+```text
+groundloop_m5_matching_read_preterminal_seal_context(bigint, bigint, bigint)
+```
+
+It is `LANGUAGE plpgsql`, `STABLE`, `CALLED ON NULL INPUT`, `SECURITY DEFINER`,
+and uses the trusted installation-schema-plus-`pg_catalog` search path pinned
+by `SET search_path FROM CURRENT`. It returns exactly one row containing the
+policy and seven captured base/head/current-image anchors frozen in the
+authoritative amendment, or raises. Explicit `PUBLIC EXECUTE` is the only new
+runtime privilege; raw temporary-table access and the migration-017 private
+checker, begin, journal, guard, and deferred-validator privileges remain
+private.
+
+Before returning, the function proves the checked seal transition and exact
+argument/GUC coordinates; absence of the transition triplet; the genuine,
+distinct trusted-owner promotion triplet and its exact OID GUCs; one context
+row for the current backend, transaction and `session_user`; exact policy and
+seal coordinates; and both validation flags false. All eight returned values
+come from that same row. NULL or malformed inputs and settings, any relation,
+owner, OID, row-count, identity, coordinate, policy or flag mismatch fail
+closed. The function performs no DML, DDL, lock, GUC or constraint mutation,
+journal/expected-set read, validation, transaction control, or publication.
+
+Migration 019 is exactly
+`migrations/019_m5_preterminal_seal_context.sql`. Its prerequisite is the
+complete accepted migration-018 five-field ledger row, whose bundle SHA-256 is
+`9c45e58fb5c61156d4d07aa0c9b767112bf285452664f39731d893445e7a9e4f` and
+migration SHA-256 is
+`941bba975c12e9fb5ba4b4f75a82e59fa518b23eac34468ed2f8b15d1cd9ed90`.
+Its bundle uses the exact
+`m5-preterminal-seal-context-schema-bundle-v1` recipe frozen in the amendment.
+The ledger-first `READ COMMITTED` installer adds no other object or backfill,
+replaces no earlier migration or function, and atomically verifies the exact
+catalog, owner, definition, flags and ACL before writing its ledger row last.
+
+The package-private helper keeps its accepted signature. It captures
+`pg_catalog.current_schema()` once, proves the exact permanent ledger and
+migration-019 row there, invokes the safely schema-qualified accessor exactly
+once, and binds every persistent read to that same schema. There is no fallback
+or mixed-schema envelope. The accessor supplies context anchors only; the
+unchanged D25/D26 derivation remains exact, and the unchanged result-bound
+builder remains the sole child-insertion authority after runtime/accounting
+terminalization and immutable result creation. The corrected seal order is
+authorize/promote/publish; advance base, heads and current image while
+nonterminal; prepare the preterminal DTO; insert the seal contribution;
+terminalize runtime and both accumulators; insert event work, timing and result;
+then require exact builder equality, insert children, force deferred constraints
+and commit.
+
+The complete correction and mandatory falsifiers are authoritative in
+`docs/workstreams/m5_runtime_contract/PRETERMINAL_CONTEXT_ACCESS_AMENDMENT.md`
+at the accepted SHA-256 above. M5-D31 and M5.0-31 are contract-`PASS` /
+implementation-`PENDING`. Acceptance implements no migration, installer,
+source, test, schema, runtime or deployment byte. Implementation requires a new
+docs-only path-exclusive activation from the pushed D31 authority barrier.
+M5-D24 through M5-D31, Task 2, M5.4-05 through M5.4-09, M5.5, M5.6,
+deployment, performance, scalability, utility, security, privacy, novelty,
+objective-truth, maintained-history, named-system-superiority and AI/model-
+quality claims remain `PENDING`; runtime remains `v1_only` outside isolated
+fixtures.
+
 ## 11. Dynamic M4 integration contract
 
 ### M5-D14 -- typed v2 runtime identity
@@ -2105,6 +2184,7 @@ regression evidence.
 | M5-D28 | Phased persisted-matching composition and retained replay | Cursor-local private phases reconcile D24/D25 write order and the direct tier-15c source without changing public signatures or frozen bytes; historical replay validates a canonical retained changed-key projection and the current cumulative accumulator without reconstructing nonpersisted no-op keys |
 | M5-D29 | Bounded persisted document withdrawal | The locked epoch payload is the legacy source identity; persisted reverse/current edges and retained direct/M5 declarations are enumerated by exact bounded locators, same-policy history is the supported form, terminal cuts use ordinary pre-opener and one checked post-open route, and migration 018 adds only two locator indexes behind an exact ledger barrier |
 | M5-D30 | Total claim-current and direct-M4/M3 provenance closure | One changed-chunk currency range returns both subject kinds; dynamic claims validate through the working delta and exact sealed direct owner, activation-base claims validate through exact M3 publication closure, predecessor history uses a backward one-row PK route, and unavailable root/classic preimages are not reconstructed |
+| M5-D31 | Trusted preterminal context access | Additive migration 019 provides one read-only, argument-bound `SECURITY DEFINER` accessor for the genuine migration-017 promotion context; one-schema runtime consumption preserves the D25/D26 derivation, result-bound child authority, seal order and every matching/result/digest semantic |
 
 ## 15. Release gate
 
@@ -2123,6 +2203,7 @@ that:
    durable accounting, the M5-D24-C1--C7 corrections, M5-D25 persisted
    matching, M5-D26 changed-state absence, and M5-D27 requirement-state
    counter ownership, M5-D28 phased persisted-matching composition and
-   retained replay, M5-D29 bounded persisted document withdrawal, and M5-D30
-   total claim-current/direct-M4/M3 provenance closure; and
+   retained replay, M5-D29 bounded persisted document withdrawal, M5-D30
+   total claim-current/direct-M4/M3 provenance closure, and M5-D31 trusted
+   preterminal context access; and
 7. path ownership prevents shared-schema or shared-contract collisions.

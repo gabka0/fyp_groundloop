@@ -1,5 +1,72 @@
 # GroundLoop Decision Log
 
+## 2026-09-25 — M5-D31 Preterminal Context Access Accepted
+
+Decision status: **accepted authoritative narrow contract amendment**. M5-D31
+and acceptance row M5.0-31 are contract-`PASS` /
+implementation-`PENDING`, and the M5.4 runtime addendum advances to revision
+12. The complete authoritative amendment is
+`docs/workstreams/m5_runtime_contract/PRETERMINAL_CONTEXT_ACCESS_AMENDMENT.md`
+at accepted content SHA-256
+`6331c8149e38031c51cb22b6a9dc2d49d30d27df67d25b5fae24b00c52058dc9`.
+
+The final reviewed candidate has exact commit
+`abce709d25e00c5774ac1b49cf046f2783e5fb2c`, tree
+`2ab0a97206a486cd07f0308116ef8e1059eec514`, sole parent
+`ee14d697dd2dbf68b33e9a6c0e3d76791afc5520`, and one added mode-`100644`
+blob `8ed4e8e451f21fce5685efc07eb272a4df680885`, 424 lines, and 21,523
+bytes. Two independent reviewers audited the identical final bytes and returned
+`GO`, `P0=0`, `P1=0`, `P2=0`; independent postcommit checks then confirmed the
+exact commit, parent, tree, sole path, mode, blob, content identity, and clean
+worktree.
+
+M5-D31 resolves only the non-owner permission contradiction in the accepted
+D24/D25/D26 preterminal seal composition. Migration 017 creates its promotion
+context, journal, and expected-set temporary tables under the trusted function
+owner, so a distinct runtime role must neither fail an owner check nor receive
+raw table privilege. The only new SQL surface is the read-only
+`groundloop_m5_matching_read_preterminal_seal_context(bigint,bigint,bigint)`
+function. It is `STABLE`, `CALLED ON NULL INPUT`, `SECURITY DEFINER`, pinned to
+the installation schema plus `pg_catalog`, parallel-unsafe, non-leakproof, and
+explicitly executable by `PUBLIC`. It returns exactly the eight captured policy
+and anchor coordinates only after proving the genuine same-backend,
+same-transaction, same-`session_user` promotion triplet, exact OID/GUC bindings,
+seal coordinates, unique context row, and both validation flags false. Raw
+temporary-table access is not granted, and every existing revoked helper ACL
+remains exact.
+
+M5-D31 authorizes only the future additive
+`migrations/019_m5_preterminal_seal_context.sql`. Migration 019 may create that
+one function and its exact privilege and may create or change nothing else. It
+is bound to the exact accepted migration-018 five-field row and canonical
+bundle recipe; its future installer is ledger-first, rejects partial or
+pre-existing objects, serializes on the schema-bundle ledger, verifies the
+function and its accepted migration-017 dependencies, and writes its ledger row
+last in one atomic top-level transaction. Migrations 001--018 remain byte-
+identical. M5.0-30 changes only its migration-019 negative and positive
+inventory cells to require exact D31 migration 019; the rest of M5.0-30 remains
+exact.
+
+The package-private runtime helper must capture one current schema, require the
+exact migration-019 ledger there, and schema-qualify the accessor and every
+persistent envelope read. The accessor replaces only the caller-inaccessible
+context-row read. It does not provide publication authority or change the
+accepted seal order, child derivation, result-bound comparison, digest, DTO,
+counter, work, timing, replay, absence, failure, or public-application
+semantics.
+
+Acceptance implements nothing. After this ten-path authority freeze is
+independently audited, integrated, and pushed, a separate audited activation
+must enforce the sequential barrier: migration-019 schema/installer evidence,
+then the revised C1-R prerequisite repair consuming the installed accessor,
+then resumed C1 structural composition. The current C1-R candidate remains
+read-only evidence until the schema lane integrates. M5-D24 through M5-D31 and
+M5.0-24 through M5.0-31 remain implementation-`PENDING`; Task 2, M5.4-05
+through M5.4-09, M5.5, M5.6, deployment, performance, utility, and AI/model-
+quality claims remain `PENDING`; runtime remains `v1_only` outside isolated
+fixtures. No security, privacy, novelty, maintained-history, objective-truth,
+or named-system-superiority result follows.
+
 ## 2026-09-22 — M5-D30 Direct-M4 Current-Observation Provenance Accepted
 
 Decision status: **accepted authoritative narrow contract amendment**. M5-D30

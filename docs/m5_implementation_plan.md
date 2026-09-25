@@ -1,12 +1,13 @@
 # GroundLoop M5 Implementation Plan
 
-Status: M5.0 contract accepted through M5-D30 and M5.1--M5.3 complete;
-M5.0-24 through M5.0-30 are contract-`PASS` /
+Status: M5.0 contract accepted through M5-D31 and M5.1--M5.3 complete;
+M5.0-24 through M5.0-31 are contract-`PASS` /
 implementation-`PENDING`; M5.4-01 through M5.4-04 are `PASS`, M5.4-05 through
-M5.4-09 remain `PENDING`; D30 freezes no implementation, treats the integrated
-D29 activation/migration/routing tranches as partial historical evidence and
-held Lane-P bytes as non-authority, and requires a new audited path-exclusive
-activation from the exact pushed D30 barrier before implementation continues
+M5.4-09 remain `PENDING`; the runtime addendum is revision 12; D31 freezes no
+implementation, authorizes only the future additive one-function migration 019
+contract, preserves the held C1-R candidate as read-only evidence, and requires
+a separately audited sequential schema-019, revised-C1-R, then C1 activation
+from the pushed D31 barrier
 
 Date: 2026-08-02; M5-D24 execution and R2e integration current through
 2026-08-19; M5.4-02/-03/-04 evidence integration current through 2026-09-02;
@@ -14,7 +15,8 @@ M5-D25 contract acceptance current through 2026-09-03; M5-D26 contract
 acceptance current through 2026-09-07; M5-D27 erratum acceptance current
 through 2026-09-17; M5-D28 phased-composition acceptance current through
 2026-09-18; M5-D29 bounded-withdrawal and M5-D30 provenance-closure acceptance
-current through 2026-09-22
+current through 2026-09-22; M5-D31 preterminal-context-access acceptance current
+through 2026-09-25
 
 Authority: `docs/m5_design_freeze.md` governs. M5-D24 recovery/accounting work
 also obeys
@@ -44,6 +46,11 @@ Total claim-current and direct-M4/M3 provenance closure also obeys
 `docs/workstreams/m5_runtime_contract/DIRECT_M4_PROVENANCE_CLOSURE_AMENDMENT.md`
 at accepted SHA-256
 `db2568affc02cf1ca6f17a549029f31089cecd857debdedf2651e6aac6898fe4`.
+Preterminal seal-context access and the exact additive migration-019 contract
+also obey
+`docs/workstreams/m5_runtime_contract/PRETERMINAL_CONTEXT_ACCESS_AMENDMENT.md`
+at accepted SHA-256
+`6331c8149e38031c51cb22b6a9dc2d49d30d27df67d25b5fae24b00c52058dc9`.
 Implementation stops on any conflict with those contracts rather than silently
 choosing new semantics.
 
@@ -840,6 +847,64 @@ exclusive activation pinned to that exact D30 barrier. M5-D24 through M5-D30
 and M5.0-24 through M5.0-30 remain implementation-`PENDING`; Task 2,
 M5.4-05 through M5.4-09, and every M5.5/M5.6 gate remain `PENDING`; runtime
 remains `v1_only` outside isolated fixtures.
+
+### 7.12 M5-D31 contract checkpoint
+
+M5-D31 is accepted on exact reviewed candidate commit
+`abce709d25e00c5774ac1b49cf046f2783e5fb2c`, tree
+`2ab0a97206a486cd07f0308116ef8e1059eec514`, sole parent
+`ee14d697dd2dbf68b33e9a6c0e3d76791afc5520`, one added mode-`100644` blob
+`8ed4e8e451f21fce5685efc07eb272a4df680885`, and 21,523-byte, 424-line
+content SHA-256
+`6331c8149e38031c51cb22b6a9dc2d49d30d27df67d25b5fae24b00c52058dc9`.
+Two independent same-byte audits returned `GO`, `P0=0`, `P1=0`, `P2=0`, and
+independent postcommit checks confirmed the exact committed identity and clean
+worktree. Runtime-addendum revision 12 and acceptance row M5.0-31 freeze only
+the preterminal seal-context access correction.
+
+This is contract `PASS` / implementation `PENDING`. Migration 017's trusted
+owner continues to own the genuine promotion context, journal, and expected-set
+temporary tables. The future additive
+`migrations/019_m5_preterminal_seal_context.sql` may create exactly one new
+object:
+`groundloop_m5_matching_read_preterminal_seal_context(bigint,bigint,bigint)`,
+with its exact `PUBLIC EXECUTE` privilege. The function is a read-only,
+argument-bound, pinned-search-path `STABLE SECURITY DEFINER` accessor returning
+only the existing eight policy/anchor fields after exact triplet, OID/GUC,
+backend, transaction, role, seal-coordinate, cardinality, and validation-flag
+proof. It grants no raw temporary-table or private-helper access. Migrations
+001--018 remain byte-identical, and migration 019 may add no table, index,
+column, constraint, trigger, type, backfill, or second function.
+
+The future installer must use the accepted migration-018 five-field prerequisite
+and canonical migration-019 bundle, make the ledger-first replay/conflict
+decision before content checks or locks, take the one `SHARE ROW EXCLUSIVE
+NOWAIT` schema-ledger lock, reject partial objects, verify the exact new
+function and unchanged accepted migration-017 checker/authorizer, and write its
+ledger row last in one atomic top-level transaction. Runtime must capture one
+current schema, require the exact migration-019 ledger and permanent ledger
+relation there, and safely qualify the accessor and all persistent reads in
+that same schema.
+
+D31 changes no matching, state, certificate, delta, absence, result, work,
+timing, replay, failure, output, digest, DTO, counter, public Python API,
+runtime-mode semantic, or public application behavior. Acceptance grants no
+implementation ownership. Only after this
+ten-path freeze is independently audited, integrated, and pushed may a
+separate path-exclusive activation allocate three sequential barriers: first
+the migration-019 schema/installer/tests, then revised C1-R prerequisite repair
+consuming the installed accessor, then resumed C1 structural composition. The
+current uncommitted C1-R candidate remains read-only evidence until the schema
+lane integrates.
+
+M5.0-30 is changed only in its migration-019 negative and positive inventory
+cells: missing, non-D31, or additional migration bytes reject, while frozen
+migrations 001--018 plus exact D31 migration 019 are required positive evidence.
+Every other M5.0-30 field remains exact.
+
+M5-D24 through M5-D31 and M5.0-24 through M5.0-31 remain implementation-
+`PENDING`. Task 2, M5.4-05 through M5.4-09, and every M5.5/M5.6 gate remain
+`PENDING`; runtime remains `v1_only` outside isolated fixtures.
 
 M5.4 exit gate: deterministic fake-port path passes first, then a bounded
 maintained PostgreSQL history and frozen-model diagnostic pass with complete

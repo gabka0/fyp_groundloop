@@ -15,16 +15,19 @@ implementation-`PENDING`; M5-D27 and M5.0-27 are contract-`PASS` /
 implementation-`PENDING`; M5-D28 and M5.0-28 are contract-`PASS` /
 implementation-`PENDING`; M5-D29 and M5.0-29 are contract-`PASS` /
 implementation-`PENDING`; M5-D30 and M5.0-30 are contract-`PASS` /
-implementation-`PENDING`; D30 freezes no implementation, the integrated D29
-activation/migration/routing tranches are partial historical evidence, held
-Lane-P bytes are non-authority, and a new audited path-exclusive activation
-must start from the exact pushed D30 barrier
+implementation-`PENDING`; M5-D31 and M5.0-31 are contract-`PASS` /
+implementation-`PENDING`; the runtime addendum is revision 12; D31 freezes no
+implementation, authorizes only the future additive one-function migration 019
+contract, preserves current C1-R bytes as read-only evidence, and requires a
+new audited schema-019, revised-C1-R, then C1 sequential activation from the
+exact pushed D31 barrier
 
 Date: 2026-08-02; M5-D24 path amendments and integration records 2026-08-06
 through 2026-08-19; M5.4-02/-03/-04 integration record 2026-09-02; M5-D25
 contract freeze 2026-09-03; M5-D26 contract freeze 2026-09-07; Task-2
 activation and M5-D27 contract freeze 2026-09-17; M5-D28 contract freeze
-2026-09-18; M5-D29 and M5-D30 contract freezes 2026-09-22
+2026-09-18; M5-D29 and M5-D30 contract freezes 2026-09-22; M5-D31 contract
+freeze 2026-09-25
 
 Authority: `docs/m5_design_freeze.md` defines semantics and
 `docs/m5_implementation_plan.md` defines gates. This document defines only
@@ -41,6 +44,8 @@ M5-D29 implementation must additionally obey the exact accepted
 `docs/workstreams/m5_runtime_contract/BOUNDED_DOCUMENT_WITHDRAWAL_AMENDMENT.md`.
 M5-D30 implementation must additionally obey the exact accepted
 `docs/workstreams/m5_runtime_contract/DIRECT_M4_PROVENANCE_CLOSURE_AMENDMENT.md`.
+M5-D31 implementation must additionally obey the exact accepted
+`docs/workstreams/m5_runtime_contract/PRETERMINAL_CONTEXT_ACCESS_AMENDMENT.md`.
 
 The accepted C7 correction at
 `docs/workstreams/m5_runtime_contract/DIRECT_ACQUISITION_TERMINAL_CUTOFF_CORRECTION.md`
@@ -944,3 +949,75 @@ M5-D24 through M5-D30 and M5.0-24 through M5.0-30 remain implementation-
 `PENDING`. Task 2, M5.4-05 through M5.4-09, and every M5.5/M5.6 gate remain
 `PENDING`; runtime stays `v1_only`; and no deployment, model-quality, utility,
 security, novelty, maintained-history, or superiority claim follows.
+
+### Wave R10 -- M5-D31 preterminal context-access authority freeze
+
+The D31 candidate resolves only the non-owner permission contradiction exposed
+when the package-private C1-R preterminal helper must attest migration 017's
+trusted-owner promotion context without receiving raw temporary-table access.
+It was accepted on exact commit
+`abce709d25e00c5774ac1b49cf046f2783e5fb2c`, tree
+`2ab0a97206a486cd07f0308116ef8e1059eec514`, sole parent
+`ee14d697dd2dbf68b33e9a6c0e3d76791afc5520`, one added mode-`100644` blob
+`8ed4e8e451f21fce5685efc07eb272a4df680885`, and exact 21,523-byte,
+424-line content SHA-256
+`6331c8149e38031c51cb22b6a9dc2d49d30d27df67d25b5fae24b00c52058dc9`.
+Independent semantic and PostgreSQL/installer audits each returned `GO`,
+`P0=0`, `P1=0`, `P2=0`, then independently confirmed the identical committed
+bytes and exact provenance.
+
+The authority-freeze tranche owns exactly these ten paths:
+
+1. `AGENTS.md`;
+2. `docs/m5_design_freeze.md`;
+3. `docs/workstreams/m5_runtime_contract/CANDIDATE_RUNTIME_ADDENDUM.md`;
+4. `docs/m5_acceptance_matrix.md`;
+5. `docs/m5_implementation_plan.md`;
+6. `docs/m5_multiagent_execution_plan.md`;
+7. `docs/decision_log.md`;
+8. `docs/m5_implementation_status.md`;
+9. `docs/roadmap.md`; and
+10. `docs/workstreams/m5_runtime_implementation/D31_CONTRACT_FREEZE_HANDOFF.md`.
+
+The manifest is hashed in C-sorted path order; the numbered list is narrative
+ownership order. This tranche may freeze M5-D31, runtime-addendum revision 12,
+M5.0-31, and the exact future migration-019 contract. It owns no migration,
+installer, source, test, schema, DTO, digest, database, provider, deployment,
+runtime-mode, or AI-quality path and grants no implementation ownership.
+
+M5-D31 supersedes only D30's complete-migration-inventory, migration-019
+falsifier, and no-new-SQL-object statements. Migrations 001--018 remain byte-
+identical. Future migration 019 may create exactly the read-only
+`groundloop_m5_matching_read_preterminal_seal_context(bigint,bigint,bigint)`
+function and its explicit `PUBLIC EXECUTE` privilege, with the accepted
+migration-018 prerequisite, ledger-first atomic installer, trusted-owner
+triplet proof, and one-schema runtime binding. It may create or change nothing
+else and changes no M5 semantic, output, identity, counter, work, timing,
+replay, public-application, or runtime-mode contract.
+
+M5.0-30 changes only its migration-019 negative and positive inventory cells:
+missing, non-D31, or additional migration bytes reject, while frozen migrations
+001--018 plus exact D31 migration 019 are required positive evidence. Every
+other M5.0-30 field remains exact.
+
+The D29 activation/migration/routing integrations and D30 implementation work
+remain bounded historical evidence, not D31 implementation acceptance. The
+current uncommitted C1-R candidate is read-only evidence until a schema lane
+integrates; its owner-only preterminal helper is not accepted. After this
+freeze is independently audited, integrated, and pushed, implementation may
+resume only through a new independently audited path-exclusive D31 activation
+pinned to that exact pushed authority barrier.
+
+That later activation must allocate and integrate sequentially: first the
+migration-019 schema/installer/test/handoff lane; second the revised C1-R
+runtime/test/handoff lane consuming the installed accessor; and third the
+resumed C1 structural-composition lane. Dirty implementation worktrees may
+advance only through the accepted lineage and disjoint-path barriers. Every
+implementation tranche requires fresh whole-byte precommit and postcommit
+audits; historical passing tests remain evidence, not acceptance.
+
+M5-D24 through M5-D31 and M5.0-24 through M5.0-31 remain implementation-
+`PENDING`. Task 2, M5.4-05 through M5.4-09, and every M5.5/M5.6 gate remain
+`PENDING`; runtime stays `v1_only`; and no deployment, model-quality, utility,
+security, privacy, novelty, maintained-history, objective-truth, or superiority
+claim follows.
