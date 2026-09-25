@@ -196,12 +196,12 @@ This activation file alone is amended in that fresh docs-only worktree from
 the exact pushed S0 commit to replace the following ledger with final values:
 
 ```text
-reviewed_migration_019_commit = PENDING_S0
-reviewed_migration_019_blob = PENDING_S0
-reviewed_migration_019_bytes = PENDING_S0
-reviewed_migration_019_lines = PENDING_S0
-accepted_migration_019_sha256 = PENDING_S0
-accepted_migration_019_bundle_sha256 = PENDING_S0
+reviewed_migration_019_commit = c27baef9ae1971619e54c5bb8da34e5a32ae0f8d
+reviewed_migration_019_blob = 827430b976cf971c3194d8d0673710cf877ace08
+reviewed_migration_019_bytes = 8459
+reviewed_migration_019_lines = 236
+accepted_migration_019_sha256 = f92c02a365ac43a26f3291718866436b19f69924eb7a8c2b77af0312f82b536e
+accepted_migration_019_bundle_sha256 = e12d4abd95a9b2ef49010a43d6b708824462a80dfed2548107e175920dabe481
 ```
 
 The bundle digest is derived only by the accepted typed recipe:
@@ -503,9 +503,9 @@ M5-D31 contract = PASS
 M5.0-31 contract = PASS
 M5-D31 implementation = PENDING
 M5.0-31 implementation = PENDING
-migration_019_sql_bytes = NOT_AUTHORED
-migration_019_hash_pin = PENDING_S0
-migration_019_installer = NOT_AUTHORIZED_BEFORE_PIN
+migration_019_sql_bytes = PINNED_NOT_INSTALLED
+migration_019_hash_pin = migration=f92c02a365ac43a26f3291718866436b19f69924eb7a8c2b77af0312f82b536e / bundle=e12d4abd95a9b2ef49010a43d6b708824462a80dfed2548107e175920dabe481
+migration_019_installer = AUTHORIZED_NOT_RUN
 preterminal_context_accessor = NOT_IMPLEMENTED
 C1-R prerequisite repair = PENDING
 C1 structural composition = PENDING
