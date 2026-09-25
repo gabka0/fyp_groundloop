@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from psycopg import Connection, Cursor, IsolationLevel, sql
+from psycopg import Connection, Cursor, Error, IsolationLevel, sql
 from psycopg.pq import TransactionStatus
 
 from groundloop.m5.digests import hash_field, stable_m5_digest, text_field
@@ -136,6 +136,29 @@ M5_ACCEPTED_BOUNDED_DOCUMENT_WITHDRAWAL_MIGRATION_SHA256 = (
 M5_ACCEPTED_BOUNDED_DOCUMENT_WITHDRAWAL_BUNDLE_SHA256 = (
     "9c45e58fb5c61156d4d07aa0c9b767112bf285452664f39731d893445e7a9e4f"
 )
+
+M5_PRETERMINAL_SEAL_CONTEXT_BUNDLE_ID = "m5-preterminal-seal-context-schema-bundle-v1"
+M5_PRETERMINAL_SEAL_CONTEXT_MIGRATION_LABEL = (
+    "migrations/019_m5_preterminal_seal_context.sql"
+)
+M5_PRETERMINAL_SEAL_CONTEXT_MIGRATION_PATH = (
+    ROOT / M5_PRETERMINAL_SEAL_CONTEXT_MIGRATION_LABEL
+)
+M5_PRETERMINAL_SEAL_CONTEXT_ORACLE_SHA256 = (
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+)
+
+# M5-D31 pins the reviewed S0 SQL and typed bundle bytes before the first
+# installation.  These literals are authority: neither value may be inferred
+# from a changed checkout or from a caller-provided migration body.
+M5_ACCEPTED_PRETERMINAL_SEAL_CONTEXT_MIGRATION_SHA256 = (
+    "f92c02a365ac43a26f3291718866436b19f69924eb7a8c2b77af0312f82b536e"
+)
+M5_ACCEPTED_PRETERMINAL_SEAL_CONTEXT_BUNDLE_SHA256 = (
+    "e12d4abd95a9b2ef49010a43d6b708824462a80dfed2548107e175920dabe481"
+)
+
+M5_PRETERMINAL_SEAL_CONTEXT_INSTALL_LOCK_RELATIONS = ("groundloop_m5_schema_bundle",)
 
 M5_BOUNDED_DOCUMENT_WITHDRAWAL_INSTALL_LOCK_RELATIONS = (
     "groundloop_m5_requirement_admitted_pair",
@@ -496,6 +519,10 @@ class M5BoundedDocumentWithdrawalBundleError(M5RuntimeBundleError):
     """Migration 018 cannot be installed, replayed, or routed safely."""
 
 
+class M5PreterminalSealContextBundleError(M5RuntimeBundleError):
+    """Migration 019 cannot be installed or replayed safely."""
+
+
 @dataclass(frozen=True, slots=True)
 class M5BundleIdentity:
     bundle_id: str
@@ -568,6 +595,21 @@ class M5BoundedDocumentWithdrawalBundleIdentity:
 @dataclass(frozen=True, slots=True)
 class M5BoundedDocumentWithdrawalBundleInstallResult:
     identity: M5BoundedDocumentWithdrawalBundleIdentity
+    applied: bool
+
+
+@dataclass(frozen=True, slots=True)
+class M5PreterminalSealContextBundleIdentity:
+    bundle_id: str
+    bundle_sha256: str
+    migration_sha256: str
+    oracle_sha256: str
+    prerequisite_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class M5PreterminalSealContextBundleInstallResult:
+    identity: M5PreterminalSealContextBundleIdentity
     applied: bool
 
 
@@ -734,6 +776,32 @@ def m5_bounded_document_withdrawal_bundle_identity(
         migration_sha256=migration_hash,
         oracle_sha256=M5_BOUNDED_DOCUMENT_WITHDRAWAL_ORACLE_SHA256,
         prerequisite_sha256=M5_ACCEPTED_PERSISTED_MATCHING_BUNDLE_SHA256,
+    )
+
+
+def m5_preterminal_seal_context_bundle_identity(
+    *, migration_bytes: bytes | None = None
+) -> M5PreterminalSealContextBundleIdentity:
+    """Return migration 019's identity bound to the accepted migration 018."""
+
+    migration = (
+        M5_PRETERMINAL_SEAL_CONTEXT_MIGRATION_PATH.read_bytes()
+        if migration_bytes is None
+        else migration_bytes
+    )
+    migration_hash = _sha256(migration)
+    bundle_hash = stable_m5_digest(
+        M5_PRETERMINAL_SEAL_CONTEXT_BUNDLE_ID,
+        text_field(M5_PRETERMINAL_SEAL_CONTEXT_MIGRATION_LABEL),
+        hash_field(migration_hash),
+        hash_field(M5_ACCEPTED_BOUNDED_DOCUMENT_WITHDRAWAL_BUNDLE_SHA256),
+    )
+    return M5PreterminalSealContextBundleIdentity(
+        bundle_id=M5_PRETERMINAL_SEAL_CONTEXT_BUNDLE_ID,
+        bundle_sha256=bundle_hash,
+        migration_sha256=migration_hash,
+        oracle_sha256=M5_PRETERMINAL_SEAL_CONTEXT_ORACLE_SHA256,
+        prerequisite_sha256=M5_ACCEPTED_BOUNDED_DOCUMENT_WITHDRAWAL_BUNDLE_SHA256,
     )
 
 
@@ -2892,6 +2960,675 @@ def install_m5_bounded_document_withdrawal_bundle(
         return M5BoundedDocumentWithdrawalBundleInstallResult(identity, True)
 
 
+@dataclass(frozen=True, slots=True)
+class _M5FunctionCatalogImage:
+    oid: int
+    definition: str
+    owner_oid: int
+    owner_name: str
+    language_name: str
+    result_type: str
+    returns_set: bool
+    volatility: str
+    security_definer: bool
+    leakproof: bool
+    strict: bool
+    parallel: str
+    config: tuple[str, ...] | None
+    acl_text: str | None
+    input_types: tuple[str, ...]
+    all_types: tuple[str, ...] | None
+    argument_modes: tuple[str, ...] | None
+    argument_names: tuple[str, ...] | None
+    identity_arguments: str
+    result_declaration: str
+    kind: str
+    input_count: int
+    default_count: int
+    variadic_type_oid: int
+
+
+def _m5_preterminal_seal_context_selected_schema(
+    connection: Connection[Any],
+) -> str:
+    row = connection.execute("SELECT pg_catalog.current_schema()").fetchone()
+    if row is None or row[0] is None or str(row[0]) == "":
+        raise M5PreterminalSealContextBundleError(
+            "migration 019 requires one selected installation schema"
+        )
+    return str(row[0])
+
+
+def _m5_preterminal_seal_context_read_ledger(
+    connection: Connection[Any],
+    *,
+    schema_name: str,
+    bundle_id: str,
+) -> tuple[str, str, str, str, str] | None:
+    try:
+        return _read_five_field_schema_bundle_row(
+            connection,
+            bundle_id,
+            schema_name=schema_name,
+        )
+    except Error as error:
+        raise M5PreterminalSealContextBundleError(
+            "migration 019 requires the selected schema's exact bundle ledger"
+        ) from error
+
+
+def _m5_preterminal_seal_context_expected_ledger(
+    identity: M5PreterminalSealContextBundleIdentity,
+) -> tuple[str, str, str, str, str]:
+    return (
+        identity.bundle_id,
+        identity.bundle_sha256,
+        identity.migration_sha256,
+        identity.oracle_sha256,
+        identity.prerequisite_sha256,
+    )
+
+
+def _verify_m5_preterminal_seal_context_ledger_relation(
+    connection: Connection[Any], *, schema_name: str
+) -> None:
+    row = connection.execute(
+        """
+        SELECT count(*),
+               bool_and(relation_row.relkind = 'r'
+                        AND relation_row.relpersistence = 'p')
+        FROM pg_catalog.pg_class AS relation_row
+        JOIN pg_catalog.pg_namespace AS namespace_row
+          ON namespace_row.oid = relation_row.relnamespace
+        WHERE namespace_row.nspname = %s
+          AND relation_row.relname = 'groundloop_m5_schema_bundle'
+        """,
+        (schema_name,),
+    ).fetchone()
+    if row != (1, True):
+        raise M5PreterminalSealContextBundleError(
+            "migration 019 requires the selected schema's permanent bundle ledger"
+        )
+
+
+def _verify_accepted_m5_bounded_document_withdrawal_bundle_for_019(
+    connection: Connection[Any], *, schema_name: str
+) -> None:
+    expected = (
+        M5_BOUNDED_DOCUMENT_WITHDRAWAL_BUNDLE_ID,
+        M5_ACCEPTED_BOUNDED_DOCUMENT_WITHDRAWAL_BUNDLE_SHA256,
+        M5_ACCEPTED_BOUNDED_DOCUMENT_WITHDRAWAL_MIGRATION_SHA256,
+        M5_BOUNDED_DOCUMENT_WITHDRAWAL_ORACLE_SHA256,
+        M5_ACCEPTED_PERSISTED_MATCHING_BUNDLE_SHA256,
+    )
+    actual = _m5_preterminal_seal_context_read_ledger(
+        connection,
+        schema_name=schema_name,
+        bundle_id=M5_BOUNDED_DOCUMENT_WITHDRAWAL_BUNDLE_ID,
+    )
+    if actual != expected:
+        raise M5PrerequisiteError(
+            "migration 019 requires the exact accepted five-field "
+            "migration-018 ledger row"
+        )
+
+
+def _m5_preterminal_seal_context_migration_statements(
+    migration: bytes,
+) -> tuple[str, str, str]:
+    try:
+        source = migration.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise M5PreterminalSealContextBundleError(
+            "migration 019 bytes are not UTF-8"
+        ) from error
+
+    revoke_marker = (
+        "\n\nREVOKE ALL ON FUNCTION "
+        "groundloop_m5_matching_read_preterminal_seal_context("
+    )
+    grant_marker = (
+        "\n\nGRANT EXECUTE ON FUNCTION "
+        "groundloop_m5_matching_read_preterminal_seal_context("
+    )
+    if source.count(revoke_marker) != 1 or source.count(grant_marker) != 1:
+        raise M5PreterminalSealContextBundleError(
+            "migration 019 does not contain the exact three-statement surface"
+        )
+    revoke_at = source.index(revoke_marker)
+    grant_at = source.index(grant_marker, revoke_at + len(revoke_marker))
+    statements = (
+        source[:revoke_at].strip(),
+        source[revoke_at + 2 : grant_at].strip(),
+        source[grant_at + 2 :].strip(),
+    )
+    if any(not statement.endswith(";") for statement in statements):
+        raise M5PreterminalSealContextBundleError(
+            "migration 019 statements are malformed"
+        )
+    if "CREATE FUNCTION " not in statements[0] or "CREATE OR REPLACE" in source:
+        raise M5PreterminalSealContextBundleError(
+            "migration 019 function statement is not the frozen create-only form"
+        )
+    return statements
+
+
+def _m5_function_catalog_images(
+    connection: Connection[Any],
+    *,
+    schema_name: str,
+    function_name: str,
+) -> tuple[_M5FunctionCatalogImage, ...]:
+    rows = connection.execute(
+        """
+        SELECT function_row.oid,
+               pg_catalog.pg_get_functiondef(function_row.oid),
+               function_row.proowner,
+               owner_row.rolname,
+               language_row.lanname,
+               pg_catalog.format_type(function_row.prorettype, NULL),
+               function_row.proretset,
+               function_row.provolatile,
+               function_row.prosecdef,
+               function_row.proleakproof,
+               function_row.proisstrict,
+               function_row.proparallel,
+               function_row.proconfig,
+               function_row.proacl::text,
+               ARRAY(
+                   SELECT pg_catalog.format_type(argument_row.type_oid, NULL)
+                   FROM unnest(function_row.proargtypes::oid[])
+                        WITH ORDINALITY AS argument_row(type_oid, position)
+                   ORDER BY argument_row.position
+               ),
+               CASE WHEN function_row.proallargtypes IS NULL THEN NULL
+                    ELSE ARRAY(
+                        SELECT pg_catalog.format_type(
+                                   all_argument_row.type_oid,
+                                   NULL
+                               )
+                        FROM unnest(function_row.proallargtypes)
+                             WITH ORDINALITY
+                             AS all_argument_row(type_oid, position)
+                        ORDER BY all_argument_row.position
+                    )
+               END,
+               function_row.proargmodes,
+               function_row.proargnames,
+               pg_catalog.pg_get_function_identity_arguments(function_row.oid),
+               pg_catalog.pg_get_function_result(function_row.oid),
+               function_row.prokind,
+               function_row.pronargs,
+               function_row.pronargdefaults,
+               function_row.provariadic
+        FROM pg_catalog.pg_proc AS function_row
+        JOIN pg_catalog.pg_namespace AS namespace_row
+          ON namespace_row.oid = function_row.pronamespace
+        JOIN pg_catalog.pg_roles AS owner_row
+          ON owner_row.oid = function_row.proowner
+        JOIN pg_catalog.pg_language AS language_row
+          ON language_row.oid = function_row.prolang
+        WHERE namespace_row.nspname = %s
+          AND function_row.proname = %s
+        ORDER BY function_row.oid
+        """,
+        (schema_name, function_name),
+    ).fetchall()
+
+    def optional_strings(value: Any) -> tuple[str, ...] | None:
+        if value is None:
+            return None
+        return tuple(str(item) for item in value)
+
+    return tuple(
+        _M5FunctionCatalogImage(
+            oid=int(row[0]),
+            definition=str(row[1]),
+            owner_oid=int(row[2]),
+            owner_name=str(row[3]),
+            language_name=str(row[4]),
+            result_type=str(row[5]),
+            returns_set=bool(row[6]),
+            volatility=str(row[7]),
+            security_definer=bool(row[8]),
+            leakproof=bool(row[9]),
+            strict=bool(row[10]),
+            parallel=str(row[11]),
+            config=optional_strings(row[12]),
+            acl_text=None if row[13] is None else str(row[13]),
+            input_types=tuple(str(item) for item in row[14]),
+            all_types=optional_strings(row[15]),
+            argument_modes=optional_strings(row[16]),
+            argument_names=optional_strings(row[17]),
+            identity_arguments=str(row[18]),
+            result_declaration=str(row[19]),
+            kind=str(row[20]),
+            input_count=int(row[21]),
+            default_count=int(row[22]),
+            variadic_type_oid=int(row[23]),
+        )
+        for row in rows
+    )
+
+
+def _m5_single_function_catalog_image(
+    connection: Connection[Any],
+    *,
+    schema_name: str,
+    function_name: str,
+    input_types: tuple[str, ...],
+) -> _M5FunctionCatalogImage:
+    images = _m5_function_catalog_images(
+        connection,
+        schema_name=schema_name,
+        function_name=function_name,
+    )
+    matching = tuple(image for image in images if image.input_types == input_types)
+    if len(images) != 1 or len(matching) != 1:
+        raise M5PreterminalSealContextBundleError(
+            f"migration 019 requires the sole exact {function_name} signature"
+        )
+    return matching[0]
+
+
+def _m5_function_acl_entries(
+    connection: Connection[Any], *, function_oid: int
+) -> tuple[tuple[int, int, str, bool], ...]:
+    rows = connection.execute(
+        """
+        SELECT acl_row.grantor, acl_row.grantee,
+               acl_row.privilege_type, acl_row.is_grantable
+        FROM pg_catalog.pg_proc AS function_row
+        CROSS JOIN LATERAL pg_catalog.aclexplode(
+            coalesce(
+                function_row.proacl,
+                pg_catalog.acldefault('f', function_row.proowner)
+            )
+        ) AS acl_row
+        WHERE function_row.oid = %s
+        ORDER BY acl_row.grantee, acl_row.privilege_type
+        """,
+        (function_oid,),
+    ).fetchall()
+    return tuple((int(row[0]), int(row[1]), str(row[2]), bool(row[3])) for row in rows)
+
+
+def _verify_m5_function_execute_acl(
+    connection: Connection[Any],
+    *,
+    image: _M5FunctionCatalogImage,
+    public_execute: bool,
+    explicit_acl: bool,
+) -> None:
+    entries = _m5_function_acl_entries(connection, function_oid=image.oid)
+    expected_grantees = {image.owner_oid, 0} if public_execute else {image.owner_oid}
+    if (
+        (explicit_acl and image.acl_text is None)
+        or len(entries) != len(expected_grantees)
+        or {entry[1] for entry in entries} != expected_grantees
+        or any(
+            entry[0] != image.owner_oid
+            or entry[2] != "EXECUTE"
+            or (entry[1] == 0 and entry[3])
+            for entry in entries
+        )
+    ):
+        raise M5PreterminalSealContextBundleError(
+            "migration 019 function privilege boundary is not exact"
+        )
+
+
+def _m5_preterminal_expected_search_path(
+    connection: Connection[Any], *, schema_name: str
+) -> str:
+    row = connection.execute(
+        "SELECT 'search_path=' || pg_catalog.quote_ident(%s) || ', pg_catalog'",
+        (schema_name,),
+    ).fetchone()
+    if row is None:
+        raise M5PreterminalSealContextBundleError(
+            "migration 019 could not derive its trusted search path"
+        )
+    return str(row[0])
+
+
+def _m5_preterminal_trusted_function_images(
+    connection: Connection[Any], *, schema_name: str
+) -> tuple[_M5FunctionCatalogImage, _M5FunctionCatalogImage]:
+    private_triplet = _m5_single_function_catalog_image(
+        connection,
+        schema_name=schema_name,
+        function_name="groundloop_m5_matching_private_temp_triplet",
+        input_types=("regclass", "regclass", "regclass"),
+    )
+    seal_authorizer = _m5_single_function_catalog_image(
+        connection,
+        schema_name=schema_name,
+        function_name="groundloop_m5_authorize_persisted_matching_seal",
+        input_types=("bigint", "bigint", "bigint"),
+    )
+    current_owner = connection.execute(
+        "SELECT current_user::pg_catalog.regrole::oid"
+    ).fetchone()
+    expected_search_path = _m5_preterminal_expected_search_path(
+        connection, schema_name=schema_name
+    )
+    if (
+        current_owner is None
+        or private_triplet.owner_oid != int(current_owner[0])
+        or seal_authorizer.owner_oid != private_triplet.owner_oid
+        or private_triplet.language_name != "sql"
+        or private_triplet.result_type != "boolean"
+        or private_triplet.returns_set
+        or private_triplet.volatility != "s"
+        or not private_triplet.security_definer
+        or private_triplet.leakproof
+        or private_triplet.strict
+        or private_triplet.parallel != "u"
+        or private_triplet.config != (expected_search_path,)
+        or private_triplet.argument_names
+        != ("context_relation", "journal_relation", "expected_relation")
+        or private_triplet.argument_modes is not None
+        or private_triplet.all_types is not None
+        or private_triplet.kind != "f"
+        or private_triplet.input_count != 3
+        or private_triplet.default_count != 0
+        or private_triplet.variadic_type_oid != 0
+        or seal_authorizer.language_name != "plpgsql"
+        or seal_authorizer.result_type != "void"
+        or seal_authorizer.returns_set
+        or seal_authorizer.volatility != "v"
+        or not seal_authorizer.security_definer
+        or seal_authorizer.leakproof
+        or seal_authorizer.strict
+        or seal_authorizer.parallel != "u"
+        or seal_authorizer.config != (expected_search_path,)
+        or seal_authorizer.argument_names
+        != ("selected_epoch_id", "expected_revision", "sealed_revision")
+        or seal_authorizer.argument_modes is not None
+        or seal_authorizer.all_types is not None
+        or seal_authorizer.kind != "f"
+        or seal_authorizer.input_count != 3
+        or seal_authorizer.default_count != 0
+        or seal_authorizer.variadic_type_oid != 0
+    ):
+        raise M5PreterminalSealContextBundleError(
+            "migration 019 trusted migration-017 functions are not exact"
+        )
+    _verify_m5_function_execute_acl(
+        connection,
+        image=private_triplet,
+        public_execute=False,
+        explicit_acl=True,
+    )
+    _verify_m5_function_execute_acl(
+        connection,
+        image=seal_authorizer,
+        public_execute=True,
+        explicit_acl=False,
+    )
+    return private_triplet, seal_authorizer
+
+
+def _verify_m5_preterminal_seal_context_catalog(
+    connection: Connection[Any],
+    *,
+    schema_name: str,
+    trusted_before: tuple[
+        _M5FunctionCatalogImage,
+        _M5FunctionCatalogImage,
+    ],
+) -> None:
+    trusted_after = _m5_preterminal_trusted_function_images(
+        connection, schema_name=schema_name
+    )
+    if trusted_after != trusted_before:
+        raise M5PreterminalSealContextBundleError(
+            "migration 019 changed a trusted migration-017 function"
+        )
+
+    accessor = _m5_single_function_catalog_image(
+        connection,
+        schema_name=schema_name,
+        function_name="groundloop_m5_matching_read_preterminal_seal_context",
+        input_types=("bigint", "bigint", "bigint"),
+    )
+    expected_search_path = _m5_preterminal_expected_search_path(
+        connection, schema_name=schema_name
+    )
+    expected_all_types = (
+        "bigint",
+        "bigint",
+        "bigint",
+        "text",
+        "bigint",
+        "bigint",
+        "bigint",
+        "integer",
+        "bigint",
+        "timestamp with time zone",
+        "text",
+    )
+    expected_names = (
+        "selected_epoch_id",
+        "selected_expected_revision",
+        "selected_sealed_revision",
+        "policy_version",
+        "anchor_m4_epoch_id",
+        "anchor_m5_epoch_id",
+        "anchor_m5_revision",
+        "anchor_activation_count",
+        "anchor_predecessor_revision",
+        "anchor_predecessor_sealed_at",
+        "anchor_current_policy",
+    )
+    if (
+        accessor.owner_oid != trusted_before[0].owner_oid
+        or accessor.language_name != "plpgsql"
+        or accessor.result_type != "record"
+        or not accessor.returns_set
+        or accessor.volatility != "s"
+        or not accessor.security_definer
+        or accessor.leakproof
+        or accessor.strict
+        or accessor.parallel != "u"
+        or accessor.config != (expected_search_path,)
+        or accessor.all_types != expected_all_types
+        or accessor.argument_modes != ("i", "i", "i") + ("t",) * 8
+        or accessor.argument_names != expected_names
+        or accessor.identity_arguments
+        != (
+            "selected_epoch_id bigint, selected_expected_revision bigint, "
+            "selected_sealed_revision bigint"
+        )
+        or accessor.kind != "f"
+        or accessor.input_count != 3
+        or accessor.default_count != 0
+        or accessor.variadic_type_oid != 0
+    ):
+        raise M5PreterminalSealContextBundleError(
+            "migration 019 accessor catalog shape is not exact"
+        )
+    _verify_m5_function_execute_acl(
+        connection,
+        image=accessor,
+        public_execute=True,
+        explicit_acl=True,
+    )
+
+
+def _acquire_m5_preterminal_seal_context_install_lock(
+    connection: Connection[Any], *, schema_name: str
+) -> None:
+    connection.execute(
+        sql.SQL("LOCK TABLE {} IN SHARE ROW EXCLUSIVE MODE NOWAIT").format(
+            sql.Identifier(schema_name, "groundloop_m5_schema_bundle")
+        )
+    )
+
+
+def _m5_preterminal_seal_context_replay_catalog(
+    connection: Connection[Any], *, schema_name: str
+) -> None:
+    _verify_m5_preterminal_seal_context_ledger_relation(
+        connection, schema_name=schema_name
+    )
+    _verify_accepted_m5_bounded_document_withdrawal_bundle_for_019(
+        connection, schema_name=schema_name
+    )
+    trusted = _m5_preterminal_trusted_function_images(
+        connection, schema_name=schema_name
+    )
+    _verify_m5_preterminal_seal_context_catalog(
+        connection,
+        schema_name=schema_name,
+        trusted_before=trusted,
+    )
+
+
+def install_m5_preterminal_seal_context_bundle(
+    connection: Connection[Any],
+    *,
+    failure_injector: Callable[[str], None] | None = None,
+    migration_bytes: bytes | None = None,
+) -> M5PreterminalSealContextBundleInstallResult:
+    """Atomically install or ledger-first replay frozen migration 019."""
+
+    if connection.info.transaction_status != TransactionStatus.IDLE:
+        raise M5PreterminalSealContextBundleError(
+            "migration 019 requires an idle connection and owns its "
+            "top-level transaction"
+        )
+    if connection.read_only is True or connection.isolation_level not in (
+        None,
+        IsolationLevel.READ_COMMITTED,
+    ):
+        raise M5PreterminalSealContextBundleError(
+            "migration 019 requires a read-write READ COMMITTED connection"
+        )
+    migration = (
+        M5_PRETERMINAL_SEAL_CONTEXT_MIGRATION_PATH.read_bytes()
+        if migration_bytes is None
+        else migration_bytes
+    )
+    identity = m5_preterminal_seal_context_bundle_identity(migration_bytes=migration)
+    expected_ledger = _m5_preterminal_seal_context_expected_ledger(identity)
+
+    with connection.transaction():
+        connection.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED READ WRITE")
+        schema_name = _m5_preterminal_seal_context_selected_schema(connection)
+        ledger = _m5_preterminal_seal_context_read_ledger(
+            connection,
+            schema_name=schema_name,
+            bundle_id=identity.bundle_id,
+        )
+        if ledger is not None:
+            if ledger != expected_ledger:
+                raise M5BundleHashConflictError(
+                    f"bundle {identity.bundle_id} is already ledgered with "
+                    "different content"
+                )
+            _m5_preterminal_seal_context_replay_catalog(
+                connection, schema_name=schema_name
+            )
+            return M5PreterminalSealContextBundleInstallResult(identity, False)
+        if failure_injector is not None:
+            failure_injector("after_initial_ledger")
+
+        if (
+            identity.migration_sha256
+            != M5_ACCEPTED_PRETERMINAL_SEAL_CONTEXT_MIGRATION_SHA256
+            or identity.bundle_sha256
+            != M5_ACCEPTED_PRETERMINAL_SEAL_CONTEXT_BUNDLE_SHA256
+        ):
+            raise M5PreterminalSealContextBundleError(
+                "migration 019 first install bytes do not match the frozen "
+                "M5-D31 authority"
+            )
+        statements = _m5_preterminal_seal_context_migration_statements(migration)
+        _verify_m5_preterminal_seal_context_ledger_relation(
+            connection, schema_name=schema_name
+        )
+        _verify_accepted_m5_bounded_document_withdrawal_bundle_for_019(
+            connection, schema_name=schema_name
+        )
+        if failure_injector is not None:
+            failure_injector("after_prerequisite")
+
+        _acquire_m5_preterminal_seal_context_install_lock(
+            connection, schema_name=schema_name
+        )
+        if failure_injector is not None:
+            failure_injector("after_install_lock")
+        ledger = _m5_preterminal_seal_context_read_ledger(
+            connection,
+            schema_name=schema_name,
+            bundle_id=identity.bundle_id,
+        )
+        if ledger is not None:
+            if ledger != expected_ledger:
+                raise M5BundleHashConflictError(
+                    f"bundle {identity.bundle_id} is already ledgered with "
+                    "different content"
+                )
+            _m5_preterminal_seal_context_replay_catalog(
+                connection, schema_name=schema_name
+            )
+            return M5PreterminalSealContextBundleInstallResult(identity, False)
+
+        existing_accessor = _m5_function_catalog_images(
+            connection,
+            schema_name=schema_name,
+            function_name="groundloop_m5_matching_read_preterminal_seal_context",
+        )
+        if existing_accessor:
+            raise M5PreterminalSealContextBundleError(
+                "migration 019 refuses a pre-existing preterminal accessor"
+            )
+        trusted_before = _m5_preterminal_trusted_function_images(
+            connection, schema_name=schema_name
+        )
+        connection.execute(
+            "SELECT pg_catalog.set_config("
+            "'search_path', pg_catalog.quote_ident(%s) || ', pg_catalog', true)",
+            (schema_name,),
+        )
+
+        if failure_injector is not None:
+            failure_injector("before_function")
+        connection.execute(statements[0])
+        if failure_injector is not None:
+            failure_injector("after_function")
+        connection.execute(statements[1])
+        if failure_injector is not None:
+            failure_injector("after_revoke")
+        connection.execute(statements[2])
+        if failure_injector is not None:
+            failure_injector("after_grant")
+
+        _verify_m5_preterminal_seal_context_catalog(
+            connection,
+            schema_name=schema_name,
+            trusted_before=trusted_before,
+        )
+        if failure_injector is not None:
+            failure_injector("before_ledger")
+        connection.execute(
+            sql.SQL(
+                """
+                INSERT INTO {}
+                    (bundle_id, bundle_sha256, migration_sha256, oracle_sha256,
+                     prerequisite_sha256, applied_at)
+                VALUES (%s, %s, %s, %s, %s, now())
+                """
+            ).format(sql.Identifier(schema_name, "groundloop_m5_schema_bundle")),
+            expected_ledger,
+        )
+        if failure_injector is not None:
+            failure_injector("after_ledger")
+        return M5PreterminalSealContextBundleInstallResult(identity, True)
+
+
 __all__ = [
     "LEGACY_MIGRATION_NAMES",
     "LEGACY_MIGRATION_PATHS",
@@ -2916,6 +3653,8 @@ __all__ = [
     "M5_ACCEPTED_PERSISTED_MATCHING_PREREQUISITE_SHA256",
     "M5_ACCEPTED_BOUNDED_DOCUMENT_WITHDRAWAL_BUNDLE_SHA256",
     "M5_ACCEPTED_BOUNDED_DOCUMENT_WITHDRAWAL_MIGRATION_SHA256",
+    "M5_ACCEPTED_PRETERMINAL_SEAL_CONTEXT_BUNDLE_SHA256",
+    "M5_ACCEPTED_PRETERMINAL_SEAL_CONTEXT_MIGRATION_SHA256",
     "M5_BOUNDED_DOCUMENT_WITHDRAWAL_BUNDLE_ID",
     "M5_BOUNDED_DOCUMENT_WITHDRAWAL_INSTALL_LOCK_RELATIONS",
     "M5_BOUNDED_DOCUMENT_WITHDRAWAL_MIGRATION_LABEL",
@@ -2926,6 +3665,11 @@ __all__ = [
     "M5_PERSISTED_MATCHING_MIGRATION_LABEL",
     "M5_PERSISTED_MATCHING_MIGRATION_PATH",
     "M5_PERSISTED_MATCHING_ORACLE_SHA256",
+    "M5_PRETERMINAL_SEAL_CONTEXT_BUNDLE_ID",
+    "M5_PRETERMINAL_SEAL_CONTEXT_INSTALL_LOCK_RELATIONS",
+    "M5_PRETERMINAL_SEAL_CONTEXT_MIGRATION_LABEL",
+    "M5_PRETERMINAL_SEAL_CONTEXT_MIGRATION_PATH",
+    "M5_PRETERMINAL_SEAL_CONTEXT_ORACLE_SHA256",
     "M5_RUNTIME_INSTALL_LOCK_RELATIONS",
     "M5_RUNTIME_MIGRATION_LABEL",
     "M5_RUNTIME_MIGRATION_PATH",
@@ -2952,16 +3696,21 @@ __all__ = [
     "M5BoundedDocumentWithdrawalBundleError",
     "M5BoundedDocumentWithdrawalBundleIdentity",
     "M5BoundedDocumentWithdrawalBundleInstallResult",
+    "M5PreterminalSealContextBundleError",
+    "M5PreterminalSealContextBundleIdentity",
+    "M5PreterminalSealContextBundleInstallResult",
     "apply_legacy_migrations",
     "install_m5_core_bundle",
     "install_m5_runtime_bundle",
     "install_m5_runtime_recovery_bundle",
     "install_m5_persisted_matching_bundle",
     "install_m5_bounded_document_withdrawal_bundle",
+    "install_m5_preterminal_seal_context_bundle",
     "legacy_prerequisite_source_sha256",
     "m5_bundle_identity",
     "m5_runtime_bundle_identity",
     "m5_runtime_recovery_bundle_identity",
     "m5_persisted_matching_bundle_identity",
     "m5_bounded_document_withdrawal_bundle_identity",
+    "m5_preterminal_seal_context_bundle_identity",
 ]
