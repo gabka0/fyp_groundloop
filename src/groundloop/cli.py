@@ -107,9 +107,7 @@ class RuntimeComponents:
 
 
 def _mapping(value: object, name: str) -> dict[str, object]:
-    if not isinstance(value, dict) or not all(
-        isinstance(key, str) for key in value
-    ):
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
         raise ValidationError(f"{name} must be a JSON object")
     return cast(dict[str, object], value)
 
@@ -145,9 +143,7 @@ def load_cli_config(path: Path) -> CliConfig:
     canonical = json.dumps(root, sort_keys=True, separators=(",", ":"))
     schema_version = _text(root.get("schema_version"), "schema_version")
     if schema_version != "groundloop-m3-cli-config-v1":
-        raise ValidationError(
-            f"unsupported M3 CLI config schema: {schema_version}"
-        )
+        raise ValidationError(f"unsupported M3 CLI config schema: {schema_version}")
     policy = DecisionPolicy(
         policy_version=_text(policy_value.get("version"), "policy.version"),
         support_threshold=_number(
@@ -159,32 +155,20 @@ def load_cli_config(path: Path) -> CliConfig:
     )
     return CliConfig(
         schema_version=schema_version,
-        corpus_namespace=_text(
-            root.get("corpus_namespace"), "corpus_namespace"
-        ),
-        chunker_artifact_id=_text(
-            chunker.get("artifact_id"), "chunker.artifact_id"
-        ),
+        corpus_namespace=_text(root.get("corpus_namespace"), "corpus_namespace"),
+        chunker_artifact_id=_text(chunker.get("artifact_id"), "chunker.artifact_id"),
         chunk_size=_integer(chunker.get("max_characters"), "chunker.max_characters"),
         question_top_k=_integer(
             retrieval.get("question_top_k"), "retrieval.question_top_k"
         ),
-        claim_top_k=_integer(
-            retrieval.get("claim_top_k"), "retrieval.claim_top_k"
-        ),
+        claim_top_k=_integer(retrieval.get("claim_top_k"), "retrieval.claim_top_k"),
         policy=policy,
-        verifier_max_length=_integer(
-            verifier.get("max_length"), "verifier.max_length"
-        ),
-        verifier_batch_size=_integer(
-            verifier.get("batch_size"), "verifier.batch_size"
-        ),
+        verifier_max_length=_integer(verifier.get("max_length"), "verifier.max_length"),
+        verifier_batch_size=_integer(verifier.get("batch_size"), "verifier.batch_size"),
         verifier_logical_model_id=_text(
             verifier.get("logical_model_id"), "verifier.logical_model_id"
         ),
-        verifier_revision=_text(
-            verifier.get("revision"), "verifier.revision"
-        ),
+        verifier_revision=_text(verifier.get("revision"), "verifier.revision"),
         canonical_json=canonical,
     )
 
@@ -193,8 +177,7 @@ def _database_url(argument: str | None) -> str:
     value = argument or os.environ.get("GROUNDLOOP_DATABASE_URL")
     if not value:
         raise ValidationError(
-            "database URL is required via --database-url or "
-            "GROUNDLOOP_DATABASE_URL"
+            "database URL is required via --database-url or GROUNDLOOP_DATABASE_URL"
         )
     return value.replace("postgresql+psycopg://", "postgresql://", 1)
 
@@ -231,14 +214,11 @@ def _components(
             embedder=DeterministicFakeEmbedder(),
             generator=DeterministicAnswerGenerator(),
             extractor=DeterministicClaimExtractor(),
-            verifier=DeterministicFakeVerifier(
-                max_length=config.verifier_max_length
-            ),
+            verifier=DeterministicFakeVerifier(max_length=config.verifier_max_length),
         )
     if checkpoint is None or calibration_path is None:
         raise ValidationError(
-            "real backend requires --verifier-checkpoint and "
-            "--verifier-calibration"
+            "real backend requires --verifier-checkpoint and --verifier-calibration"
         )
     calibration = TemperatureCalibration.read_json(calibration_path)
     checkpoint_sha256 = tree_digest(checkpoint)
@@ -361,9 +341,7 @@ def _m3_register(args: argparse.Namespace) -> int:
         backend=str(args.backend),
         config=config,
         checkpoint=(
-            None
-            if args.verifier_checkpoint is None
-            else Path(args.verifier_checkpoint)
+            None if args.verifier_checkpoint is None else Path(args.verifier_checkpoint)
         ),
         calibration_path=(
             None
@@ -435,6 +413,90 @@ def _m4_controlled_eval(args: argparse.Namespace) -> int:
     )
 
 
+def _m4_activate_m3(args: argparse.Namespace) -> int:
+    """Activate one explicit published M3 run as the first M4 baseline."""
+    from groundloop.m4.m3_activation import activate_published_m3_run
+    from groundloop.m4.models.config import (
+        PinnedM3ReuseConfig,
+        build_pinned_m3_adapters,
+    )
+
+    repo_root = Path(args.repo_root).resolve()
+    artifact_root = Path(args.artifact_root).resolve()
+    model_config_path = (
+        repo_root / "configs/m4/models/m3_reuse_v1.json"
+        if args.model_config is None
+        else Path(args.model_config).resolve()
+    )
+    lexical_config_path = (
+        repo_root / "configs/m4/impact/lexical_v1.json"
+        if args.lexical_config is None
+        else Path(args.lexical_config).resolve()
+    )
+    model_config = PinnedM3ReuseConfig.load(model_config_path)
+    bundle = build_pinned_m3_adapters(model_config, artifact_root=artifact_root)
+    with psycopg.connect(
+        _database_url(args.database_url), autocommit=True
+    ) as connection:
+        _configure_schema(connection, str(args.schema))
+        receipt = activate_published_m3_run(
+            connection,
+            run_id=str(args.run_id),
+            embeddings=bundle.embeddings,
+            verifier_spec=bundle.verifier.spec,
+            repo_root=repo_root,
+            lexical_config_path=lexical_config_path,
+            approximate_cap_per_inserted_chunk=(
+                None if args.approximate_cap is None else int(args.approximate_cap)
+            ),
+            frontier_depth=int(args.frontier_depth),
+        )
+    if args.output is not None:
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(receipt.to_json(), encoding="utf-8")
+    action = "REPLAYED" if receipt.replayed else "ACTIVATED"
+    print(f"M3 run {receipt.run_id}: {action} as M4 epoch {receipt.base_epoch_id}")
+    print(
+        f"Answer {receipt.answer_version_id}: claims={receipt.claim_count} "
+        f"chunks={receipt.chunk_count} observations={receipt.observation_count}"
+    )
+    print(
+        f"Registry {receipt.claim_registry_snapshot_id}; policy "
+        f"{receipt.candidate_policy_id} ({receipt.candidate_policy_hash})"
+    )
+    print("Claims: " + ", ".join(receipt.claim_ids))
+    print(
+        f"Models: embedding={receipt.embedding_model_artifact_id}; "
+        f"verifier={receipt.verifier_model_artifact_id}; "
+        f"prompt={receipt.verifier_prompt_artifact_id}; "
+        f"calibration={receipt.calibration_version}@"
+        f"{receipt.calibration_temperature:.17g}; "
+        f"decision={receipt.decision_policy_version}; "
+        f"verifier_execution={receipt.verifier_execution_spec_hash}"
+    )
+    print(
+        f"Admission: vector={receipt.vector_method_version}/"
+        f"{receipt.vector_index_kind}; "
+        f"vector_build={receipt.vector_index_build_config_hash}; "
+        f"vector_search={receipt.vector_search_config_hash}; "
+        f"lexical={receipt.lexical_method_version}; "
+        f"lexical_config={receipt.lexical_config_hash}; "
+        f"role_artifacts={receipt.role_artifact_count} "
+        f"(created={receipt.created_role_artifact_count}, "
+        f"reused={receipt.reused_role_artifact_count}); "
+        f"embedding_requests={receipt.activation_embedding_request_count}"
+    )
+    print(
+        "Baseline mismatches: "
+        f"python={receipt.baseline_python_mismatch_count}, "
+        f"sql_claim={receipt.baseline_sql_claim_mismatch_count}, "
+        f"sql_answer={receipt.baseline_sql_answer_mismatch_count}; "
+        f"global_closure={str(receipt.global_closure_valid).lower()}"
+    )
+    return 0
+
+
 def _m4_real_smoke(args: argparse.Namespace) -> int:
     from groundloop.m4.smoke import (
         M4RealPostgresSmokeConfig,
@@ -448,9 +510,7 @@ def _m4_real_smoke(args: argparse.Namespace) -> int:
             repo_root=Path(args.repo_root).resolve(),
             artifact_root=Path(args.artifact_root).resolve(),
             model_config_path=(
-                None
-                if args.model_config is None
-                else Path(args.model_config).resolve()
+                None if args.model_config is None else Path(args.model_config).resolve()
             ),
             lexical_config_path=(
                 None
@@ -479,9 +539,7 @@ def _m4_real_history(args: argparse.Namespace) -> int:
             repo_root=Path(args.repo_root).resolve(),
             artifact_root=Path(args.artifact_root).resolve(),
             model_config_path=(
-                None
-                if args.model_config is None
-                else Path(args.model_config).resolve()
+                None if args.model_config is None else Path(args.model_config).resolve()
             ),
             lexical_config_path=(
                 None
@@ -537,6 +595,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     controlled.add_argument("--output-dir", type=Path, required=True)
     controlled.set_defaults(handler=_m4_controlled_eval)
+
+    activate = subcommands.add_parser(
+        "m4-activate-m3",
+        help="activate one explicit published M3 run as the first M4 baseline",
+    )
+    activate.add_argument("--run-id", required=True)
+    activate.add_argument("--database-url")
+    activate.add_argument("--schema", default="groundloop")
+    activate.add_argument("--repo-root", type=Path, default=Path.cwd())
+    activate.add_argument(
+        "--artifact-root",
+        type=Path,
+        default=Path(os.environ.get("GROUNDLOOP_M3_ARTIFACT_ROOT", Path.cwd())),
+    )
+    activate.add_argument("--model-config", type=Path)
+    activate.add_argument("--lexical-config", type=Path)
+    activate.add_argument("--approximate-cap", type=int)
+    activate.add_argument("--frontier-depth", type=int, default=1)
+    activate.add_argument("--output", type=Path)
+    activate.set_defaults(handler=_m4_activate_m3)
 
     smoke = subcommands.add_parser(
         "m4-real-smoke",

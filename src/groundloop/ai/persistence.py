@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from psycopg import Connection
+from psycopg import Connection, sql
 from psycopg.types.json import Jsonb
 
 from groundloop.ai.contracts import (
@@ -185,6 +185,7 @@ class PostgresArtifactStore:
         if manifest.status is not PipelineRunStatus.STAGED:
             raise ValidationError("only a staged manifest can start an M3 run")
         with self._connection.transaction():
+            _guard_m3_m4(self._connection, "stage a new M3 run")
             existing = self._connection.execute(
                 """
                 SELECT schema_version, config_hash, input_hash, corpus_hash,
@@ -203,8 +204,7 @@ class PostgresArtifactStore:
             )
             if existing is not None:
                 normalized_existing = tuple(
-                    item.strip() if isinstance(item, str) else item
-                    for item in existing
+                    item.strip() if isinstance(item, str) else item for item in existing
                 )
                 if normalized_existing != identity:
                     raise ArtifactConflictError(
@@ -259,6 +259,7 @@ class PostgresArtifactStore:
         """Publish every structured record in one transaction or none."""
         publication_started = time.perf_counter()
         with self._connection.transaction():
+            _guard_m3_m4(self._connection, "publish a staged M3 run")
             row = self._connection.execute(
                 """
                 SELECT status, config_hash, input_hash, corpus_hash, question_id,
@@ -288,7 +289,6 @@ class PostgresArtifactStore:
                 raise ArtifactConflictError(
                     f"pipeline run is terminal with status {row[0]}"
                 )
-
             new_ids: list[str] = []
             reused_ids: list[str] = []
             self._register_artifacts(bundle, new_ids, reused_ids)
@@ -300,7 +300,6 @@ class PostgresArtifactStore:
             self._insert_observations(bundle, epoch_id, new_ids, reused_ids)
             self._insert_materialized_state(bundle, epoch_id)
             self._connection.execute("SET CONSTRAINTS ALL IMMEDIATE")
-
             oracle = read_oracle_states(self._connection)
             expected_claims = {
                 state.claim_id: state for state in bundle.structured.claim_states
@@ -313,7 +312,6 @@ class PostgresArtifactStore:
                 raise ValidationError("PostgreSQL oracle disagrees before publication")
             if read_mismatch_counts(self._connection) != MismatchCounts(0, 0, 0):
                 raise ValidationError("materialized M3 state fails SQL oracle checks")
-
             published = replace(
                 bundle.manifest,
                 status=PipelineRunStatus.PUBLISHED,
@@ -524,11 +522,15 @@ class PostgresArtifactStore:
             (policy.policy_version,),
         ).fetchone()
         if existing is not None:
-            if existing[:3] != (
-                policy.support_threshold,
-                policy.refute_threshold,
-                policy.tie_rule_version,
-            ) or existing[3] is not None:
+            if (
+                existing[:3]
+                != (
+                    policy.support_threshold,
+                    policy.refute_threshold,
+                    policy.tie_rule_version,
+                )
+                or existing[3] is not None
+            ):
                 raise ArtifactConflictError("decision-policy payload conflict")
             reused_ids.append(policy.policy_version)
             return
@@ -720,9 +722,7 @@ class PostgresArtifactStore:
                             ),
                         ).fetchone()
                         if matches != (1,):
-                            raise ArtifactConflictError(
-                                "embedding payload conflict"
-                            )
+                            raise ArtifactConflictError("embedding payload conflict")
                         reused_ids.append(embedding_id)
                     else:
                         new_ids.append(embedding_id)
@@ -1218,8 +1218,7 @@ class PostgresArtifactStore:
                 for item in bundle.embeddings
             },
             **{
-                item.candidate_id: "retrieval"
-                for item in manifest.retrieval_candidates
+                item.candidate_id: "retrieval" for item in manifest.retrieval_candidates
             },
             bundle.structured.answer.answer_version_id: "generation",
             **{item.claim_id: "extraction" for item in bundle.structured.claims},
@@ -1270,3 +1269,64 @@ class PostgresArtifactStore:
         row = self._connection.execute(query, parameters).fetchone()
         if row is None or self._strip(row) != expected:
             raise ArtifactConflictError(f"{label} payload conflict")
+
+
+def lock_m3_m4_lifecycle(connection: Connection[Any]) -> int | None:
+    """Serialize M3 publication against first M4 activation.
+
+    Legacy M3-only schemas may not yet contain the M4 publication-head table;
+    in that case this compatibility guard is intentionally a no-op.  When the
+    table exists in the *current* schema, a self-conflicting table lock is held
+    until the caller's transaction ends and the current head is returned.
+    Looking up the relation by namespace prevents search-path fallthrough.
+    """
+    schema_row = connection.execute("SELECT current_schema()").fetchone()
+    if schema_row is None or schema_row[0] is None:
+        raise ValidationError("M3 publication requires one current schema")
+    schema_name = str(schema_row[0])
+    pipeline_relation = connection.execute(
+        """
+        SELECT class.oid
+        FROM pg_class AS class
+        JOIN pg_namespace AS namespace ON namespace.oid = class.relnamespace
+        WHERE namespace.nspname = %s
+          AND class.relname = 'groundloop_pipeline_run'
+          AND class.relkind IN ('r', 'p')
+        """,
+        (schema_name,),
+    ).fetchone()
+    if pipeline_relation is None:
+        raise ValidationError(
+            "M3 publication requires groundloop_pipeline_run in current_schema()"
+        )
+    relation = connection.execute(
+        """
+        SELECT class.oid
+        FROM pg_class AS class
+        JOIN pg_namespace AS namespace ON namespace.oid = class.relnamespace
+        WHERE namespace.nspname = %s
+          AND class.relname = 'groundloop_m4_publication_head'
+          AND class.relkind IN ('r', 'p')
+        """,
+        (schema_name,),
+    ).fetchone()
+    if relation is None:
+        return None
+    connection.execute(
+        sql.SQL("LOCK TABLE {}.{} IN SHARE ROW EXCLUSIVE MODE").format(
+            sql.Identifier(schema_name),
+            sql.Identifier("groundloop_m4_publication_head"),
+        )
+    )
+    head = connection.execute(
+        sql.SQL("SELECT epoch_id FROM {}.{} WHERE singleton").format(
+            sql.Identifier(schema_name),
+            sql.Identifier("groundloop_m4_publication_head"),
+        )
+    ).fetchone()
+    return None if head is None else int(head[0])
+
+
+def _guard_m3_m4(connection: Connection[Any], action: str) -> None:
+    if lock_m3_m4_lifecycle(connection) is not None:
+        raise ArtifactConflictError(f"cannot {action} after M4 activation")
