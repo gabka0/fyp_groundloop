@@ -497,6 +497,32 @@ def _m4_real_history(args: argparse.Namespace) -> int:
     return 0
 
 
+def _fyp_demo(args: argparse.Namespace) -> int:
+    from groundloop.fyp_demo import execute_fyp_demo, format_fyp_demo_summary
+    from groundloop.m4.real_dynamic_history import M4RealDynamicHistoryConfig
+
+    output = Path(args.output)
+    _, summary = execute_fyp_demo(
+        M4RealDynamicHistoryConfig(
+            database_url=_database_url(args.database_url),
+            repo_root=Path(args.repo_root).resolve(),
+            artifact_root=Path(args.artifact_root).resolve(),
+            model_config_path=(
+                None if args.model_config is None else Path(args.model_config).resolve()
+            ),
+            lexical_config_path=(
+                None
+                if args.lexical_config is None
+                else Path(args.lexical_config).resolve()
+            ),
+            keep_schema=bool(args.keep_schema),
+        ),
+        output=output,
+    )
+    print(format_fyp_demo_summary(summary, output=output))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="groundloop")
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -574,6 +600,27 @@ def build_parser() -> argparse.ArgumentParser:
     history.add_argument("--output", type=Path)
     history.add_argument("--keep-schema", action="store_true")
     history.set_defaults(handler=_m4_real_history)
+
+    demo = subcommands.add_parser(
+        "fyp-demo",
+        help="run and explain the bounded real-model FYP dynamic demo",
+    )
+    demo.add_argument("--database-url")
+    demo.add_argument("--repo-root", type=Path, default=Path.cwd())
+    demo.add_argument(
+        "--artifact-root",
+        type=Path,
+        default=Path(os.environ.get("GROUNDLOOP_M3_ARTIFACT_ROOT", Path.cwd())),
+    )
+    demo.add_argument("--model-config", type=Path)
+    demo.add_argument("--lexical-config", type=Path)
+    demo.add_argument(
+        "--output",
+        type=Path,
+        default=Path("artifacts/fyp-demo/m4-dynamic-history.json"),
+    )
+    demo.add_argument("--keep-schema", action="store_true")
+    demo.set_defaults(handler=_fyp_demo)
     return parser
 
 

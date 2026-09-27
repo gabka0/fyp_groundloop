@@ -101,6 +101,18 @@ python3 -m pip install -e '.[ml,dev]'
 Copy `.env.example` to `.env` before adding local configuration. Never commit
 secrets or hosted-model API keys.
 
+## Primary FYP Demo
+
+Run `groundloop fyp-demo` for the bounded real-model `INSERT`/`DELETE`/
+`REPLACE` demonstration. It presents event-level claim and answer states,
+model work, independent Python/SQL recomputation checks, durable provenance,
+and reconnect replay with zero discovery, embedding, verifier-request, or
+verifier-backend calls while preserving the existing M4.8 execution semantics.
+
+See [the primary demo guide](docs/fyp_primary_demo.md) for prerequisites, the
+exact command, expected trajectory, and the important distinction between the
+separate M3 static-generation and M4 dynamic-maintenance scenes.
+
 ## Current Milestone
 
 M4 is closed. M5.0--M5.3 are complete, and partial M5.4 runtime work is active
