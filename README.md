@@ -115,6 +115,19 @@ See [the unified end-to-end demo guide](docs/fyp_end_to_end_demo.md) for the
 exact command, canonical evidence, real-mode prerequisites, and claim
 boundary.
 
+## FYP Value Benchmark
+
+Run `groundloop fyp-value-benchmark` to compare the five frozen M4 selective
+policies with exhaustive claim-by-inserted-chunk re-verification. The command
+records actual verifier-pair work and exact recall counts, emits canonical
+JSON/CSV plus the complete source report, and applies a fail-closed value gate.
+
+The current deterministic fixture returns `NO_GO`: four policies halve pair
+attempts but lose measured effects, while the only full-recall policy performs
+the same pair work as exhaustive verification. This is controlled negative
+evidence, not a real-model accuracy, latency, or representative utility result.
+See [the FYP value benchmark guide](docs/fyp_value_benchmark.md).
+
 The older `groundloop fyp-demo` command remains available as the accepted
 M4.8 fixed registered-state presentation scene:
 

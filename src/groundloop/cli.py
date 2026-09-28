@@ -612,6 +612,25 @@ def _fyp_end_to_end_demo(args: argparse.Namespace) -> int:
     return 0
 
 
+def _fyp_value_benchmark(args: argparse.Namespace) -> int:
+    from groundloop.fyp_value_benchmark import (
+        execute_fyp_value_benchmark,
+        format_fyp_value_benchmark_summary,
+    )
+
+    result, _ = execute_fyp_value_benchmark(
+        config_path=Path(args.config),
+        output_directory=Path(args.output_dir),
+    )
+    print(
+        format_fyp_value_benchmark_summary(
+            result,
+            output_directory=Path(args.output_dir),
+        )
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="groundloop")
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -754,6 +773,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     end_to_end.add_argument("--keep-schema", action="store_true")
     end_to_end.set_defaults(handler=_fyp_end_to_end_demo)
+
+    value_benchmark = subcommands.add_parser(
+        "fyp-value-benchmark",
+        help="compare selective verifier work with the frozen exhaustive baseline",
+    )
+    value_benchmark.add_argument(
+        "--config",
+        type=Path,
+        default=Path("configs/m4/evaluation/controlled_v1.json"),
+    )
+    value_benchmark.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("artifacts/fyp-value-benchmark"),
+    )
+    value_benchmark.set_defaults(handler=_fyp_value_benchmark)
     return parser
 
 
