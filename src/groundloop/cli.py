@@ -581,6 +581,37 @@ def _fyp_demo(args: argparse.Namespace) -> int:
     return 0
 
 
+def _fyp_end_to_end_demo(args: argparse.Namespace) -> int:
+    from groundloop.fyp_end_to_end_demo import (
+        FypEndToEndDemoConfig,
+        format_fyp_end_to_end_summary,
+        run_fyp_end_to_end_demo,
+        write_fyp_end_to_end_result,
+    )
+
+    output = Path(args.output)
+    result = run_fyp_end_to_end_demo(
+        FypEndToEndDemoConfig(
+            database_url=_database_url(args.database_url),
+            repo_root=Path(args.repo_root).resolve(),
+            artifact_root=Path(args.artifact_root).resolve(),
+            backend=str(args.backend),
+            model_config_path=(
+                None if args.model_config is None else Path(args.model_config).resolve()
+            ),
+            lexical_config_path=(
+                None
+                if args.lexical_config is None
+                else Path(args.lexical_config).resolve()
+            ),
+            keep_schema=bool(args.keep_schema),
+        )
+    )
+    write_fyp_end_to_end_result(result, output)
+    print(format_fyp_end_to_end_summary(result, output=output))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="groundloop")
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -699,6 +730,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     demo.add_argument("--keep-schema", action="store_true")
     demo.set_defaults(handler=_fyp_demo)
+
+    end_to_end = subcommands.add_parser(
+        "fyp-e2e-demo",
+        help="run the bounded same-schema M3-to-M4 FYP demonstration",
+    )
+    end_to_end.add_argument("--database-url")
+    end_to_end.add_argument("--repo-root", type=Path, default=Path.cwd())
+    end_to_end.add_argument(
+        "--artifact-root",
+        type=Path,
+        default=Path(os.environ.get("GROUNDLOOP_M3_ARTIFACT_ROOT", Path.cwd())),
+    )
+    end_to_end.add_argument(
+        "--backend", choices=("deterministic", "real"), default="deterministic"
+    )
+    end_to_end.add_argument("--model-config", type=Path)
+    end_to_end.add_argument("--lexical-config", type=Path)
+    end_to_end.add_argument(
+        "--output",
+        type=Path,
+        default=Path("artifacts/fyp-e2e-demo/result.json"),
+    )
+    end_to_end.add_argument("--keep-schema", action="store_true")
+    end_to_end.set_defaults(handler=_fyp_end_to_end_demo)
     return parser
 
 

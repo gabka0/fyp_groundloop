@@ -103,6 +103,21 @@ secrets or hosted-model API keys.
 
 ## Primary FYP Demo
 
+Run `groundloop fyp-e2e-demo` for the bounded unified primary path: controlled
+documents and a question are published through M3, the exact generated run is
+activated in the same PostgreSQL schema, and production M4 executes typed
+`INSERT`/`DELETE`/`REPLACE` events with independent recomputation and
+work-free reconnect replay. The deterministic backend is the required
+system-correctness gate; a pinned local real-model run is an optional
+diagnostic with downloads disabled.
+
+See [the unified end-to-end demo guide](docs/fyp_end_to_end_demo.md) for the
+exact command, canonical evidence, real-mode prerequisites, and claim
+boundary.
+
+The older `groundloop fyp-demo` command remains available as the accepted
+M4.8 fixed registered-state presentation scene:
+
 Run `groundloop fyp-demo` for the bounded real-model `INSERT`/`DELETE`/
 `REPLACE` demonstration. It presents event-level claim and answer states,
 model work, independent Python/SQL recomputation checks, durable provenance,
