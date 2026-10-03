@@ -121,6 +121,11 @@ Task 5B/5C may change only:
 - `docs/workstreams/fyp_impact_pareto/**`; and
 - the Task 5B/5C README section.
 
+The executed Task 5C gate and smoke evidence are frozen separately in
+`TASK5C_ACTIVATION.md`; that activation reuses the existing 95% effect-recall
+and 80% work-reduction thresholds rather than choosing a gate after held-out
+results.
+
 The Task 4 runner/fixture, Task 5A module/config, all M4/M5 contracts, prepared
 source artifacts, and model-result artifacts are read-only dependencies.
 

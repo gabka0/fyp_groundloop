@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -672,6 +673,358 @@ def _fyp_impact_pareto(args: argparse.Namespace) -> int:
     return 0
 
 
+def _openai_client(args: argparse.Namespace) -> object:
+    from groundloop.hosted_verifier import OpenAIHTTPClient
+
+    key = os.environ.get(str(args.api_key_env))
+    if key is None:
+        raise ValueError(f"environment variable {args.api_key_env} is not set")
+    return OpenAIHTTPClient(api_key=key)
+
+
+def _fyp_hosted_smoke(args: argparse.Namespace) -> int:
+    from groundloop.fyp_impact_pareto import (
+        evaluate_hosted_accuracy,
+        load_gold_annotations,
+        load_task5_partitions,
+    )
+    from groundloop.hosted_verifier import (
+        OpenAIHTTPClient,
+        actual_result_cost,
+        build_request_population,
+        load_hosted_verifier_config,
+        run_sync_smoke,
+        select_development_smoke_requests,
+        write_hosted_results,
+    )
+
+    hosted_config = load_hosted_verifier_config(Path(args.hosted_config))
+    development, _ = load_task5_partitions(
+        impact_config_path=Path(args.impact_config),
+        source_path=Path(args.source),
+    )
+    requests = build_request_population(
+        config=hosted_config, partition=development
+    )
+    smoke_requests = select_development_smoke_requests(
+        requests=requests,
+        partition=development,
+        limit=hosted_config.smoke_request_limit,
+    )
+    client = cast(OpenAIHTTPClient, _openai_client(args))
+    results = run_sync_smoke(
+        config=hosted_config,
+        requests=smoke_requests,
+        client=client,
+    )
+    annotations = load_gold_annotations(
+        impact_config_path=Path(args.impact_config),
+        source_path=Path(args.source),
+    )
+    accuracy = evaluate_hosted_accuracy(
+        requests=smoke_requests,
+        results=results,
+        annotations=annotations,
+    )
+    output = Path(args.output_dir)
+    result_path = write_hosted_results(
+        results=results, output_path=output / "smoke_results.jsonl"
+    )
+    cost = actual_result_cost(config=hosted_config, results=results, batch=False)
+    report = {
+        "schema_version": "groundloop-hosted-verifier-smoke-report-v1",
+        "request_count": len(results),
+        "accuracy": asdict(accuracy),
+        "input_tokens": sum(item.input_tokens for item in results),
+        "output_tokens": sum(item.output_tokens for item in results),
+        "request_elapsed_ms_sum": sum(
+            cast(int, item.elapsed_ms) for item in results
+        ),
+        "actual_cost_usd": str(cost),
+        "result_sha256": hashlib.sha256(result_path.read_bytes()).hexdigest(),
+    }
+    report_path = output / "smoke_report.json"
+    report_path.write_text(
+        json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    print(
+        "Hosted verifier development smoke: "
+        f"{accuracy.correct_request_count}/{accuracy.evaluated_request_count} "
+        f"correct, {report['input_tokens']} input tokens, "
+        f"{report['output_tokens']} output tokens, USD {cost}.\n"
+        f"Artifacts: {output}"
+    )
+    return 0
+
+
+def _evaluation_hosted_requests(args: argparse.Namespace) -> tuple[object, ...]:
+    from groundloop.fyp_impact_pareto import load_task5_partitions
+    from groundloop.hosted_verifier import (
+        build_request_population,
+        load_hosted_verifier_config,
+    )
+
+    hosted_config = load_hosted_verifier_config(Path(args.hosted_config))
+    _, evaluation = load_task5_partitions(
+        impact_config_path=Path(args.impact_config),
+        source_path=Path(args.source),
+    )
+    return cast(
+        tuple[object, ...],
+        build_request_population(config=hosted_config, partition=evaluation),
+    )
+
+
+def _fyp_hosted_batch_init(args: argparse.Namespace) -> int:
+    from groundloop.hosted_verifier import (
+        HostedVerifierRequest,
+        build_request_manifest,
+        load_hosted_verifier_config,
+        write_batch_ledger,
+        write_role_batch_parts,
+    )
+
+    hosted_config = load_hosted_verifier_config(Path(args.hosted_config))
+    requests = cast(
+        tuple[HostedVerifierRequest, ...], _evaluation_hosted_requests(args)
+    )
+    manifest = build_request_manifest(config=hosted_config, requests=requests)
+    output = Path(args.output_dir)
+    ledger = write_role_batch_parts(
+        requests=requests,
+        request_manifest_hash=manifest.manifest_hash,
+        output_directory=output / "inputs",
+    )
+    ledger_path = write_batch_ledger(ledger, output / "batch_ledger.json")
+    print(
+        f"Initialized {len(ledger.jobs)} sequential Batch jobs at {ledger_path}; "
+        f"projected full-program Batch cost USD {manifest.estimated_batch_cost_usd}."
+    )
+    return 0
+
+
+def _fyp_hosted_batch_advance(args: argparse.Namespace) -> int:
+    from groundloop.hosted_verifier import (
+        OpenAIHTTPClient,
+        advance_batch_ledger_once,
+        load_batch_ledger,
+        write_batch_ledger,
+    )
+
+    ledger_path = Path(args.ledger)
+    ledger = load_batch_ledger(ledger_path)
+    client = cast(OpenAIHTTPClient, _openai_client(args))
+    advanced = advance_batch_ledger_once(
+        ledger=ledger,
+        client=client,
+        output_directory=Path(args.output_dir),
+    )
+    write_batch_ledger(advanced, ledger_path)
+    completed = sum(
+        item.provider_status == "completed" and item.output_path is not None
+        for item in advanced.jobs
+    )
+    active = next(
+        (
+            f"{item.role}/{item.part_index}:{item.provider_status}"
+            for item in advanced.jobs
+            if item.provider_status != "completed" or item.output_path is None
+        ),
+        "none",
+    )
+    print(f"Batch jobs complete: {completed}/{len(advanced.jobs)}; active: {active}")
+    return 0
+
+
+def _fyp_hosted_batch_collect(args: argparse.Namespace) -> int:
+    from groundloop.fyp_impact_pareto import (
+        batch_processing_seconds,
+        evaluate_hosted_accuracy,
+        evaluate_hosted_effect_frontier,
+        load_gold_annotations,
+        load_task5_partitions,
+    )
+    from groundloop.fyp_impact_selection import (
+        evaluate_policy,
+        load_impact_selection_config,
+    )
+    from groundloop.hosted_verifier import (
+        HostedVerifierRequest,
+        actual_result_cost,
+        collect_batch_results_by_role,
+        load_batch_ledger,
+        load_hosted_verifier_config,
+        write_hosted_results,
+    )
+
+    hosted_config = load_hosted_verifier_config(Path(args.hosted_config))
+    impact_config = load_impact_selection_config(Path(args.impact_config))
+    _, evaluation = load_task5_partitions(
+        impact_config_path=Path(args.impact_config),
+        source_path=Path(args.source),
+    )
+    requests = cast(
+        tuple[HostedVerifierRequest, ...], _evaluation_hosted_requests(args)
+    )
+    ledger = load_batch_ledger(Path(args.ledger))
+    results_by_role = collect_batch_results_by_role(
+        ledger=ledger, requests=requests
+    )
+    exhaustive_results = tuple(
+        sorted(
+            results_by_role["baseline_old"]
+            + results_by_role["exhaustive_new"],
+            key=lambda item: item.request_id,
+        )
+    )
+    annotations = load_gold_annotations(
+        impact_config_path=Path(args.impact_config),
+        source_path=Path(args.source),
+    )
+    accuracy = evaluate_hosted_accuracy(
+        requests=requests,
+        results=exhaustive_results,
+        annotations=annotations,
+    )
+    selected_accuracy = evaluate_hosted_accuracy(
+        requests=requests,
+        results=results_by_role["selected_new"],
+        annotations=annotations,
+    )
+    selection_started = time.perf_counter_ns()
+    evaluate_policy(
+        partition=evaluation,
+        policy_id="old_new_rarity_coverage",
+        budget=8,
+        config=impact_config,
+    )
+    selection_elapsed_ms = (
+        time.perf_counter_ns() - selection_started + 999_999
+    ) // 1_000_000
+    projection_started = time.perf_counter_ns()
+    effects = evaluate_hosted_effect_frontier(
+        partition=evaluation,
+        requests=requests,
+        results=exhaustive_results,
+        policy_id="old_new_rarity_coverage",
+        budgets=(1, 2, 4, 8, 16, 32, 64, 256),
+    )
+    projection_elapsed_ms = (
+        time.perf_counter_ns() - projection_started + 999_999
+    ) // 1_000_000
+
+    def role_usage(role: str) -> dict[str, object]:
+        values = results_by_role[role]
+        jobs = tuple(item for item in ledger.jobs if item.role == role)
+        if any(item.created_at is None or item.completed_at is None for item in jobs):
+            raise ValueError("completed Batch job lacks lifecycle coordinates")
+        created = tuple(cast(int, item.created_at) for item in jobs)
+        completed = tuple(cast(int, item.completed_at) for item in jobs)
+        return {
+            "request_count": len(values),
+            "batch_call_count": len(jobs),
+            "input_tokens": sum(item.input_tokens for item in values),
+            "output_tokens": sum(item.output_tokens for item in values),
+            "actual_batch_cost_usd": str(
+                actual_result_cost(
+                    config=hosted_config,
+                    results=values,
+                    batch=True,
+                )
+            ),
+            "provider_processing_seconds": batch_processing_seconds(
+                ledger, role
+            ),
+            "submission_to_completion_seconds": sum(
+                end - start for start, end in zip(created, completed, strict=True)
+            ),
+        }
+
+    role_metrics = {
+        role: role_usage(role)
+        for role in ("selected_new", "baseline_old", "exhaustive_new")
+    }
+    qualifying = tuple(
+        point
+        for point in effects
+        if point.avoided_verifier_pair_count * 100
+        >= point.exhaustive_verifier_pair_count * 80
+        and all(
+            denominator > 0 and numerator * 100 >= denominator * 95
+            for numerator, denominator in (
+                (point.pair_effect_numerator, point.pair_effect_denominator),
+                (point.claim_effect_numerator, point.claim_effect_denominator),
+                (point.status_effect_numerator, point.status_effect_denominator),
+                (point.answer_effect_numerator, point.answer_effect_denominator),
+            )
+        )
+    )
+    output = Path(args.output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    for role, values in results_by_role.items():
+        write_hosted_results(
+            results=values,
+            output_path=output / f"{role}_results.jsonl",
+        )
+    report: dict[str, object] = {
+        "schema_version": "groundloop-hosted-verifier-evaluation-report-v1",
+        "result_scope": "constructed_vitaminc_model_relative_effect_diagnostic",
+        "request_manifest_hash": ledger.request_manifest_hash,
+        "accuracy": asdict(accuracy),
+        "selected_new_accuracy": asdict(selected_accuracy),
+        "effect_points": [asdict(item) for item in effects],
+        "role_metrics": role_metrics,
+        "selection_elapsed_ms": selection_elapsed_ms,
+        "effect_projection_elapsed_ms": projection_elapsed_ms,
+        "gate": {
+            "minimum_work_reduction": {"numerator": 80, "denominator": 100},
+            "minimum_each_effect_recall": {
+                "numerator": 95,
+                "denominator": 100,
+            },
+            "qualifying_budgets": [item.budget for item in qualifying],
+            "verdict": "PASS" if qualifying else "NO_GO",
+        },
+        "timing_boundary": (
+            "provider Batch lifecycle time is measured; the API does not expose "
+            "pure accelerator inference time"
+        ),
+        "limitations": [
+            "The effect oracle is the exhaustive hosted-model observation set, "
+            "not objective truth.",
+            "Each source case is a controlled two-required-claim answer; this is "
+            "not a natural deployed answer population.",
+            "The held-out source was previously used by M4.13 and is not an "
+            "untouched external benchmark.",
+        ],
+    }
+    canonical_without_hash = json.dumps(
+        report, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    report["report_sha256"] = hashlib.sha256(
+        canonical_without_hash.encode()
+    ).hexdigest()
+    report_path = output / "hosted_evaluation_report.json"
+    report_path.write_text(
+        json.dumps(
+            report,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    print(
+        "Hosted verifier held-out evaluation: "
+        f"accuracy {accuracy.correct_request_count}/"
+        f"{accuracy.evaluated_request_count}; gate {report['gate']}; "
+        f"artifacts {output}"
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="groundloop")
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -879,6 +1232,79 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("artifacts/fyp-impact-pareto"),
     )
     impact_pareto.set_defaults(handler=_fyp_impact_pareto)
+
+    hosted_smoke = subcommands.add_parser(
+        "fyp-hosted-smoke",
+        help="run the capped Task 5C development verifier smoke",
+    )
+    hosted_smoke.add_argument(
+        "--impact-config",
+        type=Path,
+        default=Path("configs/fyp/impact_selection_v1.json"),
+    )
+    hosted_smoke.add_argument(
+        "--hosted-config",
+        type=Path,
+        default=Path("configs/fyp/hosted_verifier_openai_luna_v1.json"),
+    )
+    hosted_smoke.add_argument("--source", type=Path, required=True)
+    hosted_smoke.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("artifacts/fyp-hosted-verifier/smoke"),
+    )
+    hosted_smoke.add_argument("--api-key-env", default="OPENAI_API_KEY")
+    hosted_smoke.set_defaults(handler=_fyp_hosted_smoke)
+
+    hosted_batch_init = subcommands.add_parser(
+        "fyp-hosted-batch-init",
+        help="freeze resumable Task 5C role-separated Batch inputs",
+    )
+    hosted_batch_init.add_argument(
+        "--impact-config",
+        type=Path,
+        default=Path("configs/fyp/impact_selection_v1.json"),
+    )
+    hosted_batch_init.add_argument(
+        "--hosted-config",
+        type=Path,
+        default=Path("configs/fyp/hosted_verifier_openai_luna_v1.json"),
+    )
+    hosted_batch_init.add_argument("--source", type=Path, required=True)
+    hosted_batch_init.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("artifacts/fyp-hosted-verifier/batch"),
+    )
+    hosted_batch_init.set_defaults(handler=_fyp_hosted_batch_init)
+
+    hosted_batch_advance = subcommands.add_parser(
+        "fyp-hosted-batch-advance",
+        help="submit or poll exactly one resumable Task 5C Batch job",
+    )
+    hosted_batch_advance.add_argument("--ledger", type=Path, required=True)
+    hosted_batch_advance.add_argument("--output-dir", type=Path, required=True)
+    hosted_batch_advance.add_argument("--api-key-env", default="OPENAI_API_KEY")
+    hosted_batch_advance.set_defaults(handler=_fyp_hosted_batch_advance)
+
+    hosted_batch_collect = subcommands.add_parser(
+        "fyp-hosted-batch-collect",
+        help="validate complete Task 5C Batch outputs and compute the final report",
+    )
+    hosted_batch_collect.add_argument(
+        "--impact-config",
+        type=Path,
+        default=Path("configs/fyp/impact_selection_v1.json"),
+    )
+    hosted_batch_collect.add_argument(
+        "--hosted-config",
+        type=Path,
+        default=Path("configs/fyp/hosted_verifier_openai_luna_v1.json"),
+    )
+    hosted_batch_collect.add_argument("--source", type=Path, required=True)
+    hosted_batch_collect.add_argument("--ledger", type=Path, required=True)
+    hosted_batch_collect.add_argument("--output-dir", type=Path, required=True)
+    hosted_batch_collect.set_defaults(handler=_fyp_hosted_batch_collect)
     return parser
 
 

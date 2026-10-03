@@ -10,18 +10,24 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from groundloop.domain import AnswerStatus, ClaimStatus
 from groundloop.errors import ValidationError
 from groundloop.fyp_impact_selection import (
     POLICY_IDS,
+    Partition,
     SelectionMetrics,
     evaluate_policy,
     load_impact_selection_config,
     load_revision_cases,
+    rank_claims,
     run_impact_selection,
     split_revision_cases,
 )
 from groundloop.hosted_verifier import (
+    BatchLedger,
     HostedRequestManifest,
+    HostedVerifierRequest,
+    HostedVerifierResult,
     build_request_manifest,
     build_request_population,
     load_hosted_verifier_config,
@@ -634,4 +640,277 @@ def format_impact_pareto_summary(
             "Boundary: offline retrospective analysis and request freeze only; "
             "no paid inference or speedup claim.",
         )
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class GoldAnnotation:
+    case_id: str
+    stratum: str
+    claim_sha256: str
+    evidence_sha256: str
+    label: str
+
+
+@dataclass(frozen=True, slots=True)
+class HostedAccuracy:
+    evaluated_request_count: int
+    correct_request_count: int
+    old_request_count: int
+    old_correct_count: int
+    new_request_count: int
+    new_correct_count: int
+
+    def __post_init__(self) -> None:
+        if self.evaluated_request_count != (
+            self.old_request_count + self.new_request_count
+        ):
+            raise ValidationError("accuracy side counts are inconsistent")
+        if self.correct_request_count != (
+            self.old_correct_count + self.new_correct_count
+        ):
+            raise ValidationError("accuracy correct counts are inconsistent")
+        if not 0 <= self.correct_request_count <= self.evaluated_request_count:
+            raise ValidationError("accuracy count is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class HostedEffectPoint:
+    policy_id: str
+    budget: int
+    event_count: int
+    verifier_pair_count: int
+    exhaustive_verifier_pair_count: int
+    avoided_verifier_pair_count: int
+    pair_effect_numerator: int
+    pair_effect_denominator: int
+    claim_effect_numerator: int
+    claim_effect_denominator: int
+    status_effect_numerator: int
+    status_effect_denominator: int
+    answer_effect_numerator: int
+    answer_effect_denominator: int
+
+
+def load_task5_partitions(
+    *, impact_config_path: str | Path, source_path: str | Path
+) -> tuple[Partition, Partition]:
+    config = load_impact_selection_config(impact_config_path)
+    cases = load_revision_cases(source_path, config)
+    return split_revision_cases(cases, config)
+
+
+def load_gold_annotations(
+    *, impact_config_path: str | Path, source_path: str | Path
+) -> tuple[GoldAnnotation, ...]:
+    config = load_impact_selection_config(impact_config_path)
+    load_revision_cases(source_path, config)
+    annotations: list[GoldAnnotation] = []
+    for line_number, line in enumerate(Path(source_path).read_bytes().splitlines(), 1):
+        try:
+            raw_value = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise ValidationError(
+                f"gold source row {line_number} is invalid JSON"
+            ) from error
+        if not isinstance(raw_value, dict):
+            raise ValidationError("gold source row must be an object")
+        raw = cast(dict[str, Any], raw_value)
+        fields = ("case_id", "stratum", "claim_sha256", "evidence_sha256", "label")
+        if any(not isinstance(raw.get(field), str) for field in fields):
+            raise ValidationError("gold annotation fields are invalid")
+        label = cast(str, raw["label"])
+        if label not in {"support", "refute", "neutral"}:
+            raise ValidationError("gold annotation label is invalid")
+        annotations.append(
+            GoldAnnotation(
+                case_id=cast(str, raw["case_id"]),
+                stratum=cast(str, raw["stratum"]),
+                claim_sha256=cast(str, raw["claim_sha256"]),
+                evidence_sha256=cast(str, raw["evidence_sha256"]),
+                label=label,
+            )
+        )
+    keys = tuple(
+        (item.claim_sha256, item.evidence_sha256) for item in annotations
+    )
+    if len(keys) != len(set(keys)):
+        raise ValidationError("gold annotations contain duplicate pair identities")
+    return tuple(annotations)
+
+
+def evaluate_hosted_accuracy(
+    *,
+    requests: tuple[HostedVerifierRequest, ...],
+    results: tuple[HostedVerifierResult, ...],
+    annotations: tuple[GoldAnnotation, ...],
+) -> HostedAccuracy:
+    request_by_id = {item.request_id: item for item in requests}
+    gold = {
+        (item.claim_sha256, item.evidence_sha256): item.label
+        for item in annotations
+    }
+    seen: set[str] = set()
+    old_count = old_correct = new_count = new_correct = 0
+    for result in results:
+        if result.request_id in seen or result.request_id not in request_by_id:
+            raise ValidationError("accuracy results contain duplicate or unknown IDs")
+        seen.add(result.request_id)
+        request = request_by_id[result.request_id]
+        expected = gold.get(
+            (request.claim_sha256, request.current_evidence_sha256)
+        )
+        if expected is None:
+            continue
+        correct = int(result.label == expected)
+        if request.judged_side == "old":
+            old_count += 1
+            old_correct += correct
+        else:
+            new_count += 1
+            new_correct += correct
+    return HostedAccuracy(
+        evaluated_request_count=old_count + new_count,
+        correct_request_count=old_correct + new_correct,
+        old_request_count=old_count,
+        old_correct_count=old_correct,
+        new_request_count=new_count,
+        new_correct_count=new_correct,
+    )
+
+
+def _claim_status(label: str) -> ClaimStatus:
+    return {
+        "support": ClaimStatus.SUPPORTED,
+        "refute": ClaimStatus.REFUTED,
+        "neutral": ClaimStatus.UNSUPPORTED,
+    }[label]
+
+
+def _answer_status(statuses: tuple[ClaimStatus, ...]) -> AnswerStatus:
+    if any(item is ClaimStatus.REFUTED for item in statuses):
+        return AnswerStatus.CONTRADICTED
+    if any(item is ClaimStatus.CONFLICTED for item in statuses):
+        return AnswerStatus.CONFLICTED
+    if statuses and all(item is ClaimStatus.SUPPORTED for item in statuses):
+        return AnswerStatus.VALID
+    if any(item is ClaimStatus.SUPPORTED for item in statuses):
+        return AnswerStatus.PARTIALLY_SUPPORTED
+    return AnswerStatus.UNSUPPORTED
+
+
+def evaluate_hosted_effect_frontier(
+    *,
+    partition: Partition,
+    requests: tuple[HostedVerifierRequest, ...],
+    results: tuple[HostedVerifierResult, ...],
+    policy_id: str,
+    budgets: tuple[int, ...],
+) -> tuple[HostedEffectPoint, ...]:
+    if len(results) != len(requests):
+        raise ValidationError("effect evaluation requires exhaustive hosted results")
+    request_by_key = {
+        (item.event_index, item.judged_side, item.claim_sha256): item
+        for item in requests
+    }
+    result_by_id = {item.request_id: item for item in results}
+    if len(result_by_id) != len(results):
+        raise ValidationError("effect results contain duplicate request IDs")
+    if set(result_by_id) != {item.request_id for item in requests}:
+        raise ValidationError("effect results do not match the request population")
+    answer_groups = {
+        case.case_id: tuple(
+            sorted(claim.claim_sha256 for claim in case.affected_claims)
+        )
+        for case in partition.cases
+    }
+    points: list[HostedEffectPoint] = []
+    for budget in budgets:
+        pair_num = pair_den = status_num = status_den = 0
+        answer_num = answer_den = 0
+        for event_index, event in enumerate(partition.cases):
+            selected = {
+                item.claim_sha256
+                for item in rank_claims(
+                    policy_id=policy_id,
+                    claims=partition.registry,
+                    old_evidence=event.old_evidence,
+                    new_evidence=event.new_evidence,
+                )[: min(budget, len(partition.registry))]
+            }
+            old_statuses: dict[str, ClaimStatus] = {}
+            new_statuses: dict[str, ClaimStatus] = {}
+            treatment_statuses: dict[str, ClaimStatus] = {}
+            for claim in partition.registry:
+                old_request = request_by_key[
+                    (event_index, "old", claim.claim_sha256)
+                ]
+                new_request = request_by_key[
+                    (event_index, "new", claim.claim_sha256)
+                ]
+                old_status = _claim_status(result_by_id[old_request.request_id].label)
+                new_status = _claim_status(result_by_id[new_request.request_id].label)
+                treatment_status = (
+                    new_status
+                    if claim.claim_sha256 in selected
+                    else ClaimStatus.UNSUPPORTED
+                )
+                old_statuses[claim.claim_sha256] = old_status
+                new_statuses[claim.claim_sha256] = new_status
+                treatment_statuses[claim.claim_sha256] = treatment_status
+                if old_status is not new_status:
+                    pair_den += 1
+                    status_den += 1
+                    if claim.claim_sha256 in selected:
+                        pair_num += 1
+                    if treatment_status is new_status:
+                        status_num += 1
+            for claim_ids in answer_groups.values():
+                old_answer = _answer_status(
+                    tuple(old_statuses[claim_id] for claim_id in claim_ids)
+                )
+                new_answer = _answer_status(
+                    tuple(new_statuses[claim_id] for claim_id in claim_ids)
+                )
+                if old_answer is new_answer:
+                    continue
+                answer_den += 1
+                treatment_answer = _answer_status(
+                    tuple(treatment_statuses[claim_id] for claim_id in claim_ids)
+                )
+                answer_num += int(treatment_answer is new_answer)
+        verifier_pairs = len(partition.cases) * min(
+            budget, len(partition.registry)
+        )
+        exhaustive = len(partition.cases) * len(partition.registry)
+        points.append(
+            HostedEffectPoint(
+                policy_id=policy_id,
+                budget=budget,
+                event_count=len(partition.cases),
+                verifier_pair_count=verifier_pairs,
+                exhaustive_verifier_pair_count=exhaustive,
+                avoided_verifier_pair_count=exhaustive - verifier_pairs,
+                pair_effect_numerator=pair_num,
+                pair_effect_denominator=pair_den,
+                claim_effect_numerator=pair_num,
+                claim_effect_denominator=pair_den,
+                status_effect_numerator=status_num,
+                status_effect_denominator=status_den,
+                answer_effect_numerator=answer_num,
+                answer_effect_denominator=answer_den,
+            )
+        )
+    return tuple(points)
+
+
+def batch_processing_seconds(ledger: BatchLedger, role: str) -> int:
+    jobs = tuple(item for item in ledger.jobs if item.role == role)
+    if not jobs or any(
+        item.in_progress_at is None or item.completed_at is None for item in jobs
+    ):
+        raise ValidationError("batch role lacks complete timing coordinates")
+    return sum(
+        cast(int, item.completed_at) - cast(int, item.in_progress_at)
+        for item in jobs
     )
