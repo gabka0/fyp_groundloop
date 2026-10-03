@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from groundloop.fyp_impact_pareto import (
@@ -16,6 +17,7 @@ from groundloop.hosted_verifier import (
     build_request_population,
     load_hosted_verifier_config,
     parse_openai_response,
+    recover_failed_role_with_smaller_parts,
     write_role_batch_parts,
 )
 from groundloop.m4.contracts import sha256_text
@@ -222,3 +224,56 @@ def test_batch_ledger_advances_only_one_job(tmp_path: Path) -> None:
     assert advanced.jobs[0].provider_status == "completed"
     assert advanced.jobs[0].output_path is not None
     assert advanced.jobs[1].provider_status == "not_submitted"
+
+
+class _ZeroWorkFailedClient:
+    def json_request(
+        self, *, method: str, path: str, payload: object | None = None
+    ) -> tuple[dict[str, object], bytes]:
+        assert method == "GET"
+        assert path == "/v1/batches/batch_failed"
+        assert payload is None
+        value: dict[str, object] = {
+            "id": "batch_failed",
+            "status": "failed",
+            "request_counts": {"total": 0, "completed": 0, "failed": 0},
+            "output_file_id": None,
+        }
+        return value, json.dumps(value).encode()
+
+
+def test_zero_work_failed_role_can_be_repartitioned(tmp_path: Path) -> None:
+    config = load_hosted_verifier_config(
+        ROOT / "configs/fyp/hosted_verifier_openai_luna_v1.json"
+    )
+    requests = build_request_population(config=config, partition=_partition())
+    ledger = write_role_batch_parts(
+        requests=requests,
+        request_manifest_hash="1" * 64,
+        output_directory=tmp_path / "initial",
+    )
+    jobs = tuple(
+        replace(
+            item,
+            batch_id="batch_failed",
+            provider_status="validating",
+        )
+        if item.role == "exhaustive_new"
+        else item
+        for item in ledger.jobs
+    )
+    recovered = recover_failed_role_with_smaller_parts(
+        ledger=replace(ledger, jobs=jobs),
+        requests=requests,
+        role="exhaustive_new",
+        client=_ZeroWorkFailedClient(),  # type: ignore[arg-type]
+        output_directory=tmp_path / "recovery",
+        maximum_part_estimated_input_tokens=400,
+    )
+    replacement = tuple(
+        item for item in recovered.jobs if item.role == "exhaustive_new"
+    )
+    assert len(replacement) > 1
+    assert sum(item.input_request_count for item in replacement) == 8
+    assert all(item.batch_id is None for item in replacement)
+    assert all(Path(item.input_path).is_file() for item in replacement)

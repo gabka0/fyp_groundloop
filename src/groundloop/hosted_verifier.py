@@ -1302,3 +1302,106 @@ def collect_batch_results_by_role(
         } != identities:
             raise ValidationError(f"batch role {role} results are incomplete")
     return result
+
+
+def recover_failed_role_with_smaller_parts(
+    *,
+    ledger: BatchLedger,
+    requests: tuple[HostedVerifierRequest, ...],
+    role: str,
+    client: OpenAIHTTPClient,
+    output_directory: str | Path,
+    maximum_part_estimated_input_tokens: int,
+) -> BatchLedger:
+    """Replace an unexecuted failed role with smaller byte-equivalent parts."""
+    if role not in {"baseline_old", "exhaustive_new", "selected_new"}:
+        raise ValidationError("recovery role is invalid")
+    if maximum_part_estimated_input_tokens <= 0:
+        raise ValidationError("recovery token cap must be positive")
+    replaced = tuple(item for item in ledger.jobs if item.role == role)
+    if not replaced:
+        raise ValidationError("recovery role is absent from the ledger")
+    if any(
+        item.provider_status == "completed" or item.output_path is not None
+        for item in replaced
+    ):
+        raise ValidationError("cannot repartition a role with completed output")
+    for job in replaced:
+        if job.batch_id is None:
+            continue
+        payload, _ = client.json_request(
+            method="GET", path=f"/v1/batches/{job.batch_id}"
+        )
+        counts = _required_dict(payload.get("request_counts"), "request_counts")
+        if (
+            payload.get("status") != "failed"
+            or _required_int(counts.get("total"), "request total") != 0
+            or _required_int(counts.get("completed"), "request completed") != 0
+            or _required_int(counts.get("failed"), "request failed") != 0
+            or payload.get("output_file_id") is not None
+        ):
+            raise ValidationError(
+                "recovery requires a failed role with zero executed requests"
+            )
+    if role == "baseline_old":
+        values = tuple(item for item in requests if item.judged_side == "old")
+    elif role == "exhaustive_new":
+        values = tuple(item for item in requests if item.judged_side == "new")
+    else:
+        values = tuple(
+            item
+            for item in requests
+            if item.judged_side == "new" and item.selected_by_task5a
+        )
+    output = Path(output_directory)
+    output.mkdir(parents=True, exist_ok=True)
+    chunks: list[list[HostedVerifierRequest]] = []
+    current: list[HostedVerifierRequest] = []
+    current_tokens = 0
+    for request in values:
+        if current and (
+            current_tokens + request.estimated_input_tokens
+            > maximum_part_estimated_input_tokens
+        ):
+            chunks.append(current)
+            current = []
+            current_tokens = 0
+        current.append(request)
+        current_tokens += request.estimated_input_tokens
+    if current:
+        chunks.append(current)
+    replacement: list[BatchJobState] = []
+    recovered_ids: list[str] = []
+    for part_index, chunk in enumerate(chunks):
+        path = output / f"{role}_recovery_part_{part_index:02d}.jsonl"
+        content = "".join(item.batch_line() + "\n" for item in chunk)
+        path.write_text(content, encoding="utf-8")
+        recovered_ids.extend(item.request_id for item in chunk)
+        replacement.append(
+            BatchJobState(
+                role=role,
+                part_index=part_index,
+                input_path=str(path.resolve()),
+                input_sha256=_sha256_text(content),
+                input_request_count=len(chunk),
+                input_file_id=None,
+                batch_id=None,
+                provider_status="not_submitted",
+                output_file_id=None,
+                error_file_id=None,
+                created_at=None,
+                in_progress_at=None,
+                finalizing_at=None,
+                completed_at=None,
+                output_path=None,
+            )
+        )
+    expected_ids = [item.request_id for item in values]
+    if recovered_ids != expected_ids:
+        raise ValidationError("recovery repartition changed request identity or order")
+    preserved = tuple(item for item in ledger.jobs if item.role != role)
+    return BatchLedger(
+        schema_version=ledger.schema_version,
+        request_manifest_hash=ledger.request_manifest_hash,
+        jobs=preserved + tuple(replacement),
+    )

@@ -62,6 +62,22 @@ prevent duplicate submissions:
 2. baseline old observations: 32,768 requests, two Batch calls; and
 3. exhaustive new observations: 32,768 requests, two Batch calls.
 
+### Live token-limit recovery
+
+The first exhaustive-new submission failed during validation with zero
+executed requests and provider error `token_limit_exceeded`: the organization
+reported a live 2,000,000 enqueued-token limit. The earlier 4.5M estimate was
+therefore not a safe activation bound for the remaining role.
+
+Before any exhaustive-new output was observed, the operational plan was
+narrowed to repartition the same ordered 32,768 request identities into parts
+of at most 1,500,000 estimated input tokens. Recovery is allowed only after the
+API confirms the replaced role's submitted batch is `failed`, its total,
+completed, and failed request counts are all zero, and it has no output file.
+The prompt, schema, request bodies, result metrics, gates, and spend cap do not
+change. Actual Batch-call count replaces the original two-call estimate in the
+final report.
+
 The exhaustive old/new observations define the model-relative effect oracle.
 For an unselected claim, replacement removes the old observation and leaves
 the claim unsupported. Each source case forms one controlled answer with its

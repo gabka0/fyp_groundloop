@@ -850,6 +850,38 @@ def _fyp_hosted_batch_advance(args: argparse.Namespace) -> int:
     return 0
 
 
+def _fyp_hosted_batch_repartition(args: argparse.Namespace) -> int:
+    from groundloop.hosted_verifier import (
+        HostedVerifierRequest,
+        OpenAIHTTPClient,
+        load_batch_ledger,
+        recover_failed_role_with_smaller_parts,
+        write_batch_ledger,
+    )
+
+    ledger_path = Path(args.ledger)
+    ledger = load_batch_ledger(ledger_path)
+    requests = cast(
+        tuple[HostedVerifierRequest, ...], _evaluation_hosted_requests(args)
+    )
+    client = cast(OpenAIHTTPClient, _openai_client(args))
+    recovered = recover_failed_role_with_smaller_parts(
+        ledger=ledger,
+        requests=requests,
+        role=str(args.role),
+        client=client,
+        output_directory=Path(args.output_dir),
+        maximum_part_estimated_input_tokens=int(args.maximum_estimated_tokens),
+    )
+    write_batch_ledger(recovered, ledger_path)
+    replacement = tuple(item for item in recovered.jobs if item.role == args.role)
+    print(
+        f"Repartitioned {sum(item.input_request_count for item in replacement)} "
+        f"{args.role} requests into {len(replacement)} unsubmitted jobs."
+    )
+    return 0
+
+
 def _fyp_hosted_batch_collect(args: argparse.Namespace) -> int:
     from groundloop.fyp_impact_pareto import (
         batch_processing_seconds,
@@ -1362,6 +1394,36 @@ def build_parser() -> argparse.ArgumentParser:
     hosted_batch_advance.add_argument("--output-dir", type=Path, required=True)
     hosted_batch_advance.add_argument("--api-key-env", default="OPENAI_API_KEY")
     hosted_batch_advance.set_defaults(handler=_fyp_hosted_batch_advance)
+
+    hosted_batch_repartition = subcommands.add_parser(
+        "fyp-hosted-batch-repartition",
+        help="repartition one zero-work failed Batch role below a live token cap",
+    )
+    hosted_batch_repartition.add_argument(
+        "--impact-config",
+        type=Path,
+        default=Path("configs/fyp/impact_selection_v1.json"),
+    )
+    hosted_batch_repartition.add_argument(
+        "--hosted-config",
+        type=Path,
+        default=Path("configs/fyp/hosted_verifier_openai_luna_v1.json"),
+    )
+    hosted_batch_repartition.add_argument("--source", type=Path, required=True)
+    hosted_batch_repartition.add_argument("--ledger", type=Path, required=True)
+    hosted_batch_repartition.add_argument("--output-dir", type=Path, required=True)
+    hosted_batch_repartition.add_argument(
+        "--role",
+        choices=("baseline_old", "exhaustive_new", "selected_new"),
+        required=True,
+    )
+    hosted_batch_repartition.add_argument(
+        "--maximum-estimated-tokens", type=int, default=1_500_000
+    )
+    hosted_batch_repartition.add_argument(
+        "--api-key-env", default="OPENAI_API_KEY"
+    )
+    hosted_batch_repartition.set_defaults(handler=_fyp_hosted_batch_repartition)
 
     hosted_batch_collect = subcommands.add_parser(
         "fyp-hosted-batch-collect",
