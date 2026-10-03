@@ -902,7 +902,28 @@ def _fyp_hosted_batch_collect(args: argparse.Namespace) -> int:
     selection_elapsed_ms = (
         time.perf_counter_ns() - selection_started + 999_999
     ) // 1_000_000
-    projection_started = time.perf_counter_ns()
+    selected_projection_started = time.perf_counter_ns()
+    evaluate_hosted_effect_frontier(
+        partition=evaluation,
+        requests=requests,
+        results=exhaustive_results,
+        policy_id="old_new_rarity_coverage",
+        budgets=(8,),
+    )
+    selected_projection_elapsed_ms = (
+        time.perf_counter_ns() - selected_projection_started + 999_999
+    ) // 1_000_000
+    exhaustive_projection_started = time.perf_counter_ns()
+    evaluate_hosted_effect_frontier(
+        partition=evaluation,
+        requests=requests,
+        results=exhaustive_results,
+        policy_id="old_new_rarity_coverage",
+        budgets=(256,),
+    )
+    exhaustive_projection_elapsed_ms = (
+        time.perf_counter_ns() - exhaustive_projection_started + 999_999
+    ) // 1_000_000
     effects = evaluate_hosted_effect_frontier(
         partition=evaluation,
         requests=requests,
@@ -910,9 +931,6 @@ def _fyp_hosted_batch_collect(args: argparse.Namespace) -> int:
         policy_id="old_new_rarity_coverage",
         budgets=(1, 2, 4, 8, 16, 32, 64, 256),
     )
-    projection_elapsed_ms = (
-        time.perf_counter_ns() - projection_started + 999_999
-    ) // 1_000_000
 
     def role_usage(role: str) -> dict[str, object]:
         values = results_by_role[role]
@@ -945,6 +963,17 @@ def _fyp_hosted_batch_collect(args: argparse.Namespace) -> int:
         role: role_usage(role)
         for role in ("selected_new", "baseline_old", "exhaustive_new")
     }
+    selected_provider_wall_ms = (
+        cast(int, role_metrics["selected_new"]["submission_to_completion_seconds"])
+        * 1000
+    )
+    exhaustive_provider_wall_ms = (
+        cast(
+            int,
+            role_metrics["exhaustive_new"]["submission_to_completion_seconds"],
+        )
+        * 1000
+    )
     qualifying = tuple(
         point
         for point in effects
@@ -975,8 +1004,29 @@ def _fyp_hosted_batch_collect(args: argparse.Namespace) -> int:
         "selected_new_accuracy": asdict(selected_accuracy),
         "effect_points": [asdict(item) for item in effects],
         "role_metrics": role_metrics,
-        "selection_elapsed_ms": selection_elapsed_ms,
-        "effect_projection_elapsed_ms": projection_elapsed_ms,
+        "timing_comparison": {
+            "selected": {
+                "selection_elapsed_ms": selection_elapsed_ms,
+                "provider_submission_to_completion_ms": selected_provider_wall_ms,
+                "state_projection_elapsed_ms": selected_projection_elapsed_ms,
+                "total_update_elapsed_ms": (
+                    selection_elapsed_ms
+                    + selected_provider_wall_ms
+                    + selected_projection_elapsed_ms
+                ),
+            },
+            "exhaustive": {
+                "selection_elapsed_ms": 0,
+                "provider_submission_to_completion_ms": (
+                    exhaustive_provider_wall_ms
+                ),
+                "state_projection_elapsed_ms": exhaustive_projection_elapsed_ms,
+                "total_update_elapsed_ms": (
+                    exhaustive_provider_wall_ms
+                    + exhaustive_projection_elapsed_ms
+                ),
+            },
+        },
         "gate": {
             "minimum_work_reduction": {"numerator": 80, "denominator": 100},
             "minimum_each_effect_recall": {
