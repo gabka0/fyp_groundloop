@@ -142,6 +142,20 @@ AI-accuracy result. See
 [the impact-selection guide](docs/fyp_impact_selection.md) for the exact
 source hash, command, outputs, results, and limitations.
 
+## FYP Impact Pareto and Hosted-Verifier Freeze
+
+Run `groundloop fyp-impact-pareto` to account for every Task 4 positive miss,
+sweep the complete retrospective Task 5A held-out budget frontier, and produce
+the exact label-blind hosted-verifier request population. On the constructed
+held-out partition, rarity-weighted old/new selection reaches 256/256 affected
+claims at budget 64 while evaluating 8,192/32,768 pairs (75% fewer pairs).
+The frozen 65,536-request OpenAI Batch plan has an estimated upper cost of USD
+1.256812.
+
+This is offline selection and cost-planning evidence, not hosted-model
+accuracy, measured latency, effect retention, or end-to-end speedup. See
+[the Task 5B guide](docs/fyp_impact_pareto.md).
+
 The older `groundloop fyp-demo` command remains available as the accepted
 M4.8 fixed registered-state presentation scene:
 

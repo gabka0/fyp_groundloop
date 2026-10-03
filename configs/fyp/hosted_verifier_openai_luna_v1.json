@@ -1,0 +1,34 @@
+{
+  "schema_version": "groundloop-hosted-verifier-config-v1",
+  "provider": "openai",
+  "model": "gpt-6-luna",
+  "endpoint": "/v1/responses",
+  "reasoning_effort": "none",
+  "max_output_tokens": 32,
+  "standard_input_usd_per_million": "0.10",
+  "standard_output_usd_per_million": "0.50",
+  "batch_discount_numerator": 1,
+  "batch_discount_denominator": 2,
+  "maximum_program_spend_usd": "4.00",
+  "smoke_request_limit": 32,
+  "smoke_spend_limit_usd": "0.05",
+  "prompt_version": "groundloop-change-aware-verifier-v1",
+  "instructions": "Judge the claim only against the supplied NEW EVIDENCE. OLD EVIDENCE is revision context and must not override the new text. Return support when the new evidence entails the claim, refute when it contradicts the claim, and neutral when neither follows. Pay particular attention to changed numbers, versions, API names, negation, and removed statements. Do not use outside knowledge.",
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "label": {
+        "type": "string",
+        "enum": [
+          "support",
+          "refute",
+          "neutral"
+        ]
+      }
+    },
+    "required": [
+      "label"
+    ],
+    "additionalProperties": false
+  }
+}

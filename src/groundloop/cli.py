@@ -651,6 +651,27 @@ def _fyp_impact_selection(args: argparse.Namespace) -> int:
     return 0
 
 
+def _fyp_impact_pareto(args: argparse.Namespace) -> int:
+    from groundloop.fyp_impact_pareto import (
+        execute_impact_pareto,
+        format_impact_pareto_summary,
+    )
+
+    result, _ = execute_impact_pareto(
+        config_path=Path(args.config),
+        source_path=Path(args.source),
+        hosted_config_path=Path(args.hosted_config),
+        output_directory=Path(args.output_dir),
+    )
+    print(
+        format_impact_pareto_summary(
+            result,
+            output_directory=Path(args.output_dir),
+        )
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="groundloop")
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -831,6 +852,33 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("artifacts/fyp-impact-selection"),
     )
     impact_selection.set_defaults(handler=_fyp_impact_selection)
+
+    impact_pareto = subcommands.add_parser(
+        "fyp-impact-pareto",
+        help="freeze Task 4 misses, the held-out Pareto, and hosted requests",
+    )
+    impact_pareto.add_argument(
+        "--config",
+        type=Path,
+        default=Path("configs/fyp/impact_pareto_v1.json"),
+    )
+    impact_pareto.add_argument(
+        "--source",
+        type=Path,
+        required=True,
+        help="exact prepared M4.13 VitaminC development JSONL",
+    )
+    impact_pareto.add_argument(
+        "--hosted-config",
+        type=Path,
+        default=Path("configs/fyp/hosted_verifier_openai_luna_v1.json"),
+    )
+    impact_pareto.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("artifacts/fyp-impact-pareto"),
+    )
+    impact_pareto.set_defaults(handler=_fyp_impact_pareto)
     return parser
 
 

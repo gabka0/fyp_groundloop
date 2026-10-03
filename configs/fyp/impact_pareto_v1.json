@@ -1,0 +1,22 @@
+{
+  "schema_version": "groundloop-fyp-impact-pareto-config-v1",
+  "task4_config_path": "configs/m4/evaluation/controlled_v1.json",
+  "task5a_config_path": "configs/fyp/impact_selection_v1.json",
+  "task5a_report_manifest_hash": "dac99fd0ffff4749b6defe6ad3975e593f4615d6a291050ce0920da875bea9fa",
+  "policies": [
+    "changed_token_overlap",
+    "new_evidence_overlap",
+    "old_new_rarity_coverage"
+  ],
+  "budgets": [
+    1,
+    2,
+    4,
+    8,
+    16,
+    32,
+    64,
+    256
+  ],
+  "frontier_scope": "retrospective_after_task5a_selection"
+}
