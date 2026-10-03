@@ -35,6 +35,8 @@ requests. All 32 responses were complete and schema-valid.
 - Accuracy: 26/32 (81.25%)
 - Old-side accuracy: 12/16
 - New-side accuracy: 14/16
+- `support_refute` accuracy: 16/16
+- `support_neutral` accuracy: 10/16
 - Input/output tokens: 7,122 / 587
 - Actual standard-endpoint cost: USD 0.0010057
 - Sum of per-request elapsed time: 131,330 ms

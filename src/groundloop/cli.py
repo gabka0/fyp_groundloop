@@ -726,6 +726,18 @@ def _fyp_hosted_smoke(args: argparse.Namespace) -> int:
         results=results,
         annotations=annotations,
     )
+    accuracy_by_stratum = {
+        stratum: asdict(
+            evaluate_hosted_accuracy(
+                requests=smoke_requests,
+                results=results,
+                annotations=tuple(
+                    item for item in annotations if item.stratum == stratum
+                ),
+            )
+        )
+        for stratum in sorted({item.stratum for item in annotations})
+    }
     output = Path(args.output_dir)
     result_path = write_hosted_results(
         results=results, output_path=output / "smoke_results.jsonl"
@@ -735,6 +747,7 @@ def _fyp_hosted_smoke(args: argparse.Namespace) -> int:
         "schema_version": "groundloop-hosted-verifier-smoke-report-v1",
         "request_count": len(results),
         "accuracy": asdict(accuracy),
+        "accuracy_by_stratum": accuracy_by_stratum,
         "input_tokens": sum(item.input_tokens for item in results),
         "output_tokens": sum(item.output_tokens for item in results),
         "request_elapsed_ms_sum": sum(
@@ -887,6 +900,18 @@ def _fyp_hosted_batch_collect(args: argparse.Namespace) -> int:
         results=exhaustive_results,
         annotations=annotations,
     )
+    accuracy_by_stratum = {
+        stratum: asdict(
+            evaluate_hosted_accuracy(
+                requests=requests,
+                results=exhaustive_results,
+                annotations=tuple(
+                    item for item in annotations if item.stratum == stratum
+                ),
+            )
+        )
+        for stratum in sorted({item.stratum for item in annotations})
+    }
     selected_accuracy = evaluate_hosted_accuracy(
         requests=requests,
         results=results_by_role["selected_new"],
@@ -1001,6 +1026,7 @@ def _fyp_hosted_batch_collect(args: argparse.Namespace) -> int:
         "result_scope": "constructed_vitaminc_model_relative_effect_diagnostic",
         "request_manifest_hash": ledger.request_manifest_hash,
         "accuracy": asdict(accuracy),
+        "accuracy_by_stratum": accuracy_by_stratum,
         "selected_new_accuracy": asdict(selected_accuracy),
         "effect_points": [asdict(item) for item in effects],
         "role_metrics": role_metrics,
