@@ -128,6 +128,20 @@ the same pair work as exhaustive verification. This is controlled negative
 evidence, not a real-model accuracy, latency, or representative utility result.
 See [the FYP value benchmark guide](docs/fyp_value_benchmark.md).
 
+## FYP Impact-Selection Diagnostic
+
+Run `groundloop fyp-impact-selection` with the exact prepared M4.13 VitaminC
+development JSONL to test a text-only selector on a deterministic
+development/held-out split. The selected rarity-weighted old/new policy routes
+8 of 256 candidate claims per event. On the held-out half it recovered 249/256
+affected claims and both affected claims for 124/128 events while avoiding
+31,744/32,768 candidate pairs.
+
+This `PASS` is bounded selection evidence, not a measured LLM speedup or an
+AI-accuracy result. See
+[the impact-selection guide](docs/fyp_impact_selection.md) for the exact
+source hash, command, outputs, results, and limitations.
+
 The older `groundloop fyp-demo` command remains available as the accepted
 M4.8 fixed registered-state presentation scene:
 

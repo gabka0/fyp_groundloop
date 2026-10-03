@@ -631,6 +631,26 @@ def _fyp_value_benchmark(args: argparse.Namespace) -> int:
     return 0
 
 
+def _fyp_impact_selection(args: argparse.Namespace) -> int:
+    from groundloop.fyp_impact_selection import (
+        execute_impact_selection,
+        format_impact_selection_summary,
+    )
+
+    result, _ = execute_impact_selection(
+        config_path=Path(args.config),
+        source_path=Path(args.source),
+        output_directory=Path(args.output_dir),
+    )
+    print(
+        format_impact_selection_summary(
+            result,
+            output_directory=Path(args.output_dir),
+        )
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="groundloop")
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -789,6 +809,28 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("artifacts/fyp-value-benchmark"),
     )
     value_benchmark.set_defaults(handler=_fyp_value_benchmark)
+
+    impact_selection = subcommands.add_parser(
+        "fyp-impact-selection",
+        help="run the held-out text-only impact-selection diagnostic",
+    )
+    impact_selection.add_argument(
+        "--config",
+        type=Path,
+        default=Path("configs/fyp/impact_selection_v1.json"),
+    )
+    impact_selection.add_argument(
+        "--source",
+        type=Path,
+        required=True,
+        help="exact prepared M4.13 VitaminC development JSONL",
+    )
+    impact_selection.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("artifacts/fyp-impact-selection"),
+    )
+    impact_selection.set_defaults(handler=_fyp_impact_selection)
     return parser
 
 
