@@ -10,10 +10,11 @@ authority for every row written here.
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from typing import Any
 
-from psycopg import Cursor
+from psycopg import Cursor, sql
 from psycopg.types.json import Jsonb
 
 from groundloop.domain import StatusDelta
@@ -26,6 +27,13 @@ from groundloop.m5.runtime.contracts import (
     M5ChangedStateReference,
     M5RuntimeWork,
     M5StateReferenceKind,
+)
+from groundloop.postgres.migrations import (
+    M5_ACCEPTED_BOUNDED_DOCUMENT_WITHDRAWAL_BUNDLE_SHA256,
+    M5_ACCEPTED_PRETERMINAL_SEAL_CONTEXT_BUNDLE_SHA256,
+    M5_ACCEPTED_PRETERMINAL_SEAL_CONTEXT_MIGRATION_SHA256,
+    M5_PRETERMINAL_SEAL_CONTEXT_BUNDLE_ID,
+    M5_PRETERMINAL_SEAL_CONTEXT_ORACLE_SHA256,
 )
 
 
@@ -114,6 +122,35 @@ _D26_KINDS = frozenset(
     }
 )
 _RUNTIME_WORK_COUNTER_NAMES = M5RuntimeWork.counter_names()
+
+
+@dataclass(frozen=True, slots=True)
+class _SchemaBoundPublicationReader:
+    """Bind this module's closed read templates to one captured namespace.
+
+    Only internal SELECT templates enter this adapter; values stay in psycopg
+    parameters. GroundLoop relation/function identifiers are quoted separately,
+    including those in the shared D25/D26 child derivation. No search-path
+    mutation, temporary-table read, transaction ownership or write is added.
+    """
+
+    cursor: Cursor[Any]
+    schema: str
+
+    def execute(
+        self, query: str, params: tuple[object, ...] | None = None
+    ) -> Cursor[Any]:
+        parts: list[sql.Composable] = []
+        position = 0
+        for match in re.finditer(r"\bgroundloop_[a-z0-9_]+\b", query):
+            parts.append(sql.SQL(query[position : match.start()]))
+            parts.append(sql.Identifier(self.schema, match.group()))
+            position = match.end()
+        parts.append(sql.SQL(query[position:]))
+        return self.cursor.execute(sql.Composed(parts), params)
+
+
+_PublicationReadCursor = Cursor[Any] | _SchemaBoundPublicationReader
 
 
 def _require_nonnegative_int(name: str, value: int, *, positive: bool = False) -> None:
@@ -536,6 +573,176 @@ def _load_seal_envelope(
     )
 
 
+def _load_preterminal_seal_envelope(
+    cursor: _SchemaBoundPublicationReader,
+    *,
+    epoch_id: int,
+    expected_revision: int,
+    sealed_revision: int,
+) -> _SealEnvelope:
+    """Validate the independent half-terminal image using D31's attestation."""
+
+    context_rows = cursor.execute(
+        "SELECT * FROM groundloop_m5_matching_read_preterminal_seal_context(%s,%s,%s)",
+        (epoch_id, expected_revision, sealed_revision),
+    ).fetchall()
+    if len(context_rows) != 1:
+        raise ValidationError("preterminal matching context cardinality is invalid")
+    context = context_rows[0]
+    if (
+        len(context) != 8
+        or any(value is None for value in context)
+        or not str(context[0]).strip()
+        or not str(context[7]).strip()
+    ):
+        raise ValidationError("preterminal matching context coordinates are invalid")
+
+    rows = cursor.execute(
+        """
+        SELECT epoch.event_id, epoch.payload_hash, epoch.epoch_id, epoch.revision,
+               epoch.structural_status, epoch.semantic_status,
+               epoch.evaluation_state, epoch.publication_mode, epoch.sealed_at,
+               runtime.structural_event_id, runtime.runtime_state,
+               runtime.terminal_at, runtime.revision,
+               runtime.expected_previous_published_epoch_id,
+               runtime.open_work_count, runtime.open_scope_count,
+               runtime.blocking_failure_count,
+               update_row.previous_published_epoch_id, update_row.update_kind,
+               update_row.decision_policy_version,
+               predecessor.revision, predecessor.structural_status,
+               predecessor.semantic_status, predecessor.evaluation_state,
+               predecessor.publication_mode, predecessor.sealed_at,
+               m4_head.epoch_id, m5_head.epoch_id, m5_head.sealed_revision,
+               current_image.decision_policy_version,
+               current_image.installed_epoch_id,
+               current_image.installed_revision,
+               working_image.base_epoch_id, working_image.base_revision,
+               working_image.decision_policy_version,
+               working_image.updated_revision,
+               matching_accumulator.updated_revision,
+               work_accumulator.updated_revision,
+               work_accumulator.terminalized,
+               timing_accumulator.updated_revision,
+               timing_accumulator.terminalized,
+               timing_accumulator.pending_contribution_kind,
+               timing_accumulator.pending_source_id,
+               timing_accumulator.pending_contribution_key_digest,
+               timing_accumulator.pending_anchor_revision,
+               deactivation.event_id, deactivation.group_version_id,
+               deactivation.action, deactivation.successor_group_version_id,
+               count(deactivation.epoch_id) OVER (),
+               (SELECT count(*)
+                  FROM groundloop_m5_event_result AS result
+                 WHERE result.structural_event_id = epoch.event_id
+                    OR result.epoch_id = epoch.epoch_id),
+               (SELECT count(*)
+                  FROM groundloop_m5_event_result_delta AS delta
+                 WHERE delta.structural_event_id = epoch.event_id),
+               (SELECT count(*)
+                  FROM groundloop_m5_event_result_state_reference AS reference
+                 WHERE reference.structural_event_id = epoch.event_id),
+               (SELECT count(*) FROM groundloop_m5_activation),
+               ARRAY(
+                 SELECT policy.policy_version
+                   FROM groundloop_decision_policy AS policy
+                  WHERE policy.valid_from_epoch <=
+                        update_row.previous_published_epoch_id
+                    AND (policy.valid_to_epoch IS NULL OR
+                         update_row.previous_published_epoch_id <
+                         policy.valid_to_epoch)
+                  ORDER BY policy.policy_version COLLATE "C"),
+               ARRAY(
+                 SELECT policy.policy_version
+                   FROM groundloop_decision_policy AS policy
+                  WHERE policy.valid_from_epoch <= epoch.epoch_id
+                    AND (policy.valid_to_epoch IS NULL OR
+                         epoch.epoch_id < policy.valid_to_epoch)
+                  ORDER BY policy.policy_version COLLATE "C")
+        FROM groundloop_epoch AS epoch
+        JOIN groundloop_m5_runtime_epoch AS runtime USING (epoch_id)
+        JOIN groundloop_m5_update AS update_row USING (epoch_id)
+        JOIN groundloop_epoch AS predecessor
+          ON predecessor.epoch_id = update_row.previous_published_epoch_id
+        JOIN groundloop_m4_publication_head AS m4_head ON m4_head.singleton
+        JOIN groundloop_m5_publication_head AS m5_head ON m5_head.singleton
+        JOIN groundloop_m5_matching_image_current AS current_image
+          ON current_image.singleton
+        JOIN groundloop_m5_matching_image_working AS working_image
+          ON working_image.epoch_id = epoch.epoch_id
+        JOIN groundloop_m5_matching_work_accumulator AS matching_accumulator
+          ON matching_accumulator.epoch_id = epoch.epoch_id
+        JOIN groundloop_m5_runtime_work_accumulator AS work_accumulator
+          ON work_accumulator.epoch_id = epoch.epoch_id
+        JOIN groundloop_m5_runtime_timing_accumulator AS timing_accumulator
+          ON timing_accumulator.epoch_id = epoch.epoch_id
+        LEFT JOIN groundloop_m5_group_deactivation AS deactivation
+          ON deactivation.epoch_id = epoch.epoch_id
+        WHERE epoch.epoch_id = %s
+          AND EXISTS (
+            SELECT 1 FROM groundloop_runtime_mode
+             WHERE singleton AND mode = 'm5_active')
+        """,
+        (epoch_id,),
+    ).fetchall()
+    if len(rows) != 1:
+        raise ValidationError(
+            "preterminal event has an invalid seal-envelope cardinality"
+        )
+    row = rows[0]
+    anchor_m4_epoch = int(context[1])
+    if (
+        int(context[2]) != anchor_m4_epoch
+        or int(context[3]) != int(context[5])
+        or int(context[4]) != 1
+        or int(row[2]) != epoch_id
+        or int(row[3]) != sealed_revision
+        or tuple(row[4:8]) != ("committed", "sealed", "complete", "strict")
+        or row[8] is None
+        or str(row[9]) != str(row[0])
+        or str(row[10]) != "semantic_complete"
+        or row[11] is not None
+        or int(row[12]) != expected_revision
+        or int(row[13]) != anchor_m4_epoch
+        or tuple(int(row[index]) for index in (14, 15, 16)) != (0, 0, 0)
+        or int(row[17]) != anchor_m4_epoch
+        or str(row[19]) != str(context[0])
+        or int(row[20]) != int(context[5])
+        or tuple(row[21:25]) != ("committed", "sealed", "complete", "strict")
+        or row[25] != context[6]
+        or tuple(int(row[index]) for index in (26, 27, 28))
+        != (epoch_id, epoch_id, sealed_revision)
+        or str(row[29]) != str(context[0])
+        or tuple(int(row[index]) for index in (30, 31)) != (epoch_id, sealed_revision)
+        or tuple(int(row[index]) for index in (32, 33))
+        != (anchor_m4_epoch, int(context[3]))
+        or str(row[34]) != str(context[0])
+        or int(row[35]) > expected_revision
+        or int(row[36]) > expected_revision
+        or tuple(row[index] for index in (37, 38)) != (expected_revision, False)
+        or tuple(row[index] for index in (39, 40)) != (expected_revision, False)
+        or any(row[index] is not None for index in range(41, 45))
+        or (row[45] is not None and str(row[45]) != str(row[0]))
+        or int(row[49]) not in {0, 1}
+        or tuple(int(row[index]) for index in range(50, 54)) != (0, 0, 0, 1)
+        or tuple(str(value) for value in row[54]) != (str(context[7]),)
+        or tuple(str(value) for value in row[55]) != (str(context[0]),)
+    ):
+        raise ValidationError("preterminal seal coordinates are inconsistent")
+    return _SealEnvelope(
+        event_id=str(row[0]),
+        payload_hash=_strip_hash(row[1], name="event payload hash"),
+        epoch_id=epoch_id,
+        revision=sealed_revision,
+        previous_epoch_id=anchor_m4_epoch,
+        previous_revision=int(context[5]),
+        update_kind=str(row[18]),
+        decision_policy_version=str(context[0]),
+        predecessor_group_id=(None if row[46] is None else str(row[46])),
+        deactivation_action=(None if row[47] is None else str(row[47])),
+        successor_group_id=(None if row[48] is None else str(row[48])),
+    )
+
+
 def _typed_optional_hash(node: object, *, name: str) -> str | None:
     if not isinstance(node, dict):
         raise ValidationError(f"{name} has an invalid typed node")
@@ -547,7 +754,7 @@ def _typed_optional_hash(node: object, *, name: str) -> str | None:
 
 
 def _load_structural_logical_changes(
-    cursor: Cursor[Any], *, envelope: _SealEnvelope
+    cursor: _PublicationReadCursor, *, envelope: _SealEnvelope
 ) -> tuple[_LogicalChange, ...]:
     """Point-read and byte-validate the one D26 structural contribution."""
 
@@ -876,7 +1083,7 @@ def _net_logical_changes(
 
 
 def _present_artifact_hash(
-    cursor: Cursor[Any],
+    cursor: _PublicationReadCursor,
     *,
     kind: str,
     object_id: str,
@@ -1009,7 +1216,7 @@ def _present_artifact_hash(
 
 
 def _published_present_keys(
-    cursor: Cursor[Any], *, epoch_id: int, revision: int
+    cursor: _PublicationReadCursor, *, epoch_id: int, revision: int
 ) -> tuple[tuple[str, str], ...]:
     rows = cursor.execute(
         """
@@ -1054,7 +1261,7 @@ def _published_present_keys(
 
 
 def _closed_absence_candidate_keys(
-    cursor: Cursor[Any], *, epoch_id: int
+    cursor: _PublicationReadCursor, *, epoch_id: int
 ) -> tuple[tuple[str, str], ...]:
     rows = cursor.execute(
         """
@@ -1097,7 +1304,7 @@ def _closed_absence_candidate_keys(
 
 
 def _validate_d26_absence_set(
-    cursor: Cursor[Any],
+    cursor: _PublicationReadCursor,
     *,
     envelope: _SealEnvelope,
     absent: dict[tuple[str, str], tuple[str | None, tuple[_LogicalChange, ...]]],
@@ -1511,7 +1718,7 @@ def _validate_d26_absence_set(
 
 
 def _build_combined_deltas(
-    cursor: Cursor[Any],
+    cursor: _PublicationReadCursor,
     *,
     envelope: _SealEnvelope,
     changed_keys: set[tuple[str, str]],
@@ -1570,18 +1777,13 @@ def _build_combined_deltas(
     return tuple(sorted(deltas, key=lambda value: (value.object_type, value.object_id)))
 
 
-def _derive_matching_publication_children(
-    cursor: Cursor[Any],
+def _derive_matching_publication_children_from_envelope(
+    cursor: _PublicationReadCursor,
     *,
-    epoch_id: int,
-    sealed_revision: int,
-) -> tuple[_SealEnvelope, M5MatchingPublicationChildren]:
-
-    _require_nonnegative_int("epoch_id", epoch_id, positive=True)
-    _require_nonnegative_int("sealed_revision", sealed_revision, positive=True)
-    envelope = _load_seal_envelope(
-        cursor, epoch_id=epoch_id, sealed_revision=sealed_revision
-    )
+    envelope: _SealEnvelope,
+) -> M5MatchingPublicationChildren:
+    epoch_id = envelope.epoch_id
+    sealed_revision = envelope.revision
     present_keys = _published_present_keys(
         cursor, epoch_id=epoch_id, revision=sealed_revision
     )
@@ -1655,12 +1857,82 @@ def _derive_matching_publication_children(
             ),
         )
     )
-    return (
-        envelope,
-        M5MatchingPublicationChildren(
-            combined_deltas=combined_deltas,
-            changed_state_references=references_tuple,
-        ),
+    return M5MatchingPublicationChildren(
+        combined_deltas=combined_deltas,
+        changed_state_references=references_tuple,
+    )
+
+
+def _derive_matching_publication_children(
+    cursor: Cursor[Any],
+    *,
+    epoch_id: int,
+    sealed_revision: int,
+) -> tuple[_SealEnvelope, M5MatchingPublicationChildren]:
+    _require_nonnegative_int("epoch_id", epoch_id, positive=True)
+    _require_nonnegative_int("sealed_revision", sealed_revision, positive=True)
+    envelope = _load_seal_envelope(
+        cursor, epoch_id=epoch_id, sealed_revision=sealed_revision
+    )
+    return envelope, _derive_matching_publication_children_from_envelope(
+        cursor, envelope=envelope
+    )
+
+
+def _prepare_preterminal_matching_publication_children(
+    cursor: Cursor[Any],
+    *,
+    epoch_id: int,
+    expected_revision: int,
+    sealed_revision: int,
+) -> M5MatchingPublicationChildren:
+    """Derive compare-only children from the private half-terminal seal image."""
+
+    _require_nonnegative_int("epoch_id", epoch_id, positive=True)
+    _require_nonnegative_int("expected_revision", expected_revision, positive=True)
+    _require_nonnegative_int("sealed_revision", sealed_revision, positive=True)
+    if sealed_revision != expected_revision + 1:
+        raise ValidationError("sealed_revision must be expected_revision + 1")
+    schema_rows = cursor.execute("SELECT pg_catalog.current_schema()").fetchall()
+    if len(schema_rows) != 1 or schema_rows[0][0] is None:
+        raise ValidationError("preterminal preparation requires a current schema")
+    schema = str(schema_rows[0][0])
+    ledger_catalog = cursor.execute(
+        "SELECT relation.relkind, relation.relpersistence "
+        "FROM pg_catalog.pg_class AS relation "
+        "JOIN pg_catalog.pg_namespace AS namespace "
+        "ON namespace.oid=relation.relnamespace "
+        "WHERE namespace.nspname=%s "
+        "AND relation.relname='groundloop_m5_schema_bundle'",
+        (schema,),
+    ).fetchall()
+    if ledger_catalog != [("r", "p")]:
+        raise ValidationError("preterminal preparation requires a permanent ledger")
+    reader = _SchemaBoundPublicationReader(cursor, schema)
+    ledger = reader.execute(
+        "SELECT bundle_id,bundle_sha256,migration_sha256,oracle_sha256,"
+        "prerequisite_sha256 FROM groundloop_m5_schema_bundle WHERE bundle_id=%s",
+        (M5_PRETERMINAL_SEAL_CONTEXT_BUNDLE_ID,),
+    ).fetchall()
+    exact_ledger = (
+        M5_PRETERMINAL_SEAL_CONTEXT_BUNDLE_ID,
+        M5_ACCEPTED_PRETERMINAL_SEAL_CONTEXT_BUNDLE_SHA256,
+        M5_ACCEPTED_PRETERMINAL_SEAL_CONTEXT_MIGRATION_SHA256,
+        M5_PRETERMINAL_SEAL_CONTEXT_ORACLE_SHA256,
+        M5_ACCEPTED_BOUNDED_DOCUMENT_WITHDRAWAL_BUNDLE_SHA256,
+    )
+    if len(ledger) != 1 or tuple(str(value).rstrip(" ") for value in ledger[0]) != (
+        exact_ledger
+    ):
+        raise ValidationError("preterminal preparation requires exact migration 019")
+    envelope = _load_preterminal_seal_envelope(
+        reader,
+        epoch_id=epoch_id,
+        expected_revision=expected_revision,
+        sealed_revision=sealed_revision,
+    )
+    return _derive_matching_publication_children_from_envelope(
+        reader, envelope=envelope
     )
 
 

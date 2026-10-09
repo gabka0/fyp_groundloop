@@ -9775,7 +9775,9 @@ def _structural_retirement_plan(
             hall_subset_entries_examined=subset_entries,
             hall_neighbor_entries_changed=neighbour_changes,
             hall_deficiency_entries_examined=subset_entries,
-            group_local_state_operations=1,
+            group_local_state_operations=len(
+                {change.group_version_id for change in mask_changes}
+            ),
             groups_touched=1 + int(successor_shape is not None),
             claims_touched=int(bool(claim_state_writes)),
             answers_touched=len(answer_state_writes),
