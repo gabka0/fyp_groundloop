@@ -1,11 +1,11 @@
 # GroundLoop M5 Acceptance Matrix
 
-Status: accepted M5 falsification contract through M5-D31; staged evidence
+Status: accepted M5 falsification contract through M5-D32; staged evidence
 is current through the integrated M5.4-02/-03/-04 late-result activity tranche;
 M5.4-01 through M5.4-04 are `PASS`, M5.4 remains partial, and M5.0-24 is
-`PASS / PENDING`; M5.0-25 through M5.0-31 are `PASS / PENDING`
+`PASS / PENDING`; M5.0-25 through M5.0-32 are `PASS / PENDING`
 
-Date: 2026-09-25
+Date: 2026-10-09
 
 Authority: each row is a necessary condition, not a menu. In Section 1, the
 first status is the M5.0 contract audit and the second is implementation
@@ -14,6 +14,11 @@ invariant, and falsifier; it does not pretend the code exists. An
 implementation `PASS` requires the named executable evidence. A lone
 `PENDING` means both are pending. `N/A` is forbidden for CORE rows unless the
 design freeze is reopened and the scope change is recorded.
+
+Current precedence: M5-D32's exact future migration-020 delta is the sole new
+exception to earlier migration-inventory and no-new-kind/recipe falsifiers.
+All unchanged D24--D31 mechanisms and historical receipts remain exact.
+Runtime-addendum revision 13 is current; no implementation gate is promoted.
 
 ## 1. M5.0 design-decision gates
 
@@ -50,6 +55,7 @@ design freeze is reopened and the scope change is recorded.
 | M5.0-29 | M5-D29 bounded persisted document withdrawal | Reconstruct the legacy payload from sidecars; trust a caller preview/plan; miss or overinclude reverse candidates, observations, direct/M5 jobs, dependencies, scopes, roots, or provenance; accept malformed lineage, cross-policy history, typed rootless `ObserveRequirementEvent`, or a self-consistent wrong declaration; cancel a D24-valid unresolved attempt attached only to terminal authority; use an unlisted terminal origin; weaken canonical-result/envelope/work/telemetry validation; add a third or wider migration-018 object; accept a wrong 017 prerequisite, ledger identity, lock order, partial install, scan fallback, late route barrier, hidden hydration/cache/oracle, provider call in transaction, counter alias, or changed public/DTO/digest/runtime bytes | All 24 D29 falsifier groups: exact retained source and sidecar closure; lineage/dedup/policy/activity; candidate/observation independence including activation-bootstrap; terminal cancellation and typed-rootless fail-closed boundaries; exact insert/delete/replace forms; one-key/two-index catalog and plan shapes; complete all-state direct dependency/scope and M5 scope/provenance declaration proofs; ledger/install/rerun/rollback; oracle and frozen-byte inventory; crash/race/replay/lock-order/bounded-history/work; two-call compare-only authority and every terminalization cut; prospective reservation closure; sole timing ownership; and the migration-018 route barrier | PASS / PENDING |
 | M5.0-30 | M5-D30 total claim-current and direct-M4/M3 provenance closure | Filter changed-chunk currency to one subject kind; convert claim and requirement holders; infer a dynamic claim without its exact working delta, child revision, admitted pair, owner topology, currency, or predecessor; scan an unbounded interval prefix; require classic artifact/judgment/pair-input or raw root membership that was never persisted; reject valid optional execution, arbitrary retained IDs/tasks, M4 reuse, or legacy empty task; accept partial/cross-coordinate execution; treat unrelated M4 history as bootstrap authority or poison; omit or change the exact M3 epoch/run/execution/candidate/artifact closure; misorder locks; migration 019 is missing, differs from exact M5-D31, or is accompanied by another migration; or change public/DTO/digest/counter/runtime bytes | All 15 D30 falsifier groups: total mixed-subject locator and partition; typed and legacy dynamic identity cases; optional three-coordinate execution; exact delta/predecessor/child injection with backward `LIMIT 1` long-history plans; exact M3 activation-base epoch/publication closure and NULL reuse; child/admission/parent/result/topology/owner mutations; retained discovery nonreconstruction; branch exclusivity; query-plan/cardinality/trace exclusions; both race orders and isolation rejection; unchanged outputs/digests/work/timing/replay; frozen migrations 001--018 plus exact M5-D31 migration 019 | PASS / PENDING |
 | M5.0-31 | M5-D31 trusted preterminal context access | Read the trusted promotion context directly; accept owner-only evidence, raw temporary-table/private-helper privilege, NULL or malformed input, wrong mode/GUC/table/OID/owner/backend/xid/role/cardinality/coordinate/policy/validation flag, a transition-triplet collision, a mutable or nonrepeatable accessor, a wrong migration-018 prerequisite or migration-019 ledger/catalog/ACL, another migration object, mixed-schema composition, changed D25/D26/result/digest semantics, preterminal child insertion, altered seal order, or changed public/runtime bytes | All 14 D31 falsifier groups: exact bundle/ledger/install/replay/rollback/concurrency and sole-function catalog proof; unchanged migrations 001--018; owner and distinct non-owner positives with raw-access denial; forged-triplet, NULL and full fail-closed matrices; repeatability/nonmutation; one-schema binding; real REPLACE/RETIRE preterminal contribution and terminal builder equality; D26 absence, present-state, certificate-only, malformed-child, replay and rollback regressions; compile/static/package gates, two same-byte audits and exact identity checks | PASS / PENDING |
+| M5.0-32 | M5-D32 group-only semantic readiness | Fake M4 update/job; SC-to-complete shortcut; two edges in one transaction; unaccounted/after-advance contribution; wrong event/declaration/phase/revision/hash/work; open/failed jobs/scopes or positive counters; direct/document surface; replay writes/new anchor; schema/temp lookup; extra 020 object or modified 000--019; D25 semantic write or D26 recipe change; early pending clear or fabricated positive fixture | All Section-7 D32 falsifiers: SQL/Python source/key/S+K vectors; exact three CHECKs/two validators/one guard+trigger; ledger/catalog/install/rerun/rollback/races and 019 prerequisites; real owner/non-owner zero-root RETIRE and nonempty-root REPLACE readiness; exact work/timing/missing/replay; disjoint schema->readiness->R-T->C1 custody; genuine pending-anchor seal and terminal equality; static/package/live compatibility and two same-byte audits | PASS / PENDING |
 
 M5.0 originally froze after the contract side of every row passed, three
 independent audits reported no unresolved P0/P1, and the coordinator recorded
@@ -59,13 +65,14 @@ Accepted M5-D24-C5 resolves its successful-return active-cutoff invocation-
 work defect. Accepted M5-D24-C6 resolves the three additional checked origins
 outside C5, and accepted M5-D24-C7 closes the typed-direct acquisition/failure-
 closure provenance boundary. The current accepted contract set is M5-D21
-through M5-D31 plus runtime-addendum revision 12, the M5-D24 recovery amendment
+through M5-D32 plus runtime-addendum revision 13, the M5-D24 recovery amendment
 and accepted C1--C7 corrections, the M5-D25 persisted-matching amendment, the
 M5-D26 changed-state absence amendment, the M5-D27 counter-ownership erratum,
 the M5-D28 phased persisted-matching composition amendment, the M5-D29 bounded
 document-withdrawal amendment, the M5-D30 direct-M4 current-observation
-provenance amendment, the M5-D31 preterminal-context access amendment, and rows
-M5.0-21 through M5.0-31. M5.0-24 through M5.0-31 are each contract-`PASS` /
+provenance amendment, the M5-D31 preterminal-context access amendment, the
+M5-D32 semantic-readiness amendment, and rows M5.0-21 through M5.0-32.
+M5.0-24 through M5.0-32 are each contract-`PASS` /
 implementation-`PENDING`; the exact R2e C7
 implementation lane integrated at `2c2aed9` and its grant is closed. No D24
 lane is active. The later separately activated evidence tranche integrated at

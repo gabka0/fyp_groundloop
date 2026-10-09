@@ -1,14 +1,22 @@
 # GroundLoop M5 Implementation Status
 
-Status date: 2026-09-25
+Status date: 2026-10-09
 
-Milestone status: **M5.0 contract through accepted M5-D31 and M5.1--M5.3 are
+Milestone status: **M5.0 contract through accepted M5-D32 and M5.1--M5.3 are
 complete; M5.4 is partially complete.**
 M5.4-01 through M5.4-04 pass. M5.4-05 through M5.4-09 and every M5.5--M5.6
 implementation/evaluation closure remain pending. M5-D24-C1 through M5-D24-C7
-are accepted. M5.0-24 through M5.0-31 are each contract-`PASS` /
+are accepted. M5.0-24 through M5.0-32 are each contract-`PASS` /
 implementation-`PENDING`. M5-D31's accepted candidate SHA-256 is
 `6331c8149e38031c51cb22b6a9dc2d49d30d27df67d25b5fae24b00c52058dc9`.
+M5-D32's accepted candidate SHA-256 is
+`0e9a4bbe8da34d8248ce138c4bc21cb8076ddb4a578ea6a36cd6a4e100811435`;
+runtime-addendum revision 13 is authoritative. D32 supplies a contract for
+missing group-only readiness, not executable evidence. Its future 020 schema,
+private helper, held R-T acceptance and C1 atomic composition remain PENDING
+and require a fresh sequential manifest. The held reader diagnostic's 165
+passes do not prove a genuine pending-anchor seal. Protected WIP is unchanged;
+no provider, deployment, runtime mode or AI-quality result is promoted.
 M5-D30's accepted candidate SHA-256 is
 `db2568affc02cf1ca6f17a549029f31089cecd857debdedf2651e6aac6898fe4`.
 M5-D29's accepted candidate SHA-256 is

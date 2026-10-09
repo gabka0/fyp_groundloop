@@ -1,19 +1,19 @@
 # GroundLoop M5 Bounded Evidence-Group Design Freeze
 
-Status: frozen M5.0 contract, amended through accepted M5-D31 and
-M5-D24-C1--C7; implementation evidence for M5-D24 through M5-D31 remains
+Status: frozen M5.0 contract, amended through accepted M5-D32 and
+M5-D24-C1--C7; implementation evidence for M5-D24 through M5-D32 remains
 pending
 
 Date: 2026-08-02; M5-D21 through M5-D24-C7 amendments 2026-08-06--2026-08-18;
 M5-D25 amendment 2026-09-03; M5-D26 amendment 2026-09-07; M5-D27 erratum
 2026-09-17; M5-D28 amendment 2026-09-18; M5-D29 and M5-D30 amendments
-2026-09-22; M5-D31 amendment 2026-09-25
+2026-09-22; M5-D31 amendment 2026-09-25; M5-D32 amendment 2026-10-09
 
 Authority: this document specializes `docs/technical_design.md` v0.2 for M5.
 It preserves original decisions D-1 through D-20 except where the earlier
 pseudocode is mathematically inconsistent with its own stated system-of-
 distinct-representatives semantics. Those corrections, the later runtime
-decisions M5-D21 through M5-D31, and accepted M5-D24-C1 through M5-D24-C7 are
+decisions M5-D21 through M5-D32, and accepted M5-D24-C1 through M5-D24-C7 are
 recorded in the decision log and frozen here. The byte-total M5-D24
 specialization is authoritative at
 `docs/workstreams/m5_runtime_contract/RECOVERY_WORK_AMENDMENT.md`.
@@ -51,6 +51,13 @@ The narrow M5-D31 preterminal-context access correction is authoritative at
 `docs/workstreams/m5_runtime_contract/PRETERMINAL_CONTEXT_ACCESS_AMENDMENT.md`;
 its independently accepted pre-freeze content SHA-256 is
 `6331c8149e38031c51cb22b6a9dc2d49d30d27df67d25b5fae24b00c52058dc9`.
+The M5-D32 group-only readiness correction is authoritative at
+`docs/workstreams/m5_runtime_contract/SEMANTIC_READINESS_AMENDMENT.md`, exact
+accepted SHA-256
+`0e9a4bbe8da34d8248ce138c4bc21cb8076ddb4a578ea6a36cd6a4e100811435`.
+Runtime-addendum revision 13 is current. Earlier D31 inventory prohibitions are
+superseded only for D32's explicitly enumerated future migration-020 delta;
+historical decisions and implementation receipts are not rewritten.
 
 M5 implementation begins only after the M5.0 *contract* gate passes. Later
 implementation-evidence cells in the acceptance matrix remain `PENDING` until
@@ -1552,6 +1559,38 @@ objective-truth, maintained-history, named-system-superiority and AI/model-
 quality claims remain `PENDING`; runtime remains `v1_only` outside isolated
 fixtures.
 
+### M5-D32 -- accounted group-only semantic readiness
+
+The frozen graph remains structural_committed -> semantic_pending ->
+semantic_complete -> sealed. A rootless group lifecycle event has no root
+barrier or genuine direct-M4 job, while requirement-only completion leaves
+pending after counters reach zero. D32 supplies two private, separate outer
+transactions: rootless SC1 -> SP2, then eligible SPN -> complete(N+1).
+Nonempty-root events enter pending through genuine existing job progression.
+Only register_group/replace_group/retire_group without any M4 direct surface
+are eligible. Independent job/scope and runtime/owner/answer counts must agree.
+
+Each edge creates exactly one immutable semantic_readiness work contribution
+and timing anchor. Its source_id is the target state; its typed source identity
+binds epoch, event, payload, root set, state pair and revisions. Work is exactly
+S+K bytes hashed/serialized for source/key preimages and zero elsewhere. A
+BEFORE INSERT guard proves the genuine predecessor; unchanged 015 validates
+the actual edge; the 016 deferred validator proves the resulting cutoff. Exact
+replay returns the original anchor without writes. Prior pending timing becomes
+missing by the existing single-CAS rule; later seal remains unchanged.
+
+D32 authorizes only future additive migration 020: three kind-bearing CHECK
+extensions, one pinned-schema SECURITY INVOKER predecessor function and BEFORE
+INSERT trigger, and two specified 016 validator replacements. No table,
+column, index, public application API, DTO, changed-state reference, D25 patch,
+state recipe or legacy migration byte changes. Trusted schema, exact 020
+ledger/catalog, rootless no-barrier, D26 absence, non-owner and genuine-history
+requirements are normative in the amendment. Implementation requires a fresh
+path-exclusive schema -> readiness -> R-T -> C1 activation; all held work is
+preserved. M5-D32/M5.0-32 are contract-PASS / implementation-PENDING. Task 17,
+Task 2, C1, M5.4--M5.6, deployment and AI quality remain PENDING; v1_only stays
+the default. This freeze implements nothing.
+
 ## 11. Dynamic M4 integration contract
 
 ### M5-D14 -- typed v2 runtime identity
@@ -2185,6 +2224,7 @@ regression evidence.
 | M5-D29 | Bounded persisted document withdrawal | The locked epoch payload is the legacy source identity; persisted reverse/current edges and retained direct/M5 declarations are enumerated by exact bounded locators, same-policy history is the supported form, terminal cuts use ordinary pre-opener and one checked post-open route, and migration 018 adds only two locator indexes behind an exact ledger barrier |
 | M5-D30 | Total claim-current and direct-M4/M3 provenance closure | One changed-chunk currency range returns both subject kinds; dynamic claims validate through the working delta and exact sealed direct owner, activation-base claims validate through exact M3 publication closure, predecessor history uses a backward one-row PK route, and unavailable root/classic preimages are not reconstructed |
 | M5-D31 | Trusted preterminal context access | Additive migration 019 provides one read-only, argument-bound `SECURITY DEFINER` accessor for the genuine migration-017 promotion context; one-schema runtime consumption preserves the D25/D26 derivation, result-bound child authority, seal order and every matching/result/digest semantic |
+| M5-D32 | Accounted group-only semantic readiness | Separate rootless SC1->SP2 and eligible SPN->complete(N+1) commits use one new D24 work/timing kind, typed event/declaration-bound identity and exact S+K byte work; additive 020 changes only three CHECKs, two 016 validators and one pinned invoker predecessor function/trigger; D25 semantic state, D26 six reference kinds, legacy bytes and terminal seal remain exact |
 
 ## 15. Release gate
 

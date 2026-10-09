@@ -1,6 +1,6 @@
 # GroundLoop M5.4 Byte-Total Runtime Contract Addendum
 
-Status: frozen runtime contract revision 12; M5-D25 through M5-D31 contracts
+Status: frozen runtime contract revision 13; M5-D25 through M5-D32 contracts
 **GO** / implementation **PENDING**; full M5.4 remains blocked on executable
 runtime evidence
 
@@ -8,10 +8,11 @@ Date: 2026-08-03; revision 5 / M5-D21 through M5-D24 amendments 2026-08-06;
 revision 6 / M5-D25 amendment 2026-09-03; revision 7 / M5-D26 amendment
 2026-09-07; revision 8 / M5-D27 erratum 2026-09-17; revision 9 / M5-D28
 amendment 2026-09-18; revision 10 / M5-D29 amendment 2026-09-22; revision 11 /
-M5-D30 amendment 2026-09-22; revision 12 / M5-D31 amendment 2026-09-25
+M5-D30 amendment 2026-09-22; revision 12 / M5-D31 amendment 2026-09-25;
+revision 13 / M5-D32 amendment 2026-10-09
 
 Authority: this addendum specializes `docs/m5_design_freeze.md` M5-D1 through
-M5-D31 and M5-T1/M5-T2. It does not change those decisions. The M5 design
+M5-D32 and M5-T1/M5-T2. It does not change those decisions. The M5 design
 freeze remains authoritative for semantic truth; this addendum is authoritative
 for M5.4 runtime DTOs, identities, transition boundaries, persistence
 ownership, replay, and acceptance tests.
@@ -23,7 +24,7 @@ start only after migration 014 and its SQL oracle bundle have passed the M5.3
 fresh-install, populated-upgrade, compatibility, and three-oracle gates.
 
 This addendum MUST NOT authorize a change to an M5.0 semantic decision. An
-implementation conflict with this addendum and M5-D1 through M5-D31 MUST stop
+implementation conflict with this addendum and M5-D1 through M5-D32 MUST stop
 M5.4 as **NO-GO**. The exact amendment procedure MUST be a new numbered M5
 decision in `docs/m5_design_freeze.md`, a matching acceptance-matrix row, and a
 new runtime-addendum revision before code resumes. The migration-014 M4-open
@@ -2220,6 +2221,7 @@ database I/O MUST remain explicit.
 | M5-D29 | The authoritative bounded-withdrawal amendment uses the locked epoch payload as persisted legacy source identity, exact bounded reverse/current and declaration locators, a same-policy supported form, ordinary pre-opener plus one checked post-open hydration-cut routing, and a two-index migration-018 barrier without changing public or digest identities. |
 | M5-D30 | The authoritative claim-current provenance amendment makes the changed-chunk currency locator total across subject kinds, validates dynamic claims through exact working-delta/child/owner closure and bootstrap claims through exact M3 publication closure, and forbids unavailable root/classic reconstruction without changing public, digest, schema, or migration identities. |
 | M5-D31 | The authoritative preterminal-context amendment adds one argument-bound, read-only trusted accessor in migration 019 so a distinct non-owner runtime can attest the genuine migration-017 promotion context while preserving one-schema binding, unchanged D25/D26 derivation, result-bound child authority and exact seal order. |
+| M5-D32 | The authoritative semantic-readiness amendment preserves the full state graph and zero-root no-barrier rule, supplies separately committed group-only readiness with exact predecessor/result proof, S+K work and one pending anchor, and narrowly authorizes future additive 020 while retaining D25/D26 state/result semantics and pending implementation gates. |
 | M5-T1 | Section 18.6 requires incremental/Python/SQL equality after every relevant measured seal. |
 | M5-T2 | Sections 10 and 19 expose touched rows, bytes, model calls, and physical exclusions without hiding them in the affected-group bound. |
 
@@ -2507,7 +2509,7 @@ The contract freeze implements no migration, installer, source, test, schema,
 runtime or deployment byte. A separately reviewed and pushed path-exclusive
 D31 implementation activation is required before code work resumes.
 
-## 29. Final decision
+## 29. Historical revision-12 decision
 
 **Decision: GO for the M5-D31 contract; the prior M5-D25 through M5-D30 GOs
 remain in force. Confidence: high.**
@@ -2523,3 +2525,24 @@ Runtime remains `v1_only` outside isolated fixtures. This boundary is not
 evidence of deployment, performance, scalability, utility, security, privacy,
 novelty, objective truth, maintained history, named-system superiority,
 AI/model-quality improvement, or any broader semantic claim.
+
+## 30. Revision 13 / M5-D32 semantic readiness
+
+The accepted amendment SEMANTIC_READINESS_AMENDMENT.md at SHA-256
+0e9a4bbe8da34d8248ce138c4bc21cb8076ddb4a578ea6a36cd6a4e100811435
+governs only the missing group-only readiness route. It preserves Sections 12
+and 14.1's zero-root no-barrier rule and full state graph, extending D24's
+work/timing kind set and identity contract solely for semantic_readiness.
+Rootless SC1->SP2 and eligible SPN->complete(N+1) are distinct outer commits.
+No direct M4 row/job is invented; no D25 patch or matching contribution is
+created. Exact S+K byte work, predecessor/result proof, trusted-schema 020
+authority, one pending anchor, replay and later fused terminal accounting are
+required. D26's six reference kinds and all existing state/result recipes stay
+exact. Earlier inventory/negative clauses yield only to D32's exact 020 delta.
+
+Decision: GO for contract only, confidence high. M5-D32/M5.0-32 implementation,
+Task 17, C1, Task 2, remaining M5.4--M5.6 and AI quality remain PENDING.
+Implementation starts only under a new independently audited path-exclusive
+activation, sequentially schema/shared primitives -> private readiness -> held
+R-T -> held C1. Defaults remain v1_only; no deployment, utility or performance
+result is promoted. Revision 13 implements no migration, source or test byte.

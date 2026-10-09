@@ -81,6 +81,10 @@ order:
 54. `docs/workstreams/m5_runtime_implementation/D31_CONTRACT_FREEZE_HANDOFF.md`
     (accepted D31 bytes, review evidence, and sequential implementation
     boundary)
+55. `docs/workstreams/m5_runtime_contract/SEMANTIC_READINESS_AMENDMENT.md`
+    (authoritative M5-D32 group-only readiness and accounting correction)
+56. `docs/workstreams/m5_runtime_implementation/D32_CONTRACT_FREEZE_HANDOFF.md`
+    (accepted D32 bytes, review evidence, and sequential implementation boundary)
 
 `docs/initial_technical_design.md` (v0.1) is superseded and retained for audit
 only. The M0.5 design freeze and M1.1 amendments are complete; frozen decisions
@@ -269,6 +273,21 @@ resumed C1 lanes; the current C1-R candidate remains read-only evidence until
 the schema lane integrates. M5-D24 through M5-D31, Task 2, M5.4 and later
 gates, deployment, security, utility, and AI-quality claims remain `PENDING`;
 runtime remains `v1_only`.
+M5-D32 is the narrow group-only readiness correction, authoritative at
+`docs/workstreams/m5_runtime_contract/SEMANTIC_READINESS_AMENDMENT.md`, SHA-256
+`0e9a4bbe8da34d8248ce138c4bc21cb8076ddb4a578ea6a36cd6a4e100811435`.
+M5-D32/M5.0-32 are contract-PASS / implementation-PENDING; runtime addendum
+revision 13 is current. Its two separately committed edges preserve the state
+graph and add only one D24 work/timing kind, semantic_readiness, not a seventh
+changed-state reference. A future opt-in migration 020 may change only the
+three CHECKs, two 016 validators and one predecessor guard function/trigger
+enumerated in D32; migrations 000--019 remain exact. The earlier D31 inventory
+and new-kind/recipe prohibitions are superseded only for that exact D32 delta.
+No fake direct M4 update, authored readiness fixture or early timing clear is
+allowed. Implementation requires a fresh audited path-exclusive activation:
+schema/shared primitives -> private readiness -> held R-T -> held C1. Preserve
+both held WIP sets and protected checkouts. Task 17, C1, Task 2, remaining M5,
+deployment and AI quality remain PENDING; defaults stay v1_only.
 M5 is not complete until every remaining M5.4--M5.6 executable gate is
 recorded.
 

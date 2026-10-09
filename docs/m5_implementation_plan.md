@@ -1,13 +1,20 @@
 # GroundLoop M5 Implementation Plan
 
-Status: M5.0 contract accepted through M5-D31 and M5.1--M5.3 complete;
-M5.0-24 through M5.0-31 are contract-`PASS` /
+Status: M5.0 contract accepted through M5-D32 and M5.1--M5.3 complete;
+M5.0-24 through M5.0-32 are contract-`PASS` /
 implementation-`PENDING`; M5.4-01 through M5.4-04 are `PASS`, M5.4-05 through
-M5.4-09 remain `PENDING`; the runtime addendum is revision 12; D31 freezes no
-implementation, authorizes only the future additive one-function migration 019
-contract, preserves the held C1-R candidate as read-only evidence, and requires
-a separately audited sequential schema-019, revised-C1-R, then C1 activation
-from the pushed D31 barrier
+M5.4-09 remain `PENDING`; the runtime addendum is revision 13. D32 freezes no
+implementation and requires a separately audited schema-020/shared-primitives,
+private-readiness, held-R-T, then C1 activation from the pushed D32 barrier.
+Earlier D31 schema-019 and repair receipts retain their scoped evidence only.
+
+Current D32 boundary (2026-10-09): the accepted semantic-readiness amendment
+at SHA-256 0e9a4bbe8da34d8248ce138c4bc21cb8076ddb4a578ea6a36cd6a4e100811435
+adds no implementation authority by itself. A fresh audited manifest must
+sequence schema/shared primitives -> private readiness -> held R-T -> held C1.
+Only the exact future 020 delta is an exception to earlier inventory clauses.
+Preserve held paths and protected checkouts; original D31 stage receipts are
+historical, not a fresh grant. Task 17/C1/Task 2 and broader claims stay PENDING.
 
 Date: 2026-08-02; M5-D24 execution and R2e integration current through
 2026-08-19; M5.4-02/-03/-04 evidence integration current through 2026-09-02;

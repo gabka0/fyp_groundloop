@@ -1,6 +1,20 @@
 # GroundLoop M5 Multi-Agent Execution Plan
 
-Status: frozen M5 ownership contract; historical Waves 0--2 complete;
+Current authority update (2026-10-09): M5-D32/M5.0-32 are contract-PASS /
+implementation-PENDING; runtime-addendum revision 13 is authoritative. Exact
+amendment SEMANTIC_READINESS_AMENDMENT.md has SHA-256
+0e9a4bbe8da34d8248ce138c4bc21cb8076ddb4a578ea6a36cd6a4e100811435.
+Its new activation must be sequential and path-exclusive: schema/shared
+primitives -> private readiness -> held R-T -> held C1. No implementation runs
+in parallel. Read-only independent audits may run in parallel; they own no
+edit paths. Four held R-T and nine held C1 paths are protected until their
+respective barrier. Existing lane manifests below are historical where this
+new readiness prerequisite intervenes; no cross-lane authority is inherited.
+Only D32's exact future 020 objects override earlier inventory prohibitions;
+the source and reference boundaries remain unchanged otherwise.
+
+Historical status through the D31 checkpoint: frozen M5 ownership contract;
+historical Waves 0--2 complete;
 M5-D24 recovery R0-C, pure R0-C1, and R0-S accepted on main; R1-D, R1-P, R2a,
 and R1-C integrated at `1838316`, `56dd2d4`, `6f1ae89`, and `f5902ff`;
 M5-D24-C1 through M5-D24-C7 accepted; R2b pure orchestration integrated at

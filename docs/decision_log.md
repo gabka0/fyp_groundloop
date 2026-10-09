@@ -1,5 +1,37 @@
 # GroundLoop Decision Log
 
+## 2026-10-09 — M5-D32 Group-Only Semantic Readiness Accepted
+
+Decision status: accepted narrow contract; M5-D32/M5.0-32 contract-PASS /
+implementation-PENDING. Runtime-addendum advances to revision 13. Amendment:
+docs/workstreams/m5_runtime_contract/SEMANTIC_READINESS_AMENDMENT.md, SHA-256
+0e9a4bbe8da34d8248ce138c4bc21cb8076ddb4a578ea6a36cd6a4e100811435.
+Exact reviewed candidate: commit 5ae0a6a18441a0a47f350cea9487129793882524,
+tree 5a7b7f0379f68edac044ef60e82396b49d55dd67, sole parent
+d7db09c146795d6e6bef562a0ca266234b397639, one added mode-100644 blob
+617f802bc6ff9dbb032884c34ff34e84f4103a1c, 283 lines / 17,468 bytes.
+Two independent final same-byte audits returned GO/P0=0/P1=0/P2=0; both exact
+postcommit identity checks returned GO/P0=0/P1=0. Candidate branch and main
+were atomically pushed before this authority-freeze tranche was prepared.
+
+The group-only readiness gap cannot use fabricated direct work: M4 counters
+require a genuine M4 update, rootless RETIRE has no barrier, and requirement
+closure remains pending. Preserve the full epoch graph and add two separate
+private readiness commits, one new D24 work/timing kind (not a changed-state
+reference kind), an exact typed source identity and S+K byte work. Before-insert
+predecessor proof, unchanged 015 edge validation and deferred exact-target
+proof are all required. D25 matching images/patches/work and D26 state/absence
+recipes remain unchanged. Pending timing is not cleared early or fabricated.
+
+Future opt-in migration 020 may extend only three CHECKs, replace the two named
+016 validators, and add one pinned-schema invoker predecessor function/trigger.
+Migrations 000--019 stay exact; only conflicting negative inventory/kind/recipe
+clauses yield to that explicit delta. The freeze installs nothing. A new
+independently audited path-exclusive activation must sequence schema/shared
+primitives, private readiness, held R-T, then held C1. Existing WIP and protected
+checkouts are preserved. Task 17/C1/Task 2, M5.4--M5.6, deployment and AI quality
+remain PENDING; defaults stay v1_only. No broader research result is claimed.
+
 ## 2026-09-25 — M5-D31 Preterminal Context Access Accepted
 
 Decision status: **accepted authoritative narrow contract amendment**. M5-D31
