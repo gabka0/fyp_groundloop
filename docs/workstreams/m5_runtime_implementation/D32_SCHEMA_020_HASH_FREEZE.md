@@ -1,8 +1,10 @@
 # M5-D32 / H32 Migration-020 Exact-Byte Hash Freeze
 
-Status: docs-only H32 candidate. Requires two independent identical-byte
-GO/P0=0/P1=0 reviews, sole-path commit, two exact postcommit checks and atomic
-branch/main push before the new production installer may first install 020.
+Status: docs-only H32 correction candidate. Requires two independent
+identical-byte GO/P0=0/P1=0 reviews, sole-path commit, two exact postcommit
+checks and atomic branch/main push before the corrected production installer
+may install 020. Initial H32 fd3895793fe772f4bca723119fd88897bb352c2c is
+historical; its SQL pin is superseded by Section 6 only after this barrier.
 
 Date: 2026-10-09
 
@@ -16,21 +18,25 @@ This document pins reviewed SQL bytes; it does not change either contract,
 authorize a different object inventory, or accept runtime implementation.
 
 ```text
-worktree = /home/kassym/Desktop/groundloop-worktrees/m5-d32-schema-020-hash-freeze
-branch = workstream/m5-d32-schema-020-hash-freeze
-required_parent = eccad6b00242f5f7fc584b76121564ffafe3a1c8
-required_parent_tree = 336d0dc723d8ce5073e55fd443cd09ec72534926
-required_origin_main = eccad6b00242f5f7fc584b76121564ffafe3a1c8
+worktree = /home/kassym/Desktop/groundloop-worktrees/m5-d32-schema-020-hash-correction
+branch = workstream/m5-d32-schema-020-hash-correction
+required_parent = fd3895793fe772f4bca723119fd88897bb352c2c
+required_parent_tree = b8e45b04c6701ad3a61f24fae5b79e01cac3dc3c
+required_origin_main = fd3895793fe772f4bca723119fd88897bb352c2c
 sole_owned_path = docs/workstreams/m5_runtime_implementation/D32_SCHEMA_020_HASH_FREEZE.md
 sql_evidence_worktree = /home/kassym/Desktop/groundloop-worktrees/m5-d32-schema-020
-sql_evidence_head = eccad6b00242f5f7fc584b76121564ffafe3a1c8
+sql_evidence_head = fd3895793fe772f4bca723119fd88897bb352c2c
 ```
 
 Every implementation source, test and SQL path remains outside H32 ownership.
 The evidence worktree's drafted source remains uncommitted and is not copied,
 staged, transplanted or accepted by this docs-only tranche.
 
-## 2. Exact identities
+## 2. Historical initial H32 identities
+
+The following initial pin was accepted and pushed in fd3895793fe772f4bca723119fd88897bb352c2c.
+It is retained without rewriting its review history. Section 6 supplies the
+corrected active pin after the new commit/postcommit/push barrier.
 
 ```text
 migration_label = migrations/020_m5_semantic_readiness.sql
@@ -54,13 +60,14 @@ stable_m5_digest(
 )
 ```
 
-After H32 acceptance, the installer must use these literal accepted identities.
+After initial H32 acceptance, the installer used these literal identities;
+the correction barrier supersedes them with Section 6's exact pin.
 Computing a descriptive identity from requested bytes does not grant those
 bytes authority. Changed first-install bytes fail closed. Any SQL edit after
 this pin requires a fresh independently reviewed H32 hash-freeze correction
 before installation, even if it appears cosmetic or preserves behavior.
 
-## 3. Reviewed surface and diagnostic boundary
+## 3. Initial-pin reviewed surface and diagnostic boundary
 
 The SQL's eleven statement barriers are constraint preflight; three separate
 DROP/ADD CHECK pairs; the new pinned invoker predecessor function; its BEFORE
@@ -101,7 +108,8 @@ coordinate faults, the exact complete catalog delta and retained old flags.
 The old recovery
 fixture's missing direct-v1 baseline was derived by the accepted independent
 reference helper before installing 017, not bypassed. Read-only new-installer
-preflight also passed; the production installer has not been executed.
+preflight also passed; the production installer had not been executed at the
+initial H32 freeze. Subsequent installer diagnostics are recorded in Section 6.
 
 These are schema/identity diagnostics only. Owner/non-owner private readiness,
 the complete installer matrix, genuine held-reader pending histories and C1
@@ -139,3 +147,91 @@ Task 17/C1/Task 2, M5.4--M5.6, public workflows, deployment, AI quality and
 end-to-end utility remain PENDING. This pin adds no public route or provider
 call and does not change runtime mode; v1_only remains the default outside
 isolated fixtures. Acceptance of later lanes remains strictly sequential.
+
+## 6. Narrow schema-bounded catalog-introspection correction
+
+After the initial pin was pushed and S32 fast-forwarded with all seven existing
+owned-file hashes unchanged, the new installer was exercised in owned isolated
+schemas. A focused first-install/read-only-replay diagnostic passed. An earlier
+combined 203-test run passed before final signature checks were added; neither
+run accepts S32 or the corrected bytes.
+
+Running the 44-case schema suite alongside retained migration-016--019 tests
+then produced 40 passes and four PostgreSQL InternalError failures (72.18s).
+The installer CHECK query's WHERE clause combined namespace/relation filters
+with pg_get_constraintdef(oid). PostgreSQL could reorder those predicates and
+introspect a constraint from an unrelated schema being dropped concurrently:
+could not open relation with OID. The initial SQL preflight had the same query
+shape. Preserve these failures; no skip, retry-as-proof or prior-pin pass may
+erase them. The four errors occurred in Python catalog validation, not a
+failure of an accepted readiness runtime (which remains unimplemented).
+
+The sole SQL change is a MATERIALIZED selected_constraints CTE in the
+constraint-preflight statement. It first selects the exact pinned installation
+schema and target relation without pg_get_constraintdef, then runs the original
+uniqueness, expression, validation, nondeferrability, permanence and ambiguity
+checks on that bounded set. The installer catalog checker uses the same
+execution barrier. No readiness predicate, event/update identity, work recipe,
+guard/validator body, trigger flags, object inventory or privilege changes.
+Same-target corruption still fails closed; other-schema catalog churn is not
+authority. This fits the activation's explicit post-pin correction procedure.
+
+```text
+migration_label = migrations/020_m5_semantic_readiness.sql
+migration_sha256 = df0a3c0c9b228a4a22903479896326d27fbd6f98f5878e34d73182ba007bf837
+migration_line_count = 1292
+migration_byte_count = 68419
+bundle_id = m5-semantic-readiness-schema-bundle-v1
+bundle_sha256 = b7706feb7d54fcf9fdb4f9f38350a32967e0b460229b6f264493fb428be8ddfc
+oracle_sha256 = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+prerequisite_bundle_sha256 = e12d4abd95a9b2ef49010a43d6b708824462a80dfed2548107e175920dabe481
+prerequisite_migration_019_sha256 = f92c02a365ac43a26f3291718866436b19f69924eb7a8c2b77af0312f82b536e
+```
+
+The Section-2 canonical recipe uses the same complete migration label and
+prerequisite identity, now with this new SQL hash. Both independent corrected
+SQL audits returned GO/P0=0/P1=0/P2=0 on these identical bytes and independently
+reproduced this bundle digest. Both reversed only this query change and recovered
+the exact prior f6bed0... SQL hash and 68,224 bytes, proving the rest unchanged.
+The separate identical-byte correction-doc audits are still required; the
+old GO receipts cannot approve this pin.
+
+An initial corrected diagnostic run returned 28 passed / 17 deselected in
+42.64s. Its report is
+/tmp/groundloop-d32-sql-diagnostics.v9QrLA/schema-correction-raw.xml;
+SHA-256 54d3f0d925906e908e030fe2f300ccf2e852fd4f640f860811f78390cc8a3a48.
+Inspection of every selected node revealed a process error: pytest -k matched
+parameter IDs as well as function names. Besides 22 intended schema-only
+cases, it selected four parametrized replay fixtures that installed corrected
+020 through the new production installer, plus two negative installer cases.
+Those four isolated fixture installations occurred before this hash correction
+was pushed, contrary to the required execution sequence. This is disclosed,
+not retroactively authorized; the mixed run is not corrected-pin installer
+acceptance evidence. No public/non-test schema, protected worktree or default
+runtime mode was changed. A fresh post-barrier full installer run is mandatory.
+
+The first correction-doc candidate incorrectly described that run as raw-only
+and unexecuted-by-installer. Its provisional unpushed commit
+ddc4d1fcef4685c50c6d379a9801d9cc624722c4 and associated GO/postcommit receipts
+are superseded, not pushed or used as acceptance. Only this docs-owned path is
+corrected; its replacement commit retains the same exact pushed fd389... sole
+parent. New identical-byte audits and postcommit checks are required.
+
+Before the replacement barrier, schema-only diagnostics use explicit function
+node IDs, not -k. The raw schema-bounded foreign-constraint-churn regression
+performs 40 preflight checks followed by raw install/catalog verification,
+with intact triggers. That exact explicit-node run returned 22 passed,
+zero failures/errors/skips in 34.36s; its report is
+/tmp/groundloop-d32-sql-diagnostics.v9QrLA/schema-correction-raw-only.xml,
+SHA-256 272c848b0e94560cf7524df1dcbd42f8e5cb31850cd3b03218e1742a3e6f7bbe.
+Every retained node was inspected: no installer, replay or unledgered-install
+case is selected. This is schema-only candidate evidence, not runtime evidence.
+The pure, compatibility, installer, static and package
+acceptance gates must run again on final S32 bytes after the new barrier.
+
+H32 still owns exactly this one documentation path, which is disjoint from
+all eight S32 and every held C1/R-T path. The correction's exact pushed commit
+becomes S32's sole parent only after a fresh external owned-byte manifest,
+HEAD/index/raw-status checks, ancestor/disjointness proof and merge --ff-only
+without copying, resetting, cleaning, stashing or transplanting WIP.
+Protected/held custody and the Section-5 PENDING ceiling remain unchanged.
