@@ -302,6 +302,7 @@ class M5RuntimeWorkContributionKind(StrEnum):
     PRETERMINAL_LATE_RETURN = "preterminal_late_return"
     EPOCH_FAILURE = "epoch_failure"
     SEAL = "seal"
+    SEMANTIC_READINESS = "semantic_readiness"
 
 
 class M5TypedDirectReturnKind(StrEnum):

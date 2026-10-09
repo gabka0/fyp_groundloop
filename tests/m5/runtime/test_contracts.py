@@ -1722,6 +1722,7 @@ def test_d24_wire_enums_are_total_and_do_not_relabel_prior_values() -> None:
         "preterminal_late_return",
         "epoch_failure",
         "seal",
+        "semantic_readiness",
     )
     assert M5AttemptArchiveReason.ATTEMPT_EXPIRED.value == "attempt_expired"
     assert M5RunFailureReason.WORK_IN_PROGRESS.value == "work_in_progress"

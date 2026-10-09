@@ -2121,6 +2121,87 @@ def attempt_execution_evidence_digest(
     )
 
 
+def semantic_readiness_transition_preimage(
+    *,
+    epoch_id: int,
+    structural_event_id: str,
+    event_payload_hash: str,
+    requirement_root_set_hash: str,
+    from_runtime_state: str,
+    to_runtime_state: str,
+    expected_revision: int,
+    resulting_revision: int,
+) -> bytes:
+    """Encode the exact D32 source identity, rejecting illegal edges."""
+
+    if any(
+        type(value) is not int or value <= 0
+        for value in (epoch_id, expected_revision, resulting_revision)
+    ):
+        raise ValidationError("readiness coordinates must be positive integers")
+    if type(structural_event_id) is not str or not structural_event_id:
+        raise ValidationError("readiness event ID must be nonempty text")
+    if any(
+        type(value) is not str
+        for value in (
+            event_payload_hash,
+            requirement_root_set_hash,
+            from_runtime_state,
+            to_runtime_state,
+        )
+    ):
+        raise ValidationError("readiness hashes and state wires must be strings")
+    if (from_runtime_state, to_runtime_state) not in {
+        ("structural_committed", "semantic_pending"),
+        ("semantic_pending", "semantic_complete"),
+    }:
+        raise ValidationError("readiness edge is not a legal D32 state pair")
+    if (
+        resulting_revision != expected_revision + 1
+        or (to_runtime_state == "semantic_pending" and expected_revision != 1)
+        or (to_runtime_state == "semantic_complete" and expected_revision < 2)
+    ):
+        raise ValidationError("readiness revisions do not match their state pair")
+    return stable_m5_preimage(
+        "m5-semantic-readiness-transition-v1",
+        int_field(epoch_id),
+        text_field(structural_event_id),
+        hash_field(event_payload_hash),
+        hash_field(requirement_root_set_hash),
+        enum_field(from_runtime_state),
+        enum_field(to_runtime_state),
+        int_field(expected_revision),
+        int_field(resulting_revision),
+    )
+
+
+def semantic_readiness_transition_digest(
+    *,
+    epoch_id: int,
+    structural_event_id: str,
+    event_payload_hash: str,
+    requirement_root_set_hash: str,
+    from_runtime_state: str,
+    to_runtime_state: str,
+    expected_revision: int,
+    resulting_revision: int,
+) -> str:
+    """Hash the validated typed D32 source preimage without JSON or repr."""
+
+    return hashlib.sha256(
+        semantic_readiness_transition_preimage(
+            epoch_id=epoch_id,
+            structural_event_id=structural_event_id,
+            event_payload_hash=event_payload_hash,
+            requirement_root_set_hash=requirement_root_set_hash,
+            from_runtime_state=from_runtime_state,
+            to_runtime_state=to_runtime_state,
+            expected_revision=expected_revision,
+            resulting_revision=resulting_revision,
+        )
+    ).hexdigest()
+
+
 def runtime_work_contribution_key_digest(
     *, epoch_id: int, contribution_kind: str | Enum, source_id: str
 ) -> str:

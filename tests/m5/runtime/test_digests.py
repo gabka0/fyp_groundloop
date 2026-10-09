@@ -4,6 +4,7 @@ import hashlib
 import math
 import struct
 from enum import StrEnum
+from typing import Any
 
 import pytest
 
@@ -42,6 +43,106 @@ def _framed_sha256(*fields: str) -> str:
         digest.update(len(encoded).to_bytes(8, "big"))
         digest.update(encoded)
     return digest.hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "revision"),
+    [
+        ("structural_committed", "semantic_pending", 1),
+        ("semantic_pending", "semantic_complete", 2),
+        ("semantic_pending", "semantic_complete", 19),
+    ],
+)
+def test_d32_readiness_identity_has_independent_typed_framing(
+    before: str, after: str, revision: int
+) -> None:
+    values = dict(
+        epoch_id=7,
+        structural_event_id="event-λ🙂",
+        event_payload_hash=H1,
+        requirement_root_set_hash=H2,
+        from_runtime_state=before,
+        to_runtime_state=after,
+        expected_revision=revision,
+        resulting_revision=revision + 1,
+    )
+    expected = _framed_sha256(
+        "m5-semantic-readiness-transition-v1",
+        "int",
+        "7",
+        "text",
+        "event-λ🙂",
+        "sha256",
+        H1,
+        "sha256",
+        H2,
+        "enum",
+        before,
+        "enum",
+        after,
+        "int",
+        str(revision),
+        "int",
+        str(revision + 1),
+    )
+    assert digests.semantic_readiness_transition_digest(**values) == expected
+    preimage = digests.semantic_readiness_transition_preimage(**values)
+    assert hashlib.sha256(preimage).hexdigest() == expected
+    assert len(tuple(M5StateReferenceKind)) == 6
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("epoch_id", True),
+        ("epoch_id", 0),
+        ("epoch_id", "7"),
+        ("structural_event_id", ""),
+        ("structural_event_id", None),
+        ("event_payload_hash", None),
+        ("event_payload_hash", "A" * 64),
+        ("requirement_root_set_hash", "2" * 63),
+        ("from_runtime_state", []),
+        ("from_runtime_state", "structural_committed"),
+        ("to_runtime_state", "sealed"),
+        ("to_runtime_state", None),
+        ("expected_revision", True),
+        ("expected_revision", 1),
+        ("resulting_revision", 2),
+        ("resulting_revision", 4),
+        ("resulting_revision", 3.0),
+    ],
+)
+def test_d32_readiness_identity_rejects_wrong_type_edge_or_coordinate(
+    field: str, value: Any
+) -> None:
+    values: dict[str, Any] = dict(
+        epoch_id=7,
+        structural_event_id="event-7",
+        event_payload_hash=H1,
+        requirement_root_set_hash=H2,
+        from_runtime_state="semantic_pending",
+        to_runtime_state="semantic_complete",
+        expected_revision=2,
+        resulting_revision=3,
+    )
+    values[field] = value
+    with pytest.raises(ValidationError):
+        digests.semantic_readiness_transition_digest(**values)
+
+
+def test_d32_rootless_start_cannot_use_a_later_revision() -> None:
+    with pytest.raises(ValidationError):
+        digests.semantic_readiness_transition_digest(
+            epoch_id=7,
+            structural_event_id="event-7",
+            event_payload_hash=H1,
+            requirement_root_set_hash=H2,
+            from_runtime_state="structural_committed",
+            to_runtime_state="semantic_pending",
+            expected_revision=2,
+            resulting_revision=3,
+        )
 
 
 def test_normalizer_provenance_is_the_frozen_external_golden_vector() -> None:

@@ -9,6 +9,7 @@ bundle and is never discovered by globbing the migrations directory.
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -159,6 +160,19 @@ M5_ACCEPTED_PRETERMINAL_SEAL_CONTEXT_BUNDLE_SHA256 = (
 )
 
 M5_PRETERMINAL_SEAL_CONTEXT_INSTALL_LOCK_RELATIONS = ("groundloop_m5_schema_bundle",)
+
+# D32 authority is supplied by the separate H32 exact-byte hash freeze.
+# Never derive accepted constants from a caller body or mutable checkout.
+M5_SEMANTIC_READINESS_BUNDLE_ID = "m5-semantic-readiness-schema-bundle-v1"
+M5_SEMANTIC_READINESS_MIGRATION_LABEL = "migrations/020_m5_semantic_readiness.sql"
+M5_SEMANTIC_READINESS_MIGRATION_PATH = ROOT / M5_SEMANTIC_READINESS_MIGRATION_LABEL
+M5_SEMANTIC_READINESS_ORACLE_SHA256 = M5_PRETERMINAL_SEAL_CONTEXT_ORACLE_SHA256
+M5_ACCEPTED_SEMANTIC_READINESS_MIGRATION_SHA256 = (
+    "df0a3c0c9b228a4a22903479896326d27fbd6f98f5878e34d73182ba007bf837"
+)
+M5_ACCEPTED_SEMANTIC_READINESS_BUNDLE_SHA256 = (
+    "b7706feb7d54fcf9fdb4f9f38350a32967e0b460229b6f264493fb428be8ddfc"
+)
 
 M5_BOUNDED_DOCUMENT_WITHDRAWAL_INSTALL_LOCK_RELATIONS = (
     "groundloop_m5_requirement_admitted_pair",
@@ -3629,6 +3643,1273 @@ def install_m5_preterminal_seal_context_bundle(
         return M5PreterminalSealContextBundleInstallResult(identity, True)
 
 
+class M5SemanticReadinessBundleError(M5RuntimeBundleError):
+    """Migration 020 or its permanent runtime authority is not exact."""
+
+
+@dataclass(frozen=True, slots=True)
+class M5SemanticReadinessBundleIdentity:
+    bundle_id: str
+    bundle_sha256: str
+    migration_sha256: str
+    oracle_sha256: str
+    prerequisite_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class M5SemanticReadinessBundleInstallResult:
+    identity: M5SemanticReadinessBundleIdentity
+    applied: bool
+
+
+def m5_semantic_readiness_bundle_identity(
+    *,
+    migration_bytes: bytes | None = None,
+) -> M5SemanticReadinessBundleIdentity:
+    """Describe bytes; acceptance is the separately pinned literal identity."""
+    migration = (
+        M5_SEMANTIC_READINESS_MIGRATION_PATH.read_bytes()
+        if migration_bytes is None
+        else migration_bytes
+    )
+    migration_hash = _sha256(migration)
+    return M5SemanticReadinessBundleIdentity(
+        M5_SEMANTIC_READINESS_BUNDLE_ID,
+        stable_m5_digest(
+            M5_SEMANTIC_READINESS_BUNDLE_ID,
+            text_field(M5_SEMANTIC_READINESS_MIGRATION_LABEL),
+            hash_field(migration_hash),
+            hash_field(M5_ACCEPTED_PRETERMINAL_SEAL_CONTEXT_BUNDLE_SHA256),
+        ),
+        migration_hash,
+        M5_SEMANTIC_READINESS_ORACLE_SHA256,
+        M5_ACCEPTED_PRETERMINAL_SEAL_CONTEXT_BUNDLE_SHA256,
+    )
+
+
+_M5_READINESS_MARKER = "-- groundloop:m5-semantic-readiness-statement:"
+_M5_READINESS_STATEMENT_NAMES = (
+    "constraint_preflight",
+    "drop_check_1",
+    "add_check_1",
+    "drop_check_2",
+    "add_check_2",
+    "drop_check_3",
+    "add_check_3",
+    "predecessor_function",
+    "predecessor_trigger",
+    "work_validator",
+    "timing_validator",
+)
+_M5_READINESS_REPLACED_FUNCTIONS = frozenset(
+    {
+        "groundloop_m5_validate_work_contribution",
+        "groundloop_m5_validate_timing_accumulator",
+    }
+)
+_M5_READINESS_PREDECESSOR_FUNCTION = (
+    "groundloop_m5_validate_semantic_readiness_predecessor"
+)
+_M5_READINESS_PREDECESSOR_TRIGGER = "groundloop_m5_semantic_readiness_predecessor"
+_M5_READINESS_FUNCTION_PATTERN = re.compile(
+    r"CREATE(?: OR REPLACE)? FUNCTION (groundloop_\w+)\([^;]*?"
+    r"\bAS\s+(\$\w*\$)(.*?)\2\s*;",
+    re.DOTALL,
+)
+_M5_READINESS_EXECUTOR = Connection[Any] | Cursor[Any]
+_M5_READINESS_CATALOG_SHA256 = {
+    False: "ffe7652cda9193348340660a9c42b2ec767ec95809d89cb21918305302108252",
+    True: "27a02a8910e1a4b671b879cea1bdc0a5a35d9f693a870183355088990e207f62",
+}
+
+
+def _m5_readiness_query(
+    executor: _M5_READINESS_EXECUTOR,
+    query: str,
+    params: tuple[Any, ...] | None = None,
+) -> Cursor[Any]:
+    """Bind catalog operators/builtins without mutating caller search_path.
+
+    Only static administration queries enter here. Quoted SQL data/identifiers
+    and psycopg placeholders are copied verbatim; never compile migration SQL.
+    """
+    fragments = re.split(
+        r"([eE]'(?:\\.|''|[^'\\])*'|'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|%s)",
+        query,
+    )
+    aliases = {"bigint": "int8", "smallint": "int2"}
+    for index in range(0, len(fragments), 2):
+        source = fragments[index]
+        source = re.sub(
+            r"(?<![\w.])(left|unnest|row_number|count|bool_and)\s*\(",
+            lambda match: "pg_catalog." + match[1] + "(",
+            source,
+        )
+        source = re.sub(
+            r"::(bigint|smallint|text|oid|regclass|name)\b",
+            lambda match: "::pg_catalog." + aliases.get(match[1], match[1]),
+            source,
+        )
+        fragments[index] = re.sub(
+            r"!~|<>|<=|>=|!=|\|\||[=<>~]",
+            lambda match: " OPERATOR(pg_catalog." + match[0] + ") ",
+            source,
+        )
+    return executor.execute("".join(fragments), params)
+
+
+def _m5_readiness_bundle_row(
+    executor: _M5_READINESS_EXECUTOR, bundle_id: str, *, schema_name: str
+) -> tuple[str, str, str, str, str] | None:
+    row = executor.execute(
+        sql.SQL(
+            "SELECT bundle_id,bundle_sha256,migration_sha256,oracle_sha256,"
+            "prerequisite_sha256 FROM {} "
+            "WHERE bundle_id OPERATOR(pg_catalog.=) %s"
+        ).format(sql.Identifier(schema_name, "groundloop_m5_schema_bundle")),
+        (bundle_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return (
+        str(row[0]),
+        str(row[1]).rstrip(" "),
+        str(row[2]).rstrip(" "),
+        str(row[3]).rstrip(" "),
+        str(row[4]).rstrip(" "),
+    )
+
+
+def _m5_readiness_catalog_sql(value: str, schema_name: str) -> str:
+    """Normalize deparser qualification, never SQL data literals.
+
+    Namespace/type/operator/function bindings are independently represented by
+    catalog identity/dependency fields. PUBLIC/pg_catalog visibility changes
+    renderer qualification, not those actual bindings.
+    """
+    tokens = re.findall(
+        r"[eE]'(?:\\.|''|[^'\\])*'|'(?:''|[^'])*'|"
+        r"\"(?:\"\"|[^\"])*\"|[\w$]+|[^\s]",
+        value,
+    )
+    kept: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        identity = token[1:-1].replace('""', '"') if token.startswith('"') else token
+        if (
+            not token.startswith("'")
+            and identity in {schema_name, "pg_catalog", "public"}
+            and index + 2 < len(tokens)
+            and tokens[index + 1] == "."
+        ):
+            index += 2
+            continue
+        kept.append(token)
+        index += 1
+    # Deparser adds OPERATOR(namespace.symbol) when a caller shadows that
+    # operator. Actual namespace/operand identities remain in dependencies;
+    # collapse only a wrapper whose qualifier was already canonicalized.
+    collapsed: list[str] = []
+    index = 0
+    while index < len(kept):
+        if kept[index] == "OPERATOR" and kept[index + 1 : index + 2] == ["("]:
+            end = index + 2
+            while end < len(kept) and kept[end] != ")":
+                end += 1
+            symbol = "".join(kept[index + 2 : end])
+            if end < len(kept) and re.fullmatch(r"[+*/<>=~!@#%^&|`?\-]+", symbol):
+                collapsed.append(symbol)
+                index = end + 1
+                continue
+        collapsed.append(kept[index])
+        index += 1
+    return " ".join(collapsed)
+
+
+def _m5_readiness_catalog_fingerprint(
+    executor: _M5_READINESS_EXECUTOR, *, schema_name: str
+) -> str:
+    """Administrative structural checksum, not a semantic/state hash recipe.
+
+    Covers the closed GroundLoop object namespace and every attached trigger,
+    including FK internal triggers. Unrelated application/extension objects and
+    legitimate table ACL grants are not GroundLoop schema structure. Function
+    source/signature/configuration/ACL authority is checked separately below.
+    No data/history/sequence-current-value read or catalog mutation occurs.
+    """
+    base = """
+        WITH installation AS (SELECT %s::text AS name),
+        root_relations AS MATERIALIZED (
+          SELECT c.* FROM pg_catalog.pg_class c
+          JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+          CROSS JOIN installation s
+          WHERE n.nspname=s.name AND left(c.relname,11)='groundloop_'),
+        own_relations AS MATERIALIZED (
+          SELECT c.* FROM root_relations c
+          UNION ALL
+          SELECT c.* FROM pg_catalog.pg_class c
+          JOIN pg_catalog.pg_index i ON i.indexrelid=c.oid
+          JOIN root_relations t ON t.oid=i.indrelid
+          WHERE NOT EXISTS (SELECT 1 FROM root_relations r WHERE r.oid=c.oid)),
+        own_constraints AS MATERIALIZED (
+          SELECT k.* FROM pg_catalog.pg_constraint k
+          JOIN own_relations c ON c.oid=k.conrelid),
+        own_types AS MATERIALIZED (
+          SELECT t.* FROM pg_catalog.pg_type t
+          JOIN pg_catalog.pg_namespace n ON n.oid=t.typnamespace
+          CROSS JOIN installation s WHERE n.nspname=s.name
+          AND (left(t.typname,11)='groundloop_'
+               OR left(t.typname,12)='_groundloop_')),
+        catalog_owner AS (
+          SELECT relowner FROM own_relations
+          WHERE relname='groundloop_m5_schema_bundle')
+    """
+    # Namespace references use a structural installation token, not raw OIDs.
+    # All pg_get_* projections consume only materialized installation rows.
+    queries = {
+        "relations": """
+          SELECT c.relname,c.relkind,c.relpersistence,
+            c.relowner=(SELECT relowner FROM catalog_owner),c.relrowsecurity,
+            c.relforcerowsecurity,c.relreplident,c.reloptions,c.relchecks,
+            c.relnatts,c.relhasrules,c.relhastriggers,c.relispartition,c.relhassubclass,
+            am.amname FROM own_relations c
+          LEFT JOIN pg_catalog.pg_am am ON am.oid=c.relam""",
+        "inheritance": """
+          SELECT CASE WHEN pn.nspname=s.name THEN '<installation>'
+              ELSE pn.nspname END,p.relname,
+            CASE WHEN cn.nspname=s.name THEN '<installation>'
+              ELSE cn.nspname END,c.relname,i.inhseqno,i.inhdetachpending
+          FROM pg_catalog.pg_inherits i CROSS JOIN installation s
+          JOIN pg_catalog.pg_class p ON p.oid=i.inhparent
+          JOIN pg_catalog.pg_namespace pn ON pn.oid=p.relnamespace
+          JOIN pg_catalog.pg_class c ON c.oid=i.inhrelid
+          JOIN pg_catalog.pg_namespace cn ON cn.oid=c.relnamespace
+          WHERE EXISTS (SELECT 1 FROM own_relations r
+            WHERE r.oid=i.inhparent OR r.oid=i.inhrelid)""",
+        "columns": """
+          SELECT c.relname,a.attname,a.attnum,a.attisdropped,
+            CASE WHEN tn.nspname=s.name THEN '<installation>' ELSE tn.nspname END,
+            ty.typname,a.atttypmod,a.attnotnull,a.attidentity,a.attgenerated,
+            a.attstorage,a.attcompression,a.attoptions,
+            cn.nspname,co.collname,pg_catalog.pg_get_expr(d.adbin,d.adrelid)
+          FROM own_relations c CROSS JOIN installation s
+          JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid AND a.attnum>0
+          LEFT JOIN pg_catalog.pg_type ty ON ty.oid=a.atttypid
+          LEFT JOIN pg_catalog.pg_namespace tn ON tn.oid=ty.typnamespace
+          LEFT JOIN pg_catalog.pg_collation co ON co.oid=a.attcollation
+          LEFT JOIN pg_catalog.pg_namespace cn ON cn.oid=co.collnamespace
+          LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid=c.oid AND d.adnum=a.attnum""",
+        "constraints": """
+          SELECT c.relname,k.conname,k.contype,k.convalidated,k.condeferrable,
+            k.condeferred,k.conkey,k.confkey,k.confupdtype,k.confdeltype,
+            k.confmatchtype,k.connoinherit,k.conislocal,k.coninhcount,
+            CASE WHEN rn.nspname=s.name THEN '<installation>' ELSE rn.nspname END,
+            r.relname,i.relname,parent.conname,
+            pg_catalog.pg_get_constraintdef(k.oid)
+          FROM own_constraints k CROSS JOIN installation s
+          JOIN own_relations c ON c.oid=k.conrelid
+          LEFT JOIN pg_catalog.pg_class r ON r.oid=k.confrelid
+          LEFT JOIN pg_catalog.pg_namespace rn ON rn.oid=r.relnamespace
+          LEFT JOIN pg_catalog.pg_class i ON i.oid=k.conindid
+          LEFT JOIN pg_catalog.pg_constraint parent ON parent.oid=k.conparentid""",
+        "indexes": """
+          SELECT c.relname,t.relname,i.indisunique,i.indisprimary,i.indisexclusion,
+            i.indimmediate,i.indisvalid,i.indisready,i.indislive,i.indnkeyatts,
+            i.indnatts,i.indkey::smallint[],i.indoption::smallint[],
+            ARRAY(SELECT n.nspname||':'||o.opcname
+              FROM unnest(i.indclass::oid[]) WITH ORDINALITY x(oid,position)
+              JOIN pg_catalog.pg_opclass o ON o.oid=x.oid
+              JOIN pg_catalog.pg_namespace n ON n.oid=o.opcnamespace
+              ORDER BY x.position),
+            ARRAY(SELECT n.nspname||':'||o.collname
+              FROM unnest(i.indcollation::oid[]) WITH ORDINALITY x(oid,position)
+              LEFT JOIN pg_catalog.pg_collation o ON o.oid=x.oid
+              LEFT JOIN pg_catalog.pg_namespace n ON n.oid=o.collnamespace
+              ORDER BY x.position),
+            pg_catalog.pg_get_expr(i.indexprs,i.indrelid),
+            pg_catalog.pg_get_expr(i.indpred,i.indrelid),
+            pg_catalog.pg_get_indexdef(i.indexrelid)
+          FROM own_relations c JOIN pg_catalog.pg_index i ON i.indexrelid=c.oid
+          JOIN pg_catalog.pg_class t ON t.oid=i.indrelid""",
+        "triggers": """
+          SELECT c.relname,CASE WHEN t.tgisinternal THEN '<internal>' ELSE t.tgname END,
+            t.tgtype,t.tgenabled,t.tgisinternal,t.tgdeferrable,t.tginitdeferred,
+            t.tgnargs,t.tgattr::smallint[],t.tgargs,
+            pg_catalog.pg_get_expr(t.tgqual,t.tgrelid),
+            CASE WHEN n.nspname=s.name THEN '<installation>' ELSE n.nspname END,
+            p.proname,k.conname,r.relname,t.tgoldtable,t.tgnewtable
+          FROM own_relations c CROSS JOIN installation s
+          JOIN pg_catalog.pg_trigger t ON t.tgrelid=c.oid
+          JOIN pg_catalog.pg_proc p ON p.oid=t.tgfoid
+          JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+          LEFT JOIN pg_catalog.pg_constraint k ON k.oid=t.tgconstraint
+          LEFT JOIN pg_catalog.pg_class r ON r.oid=t.tgconstrrelid""",
+        "types": """
+          SELECT t.typname,t.typtype,t.typcategory,t.typlen,t.typbyval,
+            t.typalign,t.typstorage,t.typnotnull,
+            t.typowner=(SELECT relowner FROM catalog_owner),r.relname,
+            CASE WHEN bn.nspname=(SELECT name FROM installation)
+              THEN '<installation>' ELSE bn.nspname END,b.typname,
+            CASE WHEN en.nspname=(SELECT name FROM installation)
+              THEN '<installation>' ELSE en.nspname END,e.typname,
+            pg_catalog.pg_get_expr(t.typdefaultbin,0)
+          FROM own_types t LEFT JOIN pg_catalog.pg_class r ON r.oid=t.typrelid
+          LEFT JOIN pg_catalog.pg_type b ON b.oid=t.typbasetype
+          LEFT JOIN pg_catalog.pg_namespace bn ON bn.oid=b.typnamespace
+          LEFT JOIN pg_catalog.pg_type e ON e.oid=t.typelem
+          LEFT JOIN pg_catalog.pg_namespace en ON en.oid=e.typnamespace""",
+        "enums": """
+          SELECT t.typname,e.enumlabel,
+            (row_number() OVER (PARTITION BY t.oid ORDER BY e.enumsortorder))::bigint
+          FROM own_types t JOIN pg_catalog.pg_enum e ON e.enumtypid=t.oid""",
+        "sequences": """
+          SELECT c.relname,s.seqstart,s.seqincrement,s.seqmax,s.seqmin,
+            s.seqcache,s.seqcycle,t.relname,a.attname,d.deptype
+          FROM own_relations c JOIN pg_catalog.pg_sequence s ON s.seqrelid=c.oid
+          LEFT JOIN pg_catalog.pg_depend d ON d.classid='pg_catalog.pg_class'::regclass
+            AND d.objid=c.oid AND d.refclassid='pg_catalog.pg_class'::regclass
+            AND (d.deptype='a' OR d.deptype='i')
+          LEFT JOIN pg_catalog.pg_class t ON t.oid=d.refobjid
+          LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid=t.oid
+            AND a.attnum=d.refobjsubid""",
+        "views": """
+          SELECT c.relname,pg_catalog.pg_get_viewdef(c.oid,false)
+          FROM own_relations c WHERE c.relkind='v' OR c.relkind='m'""",
+        "functions": """
+          SELECT p.proname,pg_catalog.pg_get_function_identity_arguments(p.oid)
+          FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n
+            ON n.oid=p.pronamespace CROSS JOIN installation s
+          WHERE n.nspname=s.name AND left(p.proname,11)='groundloop_'""",
+        "expression_bindings": """
+          SELECT o.kind,o.relation_name,o.object_name,d.deptype,
+            rc.relname,
+            CASE WHEN COALESCE(pn.nspname,tn.nspname,cn.nspname,onsp.nspname,
+                              coln.nspname)=s.name THEN '<installation>'
+              ELSE COALESCE(pn.nspname,tn.nspname,cn.nspname,onsp.nspname,
+                            coln.nspname) END,
+            COALESCE(p.proname,ty.typname,c.relname,op.oprname,col.collname),
+            d.refobjsubid,
+            ARRAY(SELECT CASE WHEN n.nspname=s.name THEN '<installation>'
+                  ELSE n.nspname END||':'||t.typname
+              FROM unnest(p.proargtypes::oid[]) WITH ORDINALITY x(oid,position)
+              JOIN pg_catalog.pg_type t ON t.oid=x.oid
+              JOIN pg_catalog.pg_namespace n ON n.oid=t.typnamespace
+              ORDER BY x.position),
+            CASE WHEN ln.nspname=s.name THEN '<installation>'
+              ELSE ln.nspname END,lt.typname,
+            CASE WHEN rn.nspname=s.name THEN '<installation>'
+              ELSE rn.nspname END,rt.typname,
+            CASE WHEN p.oid IS NOT NULL
+              THEN pg_catalog.pg_get_function_identity_arguments(p.oid)
+              ELSE NULL END
+          FROM (
+            SELECT 'constraint'::text AS kind,c.relname AS relation_name,
+              k.conname AS object_name,'pg_catalog.pg_constraint'::regclass AS classid,
+              k.oid AS objid FROM own_constraints k
+              JOIN own_relations c ON c.oid=k.conrelid
+            UNION ALL
+            SELECT 'default',c.relname,a.attname,
+              'pg_catalog.pg_attrdef'::regclass,d.oid FROM own_relations c
+              JOIN pg_catalog.pg_attrdef d ON d.adrelid=c.oid
+              JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid AND a.attnum=d.adnum
+            UNION ALL
+            SELECT 'index',c.relname,c.relname,'pg_catalog.pg_class'::regclass,c.oid
+              FROM own_relations c WHERE c.relkind='i'
+            UNION ALL
+            SELECT 'view',c.relname,r.rulename,'pg_catalog.pg_rewrite'::regclass,r.oid
+              FROM own_relations c JOIN pg_catalog.pg_rewrite r ON r.ev_class=c.oid
+              WHERE c.relkind='v' OR c.relkind='m'
+          ) o JOIN pg_catalog.pg_depend d ON d.classid=o.classid AND d.objid=o.objid
+          CROSS JOIN installation s
+          JOIN pg_catalog.pg_class rc ON rc.oid=d.refclassid
+          LEFT JOIN pg_catalog.pg_proc p ON d.refclassid='pg_catalog.pg_proc'::regclass
+            AND p.oid=d.refobjid
+          LEFT JOIN pg_catalog.pg_namespace pn ON pn.oid=p.pronamespace
+          LEFT JOIN pg_catalog.pg_type ty ON d.refclassid='pg_catalog.pg_type'::regclass
+            AND ty.oid=d.refobjid
+          LEFT JOIN pg_catalog.pg_namespace tn ON tn.oid=ty.typnamespace
+          LEFT JOIN pg_catalog.pg_class c
+            ON d.refclassid='pg_catalog.pg_class'::regclass
+            AND c.oid=d.refobjid
+          LEFT JOIN pg_catalog.pg_namespace cn ON cn.oid=c.relnamespace
+          LEFT JOIN pg_catalog.pg_operator op
+            ON d.refclassid='pg_catalog.pg_operator'::regclass AND op.oid=d.refobjid
+          LEFT JOIN pg_catalog.pg_namespace onsp ON onsp.oid=op.oprnamespace
+          LEFT JOIN pg_catalog.pg_type lt ON lt.oid=op.oprleft
+          LEFT JOIN pg_catalog.pg_namespace ln ON ln.oid=lt.typnamespace
+          LEFT JOIN pg_catalog.pg_type rt ON rt.oid=op.oprright
+          LEFT JOIN pg_catalog.pg_namespace rn ON rn.oid=rt.typnamespace
+          LEFT JOIN pg_catalog.pg_collation col
+            ON d.refclassid='pg_catalog.pg_collation'::regclass AND col.oid=d.refobjid
+          LEFT JOIN pg_catalog.pg_namespace coln ON coln.oid=col.collnamespace
+          WHERE d.refclassid='pg_catalog.pg_proc'::regclass
+            OR d.refclassid='pg_catalog.pg_type'::regclass
+            OR d.refclassid='pg_catalog.pg_class'::regclass
+            OR d.refclassid='pg_catalog.pg_operator'::regclass
+            OR d.refclassid='pg_catalog.pg_collation'::regclass
+          """,
+    }
+
+    def frame(value: Any) -> bytes:
+        if value is None:
+            return b"n"
+        if type(value) is bool:
+            return b"b1" if value else b"b0"
+        if type(value) is int:
+            payload = str(value).encode("ascii")
+            tag = b"i"
+        elif type(value) is str:
+            payload = value.encode("utf-8")
+            tag = b"t"
+        elif isinstance(value, (bytes, memoryview)):
+            payload = bytes(value)
+            tag = b"x"
+        elif isinstance(value, (tuple, list)):
+            return b"l" + len(value).to_bytes(8, "big") + b"".join(map(frame, value))
+        else:
+            raise M5SemanticReadinessBundleError("unexpected catalog checksum type")
+        return tag + len(payload).to_bytes(8, "big") + payload
+
+    digest = hashlib.sha256(b"m5-readiness-structural-catalog-checksum-v1\x00")
+    sql_fields = {
+        "columns": (-1,),
+        "constraints": (-1,),
+        "indexes": (-3, -2, -1),
+        "triggers": (10,),
+        "types": (-1,),
+        "views": (-1,),
+        "functions": (-1,),
+        "expression_bindings": (-1,),
+    }
+    for name, query in queries.items():
+        rows = _m5_readiness_query(executor, base + query, (schema_name,)).fetchall()
+        digest.update(frame(name))
+        encoded = []
+        for row in rows:
+            normalized = list(row)
+            for position in sql_fields.get(name, ()):
+                if normalized[position] is not None:
+                    normalized[position] = _m5_readiness_catalog_sql(
+                        str(normalized[position]), schema_name
+                    )
+            encoded.append(frame(tuple(normalized)))
+        encoded.sort()
+        digest.update(len(encoded).to_bytes(8, "big"))
+        for row in encoded:
+            digest.update(len(row).to_bytes(8, "big"))
+            digest.update(row)
+    return digest.hexdigest()
+
+
+def _m5_readiness_statements(migration: bytes) -> tuple[tuple[str, str], ...]:
+    try:
+        source = migration.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise M5SemanticReadinessBundleError("migration 020 is not UTF-8") from error
+    parts = source.split(_M5_READINESS_MARKER)
+    if any(
+        line.strip() and not line.lstrip().startswith("--")
+        for line in parts[0].splitlines()
+    ):
+        raise M5SemanticReadinessBundleError("executable SQL before 020's first marker")
+    statements = tuple(
+        (part.split("\n", 1)[0], part.split("\n", 1)[1].strip()) for part in parts[1:]
+    )
+    if tuple(name for name, _ in statements) != _M5_READINESS_STATEMENT_NAMES:
+        raise M5SemanticReadinessBundleError(
+            "migration 020 statement inventory is not exact"
+        )
+    return statements
+
+
+def _m5_readiness_pinned_source() -> bytes:
+    source = M5_SEMANTIC_READINESS_MIGRATION_PATH.read_bytes()
+    if _sha256(source) != M5_ACCEPTED_SEMANTIC_READINESS_MIGRATION_SHA256:
+        raise M5SemanticReadinessBundleError(
+            "local 020 source is not the pinned authority"
+        )
+    return source
+
+
+def _m5_readiness_ledger(
+    identity: M5SemanticReadinessBundleIdentity,
+) -> tuple[str, ...]:
+    return (
+        identity.bundle_id,
+        identity.bundle_sha256,
+        identity.migration_sha256,
+        identity.oracle_sha256,
+        identity.prerequisite_sha256,
+    )
+
+
+def _m5_readiness_schema(executor: _M5_READINESS_EXECUTOR) -> str:
+    row = _m5_readiness_query(
+        executor,
+        "SELECT n.nspname FROM pg_catalog.pg_namespace n "
+        "WHERE n.nspname=pg_catalog.current_schema() AND n.nspname !~ '^pg_' "
+        "AND n.oid<>pg_catalog.pg_my_temp_schema()",
+    ).fetchone()
+    if row is None or not str(row[0]):
+        raise M5SemanticReadinessBundleError(
+            "020 requires one trusted permanent schema"
+        )
+    return str(row[0])
+
+
+def _m5_readiness_require_prerequisites(
+    executor: _M5_READINESS_EXECUTOR,
+    *,
+    schema_name: str,
+) -> None:
+    """All reads bind to the captured schema; old source identities stay exact."""
+    expected = (
+        (
+            M5_ACCEPTED_RUNTIME_BUNDLE_ID,
+            M5_ACCEPTED_RUNTIME_BUNDLE_SHA256,
+            M5_ACCEPTED_RUNTIME_MIGRATION_SHA256,
+            M5_ACCEPTED_RUNTIME_ORACLE_SHA256,
+            M5_ACCEPTED_RUNTIME_PREREQUISITE_SHA256,
+        ),
+        (
+            M5_ACCEPTED_RECOVERY_BUNDLE_ID,
+            M5_ACCEPTED_RECOVERY_BUNDLE_SHA256,
+            M5_ACCEPTED_RECOVERY_MIGRATION_SHA256,
+            M5_ACCEPTED_RECOVERY_ORACLE_SHA256,
+            M5_ACCEPTED_RECOVERY_PREREQUISITE_SHA256,
+        ),
+        (
+            M5_ACCEPTED_PERSISTED_MATCHING_BUNDLE_ID,
+            M5_ACCEPTED_PERSISTED_MATCHING_BUNDLE_SHA256,
+            M5_ACCEPTED_PERSISTED_MATCHING_MIGRATION_SHA256,
+            M5_ACCEPTED_PERSISTED_MATCHING_ORACLE_SHA256,
+            M5_ACCEPTED_PERSISTED_MATCHING_PREREQUISITE_SHA256,
+        ),
+        (
+            M5_BOUNDED_DOCUMENT_WITHDRAWAL_BUNDLE_ID,
+            M5_ACCEPTED_BOUNDED_DOCUMENT_WITHDRAWAL_BUNDLE_SHA256,
+            M5_ACCEPTED_BOUNDED_DOCUMENT_WITHDRAWAL_MIGRATION_SHA256,
+            M5_BOUNDED_DOCUMENT_WITHDRAWAL_ORACLE_SHA256,
+            M5_ACCEPTED_PERSISTED_MATCHING_BUNDLE_SHA256,
+        ),
+        (
+            M5_PRETERMINAL_SEAL_CONTEXT_BUNDLE_ID,
+            M5_ACCEPTED_PRETERMINAL_SEAL_CONTEXT_BUNDLE_SHA256,
+            M5_ACCEPTED_PRETERMINAL_SEAL_CONTEXT_MIGRATION_SHA256,
+            M5_PRETERMINAL_SEAL_CONTEXT_ORACLE_SHA256,
+            M5_ACCEPTED_BOUNDED_DOCUMENT_WITHDRAWAL_BUNDLE_SHA256,
+        ),
+    )
+    permanent = _m5_readiness_query(
+        executor,
+        "SELECT count(*),bool_and(c.relkind='r' AND c.relpersistence='p') "
+        "FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n "
+        "ON n.oid=c.relnamespace WHERE n.nspname=%s "
+        "AND c.relname='groundloop_m5_schema_bundle'",
+        (schema_name,),
+    ).fetchone()
+    if permanent != (1, True):
+        raise M5SemanticReadinessBundleError("020 requires a permanent ledger")
+    core = m5_bundle_identity()
+    if core.bundle_sha256 != M5_ACCEPTED_RUNTIME_PREREQUISITE_SHA256:
+        raise M5PrerequisiteError(
+            "020 local 000--014 prerequisite bytes are not accepted"
+        )
+    for row in (
+        (
+            core.bundle_id,
+            core.bundle_sha256,
+            core.migration_sha256,
+            core.oracle_sha256,
+            core.prerequisite_source_sha256,
+        ),
+        *expected,
+    ):
+        actual = _m5_readiness_bundle_row(executor, row[0], schema_name=schema_name)
+        if actual != row:
+            raise M5PrerequisiteError(
+                "020 requires all exact five-field prerequisite ledgers"
+            )
+    local_files = (
+        (M5_RUNTIME_MIGRATION_PATH, M5_ACCEPTED_RUNTIME_MIGRATION_SHA256),
+        (M5_RUNTIME_RECOVERY_MIGRATION_PATH, M5_ACCEPTED_RECOVERY_MIGRATION_SHA256),
+        (
+            M5_PERSISTED_MATCHING_MIGRATION_PATH,
+            M5_ACCEPTED_PERSISTED_MATCHING_MIGRATION_SHA256,
+        ),
+        (
+            M5_BOUNDED_DOCUMENT_WITHDRAWAL_MIGRATION_PATH,
+            M5_ACCEPTED_BOUNDED_DOCUMENT_WITHDRAWAL_MIGRATION_SHA256,
+        ),
+        (
+            M5_PRETERMINAL_SEAL_CONTEXT_MIGRATION_PATH,
+            M5_ACCEPTED_PRETERMINAL_SEAL_CONTEXT_MIGRATION_SHA256,
+        ),
+    )
+    if any(_sha256(path.read_bytes()) != digest for path, digest in local_files):
+        raise M5PrerequisiteError("020 local prerequisite sources are changed")
+
+
+def _m5_readiness_expected_function_sources(*, installed: bool) -> dict[str, str]:
+    bodies: dict[str, str] = {}
+    paths = (
+        *LEGACY_MIGRATION_PATHS,
+        M5_MIGRATION_PATH,
+        M5_RUNTIME_MIGRATION_PATH,
+        M5_RUNTIME_RECOVERY_MIGRATION_PATH,
+        M5_PERSISTED_MATCHING_MIGRATION_PATH,
+        M5_BOUNDED_DOCUMENT_WITHDRAWAL_MIGRATION_PATH,
+        M5_PRETERMINAL_SEAL_CONTEXT_MIGRATION_PATH,
+    )
+    for path in paths:
+        for match in _M5_READINESS_FUNCTION_PATTERN.finditer(path.read_text()):
+            bodies[match.group(1)] = match.group(3)
+    if installed:
+        for match in _M5_READINESS_FUNCTION_PATTERN.finditer(
+            _m5_readiness_pinned_source().decode("utf-8")
+        ):
+            bodies[match.group(1)] = match.group(3)
+    return bodies
+
+
+def _m5_readiness_verify_preserved_catalog(
+    executor: _M5_READINESS_EXECUTOR,
+    *,
+    schema_name: str,
+    installed: bool,
+) -> None:
+    """Verify unchanged static authority flags/ACLs and trigger attachments.
+
+    The input sources have already passed the literal prerequisite hashes.
+    Catalog owner identity is the permanent ledger owner, not the calling role;
+    a separately connected non-owner can perform the same read-only check.
+    """
+    paths = (
+        *LEGACY_MIGRATION_PATHS,
+        M5_MIGRATION_PATH,
+        M5_RUNTIME_MIGRATION_PATH,
+        M5_RUNTIME_RECOVERY_MIGRATION_PATH,
+        M5_PERSISTED_MATCHING_MIGRATION_PATH,
+        M5_BOUNDED_DOCUMENT_WITHDRAWAL_MIGRATION_PATH,
+        M5_PRETERMINAL_SEAL_CONTEXT_MIGRATION_PATH,
+    )
+    sources = [path.read_text() for path in paths]
+    if installed:
+        sources.append(_m5_readiness_pinned_source().decode("utf-8"))
+    owner = _m5_readiness_query(
+        executor,
+        "SELECT c.relowner FROM pg_catalog.pg_class c JOIN "
+        "pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
+        "WHERE n.nspname=%s AND c.relname='groundloop_m5_schema_bundle'",
+        (schema_name,),
+    ).fetchone()
+    config = _m5_readiness_query(
+        executor,
+        "SELECT 'search_path='||pg_catalog.quote_ident(%s)||', pg_catalog'",
+        (schema_name,),
+    ).fetchone()
+    if owner is None or config is None:
+        raise M5SemanticReadinessBundleError("020 permanent catalog owner is absent")
+    headers: dict[str, str] = {}
+    private: set[str] = set()
+    triggers: dict[str, tuple[Any, ...]] = {}
+    trigger_pattern = re.compile(
+        r"^CREATE (CONSTRAINT )?TRIGGER (\w+)(.*?)"
+        r"EXECUTE (?:FUNCTION|PROCEDURE) (\w+)\(\);",
+        re.DOTALL | re.MULTILINE,
+    )
+    for source in sources:
+        for match in _M5_READINESS_FUNCTION_PATTERN.finditer(source):
+            headers[match.group(1)] = source[match.start() : match.start(3)]
+        for match in re.finditer(
+            r"^(REVOKE ALL|GRANT EXECUTE) ON FUNCTION (groundloop_\w+)"
+            r"\([^;]*?\)\s+(?:FROM|TO) PUBLIC[^;]*;",
+            source,
+            re.DOTALL | re.MULTILINE,
+        ):
+            if match.group(1) == "REVOKE ALL":
+                private.add(match.group(2))
+            else:
+                private.discard(match.group(2))
+        # DROP followed by CREATE is allowed only where the frozen old source
+        # already does so. Migration 020 adds its sole new trigger.
+        operations = [
+            (match.start(), "create", match)
+            for match in trigger_pattern.finditer(source)
+        ] + [
+            (match.start(), "drop", match)
+            for match in re.finditer(
+                r"^DROP TRIGGER(?: IF EXISTS)? (\w+) ON \w+;",
+                source,
+                re.MULTILINE,
+            )
+        ]
+        for _, operation, match in sorted(operations, key=lambda item: item[0]):
+            if operation == "drop":
+                triggers.pop(match.group(1), None)
+                continue
+            clause = match.group(3)
+            relation = re.search(r"\bON (\w+)", clause)
+            if relation is None:
+                raise M5SemanticReadinessBundleError("020 prior trigger is malformed")
+            # Two retained M4 triggers name UPDATE OF columns. Their attribute
+            # identities are compared by name, not installation-specific attnum.
+            column_match = re.search(r"UPDATE OF (.*?) ON", clause, re.DOTALL)
+            columns = (
+                tuple(value.strip() for value in column_match.group(1).split(","))
+                if column_match is not None
+                else ()
+            )
+            trigger_type = 1
+            for word, bit in (
+                ("BEFORE", 2),
+                ("INSERT", 4),
+                ("DELETE", 8),
+                ("UPDATE", 16),
+                ("TRUNCATE", 32),
+                ("INSTEAD", 64),
+            ):
+                if re.search(r"\b" + word + r"\b", clause):
+                    trigger_type |= bit
+            triggers[match.group(2)] = (
+                trigger_type,
+                "O",
+                False,
+                "DEFERRABLE" in clause,
+                "INITIALLY DEFERRED" in clause,
+                0,
+                None,
+                list(columns),
+                b"",
+                match.group(4),
+                schema_name,
+                relation.group(1),
+                "p",
+            )
+    rows = _m5_readiness_query(
+        executor,
+        "SELECT p.proname,p.proowner,l.lanname,p.prosecdef,p.proconfig,"
+        "p.provolatile,p.proisstrict,p.proleakproof,p.proparallel,p.prokind,"
+        "ARRAY(SELECT a.grantee::text||':'||a.privilege_type||':'||"
+        "a.is_grantable::text FROM pg_catalog.aclexplode(COALESCE(p.proacl,"
+        "pg_catalog.acldefault('f',p.proowner))) a ORDER BY a.grantee) "
+        "FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON "
+        "n.oid=p.pronamespace JOIN pg_catalog.pg_language l ON l.oid=p.prolang "
+        "WHERE n.nspname=%s AND p.proname=ANY(%s)",
+        (schema_name, list(headers)),
+    ).fetchall()
+    expected_flags: dict[str, tuple[Any, ...]] = {}
+    for name, header in headers.items():
+        language = re.search(r"\bLANGUAGE (\w+)", header)
+        if language is None:
+            raise M5SemanticReadinessBundleError("020 prior language is malformed")
+        acl = [f"{owner[0]}:EXECUTE:false"]
+        if name not in private:
+            acl.insert(0, "0:EXECUTE:false")
+        settings = (
+            [str(config[0])] if "SET search_path FROM CURRENT" in header else None
+        )
+        if name == "groundloop_m5_authorize_persisted_matching_activation":
+            # Accepted 017 installer-only literals are part of the prior catalog,
+            # in addition to its SQL's pinned search_path.
+            assert settings is not None
+            settings += [
+                "groundloop.m5_accepted_persisted_matching_bundle_sha256="
+                + M5_ACCEPTED_PERSISTED_MATCHING_BUNDLE_SHA256,
+                "groundloop.m5_accepted_persisted_matching_migration_sha256="
+                + M5_ACCEPTED_PERSISTED_MATCHING_MIGRATION_SHA256,
+            ]
+        expected_flags[name] = (
+            owner[0],
+            language.group(1),
+            "SECURITY DEFINER" in header,
+            settings,
+            "i" if "IMMUTABLE" in header else "s" if "STABLE" in header else "v",
+            bool(re.search(r"\bSTRICT\b", header)),
+            bool(re.search(r"(?<!NOT )\bLEAKPROOF\b", header)),
+            "s"
+            if "PARALLEL SAFE" in header
+            else "r"
+            if "PARALLEL RESTRICTED" in header
+            else "u",
+            "f",
+            acl,
+        )
+    actual_flags = {str(row[0]): tuple(row[1:]) for row in rows}
+    if len(rows) != len(expected_flags) or actual_flags != expected_flags:
+        mismatches = sorted(
+            name
+            for name in expected_flags
+            if actual_flags.get(name) != expected_flags[name]
+        )
+        raise M5SemanticReadinessBundleError(
+            "020 preserved function ownership/flags/path/execute ACL are not exact: "
+            + ", ".join(mismatches)
+        )
+    _m5_readiness_verify_function_signatures(
+        executor, schema_name=schema_name, headers=headers
+    )
+    trigger_rows = _m5_readiness_query(
+        executor,
+        "SELECT t.tgname,t.tgtype,t.tgenabled,t.tgisinternal,t.tgdeferrable,"
+        "t.tginitdeferred,t.tgnargs,t.tgqual,ARRAY(SELECT a.attname FROM "
+        "unnest(t.tgattr::smallint[]) WITH ORDINALITY x(attnum,position) JOIN "
+        "pg_catalog.pg_attribute a ON a.attrelid=t.tgrelid AND a.attnum=x.attnum "
+        "ORDER BY x.position),t.tgargs,p.proname,pn.nspname,c.relname,c.relpersistence "
+        "FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_class c ON c.oid=t.tgrelid "
+        "JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace JOIN "
+        "pg_catalog.pg_proc p ON p.oid=t.tgfoid JOIN pg_catalog.pg_namespace pn ON "
+        "pn.oid=p.pronamespace WHERE n.nspname=%s AND t.tgname=ANY(%s)",
+        (schema_name, list(triggers)),
+    ).fetchall()
+    if (
+        len(trigger_rows) != len(triggers)
+        or {str(row[0]): tuple(row[1:]) for row in trigger_rows} != triggers
+    ):
+        raise M5SemanticReadinessBundleError(
+            "020 preserved trigger attachment/flags are not exact"
+        )
+
+
+def _m5_readiness_verify_function_signatures(
+    executor: _M5_READINESS_EXECUTOR,
+    *,
+    schema_name: str,
+    headers: dict[str, str],
+) -> None:
+    """Compare exact declared inputs/outputs, including types outside search_path."""
+    aliases = {
+        "bigint": "int8",
+        "integer": "int4",
+        "boolean": "bool",
+        "char(64)": "bpchar",
+        "double precision": "float8",
+        "timestamptz": "timestamptz",
+    }
+
+    def type_identity(declared: str) -> str:
+        array = declared.endswith("[]")
+        base = declared[:-2] if array else declared
+        namespace = schema_name if base.startswith("groundloop_") else "pg_catalog"
+        return namespace + ":" + ("_" if array else "") + aliases.get(base, base)
+
+    expected: dict[str, tuple[Any, ...]] = {}
+    for name, header in headers.items():
+        match = re.search(
+            r"FUNCTION \w+\((.*?)\)\s*RETURNS (.*?)\bLANGUAGE", header, re.DOTALL
+        )
+        if match is None:
+            raise M5SemanticReadinessBundleError("020 signature source is malformed")
+        inputs = [
+            " ".join(value.split())
+            for value in match.group(1).split(",")
+            if value.strip()
+        ]
+        names: list[str] = []
+        types: list[str] = []
+        defaults: list[str] = []
+        for value in inputs:
+            input_name, declaration = value.split(" ", 1)
+            parts = declaration.split(" DEFAULT ")
+            names.append(input_name)
+            types.append(type_identity(parts[0]))
+            if len(parts) == 2:
+                defaults.append(parts[1] + "::" + parts[0])
+        result = " ".join(match.group(2).split())
+        table = result.startswith("TABLE (")
+        output_types: list[str] = []
+        if table:
+            for value in result[7:-1].split(","):
+                output_name, output_type = value.strip().split(" ", 1)
+                names.append(output_name)
+                output_types.append(type_identity(output_type))
+        expected[name] = (
+            types,
+            "pg_catalog:record" if table else type_identity(result),
+            table,
+            len(defaults),
+            0,
+            names or None,
+            types + output_types if table else None,
+            ["i"] * len(types) + ["t"] * len(output_types) if table else None,
+            ", ".join(defaults) if defaults else None,
+        )
+    rows = _m5_readiness_query(
+        executor,
+        "SELECT p.proname,ARRAY(SELECT tn.nspname||':'||ty.typname "
+        "FROM unnest(p.proargtypes::oid[]) WITH ORDINALITY a(type_oid,position) "
+        "JOIN pg_catalog.pg_type ty ON ty.oid=a.type_oid JOIN "
+        "pg_catalog.pg_namespace tn ON tn.oid=ty.typnamespace ORDER BY a.position),"
+        "rn.nspname||':'||rt.typname,p.proretset,p.pronargdefaults,p.provariadic,"
+        "p.proargnames,CASE WHEN p.proallargtypes IS NULL THEN NULL ELSE "
+        "ARRAY(SELECT tn.nspname||':'||ty.typname FROM unnest(p.proallargtypes) "
+        "WITH ORDINALITY a(type_oid,position) JOIN pg_catalog.pg_type ty ON "
+        "ty.oid=a.type_oid JOIN pg_catalog.pg_namespace tn ON "
+        "tn.oid=ty.typnamespace ORDER BY a.position) END,p.proargmodes,"
+        "pg_catalog.pg_get_expr(p.proargdefaults,0) FROM pg_catalog.pg_proc p "
+        "JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace JOIN "
+        "pg_catalog.pg_type rt ON rt.oid=p.prorettype JOIN "
+        "pg_catalog.pg_namespace rn ON rn.oid=rt.typnamespace "
+        "WHERE n.nspname=%s AND p.proname=ANY(%s)",
+        (schema_name, list(headers)),
+    ).fetchall()
+    if (
+        len(rows) != len(expected)
+        or {str(row[0]): tuple(row[1:]) for row in rows} != expected
+    ):
+        raise M5SemanticReadinessBundleError("020 function signatures are not exact")
+
+
+def _m5_readiness_verify_catalog(
+    executor: _M5_READINESS_EXECUTOR,
+    *,
+    schema_name: str,
+    installed: bool,
+) -> None:
+    if (
+        _m5_readiness_catalog_fingerprint(executor, schema_name=schema_name)
+        != _M5_READINESS_CATALOG_SHA256[installed]
+    ):
+        raise M5SemanticReadinessBundleError(
+            "020 retained structural catalog CHECK/metadata checksum is not exact"
+        )
+    expected = _m5_readiness_expected_function_sources(installed=installed)
+    rows = _m5_readiness_query(
+        executor,
+        "SELECT p.proname,p.prosrc FROM pg_catalog.pg_proc p "
+        "JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace "
+        "WHERE n.nspname=%s AND p.proname=ANY(%s)",
+        (schema_name, list(expected)),
+    ).fetchall()
+    if (
+        len(rows) != len(expected)
+        or {str(name): str(body) for name, body in rows} != expected
+    ):
+        raise M5SemanticReadinessBundleError(
+            "020 prerequisite/preserved function source catalog is not exact"
+        )
+    _m5_readiness_verify_preserved_catalog(
+        executor, schema_name=schema_name, installed=installed
+    )
+    new_rows = _m5_readiness_query(
+        executor,
+        "SELECT "
+        "p.prosrc,p.prosecdef,p.proconfig,p.proowner,rn.nspname||':'||rt.typname,"
+        "p.pronargs,p.proretset,p.provolatile,p.proisstrict,p.proleakproof,p.proparallel,p.prokind,"
+        "p.proacl,l.lanname FROM pg_catalog.pg_proc p "
+        "JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace "
+        "JOIN pg_catalog.pg_language l ON l.oid=p.prolang "
+        "JOIN pg_catalog.pg_type rt ON rt.oid=p.prorettype "
+        "JOIN pg_catalog.pg_namespace rn ON rn.oid=rt.typnamespace "
+        "WHERE n.nspname=%s AND "
+        "p.proname=%s",
+        (schema_name, _M5_READINESS_PREDECESSOR_FUNCTION),
+    ).fetchall()
+    if not installed:
+        if new_rows:
+            raise M5SemanticReadinessBundleError(
+                "020 refuses a partial predecessor function"
+            )
+    else:
+        owner = _m5_readiness_query(
+            executor,
+            "SELECT p.proowner FROM pg_catalog.pg_proc p JOIN "
+            "pg_catalog.pg_namespace n "
+            "ON n.oid=p.pronamespace WHERE n.nspname=%s AND "
+            "p.proname='groundloop_m5_validate_work_contribution'",
+            (schema_name,),
+        ).fetchone()
+        config = _m5_readiness_query(
+            executor,
+            "SELECT 'search_path='||pg_catalog.quote_ident(%s)||', pg_catalog'",
+            (schema_name,),
+        ).fetchone()
+        if (
+            owner is None
+            or config is None
+            or new_rows
+            != [
+                (
+                    expected[_M5_READINESS_PREDECESSOR_FUNCTION],
+                    False,
+                    [str(config[0])],
+                    owner[0],
+                    "pg_catalog:trigger",
+                    0,
+                    False,
+                    "v",
+                    False,
+                    False,
+                    "u",
+                    "f",
+                    None,
+                    "plpgsql",
+                )
+            ]
+        ):
+            raise M5SemanticReadinessBundleError(
+                "020 predecessor flags/path/ACL are not exact"
+            )
+    # Existing validator configuration, invoker flags, and default ACL remain exact.
+    old_flags = _m5_readiness_query(
+        executor,
+        "SELECT "
+        "p.proname,p.prosecdef,p.proconfig,rn.nspname||':'||rt.typname,"
+        "p.pronargs,p.proretset,p.provolatile,p.proisstrict,p.proleakproof,"
+        "p.proparallel,p.prokind,p.proacl,l.lanname "
+        "FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON "
+        "n.oid=p.pronamespace "
+        "JOIN pg_catalog.pg_language l ON l.oid=p.prolang "
+        "JOIN pg_catalog.pg_type rt ON rt.oid=p.prorettype "
+        "JOIN pg_catalog.pg_namespace rn ON rn.oid=rt.typnamespace "
+        'WHERE n.nspname=%s AND p.proname=ANY(%s) ORDER BY p.proname COLLATE "C"',
+        (schema_name, sorted(_M5_READINESS_REPLACED_FUNCTIONS)),
+    ).fetchall()
+    if old_flags != [
+        (
+            name,
+            False,
+            None,
+            "pg_catalog:trigger",
+            0,
+            False,
+            "v",
+            False,
+            False,
+            "u",
+            "f",
+            None,
+            "plpgsql",
+        )
+        for name in sorted(_M5_READINESS_REPLACED_FUNCTIONS)
+    ]:
+        raise M5SemanticReadinessBundleError(
+            "020 prior validator flags/ACL are not exact"
+        )
+    trigger_rows = _m5_readiness_query(
+        executor,
+        "SELECT "
+        "t.tgtype,t.tgenabled,t.tgisinternal,t.tgdeferrable,t.tginitdeferred,t.tgnargs,"
+        "t.tgqual,t.tgattr::text,t.tgargs,p.proname,pn.nspname,"
+        "c.relname,c.relpersistence "
+        "FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_class c ON c.oid=t.tgrelid "
+        "JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
+        "JOIN pg_catalog.pg_proc p ON p.oid=t.tgfoid JOIN pg_catalog.pg_namespace "
+        "pn ON pn.oid=p.pronamespace "
+        "WHERE n.nspname=%s AND (t.tgname=%s OR p.proname=%s)",
+        (
+            schema_name,
+            _M5_READINESS_PREDECESSOR_TRIGGER,
+            _M5_READINESS_PREDECESSOR_FUNCTION,
+        ),
+    ).fetchall()
+    expected_trigger = (
+        [
+            (
+                7,
+                "O",
+                False,
+                False,
+                False,
+                0,
+                None,
+                "",
+                b"",
+                _M5_READINESS_PREDECESSOR_FUNCTION,
+                schema_name,
+                "groundloop_m5_runtime_work_contribution",
+                "p",
+            )
+        ]
+        if installed
+        else []
+    )
+    if trigger_rows != expected_trigger:
+        raise M5SemanticReadinessBundleError("020 predecessor trigger is not exact")
+    statements = dict(_m5_readiness_statements(_m5_readiness_pinned_source()))
+    for index in range(1, 4):
+        statement = statements[f"add_check_{index}"]
+        match = re.fullmatch(
+            r"ALTER TABLE (\w+) ADD CONSTRAINT (\w+)\s+(CHECK .*);",
+            statement,
+            re.DOTALL,
+        )
+        if match is None:
+            raise M5SemanticReadinessBundleError("020 CHECK source is malformed")
+        relation, name, definition = match.groups()
+        if not installed:
+            definition = definition.replace(", 'semantic_readiness'::text", "")
+        constraint_rows = _m5_readiness_query(
+            executor,
+            "WITH selected_constraints AS MATERIALIZED (SELECT k.oid,k.conname,"
+            "k.convalidated,k.condeferrable,k.condeferred,c.relpersistence "
+            "FROM pg_catalog.pg_constraint k JOIN pg_catalog.pg_class c ON "
+            "c.oid=k.conrelid JOIN pg_catalog.pg_namespace n ON "
+            "n.oid=c.relnamespace WHERE n.nspname=%s AND c.relname=%s) SELECT "
+            "k.conname,pg_catalog.pg_get_constraintdef(k.oid),k.convalidated,"
+            "k.condeferrable,k.condeferred,k.relpersistence "
+            "FROM selected_constraints k WHERE k.conname=%s OR "
+            "pg_catalog.pg_get_constraintdef(k.oid)=%s",
+            (schema_name, relation, name, definition),
+        ).fetchall()
+        normalized_constraints = [
+            (row[0], _m5_readiness_catalog_sql(str(row[1]), schema_name), *row[2:])
+            for row in constraint_rows
+        ]
+        if normalized_constraints != [
+            (
+                name,
+                _m5_readiness_catalog_sql(definition, schema_name),
+                True,
+                False,
+                False,
+                "p",
+            )
+        ]:
+            raise M5SemanticReadinessBundleError(
+                "020 requires uniquely exact closed CHECK constraints"
+            )
+
+
+def require_m5_semantic_readiness_bundle(
+    executor: _M5_READINESS_EXECUTOR,
+    *,
+    schema_name: str,
+) -> None:
+    """Read-only exact authority check for one already captured permanent schema."""
+    row = _m5_readiness_query(
+        executor,
+        "SELECT nspname FROM pg_catalog.pg_namespace WHERE nspname=%s AND nspname "
+        "!~ '^pg_' AND oid<>pg_catalog.pg_my_temp_schema()",
+        (schema_name,),
+    ).fetchone()
+    if row != (schema_name,):
+        raise M5SemanticReadinessBundleError(
+            "020 authority schema is absent or temporary"
+        )
+    _m5_readiness_require_prerequisites(executor, schema_name=schema_name)
+    expected = (
+        M5_SEMANTIC_READINESS_BUNDLE_ID,
+        M5_ACCEPTED_SEMANTIC_READINESS_BUNDLE_SHA256,
+        M5_ACCEPTED_SEMANTIC_READINESS_MIGRATION_SHA256,
+        M5_SEMANTIC_READINESS_ORACLE_SHA256,
+        M5_ACCEPTED_PRETERMINAL_SEAL_CONTEXT_BUNDLE_SHA256,
+    )
+    if (
+        _m5_readiness_bundle_row(executor, expected[0], schema_name=schema_name)
+        != expected
+    ):
+        raise M5SemanticReadinessBundleError(
+            "020 requires its exact pinned five-field ledger"
+        )
+    _m5_readiness_verify_catalog(executor, schema_name=schema_name, installed=True)
+
+
+def install_m5_semantic_readiness_bundle(
+    connection: Connection[Any],
+    *,
+    failure_injector: Callable[[str], None] | None = None,
+    migration_bytes: bytes | None = None,
+) -> M5SemanticReadinessBundleInstallResult:
+    """Opt-in, ledger-first, atomic 020 install; never changes runtime mode."""
+    if connection.info.transaction_status != TransactionStatus.IDLE:
+        raise M5SemanticReadinessBundleError("020 requires an idle outer transaction")
+    if connection.read_only is True or connection.isolation_level not in (
+        None,
+        IsolationLevel.READ_COMMITTED,
+    ):
+        raise M5SemanticReadinessBundleError("020 requires read-write READ COMMITTED")
+    migration = (
+        _m5_readiness_pinned_source() if migration_bytes is None else migration_bytes
+    )
+    identity = m5_semantic_readiness_bundle_identity(migration_bytes=migration)
+    expected = _m5_readiness_ledger(identity)
+
+    def cut(point: str) -> None:
+        if failure_injector is not None:
+            failure_injector(point)
+
+    with connection.transaction():
+        connection.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED READ WRITE")
+        schema_name = _m5_readiness_schema(connection)
+        ledger = _m5_readiness_bundle_row(
+            connection, identity.bundle_id, schema_name=schema_name
+        )
+        if ledger is not None:
+            if ledger != expected:
+                raise M5BundleHashConflictError(
+                    "020 ledger conflicts with requested bytes"
+                )
+            require_m5_semantic_readiness_bundle(connection, schema_name=schema_name)
+            return M5SemanticReadinessBundleInstallResult(identity, False)
+        cut("after_initial_ledger")
+        if (
+            identity.migration_sha256 != M5_ACCEPTED_SEMANTIC_READINESS_MIGRATION_SHA256
+            or identity.bundle_sha256 != M5_ACCEPTED_SEMANTIC_READINESS_BUNDLE_SHA256
+        ):
+            raise M5SemanticReadinessBundleError(
+                "020 first-install bytes do not match H32 authority"
+            )
+        statements = _m5_readiness_statements(migration)
+        _m5_readiness_require_prerequisites(connection, schema_name=schema_name)
+        cut("after_prerequisite")
+        # Ledger first, then base/runtime and accounting tables in fixed order.
+        for relation in (
+            "groundloop_m5_schema_bundle",
+            "groundloop_epoch",
+            "groundloop_m5_runtime_epoch",
+            "groundloop_m5_runtime_work_contribution",
+            "groundloop_m5_transition_call_timing",
+            "groundloop_m5_runtime_timing_accumulator",
+        ):
+            connection.execute(
+                sql.SQL("LOCK TABLE {} IN SHARE ROW EXCLUSIVE MODE").format(
+                    sql.Identifier(schema_name, relation)
+                )
+            )
+        cut("after_install_lock")
+        ledger = _m5_readiness_bundle_row(
+            connection, identity.bundle_id, schema_name=schema_name
+        )
+        if ledger is not None:
+            if ledger != expected:
+                raise M5BundleHashConflictError(
+                    "020 ledger conflicts under install lock"
+                )
+            require_m5_semantic_readiness_bundle(connection, schema_name=schema_name)
+            return M5SemanticReadinessBundleInstallResult(identity, False)
+        _m5_readiness_require_prerequisites(connection, schema_name=schema_name)
+        _m5_readiness_verify_catalog(
+            connection, schema_name=schema_name, installed=False
+        )
+        connection.execute(
+            "SELECT "
+            "pg_catalog.set_config('search_path',pg_catalog.quote_ident(%s)||', "
+            "pg_catalog',true)",
+            (schema_name,),
+        )
+        for name, statement in statements:
+            cut(f"before_{name}")
+            connection.execute(statement)
+            cut(f"after_{name}")
+        _m5_readiness_verify_catalog(
+            connection, schema_name=schema_name, installed=True
+        )
+        cut("before_ledger")
+        connection.execute(
+            sql.SQL(
+                "INSERT INTO {} "
+                "(bundle_id,bundle_sha256,migration_sha256,oracle_sha256,"
+                "prerequisite_sha256,applied_at) "
+                "VALUES (%s,%s,%s,%s,%s,pg_catalog.now())"
+            ).format(sql.Identifier(schema_name, "groundloop_m5_schema_bundle")),
+            expected,
+        )
+        cut("after_ledger")
+        return M5SemanticReadinessBundleInstallResult(identity, True)
+
+
 __all__ = [
     "LEGACY_MIGRATION_NAMES",
     "LEGACY_MIGRATION_PATHS",
@@ -3713,4 +4994,16 @@ __all__ = [
     "m5_persisted_matching_bundle_identity",
     "m5_bounded_document_withdrawal_bundle_identity",
     "m5_preterminal_seal_context_bundle_identity",
+    "M5_SEMANTIC_READINESS_BUNDLE_ID",
+    "M5_SEMANTIC_READINESS_MIGRATION_LABEL",
+    "M5_SEMANTIC_READINESS_MIGRATION_PATH",
+    "M5_SEMANTIC_READINESS_ORACLE_SHA256",
+    "M5_ACCEPTED_SEMANTIC_READINESS_MIGRATION_SHA256",
+    "M5_ACCEPTED_SEMANTIC_READINESS_BUNDLE_SHA256",
+    "M5SemanticReadinessBundleError",
+    "M5SemanticReadinessBundleIdentity",
+    "M5SemanticReadinessBundleInstallResult",
+    "m5_semantic_readiness_bundle_identity",
+    "install_m5_semantic_readiness_bundle",
+    "require_m5_semantic_readiness_bundle",
 ]
