@@ -1,6 +1,6 @@
 # GroundLoop M5.4 Byte-Total Runtime Contract Addendum
 
-Status: frozen runtime contract revision 13; M5-D25 through M5-D32 contracts
+Status: frozen runtime contract revision 14; M5-D25 through M5-D33 contracts
 **GO** / implementation **PENDING**; full M5.4 remains blocked on executable
 runtime evidence
 
@@ -9,10 +9,10 @@ revision 6 / M5-D25 amendment 2026-09-03; revision 7 / M5-D26 amendment
 2026-09-07; revision 8 / M5-D27 erratum 2026-09-17; revision 9 / M5-D28
 amendment 2026-09-18; revision 10 / M5-D29 amendment 2026-09-22; revision 11 /
 M5-D30 amendment 2026-09-22; revision 12 / M5-D31 amendment 2026-09-25;
-revision 13 / M5-D32 amendment 2026-10-09
+revision 13 / M5-D32 amendment 2026-10-09; revision 14 / M5-D33 amendment 2026-10-10
 
 Authority: this addendum specializes `docs/m5_design_freeze.md` M5-D1 through
-M5-D32 and M5-T1/M5-T2. It does not change those decisions. The M5 design
+M5-D33 and M5-T1/M5-T2. It does not change those decisions. The M5 design
 freeze remains authoritative for semantic truth; this addendum is authoritative
 for M5.4 runtime DTOs, identities, transition boundaries, persistence
 ownership, replay, and acceptance tests.
@@ -24,7 +24,7 @@ start only after migration 014 and its SQL oracle bundle have passed the M5.3
 fresh-install, populated-upgrade, compatibility, and three-oracle gates.
 
 This addendum MUST NOT authorize a change to an M5.0 semantic decision. An
-implementation conflict with this addendum and M5-D1 through M5-D32 MUST stop
+implementation conflict with this addendum and M5-D1 through M5-D33 MUST stop
 M5.4 as **NO-GO**. The exact amendment procedure MUST be a new numbered M5
 decision in `docs/m5_design_freeze.md`, a matching acceptance-matrix row, and a
 new runtime-addendum revision before code resumes. The migration-014 M4-open
@@ -2222,6 +2222,7 @@ database I/O MUST remain explicit.
 | M5-D30 | The authoritative claim-current provenance amendment makes the changed-chunk currency locator total across subject kinds, validates dynamic claims through exact working-delta/child/owner closure and bootstrap claims through exact M3 publication closure, and forbids unavailable root/classic reconstruction without changing public, digest, schema, or migration identities. |
 | M5-D31 | The authoritative preterminal-context amendment adds one argument-bound, read-only trusted accessor in migration 019 so a distinct non-owner runtime can attest the genuine migration-017 promotion context while preserving one-schema binding, unchanged D25/D26 derivation, result-bound child authority and exact seal order. |
 | M5-D32 | The authoritative semantic-readiness amendment preserves the full state graph and zero-root no-barrier rule, supplies separately committed group-only readiness with exact predecessor/result proof, S+K work and one pending anchor, and narrowly authorizes future additive 020 while retaining D25/D26 state/result semantics and pending implementation gates. |
+| M5-D33 | Section31 and the authoritative document-update amendment add exact job-free document eligibility with unchanged D32 identities/work, the sole canonical M4 SEAL1->2 versus M5 N->N+1 exception, locked REPLACE metadata preservation and as-of-K group-certificate absence allowing later restoration;021 replaces only three validator bodies, preserving000--020 and strict020 verification, with implementation pending. |
 | M5-T1 | Section 18.6 requires incremental/Python/SQL equality after every relevant measured seal. |
 | M5-T2 | Sections 10 and 19 expose touched rows, bytes, model calls, and physical exclusions without hiding them in the affected-group bound. |
 
@@ -2546,3 +2547,38 @@ Implementation starts only under a new independently audited path-exclusive
 activation, sequentially schema/shared primitives -> private readiness -> held
 R-T -> held C1. Defaults remain v1_only; no deployment, utility or performance
 result is promoted. Revision 13 implements no migration, source or test byte.
+
+## 31. Revision 14 / M5-D33 document-update completion
+
+The accepted DOCUMENT_UPDATE_COMPLETION_AMENDMENT.md at SHA-256
+055ef0d6f971a23be31cc23d2b9f03b4b7cd17fa9f9bc7c505d1f565d6726b32
+supersedes only the document exclusions, metadata-default derivation,
+same-revision seal assumption and migration inventory specified in its Section1.
+It reuses D32's semantic_readiness kind/source/typed recipe/key/S+K work for
+exact job-free document declarations with genuine M4 counter1/P, no direct job
+history and independent M5 closure/count proofs. Separate readiness commits,
+guard-before-advance, one work/timing CAS, replay and pending accounting remain.
+
+The private job-free M5 seal adapter is the ONLY counter-clock exception:
+actual canonical M4 SEAL1->2 versus base/runtime/published N->N+1, preserving
+all other direct publication checks/primitives. Legacy M4 wrapper/source,
+non-job-free documents, failure coordinator and C2 are not changed/promoted.
+REPLACE preserves locked store metadata through exact sidecars/retained replay
+without rehashing the legacy event. DELETE/REPLACE group_certificate absence
+requires exact predecessor artifact, D25 structural loss, document provenance,
+final incomplete PRESENT group state, closed binding/no binding covering K
+and exact seal coordinates. Later legitimate binding at L>K is allowed on
+historical replay. Six kinds, D26 artifact/outer/set and present recipes stay exact.
+
+Only future021's three named validator-body replacements and ledger are
+authorized; 000--020 and all other schema objects remain immutable. Do not
+weaken exact020 catalog verification; add exact021 verification and separate
+preinstall literal hash freeze. New document routes require021, with no
+mixed-schema or bad-021 fallback. The amendment's complete falsifiers govern.
+
+Decision: GO for contract only, confidence high. M5-D33/M5.0-33 implementation
+remains PENDING. A NEW audited sequential path-exclusive activation is required:
+schema -> metadata -> readiness -> private job-free seal -> reader -> held C1.
+This revision implements nothing. C1/Task17/Task2, remaining M5.4--M5.6,
+deployment, AI quality and end-to-end utility/speed/cost stay PENDING; v1_only
+remains the default. Accepted S32/R32/R-T are scoped prerequisites only.

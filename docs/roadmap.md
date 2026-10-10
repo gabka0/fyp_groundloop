@@ -1,12 +1,14 @@
 # GroundLoop Roadmap
 
-Current M5 contract checkpoint (2026-10-09): accepted through M5-D32,
-runtime-addendum revision 13. SEMANTIC_READINESS_AMENDMENT.md is authoritative
-at SHA-256 0e9a4bbe8da34d8248ce138c4bc21cb8076ddb4a578ea6a36cd6a4e100811435.
-Only the exact future 020 delta supersedes earlier negative inventory/kind/
-recipe clauses; older checkpoint descriptions below are historical. New work
-must use an audited path-exclusive schema/shared-primitives -> private
-readiness -> held R-T -> held C1 activation. M5-D32/M5.0-32 are contract-PASS /
+Current M5 contract checkpoint (2026-10-10): accepted through M5-D33,
+runtime-addendum revision14. DOCUMENT_UPDATE_COMPLETION_AMENDMENT.md is
+authoritative at SHA256
+055ef0d6f971a23be31cc23d2b9f03b4b7cd17fa9f9bc7c505d1f565d6726b32.
+Only the named job-free document/two-clock/metadata/certificate exclusions and
+three-function021 delta supersede earlier statements;000--020 and exact020
+checker stay immutable. New audited path-exclusive sequence: schema/shared
+primitives with preinstall hash freeze -> metadata -> readiness -> private
+job-free seal adapter -> publication reader -> held C1. M5-D33/M5.0-33 contract-PASS /
 implementation-PENDING. Task 17, C1, Task 2, remaining M5.4--M5.6, deployment,
 AI quality and independently adjudicated end-to-end utility remain PENDING.
 Defaults remain v1_only; this authority update implements nothing.

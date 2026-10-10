@@ -1,5 +1,40 @@
 # GroundLoop Decision Log
 
+## 2026-10-10 — M5-D33 Narrow Document-Update Completion Accepted
+
+Decision status: contract-PASS / implementation-PENDING; runtime-addendum14.
+Authoritative DOCUMENT_UPDATE_COMPLETION_AMENDMENT.md SHA256
+055ef0d6f971a23be31cc23d2b9f03b4b7cd17fa9f9bc7c505d1f565d6726b32.
+Reviewed candidate commit0ac013f5eca466543e171255ee5344bfe6b5ca84,
+soleparent8290d47cba71350cc550cf18cb12c32b47cb7b2a,
+tree0b64d946095fa9ece7480fe5b6abf54814c7c1e9, one mode100644 blob
+dfb9fbf07c7396bce3072155f8f6c262db7b2360,453lines28635bytes.
+Both independent final same-byte audits GO/P0=0/P1=0/P2=0; both fresh
+postcommit checks GO/P0=0/P1=0; atomic candidate branch/main push and live refs
+verified before preparing this freeze. Withdrawn373cc and151767 findings are
+retained in D33_CONTRACT_FREEZE_HANDOFF.md, not converted to passes.
+
+The exact empty-direct-history document branch reuses D32 readiness kind,
+source/key recipe and S+K work. Genuine evaluation declaration stays1/P while
+M5 progresses; one private M5 seal adapter is the ONLY shared-revision
+exception, retaining every nonrevision check and real M4 promoters plus
+canonical SEAL1->2 while M5/base/published goes N->N+1. No fake job, catch-up
+DELTA, old M4 wrapper edit or new identity. Failure coordinator and C2 pending.
+REPLACE preserves locked existing metadata without legacy rehash. Document
+DELETE/REPLACE group-certificate loss requires exact D25 structural withdrawal,
+predecessor artifact, final incomplete PRESENT state and binding closure as-of
+K; a legitimate later binding at L>K cannot invalidate historical replay.
+Six kinds, D26 artifact/outer/set and present-state recipes stay unchanged.
+
+Future additive021 replaces ONLY the readiness predecessor, work-contribution
+and result-children validator bodies. Preserve000--020/ledgers, all other schema
+objects and strict020 checker; pin reviewed021 identities separately before
+install. Freeze implements nothing. NEW audited path-exclusive schema ->
+metadata -> readiness -> job-free seal -> reader -> held C1 activation required.
+Current nine C1 pins/protected custody remain intact. S32/R32/R-T accepted
+prerequisites do not close C1. Task17/Task2, M5.4--M5.6, deployment, AI quality
+and end-to-end utility/speed/cost remain PENDING; v1_only stays default.
+
 ## 2026-10-09 — M5-D32 Group-Only Semantic Readiness Accepted
 
 Decision status: accepted narrow contract; M5-D32/M5.0-32 contract-PASS /

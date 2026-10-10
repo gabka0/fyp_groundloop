@@ -1,6 +1,20 @@
 # GroundLoop M5 Multi-Agent Execution Plan
 
-Current authority update (2026-10-09): M5-D32/M5.0-32 are contract-PASS /
+Current authority update (2026-10-10): M5-D33/M5.0-33 are contract-PASS /
+implementation-PENDING; runtime-addendum revision14 is authoritative.
+DOCUMENT_UPDATE_COMPLETION_AMENDMENT.md SHA256
+055ef0d6f971a23be31cc23d2b9f03b4b7cd17fa9f9bc7c505d1f565d6726b32
+requires a NEW audited sequential path-exclusive manifest:021 schema/shared
+primitives with preinstall hash freeze -> metadata -> readiness -> private
+job-free seal adapter -> publication reader -> held C1. Only one source lane
+runs at a time; independent read-only auditors own zero edit paths. Candidate
+acceptance/freeze alone grants no source edits. Current held C1 nine-file pins
+are in D33_CONTRACT_FREEZE_HANDOFF.md; no earlier pre-edit pin set is authority.
+S32/R32/R-T are accepted scoped prerequisites, with no remaining edit grant;
+C1 remains held. Only D33's exact exclusions and three-function021 delta
+supersede old statements. Failure/C2, whole M5, deployment and AI stay PENDING.
+
+Historical authority update (2026-10-09): M5-D32/M5.0-32 are contract-PASS /
 implementation-PENDING; runtime-addendum revision 13 is authoritative. Exact
 amendment SEMANTIC_READINESS_AMENDMENT.md has SHA-256
 0e9a4bbe8da34d8248ce138c4bc21cb8076ddb4a578ea6a36cd6a4e100811435.

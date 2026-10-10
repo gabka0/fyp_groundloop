@@ -1,21 +1,32 @@
 # GroundLoop M5 Implementation Status
 
-Status date: 2026-10-09
+Status date: 2026-10-10
 
-Milestone status: **M5.0 contract through accepted M5-D32 and M5.1--M5.3 are
+Milestone status: **M5.0 contract through accepted M5-D33 and M5.1--M5.3 are
 complete; M5.4 is partially complete.**
 M5.4-01 through M5.4-04 pass. M5.4-05 through M5.4-09 and every M5.5--M5.6
 implementation/evaluation closure remain pending. M5-D24-C1 through M5-D24-C7
-are accepted. M5.0-24 through M5.0-32 are each contract-`PASS` /
+are accepted. M5.0-24 through M5.0-33 are each contract-`PASS` /
 implementation-`PENDING`. M5-D31's accepted candidate SHA-256 is
 `6331c8149e38031c51cb22b6a9dc2d49d30d27df67d25b5fae24b00c52058dc9`.
 M5-D32's accepted candidate SHA-256 is
 `0e9a4bbe8da34d8248ce138c4bc21cb8076ddb4a578ea6a36cd6a4e100811435`;
-runtime-addendum revision 13 is authoritative. D32 supplies a contract for
-missing group-only readiness, not executable evidence. Its future 020 schema,
-private helper, held R-T acceptance and C1 atomic composition remain PENDING
-and require a fresh sequential manifest. The held reader diagnostic's 165
-passes do not prove a genuine pending-anchor seal. Protected WIP is unchanged;
+runtime-addendum revision14 is authoritative. D33's exact accepted amendment
+SHA256 is055ef0d6f971a23be31cc23d2b9f03b4b7cd17fa9f9bc7c505d1f565d6726b32.
+It supplies contract-only repairs for job-free document readiness/two-clock
+seal, metadata preservation and as-of-K group-certificate loss. Future021,
+all new runtime repairs and C1 acceptance remain PENDING under a NEW manifest.
+
+Scoped prerequisites S32=14f8def, R32=d716ebb and R-T=8290d47 are accepted;
+their clean implementation checkouts are preserved. R32's70 owned passes and
+R-T's173 owned passes are overlapping scoped evidence, not milestone closure.
+Held C1 remains uncommitted at8290d47 with exactly nine authorized dirty paths.
+Its50-pass diagnostic excludes the failing retained REPLACE-positive module.
+The document-readiness negative PASS proves correct rejection, NOT a document
+seal. The three confirmed blockers and two review-discovered contract edges
+are documented in D33 handoff; no failed diagnostic is erased. Current held
+pins, not historical pre-edit hashes, govern custody. Failure coordination,
+active-verifier C2 and whole M5 evidence remain PENDING. Protected WIP unchanged;
 no provider, deployment, runtime mode or AI-quality result is promoted.
 M5-D30's accepted candidate SHA-256 is
 `db2568affc02cf1ca6f17a549029f31089cecd857debdedf2651e6aac6898fe4`.

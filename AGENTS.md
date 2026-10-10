@@ -85,6 +85,10 @@ order:
     (authoritative M5-D32 group-only readiness and accounting correction)
 56. `docs/workstreams/m5_runtime_implementation/D32_CONTRACT_FREEZE_HANDOFF.md`
     (accepted D32 bytes, review evidence, and sequential implementation boundary)
+57. `docs/workstreams/m5_runtime_contract/DOCUMENT_UPDATE_COMPLETION_AMENDMENT.md`
+    (authoritative M5-D33 job-free document completion, metadata and certificate absence)
+58. `docs/workstreams/m5_runtime_implementation/D33_CONTRACT_FREEZE_HANDOFF.md`
+    (accepted D33 bytes, current custody and new sequential implementation boundary)
 
 `docs/initial_technical_design.md` (v0.1) is superseded and retained for audit
 only. The M0.5 design freeze and M1.1 amendments are complete; frozen decisions
@@ -288,6 +292,25 @@ allowed. Implementation requires a fresh audited path-exclusive activation:
 schema/shared primitives -> private readiness -> held R-T -> held C1. Preserve
 both held WIP sets and protected checkouts. Task 17, C1, Task 2, remaining M5,
 deployment and AI quality remain PENDING; defaults stay v1_only.
+Current override (2026-10-10): M5-D33/M5.0-33 are contract-PASS /
+implementation-PENDING; runtime-addendum revision 14 is current. The amendment
+DOCUMENT_UPDATE_COMPLETION_AMENDMENT.md is authoritative at SHA-256
+055ef0d6f971a23be31cc23d2b9f03b4b7cd17fa9f9bc7c505d1f565d6726b32.
+It adds exact job-free document eligibility to existing D32 identities/work,
+preserves locked REPLACE metadata and admits document-withdrawal
+group-certificate-only absence as-of K (later restoration is legal).
+Its private job-free M5 seal adapter is the sole two-clock exception: canonical
+M4 evaluation SEAL1->2 versus M5/base/published N->N+1; no old M4 wrapper edit,
+fake job or catch-up DELTA. Failure coordination and C2 remain PENDING.
+Only additive021's three named validator-body replacements supersede prior
+inventory clauses; 000--020 bytes/ledgers and exact020 checker remain intact.
+New paths require a NEW audited sequential schema -> metadata -> readiness ->
+job-free seal adapter -> publication reader -> held C1 activation. Preserve the
+CURRENT nine C1 pins in D33 handoff, not historical pre-edit pins. Existing
+accepted S32/R32/R-T are scoped prerequisites, not public/C1 acceptance.
+No source work is activated by this freeze alone. C1, Task17/Task2, remaining
+M5, deployment, AI quality and end-to-end utility stay PENDING; v1_only remains.
+
 M5 is not complete until every remaining M5.4--M5.6 executable gate is
 recorded.
 

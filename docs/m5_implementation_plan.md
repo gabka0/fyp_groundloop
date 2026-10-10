@@ -1,14 +1,24 @@
 # GroundLoop M5 Implementation Plan
 
-Status: M5.0 contract accepted through M5-D32 and M5.1--M5.3 complete;
-M5.0-24 through M5.0-32 are contract-`PASS` /
+Status: M5.0 contract accepted through M5-D33 and M5.1--M5.3 complete;
+M5.0-24 through M5.0-33 are contract-`PASS` /
 implementation-`PENDING`; M5.4-01 through M5.4-04 are `PASS`, M5.4-05 through
-M5.4-09 remain `PENDING`; the runtime addendum is revision 13. D32 freezes no
-implementation and requires a separately audited schema-020/shared-primitives,
-private-readiness, held-R-T, then C1 activation from the pushed D32 barrier.
-Earlier D31 schema-019 and repair receipts retain their scoped evidence only.
+M5.4-09 remain `PENDING`; the runtime addendum is revision 14. D33 freezes no
+implementation. Its separately audited NEW manifest must sequence021 schema/
+shared primitives (preinstall hash freeze), metadata, readiness, private
+job-free seal adapter, reader and held C1. No parallel source work.
 
-Current D32 boundary (2026-10-09): the accepted semantic-readiness amendment
+Current D33 boundary (2026-10-10): DOCUMENT_UPDATE_COMPLETION_AMENDMENT.md,
+SHA256055ef0d6f971a23be31cc23d2b9f03b4b7cd17fa9f9bc7c505d1f565d6726b32.
+Exact job-free eligibility reuses D32 identities/work; the private M5 adapter
+retains canonical M4 SEAL1->2 versus base N->N+1 without M4 source changes.
+Locked REPLACE metadata and as-of-K document certificate loss must validate.
+Only021's three named validator bodies change; exact020 checker and000--020
+stay immutable. Scoped S32=14f8def, R32=d716ebb and R-T=8290d47 are accepted
+prerequisites, not C1 completion. Held C1's nine CURRENT pins are in D33 handoff.
+Failure coordinator, C2, public routing and every wider claim stay PENDING.
+
+Historical D32 freeze boundary (2026-10-09): the accepted semantic-readiness amendment
 at SHA-256 0e9a4bbe8da34d8248ce138c4bc21cb8076ddb4a578ea6a36cd6a4e100811435
 adds no implementation authority by itself. A fresh audited manifest must
 sequence schema/shared primitives -> private readiness -> held R-T -> held C1.

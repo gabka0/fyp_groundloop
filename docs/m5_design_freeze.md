@@ -1,19 +1,20 @@
 # GroundLoop M5 Bounded Evidence-Group Design Freeze
 
-Status: frozen M5.0 contract, amended through accepted M5-D32 and
-M5-D24-C1--C7; implementation evidence for M5-D24 through M5-D32 remains
+Status: frozen M5.0 contract, amended through accepted M5-D33 and
+M5-D24-C1--C7; implementation evidence for M5-D24 through M5-D33 remains
 pending
 
 Date: 2026-08-02; M5-D21 through M5-D24-C7 amendments 2026-08-06--2026-08-18;
 M5-D25 amendment 2026-09-03; M5-D26 amendment 2026-09-07; M5-D27 erratum
 2026-09-17; M5-D28 amendment 2026-09-18; M5-D29 and M5-D30 amendments
-2026-09-22; M5-D31 amendment 2026-09-25; M5-D32 amendment 2026-10-09
+2026-09-22; M5-D31 amendment 2026-09-25; M5-D32 amendment 2026-10-09;
+M5-D33 amendment 2026-10-10
 
 Authority: this document specializes `docs/technical_design.md` v0.2 for M5.
 It preserves original decisions D-1 through D-20 except where the earlier
 pseudocode is mathematically inconsistent with its own stated system-of-
 distinct-representatives semantics. Those corrections, the later runtime
-decisions M5-D21 through M5-D32, and accepted M5-D24-C1 through M5-D24-C7 are
+decisions M5-D21 through M5-D33, and accepted M5-D24-C1 through M5-D24-C7 are
 recorded in the decision log and frozen here. The byte-total M5-D24
 specialization is authoritative at
 `docs/workstreams/m5_runtime_contract/RECOVERY_WORK_AMENDMENT.md`.
@@ -55,9 +56,17 @@ The M5-D32 group-only readiness correction is authoritative at
 `docs/workstreams/m5_runtime_contract/SEMANTIC_READINESS_AMENDMENT.md`, exact
 accepted SHA-256
 `0e9a4bbe8da34d8248ce138c4bc21cb8076ddb4a578ea6a36cd6a4e100811435`.
-Runtime-addendum revision 13 is current. Earlier D31 inventory prohibitions are
+Runtime-addendum revision 14 is current. Earlier D31 inventory prohibitions are
 superseded only for D32's explicitly enumerated future migration-020 delta;
 historical decisions and implementation receipts are not rewritten.
+
+The narrow M5-D33 document-update completion correction is authoritative at
+`docs/workstreams/m5_runtime_contract/DOCUMENT_UPDATE_COMPLETION_AMENDMENT.md`,
+accepted SHA-256
+`055ef0d6f971a23be31cc23d2b9f03b4b7cd17fa9f9bc7c505d1f565d6726b32`.
+Its exact job-free eligibility, metadata preservation, two-clock private seal,
+as-of-K group-certificate absence and three-function021 delta supersede ONLY
+the exclusions named there. Existing contracts/migrations remain immutable.
 
 M5 implementation begins only after the M5.0 *contract* gate passes. Later
 implementation-evidence cells in the acceptance matrix remain `PENDING` until
@@ -1591,6 +1600,33 @@ preserved. M5-D32/M5.0-32 are contract-PASS / implementation-PENDING. Task 17,
 Task 2, C1, M5.4--M5.6, deployment and AI quality remain PENDING; v1_only stays
 the default. This freeze implements nothing.
 
+### M5-D33 -- narrow document-update completion
+
+Reuse D32 kind/source/recipe/S+K accounting for exact document declarations
+with all direct arrays empty, no direct-job/scope/override/transition history,
+and genuine active M4 counter1/P. M5 root closure/cancellation and all counts
+independently validate; rootless start and completion stay separate commits.
+Preserve the genuine counter through readiness. A private M5 job-free seal
+adapter is the sole same-revision exception: retain every nonrevision M4
+readiness/promotion check, apply canonical M4 evaluation SEAL1->2, and retain
+M5/base/published N->N+1. No M4 source/wrapper modification, fake job, catch-up
+DELTA, new digest or second anchor; failure coordination remains PENDING.
+
+REPLACE derives existing document URI/authority under locks and retains the
+pair through preview/sidecars/replay/seal without changing the legacy payload.
+Document DELETE/REPLACE may emit ONLY group_certificate absence for an active
+group whose exact structural D25 before-present/after=None withdrawal and
+final incomplete state/binding closure are proved. Absence is at K; later
+restoration at L>K is legal on historical replay. All six kinds, D26 artifact/
+outer recipes and present-state recipes stay exact. No tombstone/null hash.
+
+Additive021 may replace only the readiness predecessor, work-contribution and
+event-result-children validators; no other schema object or old000--020 byte
+changes. Exact020 verifier remains strict; new routes require exact021 pins.
+All falsifiers, custody and separate activation barriers are normative in the
+amendment. M5-D33/M5.0-33 contract-PASS / implementation-PENDING. C1/Task17,
+M5, deployment, AI quality and end-to-end claims remain PENDING; v1_only stays.
+
 ## 11. Dynamic M4 integration contract
 
 ### M5-D14 -- typed v2 runtime identity
@@ -2225,6 +2261,7 @@ regression evidence.
 | M5-D30 | Total claim-current and direct-M4/M3 provenance closure | One changed-chunk currency range returns both subject kinds; dynamic claims validate through the working delta and exact sealed direct owner, activation-base claims validate through exact M3 publication closure, predecessor history uses a backward one-row PK route, and unavailable root/classic preimages are not reconstructed |
 | M5-D31 | Trusted preterminal context access | Additive migration 019 provides one read-only, argument-bound `SECURITY DEFINER` accessor for the genuine migration-017 promotion context; one-schema runtime consumption preserves the D25/D26 derivation, result-bound child authority, seal order and every matching/result/digest semantic |
 | M5-D32 | Accounted group-only semantic readiness | Separate rootless SC1->SP2 and eligible SPN->complete(N+1) commits use one new D24 work/timing kind, typed event/declaration-bound identity and exact S+K byte work; additive 020 changes only three CHECKs, two 016 validators and one pinned invoker predecessor function/trigger; D25 semantic state, D26 six reference kinds, legacy bytes and terminal seal remain exact |
+| M5-D33 | Narrow document-update completion | Exact job-free document readiness reuses D32 identities/work; a private two-clock M5 seal keeps canonical M4 SEAL1->2 versus M5 N->N+1; locked REPLACE metadata is preserved; document-induced active-group certificate absence is validated as-of K; additive021 replaces only three validator bodies, preserving000--020 and exact020 checks |
 
 ## 15. Release gate
 
