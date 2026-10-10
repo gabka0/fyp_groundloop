@@ -264,6 +264,19 @@ def _preterminal_envelope() -> tuple[object, ...]:
     )
 
 
+def _pending_anchor(
+    *, kind: str = "root_barrier", source_id: str = "root-set", revision: int = 3
+) -> tuple[object, ...]:
+    return (
+        kind,
+        source_id,
+        digests.runtime_work_contribution_key_digest(
+            epoch_id=9, contribution_kind=kind, source_id=source_id
+        ),
+        revision,
+    )
+
+
 class _PreterminalRowsCursor(_RowsCursor):
     def __init__(
         self,
@@ -275,6 +288,8 @@ class _PreterminalRowsCursor(_RowsCursor):
         preterminal: tuple[object, ...] | None = _preterminal_envelope(),
         present: list[tuple[object, ...]] | None = None,
         certificate: tuple[object, ...] | None = None,
+        pending_contribution: tuple[object, ...] | None = _pending_anchor(),
+        pending_reported: tuple[object, ...] | None = None,
     ) -> None:
         super().__init__(
             envelope=_envelope(),
@@ -287,6 +302,9 @@ class _PreterminalRowsCursor(_RowsCursor):
         self.context = context
         self.preterminal = preterminal
         self.calls: list[str] = []
+        self.pending_contribution = pending_contribution
+        self.pending_reported = pending_reported
+        self.pending_reads: list[tuple[str, object]] = []
 
     def execute(
         self, query: str | sql.Composable, params: object = None
@@ -309,6 +327,14 @@ class _PreterminalRowsCursor(_RowsCursor):
             self.rows = [] if self.context is None else [self.context]
         elif "JOIN groundloop_m5_matching_image_current" in query:
             self.rows = [] if self.preterminal is None else [self.preterminal]
+        elif "FROM groundloop_m5_runtime_work_contribution" in query:
+            self.pending_reads.append((normalized, params))
+            self.rows = (
+                [] if self.pending_contribution is None else [self.pending_contribution]
+            )
+        elif "FROM groundloop_m5_transition_call_timing" in query:
+            self.pending_reads.append((normalized, params))
+            self.rows = [] if self.pending_reported is None else [self.pending_reported]
         else:
             super().execute(query, params)
         return self
@@ -502,6 +528,176 @@ def test_preterminal_preparation_rejects_absent_private_context() -> None:
             expected_revision=3,
             sealed_revision=4,
         )
+
+
+@pytest.mark.parametrize("revision", (1, 3), ids=("prior", "current"))
+@pytest.mark.parametrize(
+    "kind",
+    (
+        "structural_open",
+        "m5_acquisition",
+        "direct_acquisition",
+        "m5_attempt_execution",
+        "direct_attempt_execution",
+        "direct_transition",
+        "root_result_stage",
+        "root_barrier",
+        "verifier_completion",
+        "cancellation",
+        "preterminal_late_return",
+    ),
+)
+def test_coherent_pending_anchor_preserves_identical_preterminal_children(
+    kind: str, revision: int
+) -> None:
+    anchor = _pending_anchor(kind=kind, revision=revision)
+    image = list(_preterminal_envelope())
+    image[41:45] = anchor
+    pending = _PreterminalRowsCursor(
+        preterminal=tuple(image), pending_contribution=anchor
+    )
+    no_pending = _PreterminalRowsCursor()
+    assert _prepare_preterminal_matching_publication_children(
+        cast(Any, pending), epoch_id=9, expected_revision=3, sealed_revision=4
+    ) == _prepare_preterminal_matching_publication_children(
+        cast(Any, no_pending), epoch_id=9, expected_revision=3, sealed_revision=4
+    )
+    assert len(pending.pending_reads) == 2
+    assert pending.pending_reads[0][1] == (9, kind, "root-set")
+    assert pending.pending_reads[1][1] == (9, kind, "root-set", revision)
+    assert no_pending.pending_reads == []
+    for query, _params in pending.pending_reads:
+        assert '"selected-schema".' in query
+        assert query.startswith("SELECT ")
+        assert (
+            "WHERE epoch_id = %s AND contribution_kind = %s AND source_id = %s"
+        ) in query
+        assert "FOR UPDATE" not in query
+
+
+@pytest.mark.parametrize(
+    ("source_id", "revision"),
+    (("semantic_pending", 2), ("semantic_complete", 3)),
+)
+def test_readiness_pending_point_is_read_only_and_preserved(
+    source_id: str, revision: int
+) -> None:
+    anchor = _pending_anchor(
+        kind="semantic_readiness", source_id=source_id, revision=revision
+    )
+    image = list(_preterminal_envelope())
+    image[41:45] = anchor
+    cursor = _PreterminalRowsCursor(
+        preterminal=tuple(image), pending_contribution=anchor
+    )
+    reference = _PreterminalRowsCursor()
+    assert _prepare_preterminal_matching_publication_children(
+        cast(Any, cursor), epoch_id=9, expected_revision=3, sealed_revision=4
+    ) == _prepare_preterminal_matching_publication_children(
+        cast(Any, reference), epoch_id=9, expected_revision=3, sealed_revision=4
+    )
+    assert cursor.pending_reads[0][1] == (9, "semantic_readiness", source_id)
+    assert cursor.pending_reads[1][1] == (
+        9,
+        "semantic_readiness",
+        source_id,
+        revision,
+    )
+    assert len(cursor.pending_reads) == 2
+    assert all(query.startswith("SELECT ") for query, _ in cursor.pending_reads)
+
+
+@pytest.mark.parametrize("mask", range(1, 15))
+def test_pending_anchor_rejects_every_partial_null_combination(mask: int) -> None:
+    image = list(_preterminal_envelope())
+    anchor = _pending_anchor()
+    image[41:45] = tuple(
+        value if mask & (1 << index) else None for index, value in enumerate(anchor)
+    )
+    cursor = _PreterminalRowsCursor(preterminal=tuple(image))
+    with pytest.raises(ValidationError, match="partial"):
+        _prepare_preterminal_matching_publication_children(
+            cast(Any, cursor), epoch_id=9, expected_revision=3, sealed_revision=4
+        )
+    assert cursor.pending_reads == []
+
+
+@pytest.mark.parametrize(
+    ("position", "value"),
+    (
+        (0, "seal"),
+        (0, "epoch_failure"),
+        (0, "terminal_job_failure"),
+        (0, "unknown"),
+        (0, 1),
+        (1, ""),
+        (1, "  "),
+        (1, 1),
+        (2, "malformed"),
+        (2, "a" * 64),
+        (2, 1),
+        (3, 0),
+        (3, -1),
+        (3, 4),
+        (3, True),
+        (3, "3"),
+    ),
+)
+def test_pending_anchor_rejects_invalid_coordinate_before_point_reads(
+    position: int, value: object
+) -> None:
+    image = list(_preterminal_envelope())
+    anchor = list(_pending_anchor())
+    anchor[position] = value
+    image[41:45] = anchor
+    cursor = _PreterminalRowsCursor(preterminal=tuple(image))
+    with pytest.raises(ValidationError):
+        _prepare_preterminal_matching_publication_children(
+            cast(Any, cursor), epoch_id=9, expected_revision=3, sealed_revision=4
+        )
+    assert cursor.pending_reads == []
+
+
+@pytest.mark.parametrize(
+    "contribution",
+    (
+        None,
+        ("cancellation", *_pending_anchor()[1:]),
+        (_pending_anchor()[0], "wrong-source", *_pending_anchor()[2:]),
+        (*_pending_anchor()[:2], "b" * 64, 3),
+        (*_pending_anchor()[:3], 2),
+        (*_pending_anchor()[:3], True),
+    ),
+)
+def test_pending_anchor_rejects_missing_or_conflicting_work_point(
+    contribution: tuple[object, ...] | None,
+) -> None:
+    image = list(_preterminal_envelope())
+    image[41:45] = _pending_anchor()
+    cursor = _PreterminalRowsCursor(
+        preterminal=tuple(image), pending_contribution=contribution
+    )
+    with pytest.raises(ValidationError, match="exact contribution"):
+        _prepare_preterminal_matching_publication_children(
+            cast(Any, cursor), epoch_id=9, expected_revision=3, sealed_revision=4
+        )
+    assert len(cursor.pending_reads) == 1
+
+
+@pytest.mark.parametrize("reported_key", (_pending_anchor()[2], "c" * 64))
+def test_pending_anchor_rejects_already_reported_or_conflicting_timing(
+    reported_key: object,
+) -> None:
+    image = list(_preterminal_envelope())
+    image[41:45] = _pending_anchor()
+    cursor = _PreterminalRowsCursor(
+        preterminal=tuple(image), pending_reported=(reported_key,)
+    )
+    with pytest.raises(ValidationError, match="already reported"):
+        _prepare_preterminal_matching_publication_children(
+            cast(Any, cursor), epoch_id=9, expected_revision=3, sealed_revision=4
+        )
+    assert len(cursor.pending_reads) == 2
 
 
 @pytest.mark.parametrize(

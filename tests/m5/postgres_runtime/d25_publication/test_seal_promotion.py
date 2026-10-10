@@ -25,6 +25,9 @@ from groundloop.postgres.migrations import (
     install_m5_bounded_document_withdrawal_bundle,
     install_m5_preterminal_seal_context_bundle,
 )
+from tests.m5.postgres_runtime.test_semantic_readiness import (
+    readiness_db as readiness_db,
+)
 
 
 @contextmanager
@@ -377,6 +380,207 @@ class _PreterminalSealConnection:
                     ),
                 )
         return result
+
+
+@pytest.mark.parametrize("action", ("REPLACE", "RETIRE"))
+@pytest.mark.parametrize("nonowner", (False, True))
+def test_genuine_readiness_pending_survives_preparation_and_freezes_missing(
+    readiness_db: Any, action: str, nonowner: bool
+) -> None:
+    from groundloop.m5.runtime.persistence import PostgresM5RuntimeStore
+    from tests.m5.postgres_runtime.test_semantic_readiness import (
+        _runtime_login,
+        _snapshot,
+    )
+
+    db = readiness_db
+    # The accepted matching-open fixture reads a definer-owned private context.
+    # Establish that foundation as its owner; this lane tests a distinct runtime
+    # principal's real readiness, pending seal, and replay, not non-owner open.
+    opened = _open_pending_matching_group(db, db.connection, action)
+    context = _runtime_login(db) if nonowner else db.reconnect()
+    with context as connection:
+        principal = connection.execute("SELECT current_user").fetchone()[0]
+        owner = db.connection.execute("SELECT current_user").fetchone()[0]
+        db.connection.commit()
+        assert (principal != owner) is nonowner
+        connection.commit()
+        plan, epoch, anchor = _genuine_pending_ready(
+            db, connection, action, opened=opened
+        )
+        before = PostgresM5RuntimeStore(connection).current_event_work(epoch)
+        statements: list[str] = []
+
+        class RecordingCursor(psycopg.Cursor[Any]):
+            def execute(self, query: Any, params: Any = None, **kwargs: Any) -> Any:
+                text = (
+                    query
+                    if isinstance(query, str)
+                    else query.as_string(self.connection)
+                )
+                statements.append(" ".join(text.split()))
+                return super().execute(query, params, **kwargs)
+
+        factory = connection.cursor_factory
+        connection.cursor_factory = RecordingCursor
+        try:
+            result = _sql_pending_seal_boundary(
+                db, connection, plan, epoch, anchor.anchor_revision
+            )
+        finally:
+            connection.cursor_factory = factory
+        assert (
+            sum(
+                q.startswith("UPDATE groundloop_m5_runtime_timing_accumulator ")
+                for q in statements
+            )
+            == 1
+        )
+        assert (
+            sum(
+                q.startswith("UPDATE groundloop_m5_runtime_work_accumulator ")
+                for q in statements
+            )
+            == 1
+        )
+        contribution = next(
+            i
+            for i, q in enumerate(statements)
+            if q.startswith("INSERT INTO groundloop_m5_runtime_work_contribution ")
+        )
+        terminal = next(
+            i
+            for i, q in enumerate(statements)
+            if q.startswith("UPDATE groundloop_m5_runtime_epoch ")
+        )
+        assert contribution < terminal
+        assert not any("SUM(" in q.upper() for q in statements)
+        assert statements[-1] == "SET CONSTRAINTS ALL IMMEDIATE"
+        assert all(
+            a + b == c
+            for a, b, c in zip(
+                before.counter_values(),
+                result.call_work.counter_values(),
+                result.event_work.counter_values(),
+                strict=True,
+            )
+        )
+        # Independent exhaustive test oracle, outside the terminal adapter. The
+        # adapter's authority remains the locked cumulative point, not this SUM.
+        sums = connection.execute(
+            sql.SQL("SELECT {} FROM {} WHERE epoch_id=%s").format(
+                sql.SQL(",").join(
+                    sql.SQL("sum({})").format(sql.Identifier(name))
+                    for name in result.event_work.counter_names()
+                ),
+                sql.Identifier(
+                    db.schema_name, "groundloop_m5_runtime_work_contribution"
+                ),
+            ),
+            (epoch,),
+        ).fetchone()
+        assert sums == result.event_work.counter_values()
+        row = connection.execute(
+            "SELECT contribution_key_digest,coordinator_non_db_non_neural_ns,"
+            "neural_wall_ns,postgres_roundtrip_wall_ns,external_io_wall_ns,end_to_end_wall_ns,"
+            "postgres_server_execution_ns,postgres_lock_wait_ns,postgres_wal_bytes,"
+            "postgres_shared_block_reads FROM groundloop_m5_transition_call_timing "
+            "WHERE epoch_id=%s AND contribution_kind=%s AND source_id=%s "
+            "AND anchor_revision=%s",
+            (
+                epoch,
+                anchor.contribution_kind.value,
+                anchor.source_id,
+                anchor.anchor_revision,
+            ),
+        ).fetchone()
+        assert row == (
+            anchor.contribution_key_digest,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        assert connection.execute(
+            "SELECT updated_revision,terminalized,pending_contribution_kind,"
+            "pending_source_id,"
+            "pending_contribution_key_digest,pending_anchor_revision,required_expected_count,"
+            "required_observed_count,required_missing_count "
+            "FROM groundloop_m5_runtime_timing_accumulator WHERE epoch_id=%s",
+            (epoch,),
+        ).fetchone() == (
+            anchor.anchor_revision + 1,
+            True,
+            None,
+            None,
+            None,
+            None,
+            4,
+            0,
+            4,
+        )
+        assert len(result.changed_state_references) == (4 if action == "REPLACE" else 2)
+        connection.commit()
+        before_replay = _snapshot(connection, db.schema_name)
+        replay = PostgresM5RuntimeStore(connection).read_typed_event_result(
+            plan.structural_event_id, plan.payload_hash
+        )
+        assert (
+            replay is not None
+            and replay.logical_result_hash == result.logical_result_hash
+        )
+        assert replay.event_work == result.event_work
+        assert not any(replay.call_work.counter_values())
+        assert _snapshot(connection, db.schema_name) == before_replay
+        with pytest.raises(
+            (ValidationError, psycopg.errors.RaiseException), match="preterminal"
+        ):
+            with connection.transaction(), connection.cursor() as cursor:
+                _prepare_preterminal_matching_publication_children(
+                    cursor,
+                    epoch_id=epoch,
+                    expected_revision=anchor.anchor_revision,
+                    sealed_revision=anchor.anchor_revision + 1,
+                )
+
+
+@pytest.mark.parametrize("action", ("REPLACE", "RETIRE"))
+def test_genuine_pending_seal_each_mutation_cut_rolls_back(
+    readiness_db: Any, action: str
+) -> None:
+    from tests.m5.postgres_runtime.test_semantic_readiness import _snapshot
+
+    db = readiness_db
+    plan, epoch, anchor = _genuine_pending_ready(db, db.connection, action)
+    before = _snapshot(db.connection, db.schema_name)
+    for point in (
+        "after_accounting_locks",
+        "after_half_terminal",
+        "after_preparation",
+        "after_contribution",
+        "after_prior_missing",
+        "after_terminal_runtime",
+        "after_work_cas",
+        "after_timing_cas",
+        "after_result_children",
+        "after_constraints",
+    ):
+
+        def fail(current: str, *, expected: str = point) -> None:
+            if current == expected:
+                raise RuntimeError("reader-boundary injected " + expected)
+
+        with pytest.raises(RuntimeError, match="reader-boundary injected"):
+            _sql_pending_seal_boundary(
+                db, db.connection, plan, epoch, anchor.anchor_revision, fail
+            )
+        assert _snapshot(db.connection, db.schema_name) == before
+    _sql_pending_seal_boundary(db, db.connection, plan, epoch, anchor.anchor_revision)
 
 
 def test_seal_promotion_is_one_epoch_and_does_not_own_outer_transaction() -> None:
@@ -926,3 +1130,788 @@ def test_live_preterminal_preparation_failure_rolls_back_seal(action: str) -> No
             "WHERE epoch_id=%s AND contribution_kind='seal')",
             (epoch_id, epoch_id),
         ).fetchone() == (0, 0)
+
+
+def _open_pending_matching_group(
+    db: Any, connection: Any, action: str
+) -> tuple[Any, int]:
+    """Compose accepted helpers before rev-1 commit, never held C1 or post-hoc.
+
+    The real stage writes are counted from newly inserted epoch-local rows.
+    Bytes come from the accepted structural-open producer. This is a test
+    foundation, not a claim of production C1 structural composition.
+    """
+    from groundloop.m5.runtime.contracts import M5PersistedMatchingSourceKind
+    from groundloop.m5.runtime.persistence import (
+        _derive_structural_open_work,
+        _load_candidate_manifest,
+        _persist_active_chunk_snapshot,
+        _persist_initial_pending_counters,
+        _persist_requirement_snapshot,
+        _persist_root_declarations,
+        _root_declarations_for_open,
+        _stage_structure,
+        _validate_effective_snapshots,
+        _validate_structure_declaration,
+    )
+    from groundloop.m5.runtime.postgres_matching import (
+        _finalize_prepared_matching_transition,
+        _prepare_matching_transition,
+        _stage_prepared_matching_transition,
+    )
+    from groundloop.m5.runtime.postgres_recovery import (
+        persist_structural_open_accounting,
+        persist_structural_open_identity,
+    )
+    from tests.m5.postgres_runtime.d25_store_core.conftest import (
+        authorize_and_derive_matching_transition,
+    )
+
+    plan = getattr(db, action.lower() + "_plan")(
+        event_id="d32-reader-pending-" + action.lower()
+    )
+    with connection.transaction(), connection.cursor() as cursor:
+        for table in (
+            "groundloop_runtime_mode",
+            "groundloop_m4_publication_head",
+            "groundloop_m5_publication_head",
+            "groundloop_m5_activation",
+        ):
+            assert cursor.execute(
+                sql.SQL("SELECT * FROM {} WHERE singleton FOR UPDATE").format(
+                    sql.Identifier(db.schema_name, table)
+                )
+            ).fetchone()
+        manifest = _load_candidate_manifest(cursor, plan.candidate_policy_id)
+        roots, root_set = _root_declarations_for_open(plan, manifest, None, None)
+        epoch = cursor.execute(
+            "INSERT INTO groundloop_epoch "
+            "(event_id,payload_hash,revision,structural_status,semantic_status,"
+            "evaluation_state,publication_mode,sealed_at) VALUES "
+            "(%s,%s,1,'committed','pending','pending','provisional',NULL) "
+            "RETURNING epoch_id",
+            (plan.structural_event_id, plan.payload_hash),
+        ).fetchone()[0]
+        cursor.execute(
+            "INSERT INTO groundloop_m5_update "
+            "(epoch_id,update_kind,previous_published_epoch_id,decision_policy_version,"
+            "manifest) VALUES (%s,%s,%s,%s,'{}'::jsonb)",
+            (
+                epoch,
+                action.lower() + "_group",
+                plan.expected_previous_published_epoch_id,
+                manifest.decision_policy_version,
+            ),
+        )
+        cursor.execute(
+            "INSERT INTO groundloop_m5_runtime_epoch "
+            "(epoch_id,structural_event_id,candidate_policy_id,"
+            "candidate_policy_manifest_hash,requirement_registry_snapshot_digest,"
+            "active_chunk_snapshot_digest,expected_previous_published_epoch_id,"
+            "requirement_root_set_hash,runtime_state,revision,open_work_count,"
+            "open_scope_count,blocking_failure_count,terminal_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'structural_committed',1,%s,%s,0,NULL)",
+            (
+                epoch,
+                plan.structural_event_id,
+                plan.candidate_policy_id,
+                plan.candidate_policy_manifest_hash,
+                plan.requirement_registry_snapshot.requirement_registry_snapshot_digest,
+                plan.active_chunk_snapshot.active_chunk_snapshot_digest,
+                plan.expected_previous_published_epoch_id,
+                root_set,
+                len(roots),
+                len(roots),
+            ),
+        )
+        _validate_structure_declaration(cursor, plan.event)
+        _stage_structure(
+            cursor, event=plan.event, epoch_id=epoch, failure_injector=None
+        )
+        _validate_effective_snapshots(
+            cursor, plan=plan, epoch_id=epoch, direct_open=False
+        )
+        _persist_requirement_snapshot(
+            cursor, snapshot=plan.requirement_registry_snapshot, epoch_id=epoch
+        )
+        _persist_active_chunk_snapshot(
+            cursor, snapshot=plan.active_chunk_snapshot, epoch_id=epoch
+        )
+        _persist_root_declarations(
+            cursor,
+            structural_event_id=plan.structural_event_id,
+            epoch_id=epoch,
+            roots=roots,
+        )
+        _persist_initial_pending_counters(
+            cursor,
+            snapshot=plan.requirement_registry_snapshot,
+            epoch_id=epoch,
+            roots=roots,
+        )
+        persist_structural_open_identity(
+            cursor,
+            epoch_id=epoch,
+            config=db.operational_config,
+            root_fallback_required={r.job.logical_job_id: False for r in roots},
+        )
+        intent = authorize_and_derive_matching_transition(
+            cursor,
+            epoch_id=epoch,
+            expected_runtime_revision=1,
+            resulting_revision=1,
+            source_kind=M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
+            source_id=plan.structural_event_id,
+            expected_source_identity_hash=plan.payload_hash,
+        )
+        prepared = _prepare_matching_transition(cursor, intent)
+        staged = _stage_prepared_matching_transition(cursor, intent, prepared)
+        measured = {}
+        for kind in ("group", "claim", "answer"):
+            measured[kind + "_state_write_count"] = cursor.execute(
+                sql.SQL("SELECT count(*) FROM {} WHERE epoch_id=%s").format(
+                    sql.Identifier(
+                        db.schema_name, "groundloop_m5_working_" + kind + "_state"
+                    )
+                ),
+                (epoch,),
+            ).fetchone()[0]
+        measured["certificate_binding_write_count"] = sum(
+            cursor.execute(
+                sql.SQL("SELECT count(*) FROM {} WHERE epoch_id=%s").format(
+                    sql.Identifier(
+                        db.schema_name,
+                        "groundloop_m5_working_" + kind + "_certificate_binding",
+                    )
+                ),
+                (epoch,),
+            ).fetchone()[0]
+            for kind in ("group", "claim")
+        )
+        assert measured["group_state_write_count"] == (
+            prepared.d24_owned_planned_write_counts.group_state_write_count
+        )
+        base = _derive_structural_open_work(cursor, epoch_id=epoch)
+        values = dict(zip(base.counter_names(), base.counter_values(), strict=True))
+        values.update(measured)
+        values["public_delta_count"] = 0
+        persist_structural_open_accounting(
+            cursor,
+            epoch_id=epoch,
+            structural_event_id=plan.structural_event_id,
+            payload_hash=plan.payload_hash,
+            structural_work=type(base)(**values),
+        )
+        _finalize_prepared_matching_transition(cursor, intent, staged)
+        cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
+    return plan, epoch
+
+
+def _genuine_pending_ready(
+    db: Any,
+    connection: Any,
+    action: str,
+    *,
+    opened: tuple[Any, int] | None = None,
+) -> tuple[Any, int, Any]:
+    from groundloop.m5.runtime.contracts import M5CancellationPlan, M5TerminalReason
+    from groundloop.m5.runtime.persistence import PostgresM5RuntimeStore
+    from tests.m5.postgres_runtime.test_semantic_readiness import _edge, _roots
+
+    plan, epoch = (
+        _open_pending_matching_group(db, connection, action)
+        if opened is None
+        else opened
+    )
+    if action == "RETIRE":
+        pending = _edge(
+            connection, epoch, plan.structural_event_id, "semantic_pending", 1
+        )
+        revision = pending.anchor.anchor_revision
+    else:
+        roots = _roots(plan, db.manifest)
+        cancellation = PostgresM5RuntimeStore(connection).cancel_m5_work_atomically(
+            epoch,
+            1,
+            M5CancellationPlan.build(
+                epoch_id=epoch,
+                structural_event_id=plan.structural_event_id,
+                reason=M5TerminalReason.SCOPE_RETIRED,
+                cancelled_job_ids=tuple(sorted(job.logical_job_id for _, job in roots)),
+            ),
+        )
+        revision = cancellation.resulting_revision
+    ready = _edge(
+        connection, epoch, plan.structural_event_id, "semantic_complete", revision
+    )
+    return plan, epoch, ready.anchor
+
+
+def _sql_pending_seal_boundary(
+    db: Any,
+    connection: Any,
+    plan: Any,
+    epoch: int,
+    revision: int,
+    cut: Callable[[str], None] = lambda _: None,
+) -> Any:
+    """Reader/SQL-boundary adapter, not production C1 or full work measurement.
+
+    Publication rowcounts and explicit frozen seal S/K encodes/hashes are
+    measured. Other compare-only helpers/validation/SQL producers are excluded
+    from this partial diagnostic; no complete producer or utility claim follows.
+    """
+    import hashlib
+
+    from groundloop.errors import InvalidEventError
+    from groundloop.m4.application import OpenEventReceipt, PublicationReceipt
+    from groundloop.m5.digests import enum_field, hash_field, int_field, text_field
+    from groundloop.m5.runtime.contracts import (
+        M5EventRunResult,
+        M5RunState,
+        M5RuntimeTiming,
+        M5RuntimeTimingCoverage,
+        M5RuntimeWork,
+    )
+    from groundloop.m5.runtime.persistence import _insert_runtime_work
+    from groundloop.m5.runtime.postgres_readiness import (
+        _lock_accounting,
+        _resolve_prior_pending,
+    )
+    from groundloop.m5.runtime.postgres_recovery import (
+        _TIMING_COVERAGE_COLUMNS,
+        _TIMING_SUM_COLUMNS,
+        _timing_accumulator_from_row,
+    )
+
+    sealed = revision + 1
+    with connection.transaction(), connection.cursor() as cursor:
+        for table in (
+            "groundloop_runtime_mode",
+            "groundloop_m4_publication_head",
+            "groundloop_m5_publication_head",
+        ):
+            cursor.execute(
+                sql.SQL("SELECT * FROM {} WHERE singleton FOR UPDATE").format(
+                    sql.Identifier(db.schema_name, table)
+                )
+            ).fetchone()
+        base = cursor.execute(
+            "SELECT revision,semantic_status FROM groundloop_epoch "
+            "WHERE epoch_id=%s FOR UPDATE",
+            (epoch,),
+        ).fetchone()
+        runtime = cursor.execute(
+            "SELECT revision,runtime_state FROM groundloop_m5_runtime_epoch "
+            "WHERE epoch_id=%s FOR UPDATE",
+            (epoch,),
+        ).fetchone()
+        if base != (revision, "complete") or runtime != (revision, "semantic_complete"):
+            raise InvalidEventError("SQL adapter requires genuine semantic readiness")
+        for table, key in (
+            ("groundloop_m5_owner_pending_counter", "owner_claim_id"),
+            ("groundloop_m5_answer_pending_counter", "answer_version_id"),
+        ):
+            cursor.execute(
+                sql.SQL(
+                    "SELECT * FROM {} WHERE epoch_id=%s "
+                    'ORDER BY {} COLLATE "C" FOR UPDATE'
+                ).format(sql.Identifier(db.schema_name, table), sql.Identifier(key)),
+                (epoch,),
+            ).fetchall()
+        prior, timing = _lock_accounting(cursor, db.schema_name, epoch, revision)
+        assert timing.has_pending_anchor
+        assert timing.pending_contribution_kind == "semantic_readiness"
+        assert timing.pending_source_id == "semantic_complete"
+        assert timing.pending_anchor_revision == revision
+        pending_coordinates = (
+            timing.pending_contribution_kind,
+            timing.pending_source_id,
+            timing.pending_contribution_key_digest,
+            timing.pending_anchor_revision,
+        )
+        cut("after_accounting_locks")
+        promote_matching_overlay(
+            cursor, epoch_id=epoch, expected_revision=revision, sealed_revision=sealed
+        )
+        deactivation = cursor.execute(
+            "SELECT d.group_version_id,d.action,d.successor_group_version_id,"
+            "v.group_family_id FROM groundloop_m5_group_deactivation d "
+            "JOIN groundloop_m5_group_version v USING(group_version_id) "
+            "WHERE d.epoch_id=%s AND d.event_id=%s",
+            (epoch, plan.structural_event_id),
+        ).fetchone()
+        assert deactivation is not None
+        old_group, action, successor, family = deactivation
+        assert cursor.execute(
+            "SELECT certificate_digest FROM groundloop_m5_group_state_materialized "
+            "WHERE group_version_id=%s",
+            (old_group,),
+        ).fetchone() == (None,)
+        requirements = [
+            r[0]
+            for r in cursor.execute(
+                "SELECT requirement_version_id FROM groundloop_m5_requirement_version "
+                'WHERE group_version_id=%s ORDER BY requirement_version_id COLLATE "C"',
+                (old_group,),
+            ).fetchall()
+        ]
+        cursor.execute(
+            "UPDATE groundloop_m5_group_validity SET valid_to_epoch=%s "
+            "WHERE group_version_id=%s AND valid_to_epoch IS NULL",
+            (epoch, old_group),
+        )
+        state_counts = {kind: 0 for kind in ("requirement", "group", "claim", "answer")}
+        for kind, key, keys in (
+            ("requirement", "requirement_version_id", requirements),
+            ("group", "group_version_id", [old_group]),
+        ):
+            state_counts[kind] += cursor.execute(
+                sql.SQL(
+                    "UPDATE {} SET valid_to_epoch=%s WHERE {}=ANY(%s) "
+                    "AND valid_to_epoch IS NULL"
+                ).format(
+                    sql.Identifier(
+                        db.schema_name, "groundloop_m5_published_" + kind + "_state"
+                    ),
+                    sql.Identifier(key),
+                ),
+                (epoch, keys),
+            ).rowcount
+            state_counts[kind] += cursor.execute(
+                sql.SQL("DELETE FROM {} WHERE {}=ANY(%s)").format(
+                    sql.Identifier(
+                        db.schema_name, "groundloop_m5_" + kind + "_state_materialized"
+                    ),
+                    sql.Identifier(key),
+                ),
+                (keys,),
+            ).rowcount
+        if action == "RETIRE":
+            assert successor is None
+            cursor.execute(
+                "INSERT INTO groundloop_m5_group_family_retirement VALUES (%s,%s,%s)",
+                (family, epoch, plan.structural_event_id),
+            )
+        else:
+            assert action == "REPLACE" and successor is not None
+            cursor.execute(
+                "UPDATE groundloop_m5_group_version SET lifecycle_state='PUBLISHED' "
+                "WHERE group_version_id=%s",
+                (successor,),
+            )
+            cursor.execute(
+                "UPDATE groundloop_m5_requirement_version "
+                "SET lifecycle_state='PUBLISHED' "
+                "WHERE group_version_id=%s",
+                (successor,),
+            )
+            cursor.execute(
+                "INSERT INTO groundloop_m5_group_validity "
+                "(group_version_id,group_family_id,claim_id,semantic_structure_hash,"
+                "supersedes_group_version_id,valid_from_epoch,valid_to_epoch) "
+                "SELECT v.group_version_id,v.group_family_id,f.claim_id,"
+                "v.semantic_structure_hash,v.supersedes_group_version_id,%s,NULL "
+                "FROM groundloop_m5_group_version v JOIN groundloop_m5_group_family f "
+                "USING(group_family_id) WHERE v.group_version_id=%s",
+                (epoch, successor),
+            )
+        for kind, key in (
+            ("requirement", "requirement_version_id"),
+            ("group", "group_version_id"),
+            ("claim", "claim_id"),
+            ("answer", "answer_version_id"),
+        ):
+            working = "groundloop_m5_working_" + kind + "_state"
+            keys = [
+                r[0]
+                for r in cursor.execute(
+                    sql.SQL("SELECT {} FROM {} WHERE epoch_id=%s").format(
+                        sql.Identifier(key), sql.Identifier(db.schema_name, working)
+                    ),
+                    (epoch,),
+                ).fetchall()
+            ]
+            if not keys:
+                continue
+            columns = [
+                r[0]
+                for r in cursor.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema=%s AND table_name=%s "
+                    "AND column_name NOT IN ('epoch_id','updated_revision') "
+                    "ORDER BY ordinal_position",
+                    (db.schema_name, working),
+                ).fetchall()
+            ]
+            col = sql.SQL(",").join(map(sql.Identifier, columns))
+            published = sql.Identifier(
+                db.schema_name, "groundloop_m5_published_" + kind + "_state"
+            )
+            materialized = sql.Identifier(
+                db.schema_name, "groundloop_m5_" + kind + "_state_materialized"
+            )
+            state_counts[kind] += cursor.execute(
+                sql.SQL(
+                    "UPDATE {} SET valid_to_epoch=%s WHERE {}=ANY(%s) "
+                    "AND valid_to_epoch IS NULL"
+                ).format(published, sql.Identifier(key)),
+                (epoch, keys),
+            ).rowcount
+            state_counts[kind] += cursor.execute(
+                sql.SQL("DELETE FROM {} WHERE {}=ANY(%s)").format(
+                    materialized, sql.Identifier(key)
+                ),
+                (keys,),
+            ).rowcount
+            state_counts[kind] += cursor.execute(
+                sql.SQL(
+                    "INSERT INTO {} "
+                    "({},valid_from_epoch,valid_to_epoch,sealed_revision) "
+                    "SELECT {},%s,NULL,%s FROM {} WHERE epoch_id=%s"
+                ).format(published, col, col, sql.Identifier(db.schema_name, working)),
+                (epoch, sealed, epoch),
+            ).rowcount
+            state_counts[kind] += cursor.execute(
+                sql.SQL(
+                    "INSERT INTO {} ({},updated_epoch,updated_revision) "
+                    "SELECT {},%s,%s FROM {} WHERE epoch_id=%s"
+                ).format(
+                    materialized, col, col, sql.Identifier(db.schema_name, working)
+                ),
+                (epoch, sealed, epoch),
+            ).rowcount
+        cursor.execute(
+            "UPDATE groundloop_m4_publication_head SET epoch_id=%s WHERE singleton",
+            (epoch,),
+        )
+        cursor.execute(
+            "UPDATE groundloop_m5_publication_head "
+            "SET epoch_id=%s,sealed_revision=%s WHERE singleton",
+            (epoch, sealed),
+        )
+        cursor.execute(
+            "UPDATE groundloop_epoch SET revision=%s,semantic_status='sealed',"
+            "evaluation_state='complete',publication_mode='strict',"
+            "sealed_at=clock_timestamp() "
+            "WHERE epoch_id=%s AND revision=%s",
+            (sealed, epoch, revision),
+        )
+        cut("after_half_terminal")
+        before_pending = cursor.execute(
+            "SELECT pending_contribution_kind,pending_source_id,"
+            "pending_contribution_key_digest,pending_anchor_revision "
+            "FROM groundloop_m5_runtime_timing_accumulator WHERE epoch_id=%s",
+            (epoch,),
+        ).fetchone()
+        assert before_pending == pending_coordinates
+        children = _prepare_preterminal_matching_publication_children(
+            cursor, epoch_id=epoch, expected_revision=revision, sealed_revision=sealed
+        )
+        assert (
+            cursor.execute(
+                "SELECT pending_contribution_kind,pending_source_id,"
+                "pending_contribution_key_digest,pending_anchor_revision "
+                "FROM groundloop_m5_runtime_timing_accumulator WHERE epoch_id=%s",
+                (epoch,),
+            ).fetchone()
+            == before_pending
+        )
+        cut("after_preparation")
+        publication = stable_m4_digest("m4-publication-v1", str(epoch))
+        combined = digests.combined_status_delta_set_digest(children.combined_deltas)
+        changed = digests.changed_state_set_digest(
+            r.reference_digest for r in children.changed_state_references
+        )
+        source_bytes = digests.stable_m5_preimage(
+            "m5-seal-contribution-source-v1",
+            text_field(plan.structural_event_id),
+            hash_field(combined),
+            hash_field(changed),
+            text_field(publication),
+        )
+        source = hashlib.sha256(source_bytes).hexdigest()
+        key_bytes = digests.stable_m5_preimage(
+            "m5-runtime-work-contribution-key-v1",
+            int_field(epoch),
+            enum_field("seal"),
+            text_field(plan.structural_event_id),
+        )
+        key = hashlib.sha256(key_bytes).hexdigest()
+        work = M5RuntimeWork(
+            group_state_write_count=state_counts["group"],
+            claim_state_write_count=state_counts["claim"],
+            answer_state_write_count=state_counts["answer"],
+            public_delta_count=len(children.combined_deltas),
+            bytes_hashed=len(source_bytes) + len(key_bytes),
+            bytes_serialized=len(source_bytes) + len(key_bytes),
+        )
+        total = M5RuntimeWork(
+            **dict(
+                zip(
+                    prior.counter_names(),
+                    (
+                        a + b
+                        for a, b in zip(
+                            prior.counter_values(), work.counter_values(), strict=True
+                        )
+                    ),
+                    strict=True,
+                )
+            )
+        )
+        names = (
+            "epoch_id",
+            "contribution_kind",
+            "source_id",
+            "source_identity_hash",
+            "contribution_key_digest",
+            "applied_revision",
+            *work.counter_names(),
+            "work_digest",
+        )
+        cursor.execute(
+            sql.SQL(
+                "INSERT INTO groundloop_m5_runtime_work_contribution ({}) VALUES ({})"
+            ).format(
+                sql.SQL(",").join(map(sql.Identifier, names)),
+                sql.SQL(",").join(sql.Placeholder() for _ in names),
+            ),
+            (
+                epoch,
+                "seal",
+                plan.structural_event_id,
+                source,
+                key,
+                sealed,
+                *work.counter_values(),
+                work.work_digest,
+            ),
+        )
+        cut("after_contribution")
+        _resolve_prior_pending(cursor, db.schema_name, epoch, timing)
+        cut("after_prior_missing")
+        cursor.execute(
+            "UPDATE groundloop_m5_runtime_epoch SET revision=%s,runtime_state='sealed',"
+            "terminal_at=clock_timestamp() WHERE epoch_id=%s AND revision=%s",
+            (sealed, epoch, revision),
+        )
+        for table in (
+            "groundloop_m5_owner_pending_counter",
+            "groundloop_m5_answer_pending_counter",
+        ):
+            cursor.execute(
+                sql.SQL("UPDATE {} SET updated_revision=%s WHERE epoch_id=%s").format(
+                    sql.Identifier(db.schema_name, table)
+                ),
+                (sealed, epoch),
+            )
+        cut("after_terminal_runtime")
+        assignments = sql.SQL(",").join(
+            sql.SQL("{}=%s").format(sql.Identifier(n)) for n in total.counter_names()
+        )
+        assert (
+            cursor.execute(
+                sql.SQL(
+                    "UPDATE groundloop_m5_runtime_work_accumulator SET {},"
+                    "work_digest=%s,updated_revision=%s,terminalized=true "
+                    "WHERE epoch_id=%s AND updated_revision=%s AND work_digest=%s "
+                    "AND NOT terminalized"
+                ).format(assignments),
+                (
+                    *total.counter_values(),
+                    total.work_digest,
+                    sealed,
+                    epoch,
+                    revision,
+                    prior.work_digest,
+                ),
+            ).rowcount
+            == 1
+        )
+        cut("after_work_cas")
+        increments = []
+        for prefix in (
+            "required",
+            "postgres_server_execution",
+            "postgres_lock_wait",
+            "postgres_wal_bytes",
+            "postgres_shared_block_reads",
+        ):
+            increments.extend(
+                (
+                    sql.SQL("{}={}+1").format(
+                        sql.Identifier(prefix + "_expected_count"),
+                        sql.Identifier(prefix + "_expected_count"),
+                    ),
+                    sql.SQL("{}={}+2").format(
+                        sql.Identifier(prefix + "_missing_count"),
+                        sql.Identifier(prefix + "_missing_count"),
+                    ),
+                )
+            )
+        assert (
+            cursor.execute(
+                sql.SQL(
+                    "UPDATE groundloop_m5_runtime_timing_accumulator SET {},"
+                    "updated_revision=%s,terminalized=true,pending_contribution_kind=NULL,"
+                    "pending_source_id=NULL,pending_contribution_key_digest=NULL,"
+                    "pending_anchor_revision=NULL WHERE epoch_id=%s "
+                    "AND updated_revision=%s AND NOT terminalized"
+                ).format(sql.SQL(",").join(increments)),
+                (sealed, epoch, revision),
+            ).rowcount
+            == 1
+        )
+        cut("after_timing_cas")
+        row = cursor.execute(
+            "SELECT "
+            + ",".join((*_TIMING_SUM_COLUMNS, *_TIMING_COVERAGE_COLUMNS))
+            + ",updated_revision,terminalized,pending_contribution_kind,"
+            "pending_source_id,"
+            "pending_contribution_key_digest,pending_anchor_revision "
+            "FROM groundloop_m5_runtime_timing_accumulator WHERE epoch_id=%s",
+            (epoch,),
+        ).fetchone()
+        event_timing, coverage = _timing_accumulator_from_row(row).project(
+            pending_as_missing=False
+        )
+        for kind, vector in (("event", total), ("call", work)):
+            _insert_runtime_work(
+                cursor,
+                structural_event_id=plan.structural_event_id,
+                epoch_id=epoch,
+                work_kind=kind,
+                work=vector,
+            )
+        result = M5EventRunResult.build(
+            event_id=plan.structural_event_id,
+            payload_hash=plan.payload_hash,
+            epoch_id=epoch,
+            state=M5RunState.SEALED,
+            replayed_outcome=None,
+            open_receipt=OpenEventReceipt(epoch, False, False),
+            publication_receipt=PublicationReceipt(epoch, publication, False),
+            event_work=total,
+            call_work=work,
+            event_timing=event_timing,
+            call_timing=M5RuntimeTiming(),
+            combined_deltas=children.combined_deltas,
+            changed_state_references=children.changed_state_references,
+            failure_reason=None,
+            event_timing_coverage=coverage,
+            call_timing_coverage=M5RuntimeTimingCoverage.single_point(
+                None, terminal_client_roundtrip_included=False
+            ),
+        )
+        result_names = (
+            "structural_event_id",
+            "payload_hash",
+            "epoch_id",
+            "outcome",
+            "original_open_receipt_binding_hash",
+            "publication_id",
+            "original_publication_receipt_binding_hash",
+            "event_work_kind",
+            "event_work_digest",
+            "combined_status_delta_set_hash",
+            "changed_state_set_hash",
+            "failure_reason",
+            "logical_result_hash",
+            "delta_count",
+            "state_reference_count",
+            *_TIMING_SUM_COLUMNS,
+        )
+        result_values = (
+            plan.structural_event_id,
+            plan.payload_hash,
+            epoch,
+            "sealed",
+            digests.open_event_receipt_binding_digest(
+                epoch_id=epoch,
+                replayed=False,
+                already_sealed=False,
+                publication_id=None,
+                already_failed=False,
+                failure_reason=None,
+            ),
+            publication,
+            digests.publication_receipt_binding_digest(
+                epoch_id=epoch, publication_id=publication, replayed=False
+            ),
+            "event",
+            total.work_digest,
+            combined,
+            changed,
+            None,
+            result.logical_result_hash,
+            len(children.combined_deltas),
+            len(children.changed_state_references),
+            *(getattr(event_timing, n) for n in _TIMING_SUM_COLUMNS),
+        )
+        cursor.execute(
+            sql.SQL("INSERT INTO groundloop_m5_event_result ({}) VALUES ({})").format(
+                sql.SQL(",").join(map(sql.Identifier, result_names)),
+                sql.SQL(",").join(sql.Placeholder() for _ in result_names),
+            ),
+            result_values,
+        )
+        assert (
+            build_matching_publication_children(
+                cursor, epoch_id=epoch, sealed_revision=sealed
+            )
+            == children
+        )
+        for ordinal, delta in enumerate(children.combined_deltas):
+            cursor.execute(
+                "INSERT INTO groundloop_m5_event_result_delta "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (
+                    plan.structural_event_id,
+                    ordinal,
+                    delta.object_type,
+                    delta.object_id,
+                    delta.old_status,
+                    delta.new_status,
+                    delta.reason,
+                ),
+            )
+        for ordinal, reference in enumerate(children.changed_state_references):
+            cursor.execute(
+                "INSERT INTO groundloop_m5_event_result_state_reference "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                (
+                    plan.structural_event_id,
+                    ordinal,
+                    reference.kind.value,
+                    reference.object_id,
+                    reference.epoch_id,
+                    reference.revision,
+                    reference.state_artifact_hash,
+                    reference.reference_digest,
+                ),
+            )
+        coverage_names = (
+            "structural_event_id",
+            "epoch_id",
+            *_TIMING_COVERAGE_COLUMNS,
+            "terminal_client_roundtrip_included",
+        )
+        cursor.execute(
+            sql.SQL(
+                "INSERT INTO groundloop_m5_event_timing_coverage ({}) VALUES ({})"
+            ).format(
+                sql.SQL(",").join(map(sql.Identifier, coverage_names)),
+                sql.SQL(",").join(sql.Placeholder() for _ in coverage_names),
+            ),
+            (
+                plan.structural_event_id,
+                epoch,
+                *(getattr(coverage, n) for n in _TIMING_COVERAGE_COLUMNS),
+                False,
+            ),
+        )
+        cut("after_result_children")
+        cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
+        cut("after_constraints")
+        return result

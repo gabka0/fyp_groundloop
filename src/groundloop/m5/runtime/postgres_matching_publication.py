@@ -122,6 +122,22 @@ _D26_KINDS = frozenset(
     }
 )
 _RUNTIME_WORK_COUNTER_NAMES = M5RuntimeWork.counter_names()
+_PENDING_TIMING_KINDS = frozenset(
+    {
+        "structural_open",
+        "m5_acquisition",
+        "direct_acquisition",
+        "m5_attempt_execution",
+        "direct_attempt_execution",
+        "direct_transition",
+        "root_result_stage",
+        "root_barrier",
+        "verifier_completion",
+        "cancellation",
+        "preterminal_late_return",
+        "semantic_readiness",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -573,6 +589,69 @@ def _load_seal_envelope(
     )
 
 
+def _validate_preterminal_pending_timing(
+    cursor: _SchemaBoundPublicationReader,
+    *,
+    epoch_id: int,
+    expected_revision: int,
+    coordinates: tuple[object, ...],
+) -> None:
+    """Prove one unreported prior point without resolving or changing it.
+
+    The terminal coordinator owns resolution and the final accumulator CAS.
+    Reads here are immutable point keys in the already captured namespace.
+    """
+
+    if all(value is None for value in coordinates):
+        return
+    if len(coordinates) != 4 or any(value is None for value in coordinates):
+        raise ValidationError("preterminal pending timing anchor is partial")
+    kind, source_id, raw_key, revision = coordinates
+    if (
+        type(kind) is not str
+        or kind not in _PENDING_TIMING_KINDS
+        or type(source_id) is not str
+        or not source_id.strip()
+        or type(raw_key) is not str
+        or type(revision) is not int
+        or not 1 <= revision <= expected_revision
+    ):
+        raise ValidationError("preterminal pending timing coordinates are invalid")
+    key = _strip_hash(raw_key, name="preterminal pending timing key")
+    if key != digests.runtime_work_contribution_key_digest(
+        epoch_id=epoch_id, contribution_kind=kind, source_id=source_id
+    ):
+        raise ValidationError("preterminal pending timing key is inconsistent")
+    contributions = cursor.execute(
+        """
+        SELECT contribution_kind, source_id, contribution_key_digest,
+               applied_revision
+        FROM groundloop_m5_runtime_work_contribution
+        WHERE epoch_id = %s AND contribution_kind = %s AND source_id = %s
+        """,
+        (epoch_id, kind, source_id),
+    ).fetchall()
+    if len(contributions) != 1 or (
+        contributions[0][0] != kind
+        or contributions[0][1] != source_id
+        or _strip_hash(contributions[0][2], name="pending work contribution key") != key
+        or type(contributions[0][3]) is not int
+        or contributions[0][3] != revision
+    ):
+        raise ValidationError("preterminal pending timing lacks exact contribution")
+    reported = cursor.execute(
+        """
+        SELECT contribution_key_digest
+        FROM groundloop_m5_transition_call_timing
+        WHERE epoch_id = %s AND contribution_kind = %s AND source_id = %s
+          AND anchor_revision = %s
+        """,
+        (epoch_id, kind, source_id, revision),
+    ).fetchall()
+    if reported:
+        raise ValidationError("preterminal pending timing was already reported")
+
+
 def _load_preterminal_seal_envelope(
     cursor: _SchemaBoundPublicationReader,
     *,
@@ -720,7 +799,6 @@ def _load_preterminal_seal_envelope(
         or int(row[36]) > expected_revision
         or tuple(row[index] for index in (37, 38)) != (expected_revision, False)
         or tuple(row[index] for index in (39, 40)) != (expected_revision, False)
-        or any(row[index] is not None for index in range(41, 45))
         or (row[45] is not None and str(row[45]) != str(row[0]))
         or int(row[49]) not in {0, 1}
         or tuple(int(row[index]) for index in range(50, 54)) != (0, 0, 0, 1)
@@ -728,6 +806,12 @@ def _load_preterminal_seal_envelope(
         or tuple(str(value) for value in row[55]) != (str(context[0]),)
     ):
         raise ValidationError("preterminal seal coordinates are inconsistent")
+    _validate_preterminal_pending_timing(
+        cursor,
+        epoch_id=epoch_id,
+        expected_revision=expected_revision,
+        coordinates=tuple(row[41:45]),
+    )
     return _SealEnvelope(
         event_id=str(row[0]),
         payload_hash=_strip_hash(row[1], name="event payload hash"),
