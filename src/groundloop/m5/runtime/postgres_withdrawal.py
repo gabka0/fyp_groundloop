@@ -12,7 +12,7 @@ import hashlib
 import struct
 from collections.abc import Iterable
 from copy import deepcopy
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass, replace
 from datetime import datetime
 from enum import StrEnum
 from types import UnionType
@@ -337,6 +337,94 @@ def _require_d29_document_route_authority(cursor: Cursor[Any]) -> None:
     _verify_m5_bounded_document_withdrawal_route_authority(cursor)
 
 
+def _document_structural_payload(
+    cursor: Cursor[Any],
+    event: M5TypedEventPlan,
+    *,
+    epoch_id: int | None = None,
+) -> StructuralPayload:
+    """Derive REPLACE metadata without acquiring a lock or caller authority.
+
+    Preview reads the owning document at the event's predecessor. Existing
+    events additionally require their exact immutable overlay and manifest.
+    First application repeats this read after the existing source-tier locks;
+    this helper never reacquires an earlier-tier lock during continuation.
+    """
+
+    payload = _structural_payload_from_event(event)
+    concrete = event.event
+    if type(concrete) is not ReplaceDocumentVersionEvent:
+        return payload
+    row = cursor.execute(
+        """
+        SELECT document.document_id, document.source_uri,
+               document.authority_class, version.valid_from_epoch,
+               version.valid_to_epoch
+        FROM groundloop_document_version AS version
+        JOIN groundloop_document AS document
+          ON document.document_id = version.document_id
+        WHERE version.document_version_id = %s
+        """,
+        (concrete.old_document_version_id,),
+    ).fetchone()
+    predecessor = event.expected_previous_published_epoch_id
+    if row is None or (
+        row[0] != concrete.document_id
+        or type(row[0]) is not str
+        or (row[1] is not None and type(row[1]) is not str)
+        or type(row[2]) is not str
+        or not row[2].strip()
+        or type(row[3]) is not int
+        or not 1 <= row[3] <= predecessor
+        or (row[4] is not None and (type(row[4]) is not int or row[4] <= predecessor))
+    ):
+        raise EventConflictError("replacement owning document source is inconsistent")
+    source_uri, authority_class = row[1], row[2]
+    if epoch_id is not None:
+        if type(epoch_id) is not int or epoch_id <= predecessor:
+            raise EventConflictError("replacement metadata epoch is inconsistent")
+        metadata_rows = cursor.execute(
+            """
+            SELECT epoch_id, document_id, source_uri, authority_class
+            FROM groundloop_m4_document_metadata_overlay
+            WHERE epoch_id = %s
+            ORDER BY document_id COLLATE "C"
+            """,
+            (epoch_id,),
+        ).fetchall()
+        if metadata_rows != [
+            (epoch_id, concrete.document_id, source_uri, authority_class)
+        ]:
+            raise EventConflictError("replacement retained metadata differs from owner")
+        # The retained pair, not a newer current version, is the replay input.
+        source_uri, authority_class = metadata_rows[0][2:4]
+    assert payload.inserted is not None
+    resolved = replace(
+        payload,
+        inserted=replace(
+            payload.inserted,
+            source_uri=source_uri,
+            authority_class=authority_class,
+        ),
+    )
+    if epoch_id is not None:
+        update_row = cursor.execute(
+            "SELECT manifest FROM groundloop_m4_update WHERE epoch_id = %s",
+            (epoch_id,),
+        ).fetchone()
+        value = None if update_row is None else update_row[0]
+        runtime = value.get(_M4_RUNTIME_MANIFEST_KEY) if type(value) is dict else None
+        if (
+            type(value) is not dict
+            or tuple(value) != (_M4_RUNTIME_MANIFEST_KEY,)
+            or type(runtime) is not dict
+            or set(runtime) != {"event_manifest", "scope_claim_ids", "failure_reason"}
+            or runtime["event_manifest"] != resolved.manifest
+        ):
+            raise EventConflictError("replacement retained event manifest changed")
+    return resolved
+
+
 def _document_declaration_manifest(
     direct_open: M5DirectOpenPlan,
 ) -> dict[str, object]:
@@ -403,6 +491,7 @@ def _validate_direct_update_manifest(
     *,
     direct_scope_root_job_ids: tuple[str, ...],
     runtime_state: str,
+    structural_payload: StructuralPayload | None = None,
 ) -> None:
     """Validate the exact typed M4 metadata object without serializing it."""
 
@@ -412,7 +501,13 @@ def _validate_direct_update_manifest(
     expected_keys = {"event_manifest", "scope_claim_ids", "failure_reason"}
     if type(runtime) is not dict or set(runtime) != expected_keys:
         raise EventConflictError("retained direct runtime metadata has wrong keys")
-    expected_event_manifest = _structural_payload_from_event(event).manifest
+    if type(event.event) is ReplaceDocumentVersionEvent and structural_payload is None:
+        raise EventConflictError("replacement manifest requires store-derived metadata")
+    expected_event_manifest = (
+        _structural_payload_from_event(event)
+        if structural_payload is None
+        else structural_payload
+    ).manifest
     direct = event.direct_plan
     assert direct is not None
     expected_scopes = {
@@ -878,6 +973,9 @@ def _read_existing_document_closure(
         checked,
         direct_scope_root_job_ids=manifest_scopes,
         runtime_state=runtime_state,
+        structural_payload=_document_structural_payload(
+            cursor, checked, epoch_id=int(row[0])
+        ),
     )
     epoch_state = (
         str(row[3]),
@@ -1652,6 +1750,10 @@ def _validated_structural_source_chunks(
             """,
             (closure.epoch_id,),
         ).fetchall()
+    # All existing document/overlay/version/chunk locks above are held before
+    # first-application metadata becomes authority. Replay is compare-only.
+    payload = _document_structural_payload(cursor, event, epoch_id=closure.epoch_id)
+    inserted = payload.inserted
     deactivation_rows = cursor.execute(
         """
         SELECT epoch_id, document_version_id
@@ -1868,6 +1970,20 @@ def _validated_structural_source_chunks(
     ):
         raise EventConflictError("inserted document identity is inconsistent")
     expected_chunks = {chunk.chunk_version_id: chunk for chunk in inserted.chunks}
+    inserted_end: int | None = None
+    if inserted_rows:
+        raw_end = inserted_rows[0][4]
+        if raw_end is not None:
+            if (
+                not event_local_only
+                or type(event.event) is not ReplaceDocumentVersionEvent
+                or type(raw_end) is not int
+                or raw_end <= closure.epoch_id
+            ):
+                raise EventConflictError(
+                    "inserted document historical interval is invalid"
+                )
+            inserted_end = raw_end
     for row in inserted_rows:
         chunk_id = str(row[5])
         expected = expected_chunks.get(chunk_id)
@@ -1876,13 +1992,15 @@ def _validated_structural_source_chunks(
             or str(row[1]) != inserted.version.document_id
             or str(row[2]) != inserted.version.content_hash
             or int(row[3]) != closure.epoch_id
-            or row[4] is not None
+            or row[4] != inserted_end
+            or (row[4] is not None and type(row[4]) is not int)
             or int(row[6]) != expected.chunk_index
             or str(row[7]) != expected.text
             or _strip(row[8]) != expected.text_hash
             or str(row[9]) != inserted.chunker_version
             or int(row[10]) != closure.epoch_id
-            or row[11] is not None
+            or row[11] != inserted_end
+            or (row[11] is not None and type(row[11]) is not int)
         ):
             raise EventConflictError("inserted document sidecar closure changed")
         provenance_rows = cursor.execute(
@@ -3002,6 +3120,7 @@ class _PreparedDocumentOpenSnapshot:
     locator: _D29LocatorAuthority
     located_observation_edges: tuple[M5WithdrawnObservationEdge, ...]
     bootstrap_authority: tuple[tuple[str, _BootstrapObservationAuthority], ...]
+    structural_payload: StructuralPayload | None = None
 
 
 @dataclass(slots=True)
@@ -3017,6 +3136,7 @@ class _PreparedDocumentOpen:
     locator: _D29LocatorAuthority
     located_observation_edges: tuple[M5WithdrawnObservationEdge, ...]
     bootstrap_authority: tuple[tuple[str, _BootstrapObservationAuthority], ...]
+    structural_payload: StructuralPayload | None = None
     authority_snapshot: _PreparedDocumentOpenSnapshot | None = None
     phase: _DocumentOpenPhase = _DocumentOpenPhase.LOCATORS_GATHERED
 
@@ -5254,7 +5374,18 @@ def _gather_d29_locator_authority(
         tuple(sorted(direct_claim_ids, key=_c_key)),
     )
     prospective_direct = _direct_open_from_withdrawal(
-        event, execution_policy, prospective_direct_withdrawal
+        event,
+        execution_policy,
+        prospective_direct_withdrawal,
+        structural_payload=_document_structural_payload(
+            cursor,
+            event,
+            epoch_id=(
+                closure.epoch_id
+                if type(event.event) is ReplaceDocumentVersionEvent
+                else None
+            ),
+        ),
     )
     return _D29LocatorAuthority(
         predecessor_snapshots=snapshots,
@@ -12516,7 +12647,7 @@ def _stored_direct_open(
         fallback_claims,
     )
     return M5DirectOpenPlan(
-        _structural_payload_from_event(event),
+        _document_structural_payload(cursor, event, epoch_id=closure.epoch_id),
         withdrawal,
         root_tuple,
         scope_tuple,
@@ -12850,6 +12981,8 @@ def _direct_open_from_withdrawal(
     event: M5TypedEventPlan,
     execution_policy: ApplicationExecutionPolicy,
     withdrawal: StructuralWithdrawal,
+    *,
+    structural_payload: StructuralPayload | None = None,
 ) -> M5DirectOpenPlan:
     checked = _document_event(event)
     if type(execution_policy) is not ApplicationExecutionPolicy:
@@ -12885,7 +13018,11 @@ def _direct_open_from_withdrawal(
         if root.kind is M4JobKind.IMPACT_DISCOVERY
     )
     return M5DirectOpenPlan(
-        _structural_payload_from_event(checked),
+        (
+            _structural_payload_from_event(checked)
+            if structural_payload is None
+            else structural_payload
+        ),
         withdrawal,
         root_tuple,
         scopes,
@@ -12936,6 +13073,7 @@ def _seal_prepared_document_open(prepared: _PreparedDocumentOpen) -> None:
         locator=deepcopy(prepared.locator),
         located_observation_edges=deepcopy(prepared.located_observation_edges),
         bootstrap_authority=deepcopy(prepared.bootstrap_authority),
+        structural_payload=deepcopy(prepared.structural_payload),
     )
     object.__setattr__(snapshot, "snapshot_identity", id(snapshot))
     prepared.authority_snapshot = snapshot
@@ -12969,6 +13107,7 @@ def _validate_prepared_document_open(
         or prepared.locator != snapshot.locator
         or prepared.located_observation_edges != snapshot.located_observation_edges
         or prepared.bootstrap_authority != snapshot.bootstrap_authority
+        or prepared.structural_payload != snapshot.structural_payload
     ):
         raise EventConflictError("D29 prepared locator authority changed")
     if (
@@ -13161,7 +13300,12 @@ def _preview_document_direct_open(
         return direct_open
     _require_d30_read_committed(cursor)
     withdrawal = _direct_withdrawal_preview(cursor, checked)
-    return _direct_open_from_withdrawal(checked, execution_policy, withdrawal)
+    return _direct_open_from_withdrawal(
+        checked,
+        execution_policy,
+        withdrawal,
+        structural_payload=_document_structural_payload(cursor, checked),
+    )
 
 
 def _prepare_locked_document_open(
@@ -13188,6 +13332,9 @@ def _prepare_locked_document_open(
         checked,
         lock_authority=True,
         closure=closure,
+    )
+    structural_payload = _document_structural_payload(
+        cursor, checked, epoch_id=closure.epoch_id
     )
     _require_d30_read_committed(cursor)
     locator = _gather_d29_locator_authority(
@@ -13242,6 +13389,7 @@ def _prepare_locked_document_open(
         bootstrap_authority=tuple(
             sorted(bootstrap_authority.items(), key=lambda item: _c_key(item[0]))
         ),
+        structural_payload=structural_payload,
     )
     prepared.prepared_identity = id(prepared)
     _seal_prepared_document_open(prepared)
@@ -13280,6 +13428,11 @@ def _continue_locked_document_open(
     )
     if source_chunks != prepared.source_chunks:
         raise EventConflictError("D29 prepared structural source changed")
+    structural_payload = _document_structural_payload(
+        cursor, checked, epoch_id=closure.epoch_id
+    )
+    if structural_payload != prepared.structural_payload:
+        raise EventConflictError("D29 prepared document metadata changed")
     _validate_d29_event_snapshot_image(cursor, checked, closure)
     prepared.phase = _DocumentOpenPhase.CONSUMED
     locator = prepared.locator
@@ -13370,7 +13523,10 @@ def _continue_locked_document_open(
         candidates=direct_candidates,
     )
     direct_open = _direct_open_from_withdrawal(
-        checked, execution_policy, direct_withdrawal
+        checked,
+        execution_policy,
+        direct_withdrawal,
+        structural_payload=structural_payload,
     )
     requirement_roots = _document_requirement_roots(
         checked, closure.candidate_policy, requirement_withdrawal
