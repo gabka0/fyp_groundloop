@@ -4910,6 +4910,399 @@ def install_m5_semantic_readiness_bundle(
         return M5SemanticReadinessBundleInstallResult(identity, True)
 
 
+# H33 commit6e1fe1e pins this opt-in schema-admin tranche. These literals are
+# authority, never values learned from caller bytes or a mutable checkout.
+M5_DOCUMENT_UPDATE_COMPLETION_BUNDLE_ID = (
+    "m5-document-update-completion-schema-bundle-v1"
+)
+M5_DOCUMENT_UPDATE_COMPLETION_MIGRATION_LABEL = (
+    "migrations/021_m5_document_update_completion.sql"
+)
+M5_DOCUMENT_UPDATE_COMPLETION_MIGRATION_PATH = (
+    ROOT / M5_DOCUMENT_UPDATE_COMPLETION_MIGRATION_LABEL
+)
+M5_DOCUMENT_UPDATE_COMPLETION_ORACLE_SHA256 = (
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+)
+M5_ACCEPTED_DOCUMENT_UPDATE_COMPLETION_MIGRATION_SHA256 = (
+    "198646f9a4b2f965d9ca89df684eb4f4287f3753aeff1d255c848bcb0352681c"
+)
+M5_ACCEPTED_DOCUMENT_UPDATE_COMPLETION_BUNDLE_SHA256 = (
+    "893baf9d50cbb84c27b356cbc329f97bc714ca8c280778ece920b5a4dc728eb5"
+)
+M5_DOCUMENT_UPDATE_COMPLETION_INSTALL_LOCK_RELATIONS = (
+    "groundloop_m5_schema_bundle",
+    "groundloop_epoch",
+    "groundloop_m5_runtime_epoch",
+    "groundloop_m5_runtime_work_contribution",
+    "groundloop_m5_transition_call_timing",
+    "groundloop_m5_runtime_timing_accumulator",
+)
+_M5_DOCUMENT_COMPLETION_MARKER = "-- groundloop:m5-document-completion-statement:"
+_M5_DOCUMENT_COMPLETION_STATEMENT_NAMES = (
+    "predecessor_function",
+    "work_validator",
+    "result_children",
+)
+_M5_DOCUMENT_COMPLETION_FUNCTION_NAMES = (
+    "groundloop_m5_validate_semantic_readiness_predecessor",
+    "groundloop_m5_validate_work_contribution",
+    "groundloop_m5_validate_event_result_children",
+)
+_M5_DOCUMENT_COMPLETION_SOURCE_SHA256 = {
+    False: "95de1ba328b2f3de1cf99f3810d7f992e2bf9d9d01b4b08c85940efec2e65cfa",
+    True: "8e8cfe6cbcf544d0e843bfa8189cb229573fa2b0cc597f84ff0a6d39139fb059",
+}
+
+
+class M5DocumentUpdateCompletionBundleError(M5RuntimeBundleError):
+    """Migration 021 or its permanent schema authority is not exact."""
+
+
+@dataclass(frozen=True, slots=True)
+class M5DocumentUpdateCompletionBundleIdentity:
+    bundle_id: str
+    bundle_sha256: str
+    migration_sha256: str
+    oracle_sha256: str
+    prerequisite_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class M5DocumentUpdateCompletionBundleInstallResult:
+    identity: M5DocumentUpdateCompletionBundleIdentity
+    applied: bool
+
+
+def m5_document_update_completion_bundle_identity(
+    *, migration_bytes: bytes | None = None
+) -> M5DocumentUpdateCompletionBundleIdentity:
+    """Describe requested bytes without promoting them to reviewed authority."""
+    migration = (
+        M5_DOCUMENT_UPDATE_COMPLETION_MIGRATION_PATH.read_bytes()
+        if migration_bytes is None
+        else migration_bytes
+    )
+    migration_hash = _sha256(migration)
+    return M5DocumentUpdateCompletionBundleIdentity(
+        M5_DOCUMENT_UPDATE_COMPLETION_BUNDLE_ID,
+        stable_m5_digest(
+            M5_DOCUMENT_UPDATE_COMPLETION_BUNDLE_ID,
+            text_field(M5_DOCUMENT_UPDATE_COMPLETION_MIGRATION_LABEL),
+            hash_field(migration_hash),
+            hash_field(M5_ACCEPTED_SEMANTIC_READINESS_BUNDLE_SHA256),
+        ),
+        migration_hash,
+        M5_DOCUMENT_UPDATE_COMPLETION_ORACLE_SHA256,
+        M5_ACCEPTED_SEMANTIC_READINESS_BUNDLE_SHA256,
+    )
+
+
+def _m5_document_completion_ledger(
+    identity: M5DocumentUpdateCompletionBundleIdentity,
+) -> tuple[str, ...]:
+    return (
+        identity.bundle_id,
+        identity.bundle_sha256,
+        identity.migration_sha256,
+        identity.oracle_sha256,
+        identity.prerequisite_sha256,
+    )
+
+
+def _m5_document_completion_pinned_source() -> bytes:
+    source = M5_DOCUMENT_UPDATE_COMPLETION_MIGRATION_PATH.read_bytes()
+    if _sha256(source) != M5_ACCEPTED_DOCUMENT_UPDATE_COMPLETION_MIGRATION_SHA256:
+        raise M5DocumentUpdateCompletionBundleError(
+            "021 local source does not match H33 authority"
+        )
+    return source
+
+
+def _m5_document_completion_statements(migration: bytes) -> tuple[tuple[str, str], ...]:
+    try:
+        source = migration.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise M5DocumentUpdateCompletionBundleError("021 is not UTF-8") from error
+    parts = source.split(_M5_DOCUMENT_COMPLETION_MARKER)
+    if any(
+        line.strip() and not line.lstrip().startswith("--")
+        for line in parts[0].splitlines()
+    ):
+        raise M5DocumentUpdateCompletionBundleError("executable SQL before 021 marker")
+    if any("\n" not in part for part in parts[1:]):
+        raise M5DocumentUpdateCompletionBundleError("021 malformed statement marker")
+    statements = tuple(
+        (part.split("\n", 1)[0], part.split("\n", 1)[1].strip()) for part in parts[1:]
+    )
+    if tuple(name for name, _ in statements) != _M5_DOCUMENT_COMPLETION_STATEMENT_NAMES:
+        raise M5DocumentUpdateCompletionBundleError(
+            "021 statement inventory is not exact"
+        )
+    for (_, statement), function in zip(
+        statements, _M5_DOCUMENT_COMPLETION_FUNCTION_NAMES, strict=True
+    ):
+        match = _M5_READINESS_FUNCTION_PATTERN.fullmatch(statement)
+        if (
+            match is None
+            or match.group(1) != function
+            or not statement.startswith("CREATE OR REPLACE FUNCTION " + function + "()")
+        ):
+            raise M5DocumentUpdateCompletionBundleError("021 replacement is not exact")
+    return statements
+
+
+def _m5_document_completion_require_prerequisites(
+    executor: _M5_READINESS_EXECUTOR, *, schema_name: str
+) -> None:
+    # This retains all000--019 source/ledger authority without calling the old
+    # strict020 body checker on a correctly upgraded021 catalog.
+    _m5_readiness_require_prerequisites(executor, schema_name=schema_name)
+    _m5_readiness_pinned_source()
+    expected = (
+        M5_SEMANTIC_READINESS_BUNDLE_ID,
+        M5_ACCEPTED_SEMANTIC_READINESS_BUNDLE_SHA256,
+        M5_ACCEPTED_SEMANTIC_READINESS_MIGRATION_SHA256,
+        M5_SEMANTIC_READINESS_ORACLE_SHA256,
+        M5_ACCEPTED_PRETERMINAL_SEAL_CONTEXT_BUNDLE_SHA256,
+    )
+    if (
+        _m5_readiness_bundle_row(executor, expected[0], schema_name=schema_name)
+        != expected
+    ):
+        raise M5PrerequisiteError("021 requires exact five-field020 authority")
+
+
+def _m5_document_completion_verify_catalog(
+    executor: _M5_READINESS_EXECUTOR, *, schema_name: str, installed: bool
+) -> None:
+    """Verify all172 bodies plus preserved catalog, flags, ACLs and signatures."""
+    _m5_document_completion_statements(_m5_document_completion_pinned_source())
+    if not installed:
+        _m5_readiness_verify_catalog(executor, schema_name=schema_name, installed=True)
+    if (
+        _m5_readiness_catalog_fingerprint(executor, schema_name=schema_name)
+        != _M5_READINESS_CATALOG_SHA256[True]
+    ):
+        raise M5DocumentUpdateCompletionBundleError(
+            "021 structural catalog is not exact"
+        )
+    rows = _m5_readiness_query(
+        executor,
+        "SELECT p.proname,p.prosrc FROM pg_catalog.pg_proc p JOIN "
+        "pg_catalog.pg_namespace n ON n.oid=p.pronamespace "
+        "WHERE n.nspname=%s AND pg_catalog.textlike(p.proname::text,'groundloop_%%') "
+        'ORDER BY p.proname COLLATE "C"',
+        (schema_name,),
+    ).fetchall()
+    digest = hashlib.sha256(b"m5-document-completion-function-sources-v1\x00")
+    for row in rows:
+        for value in row:
+            encoded = str(value).encode("utf-8")
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
+    if (
+        len(rows) != 172
+        or len({row[0] for row in rows}) != 172
+        or digest.hexdigest() != _M5_DOCUMENT_COMPLETION_SOURCE_SHA256[installed]
+    ):
+        raise M5DocumentUpdateCompletionBundleError(
+            "021 full function source catalog is not exact"
+        )
+    _m5_readiness_verify_preserved_catalog(
+        executor, schema_name=schema_name, installed=True
+    )
+    # The retained020 helper covers167 migration functions. The other five
+    # come from the exact core oracle and need the SAME signature/flag checks.
+    source = M5_ORACLE_PATH.read_text()
+    headers = {
+        match.group(1): source[match.start() : match.start(3)]
+        for match in _M5_READINESS_FUNCTION_PATTERN.finditer(source)
+    }
+    if len(headers) != 5:
+        raise M5DocumentUpdateCompletionBundleError(
+            "021 oracle function inventory is not exact"
+        )
+    _m5_readiness_verify_function_signatures(
+        executor, schema_name=schema_name, headers=headers
+    )
+    rows = _m5_readiness_query(
+        executor,
+        "SELECT p.proname,p.proowner=c.relowner,l.lanname,p.prosecdef,p.proconfig,"
+        "p.provolatile,p.proisstrict,p.proleakproof,p.proparallel,p.prokind,"
+        "ARRAY(SELECT a.grantee::text||':'||a.privilege_type||':'||"
+        "a.is_grantable::text FROM pg_catalog.aclexplode(COALESCE(p.proacl,"
+        "pg_catalog.acldefault('f',p.proowner))) a ORDER BY a.grantee),c.relowner "
+        "FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n "
+        "ON n.oid=p.pronamespace JOIN pg_catalog.pg_language l ON l.oid=p.prolang "
+        "JOIN pg_catalog.pg_class c ON c.relnamespace=n.oid "
+        "AND c.relname='groundloop_m5_schema_bundle' "
+        "WHERE n.nspname=%s AND p.proname=ANY(%s)",
+        (schema_name, list(headers)),
+    ).fetchall()
+    if len(rows) != 5:
+        raise M5DocumentUpdateCompletionBundleError("021 oracle functions are absent")
+    for row in rows:
+        header = headers[str(row[0])]
+        language = re.search(r"\bLANGUAGE (\w+)", header)
+        assert language is not None  # pinned source, not a caller input
+        expected_flags = (
+            True,
+            language.group(1),
+            False,
+            None,
+            "i" if "IMMUTABLE" in header else "s",
+            True,
+            False,
+            "s" if "PARALLEL SAFE" in header else "u",
+            "f",
+            ["0:EXECUTE:false", f"{row[-1]}:EXECUTE:false"],
+        )
+        if tuple(row[1:-1]) != expected_flags:
+            raise M5DocumentUpdateCompletionBundleError(
+                "021 oracle function flags/ACL are not exact"
+            )
+
+
+def require_m5_document_update_completion_bundle(
+    executor: _M5_READINESS_EXECUTOR, *, schema_name: str
+) -> None:
+    """Read-only exact021 authority in the captured permanent schema only."""
+    row = _m5_readiness_query(
+        executor,
+        "SELECT nspname FROM pg_catalog.pg_namespace WHERE nspname=%s "
+        "AND nspname !~ '^pg_' AND oid<>pg_catalog.pg_my_temp_schema()",
+        (schema_name,),
+    ).fetchone()
+    if row != (schema_name,):
+        raise M5DocumentUpdateCompletionBundleError(
+            "021 authority schema is absent or temporary"
+        )
+    identity = m5_document_update_completion_bundle_identity(
+        migration_bytes=_m5_document_completion_pinned_source()
+    )
+    if _m5_readiness_bundle_row(
+        executor, identity.bundle_id, schema_name=schema_name
+    ) != (_m5_document_completion_ledger(identity)):
+        raise M5DocumentUpdateCompletionBundleError(
+            "021 requires its exact five-field ledger"
+        )
+    _m5_document_completion_require_prerequisites(executor, schema_name=schema_name)
+    _m5_document_completion_verify_catalog(
+        executor, schema_name=schema_name, installed=True
+    )
+
+
+def install_m5_document_update_completion_bundle(
+    connection: Connection[Any],
+    *,
+    failure_injector: Callable[[str], None] | None = None,
+    migration_bytes: bytes | None = None,
+) -> M5DocumentUpdateCompletionBundleInstallResult:
+    """Opt-in ledger-first021 installation; no runtime or default-install change."""
+    if connection.info.transaction_status != TransactionStatus.IDLE:
+        raise M5DocumentUpdateCompletionBundleError(
+            "021 requires an idle outer transaction"
+        )
+    if connection.read_only is True or connection.isolation_level not in (
+        None,
+        IsolationLevel.READ_COMMITTED,
+    ):
+        raise M5DocumentUpdateCompletionBundleError(
+            "021 requires read-write READ COMMITTED"
+        )
+    migration = (
+        _m5_document_completion_pinned_source()
+        if migration_bytes is None
+        else migration_bytes
+    )
+    identity = m5_document_update_completion_bundle_identity(migration_bytes=migration)
+    expected = _m5_document_completion_ledger(identity)
+
+    def cut(point: str) -> None:
+        if failure_injector is not None:
+            failure_injector(point)
+
+    with connection.transaction():
+        connection.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED READ WRITE")
+        schema_name = _m5_readiness_schema(connection)
+        ledger = _m5_readiness_bundle_row(
+            connection, identity.bundle_id, schema_name=schema_name
+        )
+        if ledger is not None:
+            if ledger != expected:
+                raise M5BundleHashConflictError(
+                    "021 ledger conflicts with requested bytes"
+                )
+            require_m5_document_update_completion_bundle(
+                connection, schema_name=schema_name
+            )
+            return M5DocumentUpdateCompletionBundleInstallResult(identity, False)
+        cut("after_initial_ledger")
+        if (
+            identity.migration_sha256
+            != M5_ACCEPTED_DOCUMENT_UPDATE_COMPLETION_MIGRATION_SHA256
+            or identity.bundle_sha256
+            != M5_ACCEPTED_DOCUMENT_UPDATE_COMPLETION_BUNDLE_SHA256
+        ):
+            raise M5DocumentUpdateCompletionBundleError(
+                "021 first-install bytes do not match H33 authority"
+            )
+        statements = _m5_document_completion_statements(migration)
+        _m5_document_completion_require_prerequisites(
+            connection, schema_name=schema_name
+        )
+        cut("after_prerequisite")
+        for relation in M5_DOCUMENT_UPDATE_COMPLETION_INSTALL_LOCK_RELATIONS:
+            connection.execute(
+                sql.SQL("LOCK TABLE {} IN SHARE ROW EXCLUSIVE MODE").format(
+                    sql.Identifier(schema_name, relation)
+                )
+            )
+        cut("after_install_lock")
+        ledger = _m5_readiness_bundle_row(
+            connection, identity.bundle_id, schema_name=schema_name
+        )
+        if ledger is not None:
+            if ledger != expected:
+                raise M5BundleHashConflictError(
+                    "021 ledger conflicts under install lock"
+                )
+            require_m5_document_update_completion_bundle(
+                connection, schema_name=schema_name
+            )
+            return M5DocumentUpdateCompletionBundleInstallResult(identity, False)
+        _m5_document_completion_require_prerequisites(
+            connection, schema_name=schema_name
+        )
+        _m5_document_completion_verify_catalog(
+            connection, schema_name=schema_name, installed=False
+        )
+        connection.execute(
+            "SELECT pg_catalog.set_config('search_path',"
+            "pg_catalog.quote_ident(%s) OPERATOR(pg_catalog.||) ', pg_catalog',true)",
+            (schema_name,),
+        )
+        for name, statement in statements:
+            cut(f"before_{name}")
+            connection.execute(statement)
+            cut(f"after_{name}")
+        _m5_document_completion_verify_catalog(
+            connection, schema_name=schema_name, installed=True
+        )
+        cut("before_ledger")
+        connection.execute(
+            sql.SQL(
+                "INSERT INTO {} (bundle_id,bundle_sha256,migration_sha256,"
+                "oracle_sha256,prerequisite_sha256,applied_at) "
+                "VALUES (%s,%s,%s,%s,%s,pg_catalog.now())"
+            ).format(sql.Identifier(schema_name, "groundloop_m5_schema_bundle")),
+            expected,
+        )
+        cut("after_ledger")
+        return M5DocumentUpdateCompletionBundleInstallResult(identity, True)
+
+
 __all__ = [
     "LEGACY_MIGRATION_NAMES",
     "LEGACY_MIGRATION_PATHS",
@@ -5006,4 +5399,17 @@ __all__ = [
     "m5_semantic_readiness_bundle_identity",
     "install_m5_semantic_readiness_bundle",
     "require_m5_semantic_readiness_bundle",
+    "M5_DOCUMENT_UPDATE_COMPLETION_BUNDLE_ID",
+    "M5_DOCUMENT_UPDATE_COMPLETION_MIGRATION_LABEL",
+    "M5_DOCUMENT_UPDATE_COMPLETION_MIGRATION_PATH",
+    "M5_DOCUMENT_UPDATE_COMPLETION_ORACLE_SHA256",
+    "M5_DOCUMENT_UPDATE_COMPLETION_INSTALL_LOCK_RELATIONS",
+    "M5_ACCEPTED_DOCUMENT_UPDATE_COMPLETION_MIGRATION_SHA256",
+    "M5_ACCEPTED_DOCUMENT_UPDATE_COMPLETION_BUNDLE_SHA256",
+    "M5DocumentUpdateCompletionBundleError",
+    "M5DocumentUpdateCompletionBundleIdentity",
+    "M5DocumentUpdateCompletionBundleInstallResult",
+    "m5_document_update_completion_bundle_identity",
+    "install_m5_document_update_completion_bundle",
+    "require_m5_document_update_completion_bundle",
 ]
