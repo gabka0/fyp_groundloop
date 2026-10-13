@@ -10,29 +10,51 @@ import hashlib
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from psycopg import Connection, Cursor, IsolationLevel, sql
 from psycopg.pq import TransactionStatus
 
+from groundloop.domain import ChunkVersion, DocumentVersion, SubjectKind
 from groundloop.errors import EventConflictError, InvalidEventError, ValidationError
+from groundloop.m4 import evaluation_overlay
+from groundloop.m4.contracts import stable_m4_digest
+from groundloop.m4.pipeline import InsertedDocument, StructuralPayload
 from groundloop.m5.digests import enum_field, int_field, text_field
 from groundloop.m5.runtime import digests
+from groundloop.m5.runtime import postgres_withdrawal as document_source
 from groundloop.m5.runtime.contracts import (
+    ActiveChunkSnapshot,
+    ActiveChunkSnapshotEntry,
+    M5CandidatePolicyManifest,
+    M5DiscoveryDirection,
+    M5DiscoveryScopeContract,
+    M5JobKind,
+    M5LogicalJobSpec,
+    M5ReplayedOutcome,
+    M5RequirementRootProvenance,
     M5RuntimeTimingObservation,
     M5RuntimeWork,
     M5RuntimeWorkContributionKind,
     M5TerminalReason,
     M5TransitionTimingAnchor,
+    RequirementRegistrySnapshot,
+    RequirementRegistrySnapshotEntry,
+    SemanticPairKey,
 )
 from groundloop.m5.runtime.postgres_recovery import (
+    _STRUCTURAL_OPEN_COUNTERS,
     _TIMING_COVERAGE_COLUMNS,
     _TIMING_SUM_COLUMNS,
     _timing_accumulator_from_row,
     _TimingAccumulator,
 )
 from groundloop.postgres.migrations import (
+    M5_DOCUMENT_UPDATE_COMPLETION_BUNDLE_ID,
+    _m5_readiness_bundle_row,
     _m5_readiness_schema,
+    require_m5_document_update_completion_bundle,
     require_m5_semantic_readiness_bundle,
 )
 
@@ -43,6 +65,32 @@ _PREDECESSORS = {
     "semantic_complete": "semantic_pending",
 }
 _GROUP_KINDS = frozenset({"register_group", "replace_group", "retire_group"})
+_R33_DOCUMENT_KINDS = frozenset(
+    {"document_insert", "document_delete", "document_replace"}
+)
+_R33_COUNTER_FIELDS = (
+    "epoch_id",
+    "declaration_hash",
+    "lifecycle_state",
+    "default_evaluation_state",
+    "confirmed_as_of_epoch",
+    "open_discovery_scope_count",
+    "revision",
+)
+_R33_SEAL_FIELDS = (
+    "transition_id",
+    "payload_hash",
+    "transition_kind",
+    "from_revision",
+    "to_revision",
+    "override_rows_written",
+)
+_R33_DIRECT_HISTORY = (
+    "groundloop_semantic_job",
+    "groundloop_discovery_scope",
+    "groundloop_m5_direct_terminal_projection",
+    "groundloop_m4_evaluation_override_counter",
+)
 _PENDING_KINDS = frozenset(
     {
         "structural_open",
@@ -223,14 +271,904 @@ def _check_epoch_identity(
     _hash(runtime["requirement_root_set_hash"])
 
 
-def _check_declaration(
+def _r33_require_authority(cursor: Cursor[Any], schema: str) -> bool:
+    """A present021 is authoritative or an error, never an020 fallback."""
+    present = (
+        _m5_readiness_bundle_row(
+            cursor, M5_DOCUMENT_UPDATE_COMPLETION_BUNDLE_ID, schema_name=schema
+        )
+        is not None
+    )
+    if present:
+        require_m5_document_update_completion_bundle(cursor, schema_name=schema)
+    else:
+        require_m5_semantic_readiness_bundle(cursor, schema_name=schema)
+    return present
+
+
+def _r33_records(
+    cursor: Cursor[Any], statement: sql.Composed, parameters: tuple[Any, ...]
+) -> list[dict[str, Any]]:
+    cursor.execute(statement, parameters)
+    assert cursor.description is not None
+    names = tuple(column.name for column in cursor.description)
+    return [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]
+
+
+def _r33_record(
+    cursor: Cursor[Any], schema: str, relation: str, key: str, value: Any
+) -> dict[str, Any]:
+    records = _r33_records(
+        cursor,
+        sql.SQL("SELECT * FROM {} WHERE {} OPERATOR(pg_catalog.=) %s").format(
+            sql.Identifier(schema, relation), sql.Identifier(key)
+        ),
+        (value,),
+    )
+    if len(records) != 1:
+        raise EventConflictError(
+            "readiness retained document source is absent/ambiguous"
+        )
+    return records[0]
+
+
+def _r33_text(value: Any) -> str:
+    if type(value) is not str or not value.strip():
+        raise EventConflictError("readiness document source identifier is malformed")
+    return value
+
+
+def _r33_snapshot_headers(
+    cursor: Cursor[Any], schema: str, epoch: int, runtime: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    registry_hash = _hash(runtime["requirement_registry_snapshot_digest"])
+    chunk_hash = _hash(runtime["active_chunk_snapshot_digest"])
+    registry = _r33_record(
+        cursor,
+        schema,
+        "groundloop_m5_requirement_registry_snapshot",
+        "requirement_registry_snapshot_digest",
+        registry_hash,
+    )
+    chunks = _r33_record(
+        cursor,
+        schema,
+        "groundloop_m5_active_chunk_snapshot",
+        "active_chunk_snapshot_digest",
+        chunk_hash,
+    )
+    for header in (registry, chunks):
+        if (
+            type(header["created_epoch_id"]) is not int
+            or not 1 <= header["created_epoch_id"] <= epoch
+            or not isinstance(header["created_at"], datetime)
+        ):
+            raise EventConflictError("readiness snapshot creation point changed")
+    if (
+        chunks["normalizer_id"] != document_source._D29_NORMALIZER_ID
+        or _hash(chunks["normalizer_provenance_hash"])
+        != document_source._D29_NORMALIZER_PROVENANCE_HASH
+    ):
+        raise EventConflictError("readiness snapshot normalizer authority changed")
+    return registry, chunks
+
+
+def _r33_snapshots(
+    cursor: Cursor[Any], schema: str, epoch: int, runtime: dict[str, Any]
+) -> tuple[RequirementRegistrySnapshot, ActiveChunkSnapshot]:
+    """Re-encode retained snapshot members, not today's corpus or semantics."""
+    registry, chunks = _r33_snapshot_headers(cursor, schema, epoch, runtime)
+    registry_hash = _hash(runtime["requirement_registry_snapshot_digest"])
+    chunk_hash = _hash(runtime["active_chunk_snapshot_digest"])
+    members = _r33_records(
+        cursor,
+        sql.SQL(
+            "SELECT * FROM {} WHERE requirement_registry_snapshot_digest "
+            "OPERATOR(pg_catalog.=) %s ORDER BY member_ordinal"
+        ).format(
+            sql.Identifier(schema, "groundloop_m5_requirement_registry_snapshot_member")
+        ),
+        (registry_hash,),
+    )
+    chunk_members = _r33_records(
+        cursor,
+        sql.SQL(
+            "SELECT * FROM {} WHERE active_chunk_snapshot_digest "
+            "OPERATOR(pg_catalog.=) %s ORDER BY member_ordinal"
+        ).format(sql.Identifier(schema, "groundloop_m5_active_chunk_snapshot_member")),
+        (chunk_hash,),
+    )
+    for rows in (members, chunk_members):
+        if tuple(row["member_ordinal"] for row in rows) != tuple(range(len(rows))):
+            raise EventConflictError("readiness snapshot members are not dense")
+    requirement_snapshot = RequirementRegistrySnapshot(
+        registry["requirement_count"],
+        tuple(
+            RequirementRegistrySnapshotEntry(
+                requirement_version_id=row["requirement_version_id"],
+                group_version_id=row["group_version_id"],
+                group_family_id=row["group_family_id"],
+                owner_claim_id=row["owner_claim_id"],
+                normalized_requirement_text=row["normalized_requirement_text"],
+                requirement_text_hash=_hash(row["requirement_text_hash"]),
+            )
+            for row in members
+        ),
+        registry_hash,
+    )
+    chunk_snapshot = ActiveChunkSnapshot(
+        chunks["chunk_count"],
+        tuple(
+            ActiveChunkSnapshotEntry(row["chunk_version_id"], _hash(row["text_hash"]))
+            for row in chunk_members
+        ),
+        chunk_hash,
+    )
+    return requirement_snapshot, chunk_snapshot
+
+
+def _r33_terminal_result(
+    cursor: Cursor[Any], base: dict[str, Any], runtime: dict[str, Any]
+) -> None:
+    """Canonical immutable envelope first; never hydrate a terminal D29 plan."""
+    result = document_source._load_canonical_terminal_result(
+        cursor,
+        structural_event_id=str(runtime["structural_event_id"]),
+        payload_hash=_hash(base["payload_hash"]),
+    )
+    if (
+        result is None
+        or result.epoch_id != base["epoch_id"]
+        or result.replayed_outcome is not M5ReplayedOutcome.SEALED
+        or result.publication_receipt is None
+        or result.publication_receipt.publication_id
+        != stable_m4_digest("m4-publication-v1", str(base["epoch_id"]))
+        or result.event_work.public_delta_count != len(result.combined_deltas)
+        or any(
+            (ref.epoch_id, ref.revision) != (base["epoch_id"], base["revision"])
+            for ref in result.changed_state_references
+        )
+    ):
+        raise EventConflictError("readiness terminal document envelope is not exact")
+
+
+def _r33_predecessor(
+    cursor: Cursor[Any], schema: str, epoch: int, predecessor: int
+) -> dict[str, Any]:
+    """Historical P authority, without requiring P to be today's head."""
+    previous = _read_row(cursor, schema, "groundloop_epoch", predecessor, lock=False)
+    if (
+        not 0 < predecessor < epoch
+        or (
+            previous["structural_status"],
+            previous["semantic_status"],
+            previous["evaluation_state"],
+            previous["publication_mode"],
+        )
+        != ("committed", "sealed", "complete", "strict")
+        or previous["sealed_at"] is None
+    ):
+        raise EventConflictError("readiness document predecessor is not sealed")
+    typed = _rows(cursor, schema, "groundloop_m5_runtime_epoch", predecessor)
+    if typed:
+        _check_epoch_identity(
+            previous, typed[0], structural_event_id=str(previous["event_id"])
+        )
+        if typed[0]["runtime_state"] != "sealed" or any(
+            typed[0][name] != 0
+            for name in (
+                "open_work_count",
+                "open_scope_count",
+                "blocking_failure_count",
+            )
+        ):
+            raise EventConflictError("readiness predecessor has unresolved typed work")
+        _r33_terminal_result(cursor, previous, typed[0])
+        _r33_snapshot_headers(cursor, schema, predecessor, typed[0])
+    else:
+        activation = _r33_record(
+            cursor, schema, "groundloop_m5_activation", "singleton", True
+        )
+        if activation["base_m4_epoch_id"] != predecessor or not isinstance(
+            activation["activated_at"], datetime
+        ):
+            raise EventConflictError(
+                "readiness predecessor is not activation bootstrap"
+            )
+        _r33_text(activation["activation_id"])
+        _hash(activation["payload_hash"])
+    return previous
+
+
+def _r33_counter_point(
+    base: dict[str, Any], runtime: dict[str, Any], predecessor: int
+) -> None:
+    """Validate ONLY the same-statement header/counter/history snapshot."""
+    point = runtime.get("_r33_document_point")
+    if type(point) is not dict or set(point) != {
+        "transition_count",
+        "direct_history",
+        "owner_counter_bad",
+        "answer_counter_bad",
+        "counter",
+        "seal",
+    }:
+        raise EventConflictError("readiness document counter snapshot is absent")
+    if type(point["transition_count"]) is not int or any(
+        type(point[name]) is not bool
+        for name in ("direct_history", "owner_counter_bad", "answer_counter_bad")
+    ):
+        raise EventConflictError("readiness counter history snapshot is malformed")
+    counter = point["counter"]
+    transition = point["seal"]
+    if (
+        type(counter) is not dict
+        or set(counter) != set(_R33_COUNTER_FIELDS)
+        or type(transition) is not dict
+        or set(transition) != set(_R33_SEAL_FIELDS)
+    ):
+        raise EventConflictError("readiness document counter/seal shape is malformed")
+    if (
+        any(
+            type(counter[name]) is not int
+            for name in (
+                "epoch_id",
+                "revision",
+                "confirmed_as_of_epoch",
+                "open_discovery_scope_count",
+            )
+        )
+        or counter["epoch_id"] != base["epoch_id"]
+        or counter["default_evaluation_state"] != "complete"
+        or counter["open_discovery_scope_count"] != 0
+        or _hash(counter["declaration_hash"])
+        != evaluation_overlay._declaration_hash(
+            int(base["epoch_id"]), 1, predecessor, 0
+        )
+        or point["direct_history"]
+        or point["owner_counter_bad"]
+        or point["answer_counter_bad"]
+        or any(
+            runtime[name] != 0
+            for name in (
+                "open_work_count",
+                "open_scope_count",
+                "blocking_failure_count",
+            )
+        )
+    ):
+        raise InvalidEventError("readiness document has direct history or nonzero work")
+    if runtime["runtime_state"] == "failed":
+        raise InvalidEventError("job-free document failure composition remains pending")
+    if runtime["runtime_state"] != "sealed":
+        if (
+            (
+                counter["lifecycle_state"],
+                counter["revision"],
+                counter["confirmed_as_of_epoch"],
+            )
+            != ("active", 1, predecessor)
+            or point["transition_count"] != 0
+            or any(value is not None for value in transition.values())
+        ):
+            raise EventConflictError(
+                "readiness requires the original active counter1/P"
+            )
+        return
+    canonical_id = stable_m4_digest("m4-evaluation-seal-v1", str(base["epoch_id"]))
+    canonical_payload = evaluation_overlay._sha256_json(
+        evaluation_overlay._transition_payload(
+            evaluation_overlay.EvaluationTransition(
+                canonical_id, 1, kind=evaluation_overlay.EvaluationTransitionKind.SEAL
+            ),
+            (),
+        )
+    )
+    if (
+        (
+            counter["lifecycle_state"],
+            counter["revision"],
+            counter["confirmed_as_of_epoch"],
+        )
+        != ("sealed", 2, base["epoch_id"])
+        or point["transition_count"] != 1
+        or tuple(transition[name] for name in _R33_SEAL_FIELDS)
+        != (canonical_id, canonical_payload, "seal", 1, 2, 0)
+        or any(
+            type(transition[name]) is not int
+            for name in ("from_revision", "to_revision", "override_rows_written")
+        )
+    ):
+        raise EventConflictError("readiness replay lacks canonical M4 SEAL1-to-2")
+
+
+def _r33_payload(value: Any, kind: str) -> StructuralPayload:
+    """Decode a structural sidecar, NEVER a legacy event or payload hash."""
+    if (
+        type(value) is not dict
+        or set(value) != {"_groundloop_m4_runtime_v1"}
+        or type(value["_groundloop_m4_runtime_v1"]) is not dict
+    ):
+        raise EventConflictError("readiness direct runtime manifest is malformed")
+    runtime = value["_groundloop_m4_runtime_v1"]
+    if (
+        set(runtime) != {"event_manifest", "scope_claim_ids", "failure_reason"}
+        or runtime["scope_claim_ids"] != {}
+        or type(runtime["scope_claim_ids"]) is not dict
+        or runtime["failure_reason"] is not None
+        or type(runtime["event_manifest"]) is not dict
+    ):
+        raise EventConflictError("readiness direct runtime declaration changed")
+    raw = runtime["event_manifest"]
+    old = raw.get("deactivated_document_version_id")
+    if (kind == "document_insert") != (old is None):
+        raise EventConflictError("readiness action/deactivation identity changed")
+    if old is not None:
+        _r33_text(old)
+    if kind == "document_delete":
+        payload = StructuralPayload(deactivated_document_version_id=old)
+    else:
+        # The accepted InsertedDocument invariant requires at least one chunk.
+        # Such a coherent INSERT/REPLACE necessarily has impact roots; do not
+        # suppress them or invent empty-chunk positivity to reach this branch.
+        try:
+            if type(raw["inserted_chunks"]) is not list:
+                raise ValidationError("inserted chunks are not an array")
+            inserted = InsertedDocument(
+                version=DocumentVersion(
+                    _r33_text(raw["inserted_document_version_id"]),
+                    _r33_text(raw["inserted_document_id"]),
+                    _hash(raw["inserted_content_hash"]),
+                ),
+                chunks=tuple(ChunkVersion(**item) for item in raw["inserted_chunks"]),
+                source_uri=raw["source_uri"],
+                authority_class=_r33_text(raw["authority_class"]),
+                chunker_version=_r33_text(raw["chunker_version"]),
+                chunker_artifact_id=raw["chunker_artifact_id"],
+                chunker_input_hash=raw["chunker_input_hash"],
+            )
+            payload = StructuralPayload(inserted, old)
+        except (KeyError, TypeError, AttributeError, ValidationError) as error:
+            raise EventConflictError(
+                "readiness inserted source is malformed"
+            ) from error
+    if raw != payload.manifest:
+        raise EventConflictError("readiness structural sidecar is not canonical")
+    if payload.inserted_chunk_ids:
+        raise InvalidEventError("inserted chunks require genuine direct impact work")
+    return payload
+
+
+def _r33_withdrawn_chunks(
+    cursor: Cursor[Any],
+    schema: str,
+    epoch: int,
+    predecessor: int,
+    payload: StructuralPayload,
+) -> tuple[str, ...]:
+    old = payload.deactivated_document_version_id
+    if old is None:
+        raise EventConflictError("job-free document source lacks its withdrawn version")
+    rows = _r33_records(
+        cursor,
+        sql.SQL(
+            "SELECT version.*,chunk.chunk_version_id,chunk.chunk_index,chunk.text,"
+            "chunk.text_hash,chunk.chunker_version,"
+            "chunk.valid_from_epoch AS chunk_from,chunk.valid_to_epoch AS chunk_to,"
+            "provenance.chunker_artifact_id,provenance.input_hash,"
+            "artifact.chunker_version AS artifact_version "
+            "FROM {} version JOIN {} document USING(document_id) "
+            "JOIN {} chunk USING(document_version_id) "
+            "LEFT JOIN {} provenance USING(chunk_version_id) "
+            "LEFT JOIN {} artifact USING(chunker_artifact_id) "
+            "WHERE version.document_version_id OPERATOR(pg_catalog.=) %s "
+            'ORDER BY chunk.chunk_version_id COLLATE pg_catalog."C"'
+        ).format(
+            *(
+                sql.Identifier(schema, table)
+                for table in (
+                    "groundloop_document_version",
+                    "groundloop_document",
+                    "groundloop_chunk_version",
+                    "groundloop_chunk_provenance",
+                    "groundloop_chunker_artifact",
+                )
+            )
+        ),
+        (old,),
+    )
+    if not rows:
+        raise EventConflictError("readiness withdrawn source closure is absent")
+    if any(
+        row["document_version_id"] != old
+        or type(row["valid_from_epoch"]) is not int
+        or not 1 <= row["valid_from_epoch"] <= predecessor
+        or row["chunk_from"] != row["valid_from_epoch"]
+        or row["valid_to_epoch"] != epoch
+        or row["chunk_to"] != epoch
+        or row["artifact_version"] != row["chunker_version"]
+        for row in rows
+    ):
+        raise EventConflictError("readiness withdrawn intervals/provenance changed")
+    provenance = {
+        (
+            _r33_text(row["chunker_artifact_id"]),
+            _hash(row["input_hash"]),
+            _r33_text(row["chunker_version"]),
+        )
+        for row in rows
+    }
+    if len(provenance) != 1:
+        raise EventConflictError("readiness withdrawn chunk provenance is not exact")
+    artifact, input_hash, chunker = next(iter(provenance))
+    version = DocumentVersion(
+        old, _r33_text(rows[0]["document_id"]), _hash(rows[0]["content_hash"])
+    )
+    if any(
+        row["document_id"] != version.document_id
+        or _hash(row["content_hash"]) != version.content_hash
+        for row in rows
+    ):
+        raise EventConflictError("readiness withdrawn parent identity changed")
+    inserted = InsertedDocument(
+        version=version,
+        chunks=tuple(
+            ChunkVersion(
+                row["chunk_version_id"],
+                old,
+                row["chunk_index"],
+                row["text"],
+                _hash(row["text_hash"]),
+            )
+            for row in rows
+        ),
+        chunker_version=chunker,
+        chunker_artifact_id=artifact,
+        chunker_input_hash=input_hash,
+    )
+    deactivations = _rows(
+        cursor, schema, "groundloop_m4_structural_deactivation", epoch
+    )
+    if len(deactivations) != 1 or deactivations[0]["document_version_id"] != old:
+        raise EventConflictError("readiness deactivation set is not exact")
+    for table, key in (
+        ("groundloop_document_version", "valid_from_epoch"),
+        ("groundloop_chunk_version", "valid_from_epoch"),
+        ("groundloop_m4_document_metadata_overlay", "epoch_id"),
+    ):
+        if _r33_records(
+            cursor,
+            sql.SQL(
+                "SELECT 1 FROM {} WHERE {} OPERATOR(pg_catalog.=) %s LIMIT 1"
+            ).format(sql.Identifier(schema, table), sql.Identifier(key)),
+            (epoch,),
+        ):
+            raise EventConflictError("job-free DELETE contains inserted sidecars")
+    return tuple(chunk.chunk_version_id for chunk in inserted.chunks)
+
+
+def _r33_original_contribution(
     cursor: Cursor[Any], schema: str, base: dict[str, Any], runtime: dict[str, Any]
+) -> None:
+    rows = _r33_records(
+        cursor,
+        sql.SQL(
+            "SELECT * FROM {} WHERE epoch_id OPERATOR(pg_catalog.=) %s "
+            "AND contribution_kind OPERATOR(pg_catalog.=) 'structural_open'"
+        ).format(sql.Identifier(schema, "groundloop_m5_runtime_work_contribution")),
+        (base["epoch_id"],),
+    )
+    anchor = M5TransitionTimingAnchor.build(
+        epoch_id=base["epoch_id"],
+        contribution_kind=M5RuntimeWorkContributionKind.STRUCTURAL_OPEN,
+        source_id=runtime["structural_event_id"],
+        anchor_revision=1,
+        terminal_transition=False,
+    )
+    if len(rows) != 1:
+        raise EventConflictError("document requires exactly one structural-open proof")
+    row = rows[0]
+    M5RuntimeWork(
+        **{name: row[name] for name in _WORK_COLUMNS},
+        work_digest=_hash(row["work_digest"]),
+    )
+    if (
+        row["epoch_id"] != base["epoch_id"]
+        or any(
+            row[name] != 0
+            for name in _WORK_COLUMNS
+            if name not in _STRUCTURAL_OPEN_COUNTERS
+        )
+        or row["source_id"] != anchor.source_id
+        or type(row["applied_revision"]) is not int
+        or row["applied_revision"] != 1
+        or _hash(row["source_identity_hash"]) != _hash(base["payload_hash"])
+        or _hash(row["contribution_key_digest"]) != anchor.contribution_key_digest
+    ):
+        raise EventConflictError("document structural-open key/source/revision changed")
+
+
+def _r33_job_declarations(
+    cursor: Cursor[Any],
+    schema: str,
+    runtime: dict[str, Any],
+    policy: M5CandidatePolicyManifest,
+    requirement_snapshot: RequirementRegistrySnapshot,
+    chunk_snapshot: ActiveChunkSnapshot,
+) -> None:
+    """Validate retained D29 specs/provenance without constructing an event plan.
+
+    Reuse native plan-independent completion validators with their explicit
+    retained tuple layouts. This is validation work, not a producer/accounting
+    boundary. In particular it never recomputes a legacy event payload hash.
+    """
+    epoch = runtime["epoch_id"]
+    revision = runtime["revision"]
+    job_columns = (
+        "logical_job_id",
+        "epoch_id",
+        "structural_event_id",
+        "job_kind",
+        "candidate_policy_id",
+        "candidate_policy_manifest_hash",
+        "parent_job_id",
+        "subject_kind",
+        "subject_id",
+        "chunk_version_id",
+        "semantic_pair_digest",
+        "admitted_pair_digest",
+        "scope_contract_digest",
+        "requirement_registry_snapshot_digest",
+        "active_chunk_snapshot_digest",
+        "role_template_hash",
+        "execution_spec_hash",
+        "expandable",
+        "payload_hash",
+        "job_state",
+        "result_artifact_id",
+        "result_artifact_hash",
+        "scope_closure_digest",
+        "child_set_hash",
+        "archive_reason",
+        "completion_digest",
+        "cancelled_by_event_id",
+        "cancelled_by_epoch_id",
+        "cancellation_reason",
+        "created_revision",
+        "completed_revision",
+        "created_at",
+        "completed_at",
+    )
+    scope_columns = (
+        "root_job_id",
+        "epoch_id",
+        "direction",
+        "requirement_version_id",
+        "inserted_chunk_version_id",
+        "candidate_policy_id",
+        "requirement_registry_snapshot_digest",
+        "active_chunk_snapshot_digest",
+        "scope_contract_digest",
+        "scope_state",
+        "created_revision",
+        "staged_result_artifact_hash",
+        "scope_closure_digest",
+        "child_set_hash",
+        "completion_digest",
+        "staged_revision",
+        "closed_revision",
+        "created_at",
+        "closed_at",
+    )
+    jobs = _r33_records(
+        cursor,
+        sql.SQL(
+            "SELECT * FROM {} WHERE epoch_id OPERATOR(pg_catalog.=) %s "
+            'ORDER BY job_state,logical_job_id COLLATE pg_catalog."C"'
+        ).format(sql.Identifier(schema, "groundloop_m5_semantic_job")),
+        (epoch,),
+    )
+    specs: dict[str, M5LogicalJobSpec] = {}
+    retained: dict[str, dict[str, Any]] = {}
+    for job in sorted(jobs, key=lambda row: _hash(row["logical_job_id"])):
+        try:
+            kind = M5JobKind(job["job_kind"])
+            pair = None
+            if kind is M5JobKind.VERIFY_REQUIREMENT_PAIR:
+                if job["subject_kind"] != "requirement":
+                    raise ValidationError("retained child has another subject kind")
+                _hash(job["admitted_pair_digest"])
+                pair = SemanticPairKey(
+                    SubjectKind.REQUIREMENT,
+                    _r33_text(job["subject_id"]),
+                    _r33_text(job["chunk_version_id"]),
+                )
+                pair.validate_snapshots(requirement_snapshot, chunk_snapshot)
+            elif any(job[name] is not None for name in job_columns[6:12]):
+                raise ValidationError("retained root has child-only fields")
+            spec = M5LogicalJobSpec(
+                logical_job_id=_hash(job["logical_job_id"]),
+                structural_event_id=_r33_text(job["structural_event_id"]),
+                job_kind=kind,
+                candidate_policy_id=_r33_text(job["candidate_policy_id"]),
+                candidate_policy_manifest_hash=_hash(
+                    job["candidate_policy_manifest_hash"]
+                ),
+                parent_job_id=None
+                if job["parent_job_id"] is None
+                else _hash(job["parent_job_id"]),
+                pair=pair,
+                semantic_pair_digest=None
+                if pair is None
+                else _hash(job["semantic_pair_digest"]),
+                scope_contract_digest=_hash(job["scope_contract_digest"]),
+                requirement_registry_snapshot_digest=_hash(
+                    job["requirement_registry_snapshot_digest"]
+                ),
+                active_chunk_snapshot_digest=_hash(job["active_chunk_snapshot_digest"]),
+                role_template_hash=_hash(job["role_template_hash"]),
+                execution_spec_hash=_hash(job["execution_spec_hash"]),
+                expandable=job["expandable"],
+                payload_hash=_hash(job["payload_hash"]),
+            )
+        except (ValueError, ValidationError) as error:
+            raise EventConflictError("retained document job spec is invalid") from error
+        if (
+            job["epoch_id"] != epoch
+            or spec.structural_event_id != runtime["structural_event_id"]
+            or spec.candidate_policy_id != policy.candidate_policy_id
+            or spec.candidate_policy_manifest_hash != policy.manifest_hash
+            or spec.requirement_registry_snapshot_digest
+            != runtime["requirement_registry_snapshot_digest"]
+            or spec.active_chunk_snapshot_digest
+            != runtime["active_chunk_snapshot_digest"]
+            or type(job["created_revision"]) is not int
+            or not 1 <= job["created_revision"] <= revision
+            or (spec.parent_job_id is None and job["created_revision"] != 1)
+            or spec.logical_job_id in specs
+        ):
+            raise EventConflictError("retained document job declaration changed")
+        specs[spec.logical_job_id] = spec
+        retained[spec.logical_job_id] = job
+    forward_roots = set()
+    children_by_parent: dict[str, list[str]] = defaultdict(list)
+    for spec in specs.values():
+        if spec.parent_job_id is not None:
+            children_by_parent[spec.parent_job_id].append(spec.logical_job_id)
+    for job_id, spec in specs.items():
+        children = tuple(sorted(children_by_parent.get(job_id, ())))
+        document_source._validate_m5_job_state(
+            spec, tuple(retained[job_id][name] for name in job_columns), children
+        )
+        scope_rows = _r33_records(
+            cursor,
+            sql.SQL(
+                "SELECT * FROM {} WHERE root_job_id OPERATOR(pg_catalog.=) %s"
+            ).format(sql.Identifier(schema, "groundloop_m5_discovery_scope")),
+            (job_id,),
+        )
+        provenance = _r33_records(
+            cursor,
+            sql.SQL(
+                "SELECT * FROM {} WHERE epoch_id OPERATOR(pg_catalog.=) %s "
+                "AND root_job_id OPERATOR(pg_catalog.=) %s"
+            ).format(
+                sql.Identifier(schema, "groundloop_m5_requirement_root_provenance")
+            ),
+            (epoch, job_id),
+        )
+        if spec.parent_job_id is not None:
+            parent = specs.get(spec.parent_job_id)
+            if (
+                scope_rows
+                or provenance
+                or parent is None
+                or parent.parent_job_id is not None
+                or parent.scope_contract_digest != spec.scope_contract_digest
+            ):
+                raise EventConflictError(
+                    "retained child has invalid scope/provenance/parent"
+                )
+            continue
+        # A genuine no-direct-impact DELETE inserts no chunks, hence no reverse root.
+        if (
+            spec.job_kind is not M5JobKind.FORWARD_REQUIREMENT_RETRIEVAL
+            or len(scope_rows) != 1
+        ):
+            raise EventConflictError(
+                "job-free document has a reverse/missing root scope"
+            )
+        row = scope_rows[0]
+        try:
+            scope = M5DiscoveryScopeContract(
+                M5DiscoveryDirection(row["direction"]),
+                row["requirement_version_id"],
+                row["inserted_chunk_version_id"],
+                _r33_text(row["candidate_policy_id"]),
+                _hash(row["requirement_registry_snapshot_digest"]),
+                _hash(row["active_chunk_snapshot_digest"]),
+                _hash(row["scope_contract_digest"]),
+            )
+            scope.validate_snapshots(requirement_snapshot, chunk_snapshot)
+            spec.validate_manifest_and_scope(policy, scope)
+            for child_id in children:
+                specs[child_id].validate_manifest_and_scope(policy, scope)
+        except (ValueError, ValidationError) as error:
+            raise EventConflictError(
+                "retained document scope/spec binding changed"
+            ) from error
+        if (
+            row["root_job_id"] != job_id
+            or row["epoch_id"] != epoch
+            or type(row["created_revision"]) is not int
+            or row["created_revision"] != 1
+        ):
+            raise EventConflictError("retained document scope declaration changed")
+        document_source._validate_m5_scope_state(
+            spec,
+            tuple(retained[job_id][name] for name in job_columns),
+            tuple(row[name] for name in scope_columns),
+        )
+        expected = M5RequirementRootProvenance.build(
+            epoch_id=epoch, root_job_id=job_id, fallback_required=True
+        )
+        if (
+            len(provenance) != 1
+            or any(
+                provenance[0][name] != getattr(expected, name)
+                for name in (
+                    "epoch_id",
+                    "root_job_id",
+                    "fallback_required",
+                    "provenance_digest",
+                )
+            )
+            or provenance[0]["fallback_required"] is not True
+        ):
+            raise EventConflictError(
+                "retained document forward root lacks exact provenance"
+            )
+        forward_roots.add(job_id)
+    if {
+        _hash(row["root_job_id"])
+        for row in _rows(
+            cursor, schema, "groundloop_m5_requirement_root_provenance", epoch
+        )
+    } != forward_roots:
+        raise EventConflictError("retained document provenance set is not exact")
+
+
+def _r33_document_declaration(
+    cursor: Cursor[Any],
+    schema: str,
+    base: dict[str, Any],
+    runtime: dict[str, Any],
+    update: dict[str, Any],
+    *,
+    replay: bool,
+) -> None:
+    epoch = int(base["epoch_id"])
+    predecessor = int(update["previous_published_epoch_id"])
+    if document_source._validate_document_manifest(update["manifest"]) != ((), (), ()):
+        raise InvalidEventError("readiness requires all three direct arrays empty")
+    # Terminal envelope precedes source inspection, never D29 hydration.
+    if runtime["runtime_state"] == "sealed":
+        _r33_terminal_result(cursor, base, runtime)
+    _r33_counter_point(base, runtime, predecessor)
+    direct = _read_row(cursor, schema, "groundloop_m4_update", epoch, lock=False)
+    policy_id = _r33_text(runtime["candidate_policy_id"])
+    policy = document_source._policy_by_id(cursor, policy_id)
+    direct_policy = document_source._load_direct_candidate_policy(cursor, policy_id)
+    kind = {
+        "document_insert": "insert",
+        "document_delete": "delete",
+        "document_replace": "replace",
+    }
+    if (
+        direct["update_kind"] != kind[update["update_kind"]]
+        or direct["previous_published_epoch_id"] != predecessor
+        or _r33_text(direct["candidate_policy_id"]) != policy_id
+        or direct["registry_snapshot_id"] != direct_policy.claim_registry_snapshot_id
+        or policy.manifest_hash != _hash(runtime["candidate_policy_manifest_hash"])
+        or policy.decision_policy_version != update["decision_policy_version"]
+        or direct_policy.decision_policy_version != policy.decision_policy_version
+        or direct_policy.verifier_execution_spec_hash
+        != policy.verifier_execution_spec_hash
+    ):
+        raise EventConflictError("readiness retained document policy/action changed")
+    if base["publication_mode"] != (
+        "strict" if runtime["runtime_state"] == "sealed" else "provisional"
+    ):
+        raise EventConflictError("readiness document publication shape changed")
+    registry = _r33_record(
+        cursor,
+        schema,
+        "groundloop_m4_claim_registry_snapshot",
+        "claim_registry_snapshot_id",
+        direct["registry_snapshot_id"],
+    )
+    members = _r33_records(
+        cursor,
+        sql.SQL(
+            "SELECT * FROM {} WHERE claim_registry_snapshot_id "
+            "OPERATOR(pg_catalog.=) %s "
+            'ORDER BY claim_id COLLATE pg_catalog."C"'
+        ).format(sql.Identifier(schema, "groundloop_m4_claim_registry_member")),
+        (direct["registry_snapshot_id"],),
+    )
+    ids = tuple(_r33_text(row["claim_id"]) for row in members)
+    if (
+        len(ids) != direct_policy.claim_count
+        or registry["claim_count"] != len(ids)
+        or tuple(row["member_ordinal"] for row in members) != tuple(range(len(ids)))
+        or _hash(registry["claim_set_hash"])
+        != stable_m4_digest("m4-claim-registry-snapshot-v1", *ids)
+    ):
+        raise EventConflictError("readiness direct claim registry is not exact")
+    payload = _r33_payload(direct["manifest"], update["update_kind"])
+    chunks = _r33_withdrawn_chunks(cursor, schema, epoch, predecessor, payload)
+    previous = _r33_predecessor(cursor, schema, epoch, predecessor)
+    snapshots = _r33_snapshots(cursor, schema, epoch, runtime)
+    _r33_original_contribution(cursor, schema, base, runtime)
+    _r33_job_declarations(cursor, schema, runtime, policy, *snapshots)
+    # Original fallback is as-of P. Never select today's heads/currency on replay.
+    for table, subject in (
+        ("groundloop_published_observation_currency", "subject_kind='claim' AND "),
+        ("groundloop_candidate_frontier", ""),
+    ):
+        rows = _r33_records(
+            cursor,
+            sql.SQL(
+                "SELECT 1 FROM {} WHERE "
+                + subject
+                + "chunk_version_id OPERATOR(pg_catalog.=) ANY(%s) "
+                "AND valid_from_epoch OPERATOR(pg_catalog.<=) %s "
+                "AND (valid_to_epoch IS NULL OR "
+                "%s OPERATOR(pg_catalog.<) valid_to_epoch) LIMIT 1"
+            ).format(sql.Identifier(schema, table)),
+            (list(chunks), predecessor, predecessor),
+        )
+        if rows:
+            raise InvalidEventError("readiness document requires direct fallback work")
+    if replay:
+        _check_jobs(cursor, schema, runtime, target="semantic_complete")
+        return
+    heads = cursor.execute(
+        sql.SQL(
+            "SELECT h4.epoch_id,h5.epoch_id,h5.sealed_revision FROM {} h4 "
+            "JOIN {} h5 ON h5.singleton WHERE h4.singleton"
+        ).format(
+            sql.Identifier(schema, "groundloop_m4_publication_head"),
+            sql.Identifier(schema, "groundloop_m5_publication_head"),
+        )
+    ).fetchone()
+    if heads != (predecessor, predecessor, previous["revision"]):
+        raise EventConflictError("fresh readiness predecessor heads changed")
+    if _r33_records(
+        cursor,
+        sql.SQL(
+            "SELECT 1 FROM {} WHERE subject_kind='claim' "
+            "AND chunk_version_id OPERATOR(pg_catalog.=) ANY(%s) LIMIT 1"
+        ).format(sql.Identifier(schema, "groundloop_observation_currency")),
+        (list(chunks),),
+    ):
+        raise InvalidEventError("fresh readiness retains direct claim currency")
+
+
+def _check_declaration(
+    cursor: Cursor[Any],
+    schema: str,
+    base: dict[str, Any],
+    runtime: dict[str, Any],
+    *,
+    document_authority: bool = False,
+    replay: bool = False,
 ) -> None:
     update = _read_row(
         cursor, schema, "groundloop_m5_update", int(base["epoch_id"]), lock=False
     )
     if (
-        update["update_kind"] not in _GROUP_KINDS
+        update["update_kind"] not in (_GROUP_KINDS | _R33_DOCUMENT_KINDS)
         or update["previous_published_epoch_id"]
         != runtime["expected_previous_published_epoch_id"]
     ):
@@ -263,6 +1201,13 @@ def _check_declaration(
         1,
     ):
         raise ValidationError("readiness lacks the immutable structural-open proof")
+    if update["update_kind"] in _R33_DOCUMENT_KINDS:
+        if not document_authority:
+            raise InvalidEventError(
+                "readiness requires021 for documents, not the exact group declaration"
+            )
+        _r33_document_declaration(cursor, schema, base, runtime, update, replay=replay)
+        return
     for relation in (
         "groundloop_m4_update",
         "groundloop_m4_evaluation_epoch_counter",
@@ -587,20 +1532,63 @@ def _read_header_pair(
         "expected_previous_published_epoch_id",
         "requirement_root_set_hash",
     )
-    columns = sql.SQL(",").join(
+    header_columns = [
         sql.SQL("{}.{}").format(sql.Identifier(alias), sql.Identifier(name))
         for alias, fields in (("b", base_fields), ("r", runtime_fields))
         for name in fields
+    ]
+    counter_columns = [
+        sql.SQL("c.{}").format(sql.Identifier(name)) for name in _R33_COUNTER_FIELDS
+    ]
+    seal_columns = [
+        sql.SQL("s.{}").format(sql.Identifier(name)) for name in _R33_SEAL_FIELDS
+    ]
+    history = sql.SQL(" OR ").join(
+        sql.SQL(
+            "EXISTS (SELECT 1 FROM {} WHERE epoch_id OPERATOR(pg_catalog.=) b.epoch_id)"
+        ).format(sql.Identifier(schema, table))
+        for table in _R33_DIRECT_HISTORY
+    )
+    counter_bad = [
+        sql.SQL(
+            "EXISTS (SELECT 1 FROM {} WHERE epoch_id OPERATOR(pg_catalog.=) b.epoch_id "
+            "AND (updated_revision OPERATOR(pg_catalog.<>) r.revision "
+            "OR pending_multiplicity OPERATOR(pg_catalog.<>) 0))"
+        ).format(sql.Identifier(schema, table))
+        for table in (
+            "groundloop_m5_owner_pending_counter",
+            "groundloop_m5_answer_pending_counter",
+        )
+    ]
+    columns = sql.SQL(",").join(
+        [
+            *header_columns,
+            *counter_columns,
+            *seal_columns,
+            history,
+            sql.SQL(
+                "(SELECT pg_catalog.count(*) FROM {} "
+                "WHERE epoch_id OPERATOR(pg_catalog.=) b.epoch_id)"
+            ).format(
+                sql.Identifier(schema, "groundloop_m4_evaluation_counter_transition")
+            ),
+            *counter_bad,
+        ]
     )
     row = cursor.execute(
         sql.SQL(
             "SELECT {} FROM {} b JOIN {} r "
             "ON r.epoch_id OPERATOR(pg_catalog.=) b.epoch_id "
+            "LEFT JOIN {} c ON c.epoch_id OPERATOR(pg_catalog.=) b.epoch_id "
+            "LEFT JOIN {} s ON s.epoch_id OPERATOR(pg_catalog.=) b.epoch_id "
+            "AND s.transition_kind OPERATOR(pg_catalog.=) 'seal' "
             "WHERE b.epoch_id OPERATOR(pg_catalog.=) %s"
         ).format(
             columns,
             sql.Identifier(schema, "groundloop_epoch"),
             sql.Identifier(schema, "groundloop_m5_runtime_epoch"),
+            sql.Identifier(schema, "groundloop_m4_evaluation_epoch_counter"),
+            sql.Identifier(schema, "groundloop_m4_evaluation_counter_transition"),
         ),
         (epoch_id,),
     ).fetchone()
@@ -609,10 +1597,19 @@ def _read_header_pair(
     boundary = len(base_fields)
     if row[0] != epoch_id or row[boundary] != epoch_id:
         raise ValidationError("readiness replay headers returned another epoch")
-    return (
-        dict(zip(base_fields, row[:boundary], strict=True)),
-        dict(zip(runtime_fields, row[boundary:], strict=True)),
-    )
+    end = boundary + len(runtime_fields)
+    counter_end = end + len(_R33_COUNTER_FIELDS)
+    seal_end = counter_end + len(_R33_SEAL_FIELDS)
+    runtime = dict(zip(runtime_fields, row[boundary:end], strict=True))
+    runtime["_r33_document_point"] = {
+        "counter": dict(zip(_R33_COUNTER_FIELDS, row[end:counter_end], strict=True)),
+        "seal": dict(zip(_R33_SEAL_FIELDS, row[counter_end:seal_end], strict=True)),
+        "direct_history": row[seal_end],
+        "transition_count": row[seal_end + 1],
+        "owner_counter_bad": row[seal_end + 2],
+        "answer_counter_bad": row[seal_end + 3],
+    }
+    return dict(zip(base_fields, row[:boundary], strict=True)), runtime
 
 
 def _derive_artifact(
@@ -834,7 +1831,7 @@ def _advance_semantic_readiness_atomically(
         connection.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED READ WRITE")
         with connection.cursor() as cursor:
             schema = _m5_readiness_schema(cursor)
-            require_m5_semantic_readiness_bundle(cursor, schema_name=schema)
+            document_authority = _r33_require_authority(cursor, schema)
             _require_legacy_lookup_context(cursor, schema)
             cut("after_authority")
             existing = _read_contribution(cursor, schema, epoch_id, target)
@@ -843,7 +1840,14 @@ def _advance_semantic_readiness_atomically(
                 _check_epoch_identity(
                     base, runtime, structural_event_id=structural_event_id
                 )
-                _check_declaration(cursor, schema, base, runtime)
+                _check_declaration(
+                    cursor,
+                    schema,
+                    base,
+                    runtime,
+                    document_authority=document_authority,
+                    replay=True,
+                )
                 cut("after_replay_read")
                 return _validate_replay(
                     existing,
@@ -861,8 +1865,23 @@ def _advance_semantic_readiness_atomically(
             _check_epoch_identity(
                 base, runtime, structural_event_id=structural_event_id
             )
-            _check_declaration(cursor, schema, base, runtime)
             existing = _read_contribution(cursor, schema, epoch_id, target)
+            point_base, point_runtime = _read_header_pair(cursor, schema, epoch_id)
+            if any(base[name] != value for name, value in point_base.items()) or any(
+                runtime[name] != value
+                for name, value in point_runtime.items()
+                if name != "_r33_document_point"
+            ):
+                raise EventConflictError("locked readiness headers changed")
+            runtime["_r33_document_point"] = point_runtime["_r33_document_point"]
+            _check_declaration(
+                cursor,
+                schema,
+                base,
+                runtime,
+                document_authority=document_authority,
+                replay=existing is not None,
+            )
             if existing is not None:
                 return _validate_replay(
                     existing,

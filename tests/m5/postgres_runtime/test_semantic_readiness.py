@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
+import re
+import threading as r33_threading
+import time
 import uuid
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -14,6 +19,7 @@ from psycopg import Connection, Cursor, IsolationLevel, sql
 
 from groundloop.errors import EventConflictError, InvalidEventError, ValidationError
 from groundloop.m5.runtime import digests
+from groundloop.m5.runtime import postgres_readiness as readiness
 from groundloop.m5.runtime.contracts import (
     M5CancellationPlan,
     M5RunFailureReason,
@@ -51,6 +57,10 @@ from tests.m5.postgres_runtime.conftest import (
     _manifest,
     _sha,
 )
+from tests.m5.postgres_runtime.d24_application.conftest import database_snapshot
+from tests.m5.postgres_runtime.d33_document_completion import (
+    test_document_open_prerequisite as o33_fixtures,
+)
 from tests.m5.postgres_runtime.test_direct_m4_composition import (
     _open_direct_epoch,
 )
@@ -66,6 +76,9 @@ from tests.m5.postgres_runtime.test_root_transitions import (
     _roots,
     _stage,
 )
+
+OpenDatabase = o33_fixtures.OpenDatabase
+open_db = o33_fixtures.open_db
 
 
 @pytest.fixture
@@ -1809,3 +1822,1219 @@ def test_concurrent_historical_replay_keeps_one_snapshot(
     assert sealed.epoch_id == epoch
     assert replay.replay and replay.anchor == ready.anchor
     assert _point(db.connection, epoch)[3] == "sealed"
+
+
+# R33 positives consume accepted O33 production activation/OPEN. They do not
+# author M5 readiness headers or reinterpret controlled SQL seal fixtures.
+_R33_COORDINATION_RELATIONS = {
+    "groundloop_epoch",
+    "groundloop_m5_runtime_epoch",
+    "groundloop_m5_owner_pending_counter",
+    "groundloop_m5_answer_pending_counter",
+    "groundloop_m5_runtime_work_contribution",
+    "groundloop_m5_runtime_work_accumulator",
+    "groundloop_m5_runtime_timing_accumulator",
+    "groundloop_m5_transition_call_timing",
+}
+
+
+@contextmanager
+def _r33_connection(db: OpenDatabase) -> Iterator[Connection[Any]]:
+    with psycopg.connect(db.dsn) as connection:
+        connection.execute(
+            sql.SQL("SET search_path TO {}, public").format(sql.Identifier(db.schema))
+        )
+        connection.commit()
+        yield connection
+
+
+def _r33_open(db: OpenDatabase) -> tuple[Any, Any, dict[str, Any]]:
+    db.store._activate_document_open_prerequisite(db.request)
+    plan = db.plan("readiness-更新☃")
+    arguments = o33_fixtures._open_arguments(db, plan)
+    opened = db.store._open_document_open_prerequisite(plan, **arguments)
+    return plan, opened, arguments
+
+
+def _r33_cancel(
+    connection: Connection[Any], epoch: int, plan: Any, arguments: dict[str, Any]
+) -> int:
+    cancellation = M5CancellationPlan.build(
+        epoch_id=epoch,
+        structural_event_id=plan.structural_event_id,
+        cancelled_job_ids=tuple(
+            sorted(root.job.logical_job_id for root in arguments["requirement_roots"])
+        ),
+        reason=M5TerminalReason.SCOPE_RETIRED,
+    )
+    return (
+        PostgresM5RuntimeStore(connection)
+        .cancel_m5_work_atomically(epoch, 1, cancellation)
+        .resulting_revision
+    )
+
+
+def _r33_unchanged_semantics(before: tuple[Any, ...], after: tuple[Any, ...]) -> None:
+    assert {
+        name: rows for name, rows in before if name not in _R33_COORDINATION_RELATIONS
+    } == {name: rows for name, rows in after if name not in _R33_COORDINATION_RELATIONS}
+
+
+@pytest.mark.parametrize("open_db", (False, True), indirect=True)
+@pytest.mark.parametrize("nonowner", (False, True))
+def test_document_genuine_separate_readiness_histories(
+    open_db: OpenDatabase,
+    nonowner: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    db = open_db
+    plan, opened, arguments = _r33_open(db)
+    from groundloop.m5.runtime import contracts as runtime_contracts
+
+    def forbidden_legacy_rehash(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("readiness reconstructed/rehash a retained legacy event")
+
+    monkeypatch.setattr(
+        runtime_contracts, "legacy_event_payload_digest", forbidden_legacy_rehash
+    )
+    # Adapter carries connection addresses only; production sees the genuine
+    # psycopg connection, never a fake authority/plan or branch flag.
+    login_db = SimpleNamespace(
+        connection=db.connection, dsn=db.dsn, schema_name=db.schema
+    )
+    context = _runtime_login(login_db) if nonowner else _r33_connection(db)
+    with context as connection:
+        identity = connection.execute("SELECT session_user,current_user").fetchone()
+        owner = db.connection.execute("SELECT current_user").fetchone()[0]
+        db.connection.commit()
+        connection.commit()
+        assert identity[0] == identity[1]
+        assert (identity[0] != owner) is nonowner
+        counter = connection.execute(
+            "SELECT xmin::text,* FROM groundloop_m4_evaluation_epoch_counter "
+            "WHERE epoch_id=%s",
+            (opened.epoch_id,),
+        ).fetchone()
+        connection.commit()
+        receipts = []
+        if arguments["requirement_roots"]:
+            before = database_snapshot(connection)
+            for target in ("semantic_pending", "semantic_complete"):
+                with pytest.raises(InvalidEventError):
+                    _edge(
+                        connection, opened.epoch_id, plan.structural_event_id, target, 1
+                    )
+                assert database_snapshot(connection) == before
+            assert _r33_cancel(connection, opened.epoch_id, plan, arguments) == 2
+        else:
+            before = database_snapshot(connection)
+            pending = _edge(
+                connection,
+                opened.epoch_id,
+                plan.structural_event_id,
+                "semantic_pending",
+                1,
+            )
+            assert not pending.replay and pending.anchor.anchor_revision == 2
+            _r33_unchanged_semantics(before, database_snapshot(connection))
+            receipts.append((pending, 1))
+        with _r33_connection(db) as observer:
+            assert _point(observer, opened.epoch_id) == (
+                2,
+                "pending",
+                "pending",
+                "semantic_pending",
+                2,
+                0,
+                0,
+                0,
+            )
+        before = database_snapshot(connection)
+        complete = _edge(
+            connection,
+            opened.epoch_id,
+            plan.structural_event_id,
+            "semantic_complete",
+            2,
+        )
+        assert not complete.replay and complete.anchor.anchor_revision == 3
+        _r33_unchanged_semantics(before, database_snapshot(connection))
+        receipts.append((complete, 2))
+        with _r33_connection(db) as observer:
+            assert _point(observer, opened.epoch_id) == (
+                3,
+                "complete",
+                "complete",
+                "semantic_complete",
+                3,
+                0,
+                0,
+                0,
+            )
+        assert (
+            connection.execute(
+                "SELECT xmin::text,* FROM groundloop_m4_evaluation_epoch_counter "
+                "WHERE epoch_id=%s",
+                (opened.epoch_id,),
+            ).fetchone()
+            == counter
+        )
+        contributions = connection.execute(
+            "SELECT source_id,applied_revision "
+            "FROM groundloop_m5_runtime_work_contribution "
+            "WHERE epoch_id=%s AND contribution_kind='semantic_readiness' "
+            "ORDER BY applied_revision",
+            (opened.epoch_id,),
+        ).fetchall()
+        assert contributions == [
+            (r.anchor.source_id, r.anchor.anchor_revision) for r, _ in receipts
+        ]
+        connection.commit()
+        before = database_snapshot(connection)
+        for receipt, revision in receipts:
+            replay = _edge(
+                connection,
+                opened.epoch_id,
+                plan.structural_event_id,
+                receipt.anchor.source_id,
+                revision,
+            )
+            assert replay.replay and replay.anchor == receipt.anchor
+        assert database_snapshot(connection) == before
+        with _r33_connection(db) as reconnected:
+            for invalid_target, invalid_revision, invalid_event in (
+                ("semantic_complete", 2, "another-event"),
+                ("semantic_complete", 3, plan.structural_event_id),
+                ("semantic_pending", 3, plan.structural_event_id),
+                ("sealed", 2, plan.structural_event_id),
+            ):
+                with pytest.raises(
+                    (EventConflictError, InvalidEventError, ValidationError)
+                ):
+                    _edge(
+                        connection,
+                        opened.epoch_id,
+                        invalid_event,
+                        invalid_target,
+                        invalid_revision,
+                    )
+                assert database_snapshot(connection) == before
+            assert (
+                _edge(
+                    reconnected,
+                    opened.epoch_id,
+                    plan.structural_event_id,
+                    "semantic_complete",
+                    2,
+                ).anchor
+                == complete.anchor
+            )
+
+
+def _r33_prepare(db: OpenDatabase, target: str) -> tuple[Any, Any, int]:
+    plan, opened, arguments = _r33_open(db)
+    if arguments["requirement_roots"]:
+        assert _r33_cancel(db.connection, opened.epoch_id, plan, arguments) == 2
+    elif target == "semantic_complete":
+        _edge(
+            db.connection,
+            opened.epoch_id,
+            plan.structural_event_id,
+            "semantic_pending",
+            1,
+        )
+    return plan, opened, 1 if target == "semantic_pending" else 2
+
+
+_R33_EDGES = (
+    (False, "semantic_pending"),
+    (False, "semantic_complete"),
+    (True, "semantic_complete"),
+)
+
+
+def _r33_sql_frame(
+    connection: Connection[Any], fields: tuple[str, ...]
+) -> tuple[str, int]:
+    """Independent SQL framing, not a native producer/validator as its own oracle."""
+    row = connection.execute(
+        "WITH fields AS (SELECT convert_to(value,'UTF8') AS bytes,ordinality "
+        "FROM unnest(%s::text[]) WITH ORDINALITY AS field(value,ordinality)), "
+        "framed AS (SELECT string_agg(int8send(octet_length(bytes)::bigint)||bytes, "
+        "''::bytea ORDER BY ordinality) AS bytes FROM fields) "
+        "SELECT encode(digest(bytes,'sha256'),'hex'),octet_length(bytes) FROM framed",
+        (list(fields),),
+    ).fetchone()
+    assert row is not None
+    return row
+
+
+@pytest.mark.parametrize("open_db,target", _R33_EDGES, indirect=["open_db"])
+@pytest.mark.parametrize("prior_mode", ("unresolved", "missing", "observed"))
+def test_document_independent_accounting_timing_and_native_producer(
+    open_db: OpenDatabase,
+    target: str,
+    prior_mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.m5.runtime.test_semantic_readiness import _frame
+
+    db = open_db
+    plan, opened, revision = _r33_prepare(db, target)
+    prior_anchor = db.connection.execute(
+        "SELECT pending_contribution_kind,pending_source_id,"
+        "pending_contribution_key_digest,pending_anchor_revision "
+        "FROM groundloop_m5_runtime_timing_accumulator WHERE epoch_id=%s",
+        (opened.epoch_id,),
+    ).fetchone()
+    db.connection.commit()
+    if prior_mode != "unresolved":
+        db.store.append_transition_call_timing(
+            opened.epoch_id,
+            M5RuntimeWorkContributionKind(prior_anchor[0]),
+            prior_anchor[1],
+            prior_anchor[2],
+            prior_anchor[3],
+            M5RuntimeTiming(11, 0, 23, 0, 34, 7, 3, 90, 2)
+            if prior_mode == "observed"
+            else None,
+        )
+    before = database_snapshot(db.connection)
+    prior_work = db.store.current_event_work(opened.epoch_id)
+    timing_before = db.connection.execute(
+        "SELECT required_expected_count,required_observed_count,required_missing_count,"
+        "coordinator_non_db_non_neural_ns,postgres_server_execution_ns "
+        "FROM groundloop_m5_runtime_timing_accumulator WHERE epoch_id=%s",
+        (opened.epoch_id,),
+    ).fetchone()
+    timing_columns = (
+        *readiness._TIMING_SUM_COLUMNS,
+        *readiness._TIMING_COVERAGE_COLUMNS,
+    )
+    full_timing_before = db.connection.execute(
+        "SELECT "
+        + ",".join(timing_columns)
+        + " FROM groundloop_m5_runtime_timing_accumulator WHERE epoch_id=%s",
+        (opened.epoch_id,),
+    ).fetchone()
+    roots = (
+        db.connection.execute(
+            "SELECT requirement_root_set_hash FROM groundloop_m5_runtime_epoch "
+            "WHERE epoch_id=%s",
+            (opened.epoch_id,),
+        )
+        .fetchone()[0]
+        .rstrip()
+    )
+    db.connection.commit()
+    fields = (
+        "m5-semantic-readiness-transition-v1",
+        "int",
+        str(opened.epoch_id),
+        "text",
+        plan.structural_event_id,
+        "sha256",
+        plan.payload_hash,
+        "sha256",
+        roots,
+        "enum",
+        "structural_committed" if revision == 1 else "semantic_pending",
+        "enum",
+        target,
+        "int",
+        str(revision),
+        "int",
+        str(revision + 1),
+    )
+    key_fields = (
+        "m5-runtime-work-contribution-key-v1",
+        "int",
+        str(opened.epoch_id),
+        "enum",
+        "semantic_readiness",
+        "text",
+        target,
+    )
+    source, key = _frame(*fields), _frame(*key_fields)
+    assert _r33_sql_frame(db.connection, fields) == (
+        hashlib.sha256(source).hexdigest(),
+        len(source),
+    )
+    assert _r33_sql_frame(db.connection, key_fields) == (
+        hashlib.sha256(key).hexdigest(),
+        len(key),
+    )
+    db.connection.commit()
+    original = readiness._readiness_artifact
+    producer_calls = []
+
+    def producer(**kwargs: Any) -> Any:
+        encode, sha = digests.stable_m5_preimage, hashlib.sha256
+        encodes, hashes = [], []
+
+        def capture_encode(domain: str, *values: Any) -> bytes:
+            value = encode(domain, *values)
+            encodes.append((domain, value))
+            return value
+
+        def capture_hash(value: bytes = b"", **options: Any) -> Any:
+            hashes.append(value)
+            return sha(value, **options)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(digests, "stable_m5_preimage", capture_encode)
+            patch.setattr(hashlib, "sha256", capture_hash)
+            result = original(**kwargs)
+        producer_calls.append((encodes, hashes))
+        return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(readiness, "_readiness_artifact", producer)
+        receipt = _edge(
+            db.connection, opened.epoch_id, plan.structural_event_id, target, revision
+        )
+    assert len(producer_calls) == 1
+    encodes, hashes = producer_calls[0]
+    assert [value for _, value in encodes] == [source, key]
+    assert hashes.count(source) == hashes.count(key) == 1
+    _r33_unchanged_semantics(before, database_snapshot(db.connection))
+    row = db.connection.execute(
+        "SELECT source_identity_hash,contribution_key_digest,"
+        "applied_revision,work_digest,"
+        + ",".join(M5RuntimeWork.counter_names())
+        + " FROM groundloop_m5_runtime_work_contribution WHERE epoch_id=%s "
+        "AND contribution_kind='semantic_readiness' AND source_id=%s",
+        (opened.epoch_id, target),
+    ).fetchone()
+    assert row[:3] == (
+        hashlib.sha256(source).hexdigest(),
+        hashlib.sha256(key).hexdigest(),
+        revision + 1,
+    )
+    expected = M5RuntimeWork(
+        bytes_hashed=len(source) + len(key), bytes_serialized=len(source) + len(key)
+    )
+    assert row[3] == expected.work_digest and row[4:] == expected.counter_values()
+    db.connection.commit()
+    actual = db.store.current_event_work(opened.epoch_id)
+    assert actual.counter_values() == tuple(
+        a + b
+        for a, b in zip(
+            prior_work.counter_values(), expected.counter_values(), strict=True
+        )
+    )
+    timing_after = db.connection.execute(
+        "SELECT required_expected_count,required_observed_count,required_missing_count,"
+        "coordinator_non_db_non_neural_ns,postgres_server_execution_ns "
+        "FROM groundloop_m5_runtime_timing_accumulator WHERE epoch_id=%s",
+        (opened.epoch_id,),
+    ).fetchone()
+    assert timing_after == (
+        timing_before[0] + 1,
+        timing_before[1],
+        timing_before[2] + int(prior_mode == "unresolved"),
+        *timing_before[3:],
+    )
+    db.connection.commit()
+    anchor = receipt.anchor
+    full_timing_after = db.connection.execute(
+        "SELECT "
+        + ",".join(timing_columns)
+        + ",pending_contribution_kind,pending_source_id,"
+        "pending_contribution_key_digest,"
+        "pending_anchor_revision,updated_revision,terminalized "
+        "FROM groundloop_m5_runtime_timing_accumulator WHERE epoch_id=%s",
+        (opened.epoch_id,),
+    ).fetchone()
+    for name, old, new in zip(
+        timing_columns,
+        full_timing_before,
+        full_timing_after[: len(timing_columns)],
+        strict=True,
+    ):
+        increment = (
+            1
+            if name.endswith("_expected_count")
+            else int(prior_mode == "unresolved")
+            if name.endswith("_missing_count")
+            else 0
+        )
+        assert new == old + increment, name
+    assert full_timing_after[len(timing_columns) :] == (
+        "semantic_readiness",
+        target,
+        anchor.contribution_key_digest,
+        revision + 1,
+        revision + 1,
+        False,
+    )
+    db.connection.commit()
+    assert not db.store.append_transition_call_timing(
+        anchor.epoch_id,
+        anchor.contribution_kind,
+        anchor.source_id,
+        anchor.contribution_key_digest,
+        anchor.anchor_revision,
+        None,
+    ).exact_replay
+    stable = database_snapshot(db.connection)
+    assert db.store.append_transition_call_timing(
+        anchor.epoch_id,
+        anchor.contribution_kind,
+        anchor.source_id,
+        anchor.contribution_key_digest,
+        anchor.anchor_revision,
+        None,
+    ).exact_replay
+    assert (
+        _edge(
+            db.connection, opened.epoch_id, plan.structural_event_id, target, revision
+        ).anchor
+        == anchor
+    )
+    assert database_snapshot(db.connection) == stable
+    with pytest.raises(EventConflictError):
+        db.store.append_transition_call_timing(
+            anchor.epoch_id,
+            anchor.contribution_kind,
+            anchor.source_id,
+            anchor.contribution_key_digest,
+            anchor.anchor_revision,
+            M5RuntimeTiming(1, 0, 0, 0, 1, 0, 0, 1, 0),
+        )
+    assert database_snapshot(db.connection) == stable
+
+
+class _R33ActualCut(RuntimeError):
+    pass
+
+
+def _r33_mutation_cursor(control: dict[str, Any]) -> Any:
+    class RecordingCursor(Cursor[Any]):
+        def execute(self, query: Any, params: Any = None, **kwargs: Any) -> Any:
+            text = query if isinstance(query, str) else query.as_string(self.connection)
+            normalized = " ".join(text.split())
+            if "statements" in control:
+                control["statements"].append(normalized)
+            mutation = (
+                normalized.startswith(
+                    ("INSERT ", "UPDATE ", "DELETE ", "SET CONSTRAINTS")
+                )
+                or bool(
+                    re.search(
+                        r'^SELECT\s+(?:"[^"]+"\.)?"?groundloop_m5_authorize_[a-z_]+"?\(',
+                        normalized,
+                    )
+                )
+                or bool(
+                    re.search(r"\b(?:set_config|pg_advisory_[a-z_]+)\(", normalized)
+                )
+            )
+            result = super().execute(query, params, **kwargs)
+            if mutation:
+                control["records"].append(normalized)
+                if len(control["records"]) == control["target"]:
+                    raise _R33ActualCut(f"actual mutation {control['target']}")
+            return result
+
+    return RecordingCursor
+
+
+@pytest.mark.parametrize("open_db,target", _R33_EDGES, indirect=["open_db"])
+def test_document_every_actual_mutation_and_named_cut_rolls_back_then_retries(
+    open_db: OpenDatabase,
+    target: str,
+    request: pytest.FixtureRequest,
+) -> None:
+    db = open_db
+    plan, opened, revision = _r33_prepare(db, target)
+    before = database_snapshot(db.connection)
+    control: dict[str, Any] = {"records": [], "target": None, "statements": []}
+    factory = db.connection.cursor_factory
+
+    def invoke(failure: Any = None) -> Any:
+        return _edge(
+            db.connection,
+            opened.epoch_id,
+            plan.structural_event_id,
+            target,
+            revision,
+            failure_injector=failure,
+        )
+
+    def final(point: str) -> None:
+        if point == "after_deferred_validation":
+            raise _R33ActualCut("complete mutation discovery")
+
+    db.connection.cursor_factory = _r33_mutation_cursor(control)
+    try:
+        with pytest.raises(_R33ActualCut, match="complete mutation discovery"):
+            invoke(final)
+        discovered = tuple(control["records"])
+        assert discovered[-1] == "SET CONSTRAINTS ALL IMMEDIATE"
+        assert any(
+            "groundloop_m5_authorize_checked_transition" in q for q in discovered
+        )
+        assert (
+            sum("groundloop_m5_authorize_checked_transition" in q for q in discovered)
+            == 1
+        )
+        expected_updates = (
+            "groundloop_epoch",
+            "groundloop_m5_runtime_epoch",
+            "groundloop_m5_owner_pending_counter",
+            "groundloop_m5_answer_pending_counter",
+            "groundloop_m5_runtime_work_accumulator",
+            "groundloop_m5_runtime_timing_accumulator",
+        )
+        updates = [q for q in discovered if q.startswith("UPDATE ")]
+        assert len(updates) == len(expected_updates)
+        assert all(
+            '"' + name + '"' in q
+            for name, q in zip(expected_updates, updates, strict=True)
+        )
+        locks = [q for q in control["statements"] if "FOR UPDATE" in q]
+        assert len(locks) == len(expected_updates)
+        assert all(
+            '"' + name + '"' in q
+            for name, q in zip(expected_updates, locks, strict=True)
+        )
+        assert (
+            'COLLATE pg_catalog."C"' in locks[2]
+            and 'COLLATE pg_catalog."C"' in locks[3]
+        )
+        contribution = [
+            i
+            for i, q in enumerate(discovered)
+            if q.startswith("INSERT INTO")
+            and '"groundloop_m5_runtime_work_contribution"' in q
+        ]
+        assert len(contribution) == 1 and contribution[0] < discovered.index(updates[0])
+        assert not any("SUM(" in q.upper() for q in control["statements"])
+        assert database_snapshot(db.connection) == before
+        request.node.user_properties.append(
+            ("r33_actual_mutation_cuts", len(discovered))
+        )
+        for position in range(1, len(discovered) + 1):
+            control.update(records=[], target=position)
+            with pytest.raises(_R33ActualCut, match=f"actual mutation {position}$"):
+                invoke()
+            assert len(control["records"]) == position
+            assert database_snapshot(db.connection) == before
+        control.update(records=[], target=None)
+        for boundary in _CUTS:
+
+            def fail(point: str, boundary: str = boundary) -> None:
+                if point == boundary:
+                    raise _R33ActualCut(boundary)
+
+            with pytest.raises(_R33ActualCut, match=boundary):
+                invoke(fail)
+            assert database_snapshot(db.connection) == before
+        assert not invoke().replay
+    finally:
+        db.connection.cursor_factory = factory
+
+
+@pytest.mark.parametrize("open_db,target", _R33_EDGES, indirect=["open_db"])
+@pytest.mark.parametrize("leader_index", (0, 1))
+def test_document_native_observed_serializer_orders_and_zero_write_locked_loser(
+    open_db: OpenDatabase,
+    target: str,
+    leader_index: int,
+) -> None:
+    db = open_db
+    plan, opened, revision = _r33_prepare(db, target)
+    with (
+        _r33_connection(db) as first_connection,
+        _r33_connection(db) as second_connection,
+    ):
+        connections = (first_connection, second_connection)
+        for connection in connections:
+            connection.execute("SET statement_timeout='25s'")
+            connection.commit()
+        leader, follower = connections[leader_index], connections[1 - leader_index]
+        held, release, acquired, finish = (r33_threading.Event() for _ in range(4))
+        records: dict[str, Any] = {"records": [], "target": None}
+        recorder = _r33_mutation_cursor(records)
+
+        class FollowerCursor(recorder):
+            def execute(self, query: Any, params: Any = None, **kwargs: Any) -> Any:
+                result = super().execute(query, params, **kwargs)
+                source = (
+                    query
+                    if isinstance(query, str)
+                    else query.as_string(self.connection)
+                )
+                if '"groundloop_epoch"' in source and "FOR UPDATE" in source:
+                    acquired.set()
+                    assert finish.wait(20), "coordinator did not release locked loser"
+                return result
+
+        follower.cursor_factory = FollowerCursor
+
+        def invoke(index: int) -> Any:
+            def hold(point: str) -> None:
+                if index == leader_index and point == "after_base_lock":
+                    held.set()
+                    assert release.wait(20), "coordinator did not release native winner"
+
+            return _edge(
+                connections[index],
+                opened.epoch_id,
+                plan.structural_event_id,
+                target,
+                revision,
+                failure_injector=hold,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            winner_future = pool.submit(invoke, leader_index)
+            try:
+                assert held.wait(15)
+                loser_future = pool.submit(invoke, 1 - leader_index)
+                deadline = time.monotonic() + 10
+                while True:
+                    row = db.connection.execute(
+                        "SELECT pg_blocking_pids(pid),wait_event_type,query "
+                        "FROM pg_stat_activity "
+                        "WHERE pid=%s",
+                        (follower.info.backend_pid,),
+                    ).fetchone()
+                    ungranted = db.connection.execute(
+                        "SELECT locktype FROM pg_locks WHERE pid=%s AND NOT granted",
+                        (follower.info.backend_pid,),
+                    ).fetchall()
+                    if (
+                        row
+                        and leader.info.backend_pid in row[0]
+                        and row[1] == "Lock"
+                        and ungranted
+                    ):
+                        assert '"groundloop_epoch"' in row[2] and "FOR UPDATE" in row[2]
+                        break
+                    assert time.monotonic() < deadline, (
+                        "native follower blocking not observed"
+                    )
+                    time.sleep(0.01)
+                release.set()
+                winner = winner_future.result(timeout=15)
+                assert not winner.replay and acquired.wait(10)
+                committed = database_snapshot(db.connection)
+                finish.set()
+                loser = loser_future.result(timeout=15)
+                assert loser.replay and loser.anchor == winner.anchor
+                assert records["records"] == []
+                assert database_snapshot(db.connection) == committed
+                assert (
+                    _edge(
+                        follower,
+                        opened.epoch_id,
+                        plan.structural_event_id,
+                        target,
+                        revision,
+                    ).anchor
+                    == winner.anchor
+                )
+                assert database_snapshot(db.connection) == committed
+            finally:
+                release.set()
+                finish.set()
+
+
+def _r33_read_fault(
+    patch: pytest.MonkeyPatch,
+    relation: str,
+    field: str,
+    value: Any,
+) -> list[int]:
+    """Malformed retained wire image only; never persist or relax an invalid row."""
+    touched = [0]
+
+    def alter(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if field == "phantom":
+            touched[0] += 1
+            return [{"phantom": 1}]
+        if not rows:
+            return rows
+        rows = copy.deepcopy(rows)
+        touched[0] += 1
+        if field == "missing_row":
+            return []
+        if field == "extra_row":
+            return rows + [rows[0] | {"root_job_id": "f" * 64}]
+        row = rows[0]
+        parts = field.split(".")
+        for name in parts[:-1]:
+            row = row[name]
+        if value == "REMOVE_KEY":
+            del row[parts[-1]]
+        else:
+            row[parts[-1]] = value
+        if field == "public_delta_count":
+            work = M5RuntimeWork(
+                **{name: rows[0][name] for name in M5RuntimeWork.counter_names()}
+            )
+            rows[0]["work_digest"] = work.work_digest
+        return rows
+
+    read_row, records, epoch_rows = (
+        readiness._read_row,
+        readiness._r33_records,
+        readiness._rows,
+    )
+
+    def one(cursor: Any, schema: str, table: str, *args: Any, **kwargs: Any) -> Any:
+        row = read_row(cursor, schema, table, *args, **kwargs)
+        return alter([row])[0] if table == relation else row
+
+    def many(cursor: Any, query: Any, params: Any) -> Any:
+        rows = records(cursor, query, params)
+        return (
+            alter(rows)
+            if '"' + relation + '"' in query.as_string(cursor.connection)
+            else rows
+        )
+
+    def by_epoch(cursor: Any, schema: str, table: str, epoch: int) -> Any:
+        rows = epoch_rows(cursor, schema, table, epoch)
+        return alter(rows) if table == relation else rows
+
+    patch.setattr(readiness, "_read_row", one)
+    patch.setattr(readiness, "_r33_records", many)
+    patch.setattr(readiness, "_rows", by_epoch)
+    return touched
+
+
+@pytest.mark.parametrize("open_db", (False, True), indirect=True)
+@pytest.mark.parametrize("replay", (False, True))
+def test_document_retained_read_fault_matrix_never_writes(
+    open_db: OpenDatabase,
+    replay: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Read-boundary fault tests, NOT claims that native guards allow corruption."""
+    db = open_db
+    plan, opened, revision = _r33_prepare(db, "semantic_complete")
+    if replay:
+        _edge(
+            db.connection,
+            opened.epoch_id,
+            plan.structural_event_id,
+            "semantic_complete",
+            revision,
+        )
+    cases: list[tuple[str, str, Any]] = [
+        ("groundloop_m5_update", "previous_published_epoch_id", 0),
+        ("groundloop_m4_update", "update_kind", "replace"),
+        ("groundloop_m4_update", "previous_published_epoch_id", 0),
+        ("groundloop_m4_update", "candidate_policy_id", "other-policy"),
+        ("groundloop_m4_update", "registry_snapshot_id", "absent"),
+        (
+            "groundloop_m4_update",
+            "manifest._groundloop_m4_runtime_v1.failure_reason",
+            "bad",
+        ),
+        (
+            "groundloop_m4_update",
+            "manifest._groundloop_m4_runtime_v1.scope_claim_ids",
+            {"extra": []},
+        ),
+        (
+            "groundloop_m4_update",
+            "manifest._groundloop_m4_runtime_v1.event_manifest.deactivated_document_version_id",
+            "absent",
+        ),
+        (
+            "groundloop_m4_update",
+            "manifest._groundloop_m4_runtime_v1.event_manifest.inserted_document_id",
+            "phantom",
+        ),
+        ("groundloop_m4_claim_registry_snapshot", "claim_count", 999),
+        ("groundloop_m4_claim_registry_snapshot", "claim_set_hash", "f" * 64),
+        ("groundloop_m4_claim_registry_member", "member_ordinal", 999),
+        ("groundloop_m5_requirement_registry_snapshot", "requirement_count", 999),
+        ("groundloop_m5_active_chunk_snapshot", "chunk_count", 999),
+        ("groundloop_m5_active_chunk_snapshot", "normalizer_id", "other"),
+        ("groundloop_m5_active_chunk_snapshot", "normalizer_provenance_hash", "f" * 64),
+        (
+            "groundloop_m5_runtime_work_contribution",
+            "contribution_key_digest",
+            "f" * 64,
+        ),
+        ("groundloop_m5_runtime_work_contribution", "work_digest", "f" * 64),
+        ("groundloop_m5_runtime_work_contribution", "public_delta_count", 1),
+        ("groundloop_chunk_version", "valid_to_epoch", 0),
+        ("groundloop_chunk_version", "chunk_to", None),
+        ("groundloop_chunk_version", "chunk_from", 0),
+        ("groundloop_chunk_version", "artifact_version", "other"),
+        ("groundloop_chunk_version", "input_hash", None),
+        ("groundloop_chunk_version", "input_hash", "malformed"),
+        ("groundloop_chunk_version", "document_version_id", "other"),
+        ("groundloop_m4_structural_deactivation", "missing_row", None),
+        ("groundloop_m4_structural_deactivation", "extra_row", None),
+        ("groundloop_m4_structural_deactivation", "document_version_id", "other"),
+        ("groundloop_m4_document_metadata_overlay", "phantom", None),
+        ("groundloop_m5_update", "manifest.m5_d29_document_declaration_v1.extra", []),
+    ]
+    for name in (
+        "direct_root_job_ids",
+        "direct_scope_root_job_ids",
+        "direct_fallback_claim_ids",
+    ):
+        for malformed in (None, ["extra"], [None], ["extra", "extra"], "REMOVE_KEY"):
+            cases.append(
+                (
+                    "groundloop_m5_update",
+                    "manifest.m5_d29_document_declaration_v1." + name,
+                    malformed,
+                )
+            )
+    if plan.requirement_registry_snapshot.entries:
+        cases.extend(
+            [
+                (
+                    "groundloop_m5_requirement_registry_snapshot_member",
+                    "member_ordinal",
+                    999,
+                ),
+                ("groundloop_m5_requirement_root_provenance", "missing_row", None),
+                (
+                    "groundloop_m5_requirement_root_provenance",
+                    "fallback_required",
+                    False,
+                ),
+                (
+                    "groundloop_m5_requirement_root_provenance",
+                    "provenance_digest",
+                    "f" * 64,
+                ),
+                ("groundloop_m5_requirement_root_provenance", "extra_row", None),
+                ("groundloop_m5_semantic_job", "structural_event_id", "other-event"),
+                ("groundloop_m5_semantic_job", "candidate_policy_id", "other-policy"),
+                (
+                    "groundloop_m5_semantic_job",
+                    "requirement_registry_snapshot_digest",
+                    "f" * 64,
+                ),
+                (
+                    "groundloop_m5_semantic_job",
+                    "active_chunk_snapshot_digest",
+                    "f" * 64,
+                ),
+                ("groundloop_m5_semantic_job", "role_template_hash", "f" * 64),
+                ("groundloop_m5_semantic_job", "execution_spec_hash", "f" * 64),
+                ("groundloop_m5_semantic_job", "completion_digest", "f" * 64),
+                ("groundloop_m5_semantic_job", "created_revision", 999),
+                ("groundloop_m5_semantic_job", "cancelled_by_event_id", "other-event"),
+                ("groundloop_m5_semantic_job", "cancelled_by_epoch_id", 999),
+                (
+                    "groundloop_m5_semantic_job",
+                    "cancellation_reason",
+                    "retry_exhausted",
+                ),
+                (
+                    "groundloop_m5_discovery_scope",
+                    "candidate_policy_id",
+                    "other-policy",
+                ),
+                (
+                    "groundloop_m5_discovery_scope",
+                    "requirement_registry_snapshot_digest",
+                    "f" * 64,
+                ),
+                ("groundloop_m5_discovery_scope", "scope_contract_digest", "f" * 64),
+                ("groundloop_m5_discovery_scope", "completion_digest", "f" * 64),
+                ("groundloop_m5_discovery_scope", "closed_revision", 999),
+                ("groundloop_m5_discovery_scope", "missing_row", None),
+            ]
+        )
+    before = database_snapshot(db.connection)
+    for relation, field, value in cases:
+        with monkeypatch.context() as patch:
+            touched = _r33_read_fault(patch, relation, field, value)
+            with pytest.raises(
+                (InvalidEventError, EventConflictError, ValidationError)
+            ):
+                _edge(
+                    db.connection,
+                    opened.epoch_id,
+                    plan.structural_event_id,
+                    "semantic_complete",
+                    revision,
+                )
+            assert touched[0], (relation, field, value)
+        assert database_snapshot(db.connection) == before
+    request.node.user_properties.append(("r33_wire_fault_cases", len(cases)))
+    assert (
+        _edge(
+            db.connection,
+            opened.epoch_id,
+            plan.structural_event_id,
+            "semantic_complete",
+            revision,
+        ).replay
+        is replay
+    )
+
+
+@pytest.mark.parametrize("kind", ("retire", "replace"))
+def test_group_compatibility_with_exact_021_retains_original_coordination(
+    readiness_db: M5RuntimeDatabase,
+    kind: str,
+) -> None:
+    from groundloop.postgres.migrations import (
+        install_m5_document_update_completion_bundle,
+    )
+
+    db = readiness_db
+    plan = getattr(db, kind + "_plan")(event_id="r33-021-group-" + kind)
+    store = PostgresM5RuntimeStore(db.connection)
+    opened = _open_recovery_event(store, db, plan)
+    roots = _roots(plan, db.manifest)
+    revision = 1
+    if roots:
+        cancellation = M5CancellationPlan.build(
+            epoch_id=opened.epoch_id,
+            structural_event_id=plan.structural_event_id,
+            reason=M5TerminalReason.SCOPE_RETIRED,
+            cancelled_job_ids=tuple(job.logical_job_id for _, job in roots),
+        )
+        revision = store.cancel_m5_work_atomically(
+            opened.epoch_id, 1, cancellation
+        ).resulting_revision
+    install_m5_document_update_completion_bundle(db.connection)
+    if not roots:
+        assert not _edge(
+            db.connection,
+            opened.epoch_id,
+            plan.structural_event_id,
+            "semantic_pending",
+            1,
+        ).replay
+        revision = 2
+    complete = _edge(
+        db.connection,
+        opened.epoch_id,
+        plan.structural_event_id,
+        "semantic_complete",
+        revision,
+    )
+    assert not complete.replay
+    before = database_snapshot(db.connection)
+    assert (
+        _edge(
+            db.connection,
+            opened.epoch_id,
+            plan.structural_event_id,
+            "semantic_complete",
+            revision,
+        ).anchor
+        == complete.anchor
+    )
+    assert database_snapshot(db.connection) == before
+
+
+@pytest.mark.parametrize("open_db", (False,), indirect=True)
+@pytest.mark.parametrize("mutation", ("missing", "bad-ledger", "bad-function"))
+def test_document_missing_bad_and_partial_021_never_falls_back(
+    open_db: OpenDatabase,
+    mutation: str,
+) -> None:
+    from groundloop.postgres.migrations import M5DocumentUpdateCompletionBundleError
+
+    db = open_db
+    plan, opened, _ = _r33_prepare(db, "semantic_pending")
+    original = database_snapshot(db.connection)
+    # Explicit owned catalog negatives, committed before the required idle call.
+    # Fixture schema is isolated and disposable; no guard is disabled.
+    commands = {
+        "missing": "DELETE FROM groundloop_m5_schema_bundle "
+        "WHERE bundle_id='m5-document-update-completion-schema-bundle-v1'",
+        "bad-ledger": "UPDATE groundloop_m5_schema_bundle "
+        "SET bundle_sha256=repeat('f',64) "
+        "WHERE bundle_id='m5-document-update-completion-schema-bundle-v1'",
+        "bad-function": "CREATE OR REPLACE FUNCTION "
+        "groundloop_m5_validate_event_result_children() "
+        "RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+        "RAISE EXCEPTION 'controlled bad021'; END; $$",
+    }
+    if mutation in {"missing", "bad-ledger"}:
+        # These cannot be persisted legally. Record the native immutable-ledger
+        # rejection chain, not a fabricated exact020 catalog/document positive.
+        with pytest.raises(psycopg.errors.RaiseException, match="immutable M5 table"):
+            db.connection.execute(commands[mutation])
+        assert database_snapshot(db.connection) == original
+        return
+    db.connection.execute(commands[mutation])
+    db.connection.commit()
+    before = database_snapshot(db.connection)
+    with pytest.raises(
+        (M5DocumentUpdateCompletionBundleError, M5SemanticReadinessBundleError)
+    ):
+        _edge(
+            db.connection,
+            opened.epoch_id,
+            plan.structural_event_id,
+            "semantic_pending",
+            1,
+        )
+    assert database_snapshot(db.connection) == before
+
+
+@pytest.mark.parametrize("open_db", (True,), indirect=True)
+def test_document_native_guards_reject_immutable_corruption(
+    open_db: OpenDatabase,
+) -> None:
+    db = open_db
+    plan, opened, revision = _r33_prepare(db, "semantic_complete")
+    before = database_snapshot(db.connection)
+    for statement in (
+        "UPDATE groundloop_m5_requirement_root_provenance "
+        "SET provenance_digest=repeat('f',64) WHERE epoch_id=%s",
+        "DELETE FROM groundloop_m5_requirement_root_provenance WHERE epoch_id=%s",
+        "UPDATE groundloop_m5_runtime_work_contribution "
+        "SET contribution_key_digest=repeat('f',64) WHERE epoch_id=%s",
+    ):
+        with pytest.raises(psycopg.Error) as error:
+            with db.connection.transaction():
+                db.connection.execute(statement, (opened.epoch_id,))
+                db.connection.execute("SET CONSTRAINTS ALL IMMEDIATE")
+        assert error.value.sqlstate in {"P0001", "23514"}, str(error.value)
+        assert database_snapshot(db.connection) == before
+    assert not _edge(
+        db.connection,
+        opened.epoch_id,
+        plan.structural_event_id,
+        "semantic_complete",
+        revision,
+    ).replay
+    # The historical M4 counter allows this owner write; the readiness reader
+    # must independently reject it. This is an isolated persisted negative,
+    # never a fabricated readiness or terminal positive.
+    db.connection.execute(
+        "UPDATE groundloop_m4_evaluation_epoch_counter "
+        "SET revision=2 WHERE epoch_id=%s",
+        (opened.epoch_id,),
+    )
+    db.connection.commit()
+    corrupt = database_snapshot(db.connection)
+    with pytest.raises(EventConflictError, match="original active counter1/P"):
+        _edge(
+            db.connection,
+            opened.epoch_id,
+            plan.structural_event_id,
+            "semantic_complete",
+            revision,
+        )
+    assert database_snapshot(db.connection) == corrupt
+
+
+@pytest.mark.parametrize("open_db", (True,), indirect=True)
+@pytest.mark.parametrize("replay", (False, True))
+def test_document_coherently_rehashed_job_snapshot_binding_rejects(
+    open_db: OpenDatabase,
+    replay: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from groundloop.m5.runtime.contracts import (
+        M5DiscoveryScopeContract,
+        M5LogicalJobSpec,
+    )
+
+    db = open_db
+    plan, opened, revision = _r33_prepare(db, "semantic_complete")
+    if replay:
+        _edge(
+            db.connection,
+            opened.epoch_id,
+            plan.structural_event_id,
+            "semantic_complete",
+            revision,
+        )
+    before = database_snapshot(db.connection)
+    records = readiness._r33_records
+    touched = []
+
+    def corrupt(cursor: Any, query: Any, parameters: Any) -> Any:
+        rows = records(cursor, query, parameters)
+        source = query.as_string(cursor.connection)
+        if rows and '"groundloop_m5_semantic_job"' in source:
+            rows = copy.deepcopy(rows)
+            row = rows[0]
+            scope = M5DiscoveryScopeContract.build(
+                direction=readiness.M5DiscoveryDirection.FORWARD_REQUIREMENT,
+                requirement_version_id=plan.requirement_registry_snapshot.entries[
+                    0
+                ].requirement_version_id,
+                inserted_chunk_version_id=None,
+                candidate_policy_id=db.policy.candidate_policy_id,
+                requirement_registry_snapshot_digest="f" * 64,
+                active_chunk_snapshot_digest=plan.active_chunk_snapshot.active_chunk_snapshot_digest,
+            )
+            spec = M5LogicalJobSpec.build(
+                structural_event_id=plan.structural_event_id,
+                job_kind=readiness.M5JobKind.FORWARD_REQUIREMENT_RETRIEVAL,
+                manifest=db.policy,
+                scope=scope,
+            )
+            for name in (
+                "logical_job_id",
+                "payload_hash",
+                "scope_contract_digest",
+                "requirement_registry_snapshot_digest",
+            ):
+                row[name] = getattr(spec, name)
+            touched.append(True)
+        return rows
+
+    with monkeypatch.context() as patch:
+        patch.setattr(readiness, "_r33_records", corrupt)
+        with pytest.raises(
+            EventConflictError, match="document job declaration changed"
+        ):
+            _edge(
+                db.connection,
+                opened.epoch_id,
+                plan.structural_event_id,
+                "semantic_complete",
+                revision,
+            )
+    assert touched and database_snapshot(db.connection) == before
+    assert (
+        _edge(
+            db.connection,
+            opened.epoch_id,
+            plan.structural_event_id,
+            "semantic_complete",
+            revision,
+        ).replay
+        is replay
+    )
+
+
+@pytest.mark.parametrize("open_db", (False,), indirect=True)
+def test_document_controlled_exact_020_branch_rejects_real_retained_declaration(
+    open_db: OpenDatabase,
+) -> None:
+    """Controlled branch predicate only, NOT a live exact020 document catalog."""
+    db = open_db
+    plan, opened, _ = _r33_prepare(db, "semantic_pending")
+    before = database_snapshot(db.connection)
+    with db.connection.transaction(), db.connection.cursor() as cursor:
+        base, runtime = readiness._read_header_pair(cursor, db.schema, opened.epoch_id)
+        with pytest.raises(InvalidEventError, match="requires021 for documents"):
+            readiness._check_declaration(
+                cursor,
+                db.schema,
+                base,
+                runtime,
+                document_authority=False,
+            )
+    assert database_snapshot(db.connection) == before
+    assert not _edge(
+        db.connection, opened.epoch_id, plan.structural_event_id, "semantic_pending", 1
+    ).replay
