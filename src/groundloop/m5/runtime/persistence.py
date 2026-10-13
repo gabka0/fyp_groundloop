@@ -11,11 +11,13 @@ import hashlib
 import secrets
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from typing import Any
 
 from psycopg import Connection, Cursor, sql
+from psycopg.pq import TransactionStatus
+from psycopg.types.json import Jsonb
 
 from groundloop.domain import StatusDelta, SubjectKind
 from groundloop.errors import EventConflictError, InvalidEventError, ValidationError
@@ -26,9 +28,30 @@ from groundloop.events import (
     PolicyChangeEvent,
     ReplaceDocumentVersionEvent,
 )
-from groundloop.m4.application import OpenEventReceipt, PublicationReceipt
+from groundloop.incremental import IncrementalMaintenanceEngine
+from groundloop.m4.application import (
+    ApplicationExecutionPolicy,
+    OpenEventReceipt,
+    PublicationReceipt,
+)
 from groundloop.m4.contracts import VectorIndexKind
-from groundloop.m5.domain import EvidenceGroupVersion
+from groundloop.m4.evaluation_overlay import (
+    PostgresEvaluationOverlayStore,
+    _declaration_hash,
+)
+from groundloop.m4.persistence import PostgresM4RuntimeStore
+from groundloop.m4.pipeline import M4ExecutionMode, PostgresM4ApplicationPorts
+from groundloop.m5.digests import (
+    bool_field,
+    enum_field,
+    f64_field,
+    hash_field,
+    int_field,
+    option_field,
+    sequence_field,
+    text_field,
+)
+from groundloop.m5.domain import EvidenceGroupVersion, GroupMatchingCertificateArtifact
 from groundloop.m5.events import (
     ObserveRequirementEvent,
     RegisterGroupEvent,
@@ -36,7 +59,12 @@ from groundloop.m5.events import (
     RetireGroupEvent,
 )
 from groundloop.m5.runtime import digests
-from groundloop.m5.runtime.application import M5RequirementRootDeclaration
+from groundloop.m5.runtime import postgres_matching as _o33_matching
+from groundloop.m5.runtime import postgres_withdrawal as _o33_withdrawal
+from groundloop.m5.runtime.application import (
+    M5DirectOpenPlan,
+    M5RequirementRootDeclaration,
+)
 from groundloop.m5.runtime.contracts import (
     ActiveChunkSnapshot,
     M5AcquisitionDisposition,
@@ -59,11 +87,13 @@ from groundloop.m5.runtime.contracts import (
     M5JobState,
     M5LeaseTerminalProjection,
     M5LogicalJobSpec,
+    M5PersistedMatchingSourceKind,
     M5ReplayedOutcome,
     M5RequirementAttemptReturnReceipt,
     M5RequirementDiscoveryResult,
     M5RequirementPairInput,
     M5RequirementVerifierArtifact,
+    M5RequirementWithdrawalPlan,
     M5RootBarrierReceipt,
     M5RunFailureReason,
     M5RunState,
@@ -75,10 +105,15 @@ from groundloop.m5.runtime.contracts import (
     M5RuntimeWorkContributionKind,
     M5StateReferenceKind,
     M5TerminalReason,
+    M5TextNormalizerProvenance,
     M5TransitionTimingReceipt,
     M5TypedEventPlan,
     RequirementRegistrySnapshot,
     SemanticPairKey,
+    m5_overlay_work_values,
+)
+from groundloop.m5.runtime.postgres_matching_publication import (
+    install_matching_activation_projection,
 )
 from groundloop.m5.runtime.postgres_recovery import (
     RequirementExecutionAccounting,
@@ -130,6 +165,8 @@ from groundloop.postgres.m5 import (
     build_m5_bootstrap_projection,
     write_m5_materialized_states,
 )
+from groundloop.postgres.migrations import require_m5_document_update_completion_bundle
+from groundloop.repository import InMemoryRepository
 
 RuntimeFailureInjector = Callable[[str], None]
 
@@ -159,6 +196,990 @@ _STRUCTURAL_OPEN_EPOCH_ROWS = (
 _SELF_CONTAINED_FAILURE_UPDATE_KINDS = frozenset(
     {"register_group", "replace_group", "retire_group", "observe_requirement"}
 )
+
+
+def _o33_require_idle(connection: Connection[Any]) -> None:
+    if connection.info.transaction_status is not TransactionStatus.IDLE:
+        raise ValidationError("O33 requires an idle owned outer transaction")
+
+
+def _o33_schema_authority(cursor: Cursor[Any]) -> str:
+    """Pin permanent authority and reject implicit temporary-table lookup."""
+
+    if cursor.execute("SHOW transaction_isolation").fetchone() != ("read committed",):
+        raise ValidationError("O33 requires READ COMMITTED")
+    if cursor.execute("SHOW transaction_read_only").fetchone() != ("off",):
+        raise ValidationError("O33 requires a read-write transaction")
+    row = cursor.execute("SELECT current_schema()").fetchone()
+    if row is None or type(row[0]) is not str or row[0].startswith("pg_"):
+        raise ValidationError("O33 permanent schema is missing")
+    schema = row[0]
+    shadow = cursor.execute(
+        "SELECT relation.relname FROM pg_catalog.pg_class AS relation "
+        "JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid=relnamespace "
+        "WHERE namespace.nspname=%s AND relkind IN ('r','p','v','m','S') "
+        "AND pg_catalog.to_regclass(pg_catalog.quote_ident(relname)) "
+        "IS DISTINCT FROM relation.oid LIMIT 1",
+        (schema,),
+    ).fetchone()
+    if shadow is not None:
+        raise ValidationError("O33 permanent relation is shadowed")
+    require_runtime_recovery_bundle(cursor)
+    _o33_matching.require_persisted_matching_bundle(cursor)
+    _o33_withdrawal._require_d29_document_route_authority(cursor)
+    require_m5_document_update_completion_bundle(cursor, schema_name=schema)
+    return schema
+
+
+def _o33_stage_delete_source(
+    cursor: Cursor[Any],
+    plan: M5TypedEventPlan,
+    direct: M5DirectOpenPlan,
+    ports: PostgresM4ApplicationPorts,
+    epoch_id: int,
+    failure_injector: RuntimeFailureInjector | None,
+) -> None:
+    """Exact tier7 lifecycle, before D29's source-first prepare boundary."""
+
+    assert type(plan.event) is DeleteDocumentVersionEvent
+    assert direct.withdrawal is not None
+    assert direct.structural_payload is not None
+    old = plan.event.document_version_id
+    owner = cursor.execute(
+        "SELECT document_id FROM groundloop_document_version "
+        "WHERE document_version_id=%s",
+        (old,),
+    ).fetchone()
+    if owner is None:
+        raise EventConflictError("O33 old document source is absent")
+    if (
+        cursor.execute(
+            "SELECT document_id FROM groundloop_document "
+            "WHERE document_id=%s FOR UPDATE",
+            (owner[0],),
+        ).fetchone()
+        is None
+    ):
+        raise EventConflictError("O33 owning document is absent")
+    version = cursor.execute(
+        "SELECT document_id,valid_from_epoch,valid_to_epoch "
+        "FROM groundloop_document_version WHERE document_version_id=%s FOR UPDATE",
+        (old,),
+    ).fetchone()
+    if version is None or (
+        version[0] != owner[0]
+        or type(version[1]) is not int
+        or not 1 <= version[1] <= plan.expected_previous_published_epoch_id
+        or version[2] is not None
+    ):
+        raise EventConflictError("O33 document source interval changed")
+    chunks = cursor.execute(
+        "SELECT chunk_version_id,valid_from_epoch,valid_to_epoch "
+        "FROM groundloop_chunk_version WHERE document_version_id=%s "
+        'ORDER BY chunk_version_id COLLATE "C" FOR UPDATE',
+        (old,),
+    ).fetchall()
+    if (
+        not chunks
+        or tuple(row[0] for row in chunks)
+        != direct.withdrawal.plan.deactivated_chunk_ids
+        or any(row[1] != version[1] or row[2] is not None for row in chunks)
+    ):
+        raise EventConflictError("O33 complete source chunk set changed")
+    source_payload = _o33_withdrawal._structural_payload_from_event(plan)
+    if direct.structural_payload != source_payload:
+        raise EventConflictError(
+            "O33 proposed source payload differs from typed DELETE"
+        )
+    ports._write_structural_rows(cursor, epoch_id, source_payload)
+    _inject(failure_injector, "o33_source_deactivation_written")
+    if (
+        cursor.execute(
+            "UPDATE groundloop_document_version SET valid_to_epoch=%s "
+            "WHERE document_version_id=%s AND valid_to_epoch IS NULL",
+            (epoch_id, old),
+        ).rowcount
+        != 1
+    ):
+        raise EventConflictError("O33 document interval CAS failed")
+    _inject(failure_injector, "o33_source_version_closed")
+    if cursor.execute(
+        "UPDATE groundloop_chunk_version SET valid_to_epoch=%s "
+        "WHERE document_version_id=%s AND valid_to_epoch IS NULL",
+        (epoch_id, old),
+    ).rowcount != len(chunks):
+        raise EventConflictError("O33 chunk interval CAS failed")
+    _inject(failure_injector, "o33_source_chunks_closed")
+
+
+def _o33_persist_scopes(
+    cursor: Cursor[Any],
+    epoch_id: int,
+    roots: tuple[_RootDeclaration, ...],
+) -> None:
+    for root in roots:
+        scope, job = root.scope, root.job
+        cursor.execute(
+            "INSERT INTO groundloop_m5_discovery_scope "
+            "(root_job_id,epoch_id,direction,requirement_version_id,"
+            "inserted_chunk_version_id,candidate_policy_id,"
+            "requirement_registry_snapshot_digest,active_chunk_snapshot_digest,"
+            "scope_contract_digest,scope_state,created_revision) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'open',1)",
+            (
+                job.logical_job_id,
+                epoch_id,
+                scope.direction.value,
+                scope.requirement_version_id,
+                scope.inserted_chunk_version_id,
+                scope.candidate_policy_id,
+                scope.requirement_registry_snapshot_digest,
+                scope.active_chunk_snapshot_digest,
+                scope.scope_contract_digest,
+            ),
+        )
+
+
+def _o33_persist_jobs(
+    cursor: Cursor[Any],
+    epoch_id: int,
+    plan: M5TypedEventPlan,
+    roots: tuple[_RootDeclaration, ...],
+) -> None:
+    for root in roots:
+        job = root.job
+        cursor.execute(
+            "INSERT INTO groundloop_m5_semantic_job "
+            "(logical_job_id,epoch_id,structural_event_id,job_kind,candidate_policy_id,"
+            "candidate_policy_manifest_hash,scope_contract_digest,"
+            "requirement_registry_snapshot_digest,active_chunk_snapshot_digest,"
+            "role_template_hash,execution_spec_hash,expandable,payload_hash,"
+            "job_state,created_revision) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,true,%s,'declared',1)",
+            (
+                job.logical_job_id,
+                epoch_id,
+                plan.structural_event_id,
+                job.job_kind.value,
+                job.candidate_policy_id,
+                job.candidate_policy_manifest_hash,
+                job.scope_contract_digest,
+                job.requirement_registry_snapshot_digest,
+                job.active_chunk_snapshot_digest,
+                job.role_template_hash,
+                job.execution_spec_hash,
+                job.payload_hash,
+            ),
+        )
+
+
+def _o33_require_empty_direct(direct: M5DirectOpenPlan) -> None:
+    if (
+        type(direct) is not M5DirectOpenPlan
+        or direct.structural_payload is None
+        or direct.withdrawal is None
+        or direct.root_jobs
+        or direct.discovery_scopes
+        or direct.withdrawal.fallback_claim_ids
+    ):
+        raise InvalidEventError(
+            "O33 requires all three direct declaration arrays empty"
+        )
+
+
+def _o33_require_job_free(
+    cursor: Cursor[Any], epoch_id: int, direct: M5DirectOpenPlan
+) -> None:
+    _o33_require_empty_direct(direct)
+    for relation in (
+        "groundloop_semantic_job",
+        "groundloop_discovery_scope",
+        "groundloop_m5_direct_terminal_projection",
+        "groundloop_m4_evaluation_override_counter",
+        "groundloop_m4_evaluation_counter_transition",
+    ):
+        if (
+            cursor.execute(
+                sql.SQL("SELECT 1 FROM {} WHERE epoch_id=%s LIMIT 1").format(
+                    sql.Identifier(relation)
+                ),
+                (epoch_id,),
+            ).fetchone()
+            is not None
+        ):
+            raise EventConflictError("O33 direct history is not job-free")
+    row = cursor.execute(
+        "SELECT btrim(declaration_hash),lifecycle_state,revision,"
+        "open_discovery_scope_count,default_evaluation_state,confirmed_as_of_epoch "
+        "FROM groundloop_m4_evaluation_epoch_counter WHERE epoch_id=%s",
+        (epoch_id,),
+    ).fetchone()
+    predecessor = cursor.execute(
+        "SELECT previous_published_epoch_id FROM groundloop_m4_update "
+        "WHERE epoch_id=%s",
+        (epoch_id,),
+    ).fetchone()
+    if predecessor is None:
+        raise EventConflictError("O33 M4 declaration is absent")
+    if row != (
+        _declaration_hash(epoch_id, 1, predecessor[0], 0),
+        "active",
+        1,
+        0,
+        "complete",
+        predecessor[0],
+    ):
+        raise EventConflictError("O33 genuine direct declaration counter changed")
+
+
+def _o33_read_structural_work(cursor: Cursor[Any], epoch_id: int) -> M5RuntimeWork:
+    columns = (*M5RuntimeWork.counter_names(), "work_digest")
+    rows = cursor.execute(
+        sql.SQL(
+            "SELECT {} FROM groundloop_m5_runtime_work_contribution "
+            "WHERE epoch_id=%s AND contribution_kind='structural_open'"
+        ).format(sql.SQL(",").join(map(sql.Identifier, columns))),
+        (epoch_id,),
+    ).fetchall()
+    if len(rows) != 1:
+        raise EventConflictError(
+            "O33 structural work contribution is absent or duplicate"
+        )
+    return M5RuntimeWork(**dict(zip(columns, rows[0], strict=True)))
+
+
+def _o33_validate_consumed_cache(
+    cursor: Cursor[Any],
+    ports: PostgresM4ApplicationPorts,
+    plan: M5TypedEventPlan,
+    direct: M5DirectOpenPlan,
+    decision_policy_version: str,
+) -> None:
+    """Operational namespace binding, not constructor-origin attestation.
+
+    Only the bounded projection consumed by this DELETE is checked. There is
+    no cache hydration, full oracle, logical-epoch/SQL-epoch comparison or cache
+    write authority. Independent persisted closure has already validated.
+    """
+    repository, engine = ports._published_repository, ports._published_engine
+    if (
+        type(repository) is not InMemoryRepository
+        or type(engine) is not IncrementalMaintenanceEngine
+        or ports._active_epoch_id is not None
+        or ports._working_repository is not repository
+        or ports._working_engine is not engine
+    ):
+        raise EventConflictError("O33 cache is not a coherent measured published base")
+    assert type(plan.event) is DeleteDocumentVersionEvent
+    old = plan.event.document_version_id
+    row = cursor.execute(
+        "SELECT document_id,btrim(content_hash) FROM groundloop_document_version "
+        "WHERE document_version_id=%s",
+        (old,),
+    ).fetchone()
+    if row is None or not repository.has_document_version(old):
+        raise EventConflictError("O33 consumed document cache source is absent")
+    cached = repository.document_version(old)
+    if (cached.document_id, cached.content_hash) != tuple(
+        row
+    ) or repository.active_document_version(cached.document_id) != old:
+        raise EventConflictError(
+            "O33 consumed document cache differs from locked source"
+        )
+    chunks = cursor.execute(
+        "SELECT chunk_version_id,chunk_index,text,btrim(text_hash) "
+        "FROM groundloop_chunk_version WHERE document_version_id=%s "
+        'ORDER BY chunk_version_id COLLATE "C"',
+        (old,),
+    ).fetchall()
+    if tuple(sorted(repository.chunk_ids_of_document_version(old))) != tuple(
+        r[0] for r in chunks
+    ):
+        raise EventConflictError("O33 complete consumed chunk cache set differs")
+    assert direct.withdrawal is not None
+    if direct.withdrawal.plan.observation_ids:
+        raise EventConflictError("O33 job-free direct source has observations")
+    for chunk_id, index, text, text_hash in chunks:
+        chunk = repository.chunk_version(chunk_id)
+        if (
+            (chunk.document_version_id, chunk.chunk_index, chunk.text, chunk.text_hash)
+            != (old, index, text, text_hash)
+            or not repository.is_chunk_active(chunk_id)
+            or repository.current_observation_ids_for_chunk(chunk_id)
+        ):
+            raise EventConflictError("O33 consumed chunk/observation cache differs")
+    policy = _o33_matching._document_direct_policy(cursor, decision_policy_version)
+    if repository.current_policy() != policy:
+        raise EventConflictError("O33 cache policy differs from locked decision policy")
+
+
+@dataclass(frozen=True, slots=True)
+class _O33ByteRegion:
+    name: str
+    bytes_hashed: int
+    bytes_serialized: int
+
+
+def _o33_before_point(
+    cursor: Cursor[Any], schema: str, kind: str, object_id: str, predecessor: int
+) -> dict[str, Any]:
+    """One already-held open published point, never an interval-prefix scan."""
+    column = {
+        "requirement": "requirement_version_id",
+        "group": "group_version_id",
+        "claim": "claim_id",
+        "answer": "answer_version_id",
+    }[kind]
+    rows = cursor.execute(
+        sql.SQL("SELECT * FROM {} WHERE {}=%s AND valid_to_epoch IS NULL").format(
+            sql.Identifier(schema, f"groundloop_m5_published_{kind}_state"),
+            sql.Identifier(column),
+        ),
+        (object_id,),
+    ).fetchall()
+    if len(rows) != 1 or cursor.description is None:
+        raise EventConflictError("O33 byte ledger lacks its held published point")
+    point = dict(zip((c.name for c in cursor.description), rows[0], strict=True))
+    if point[column] != object_id or not 1 <= point["valid_from_epoch"] <= predecessor:
+        raise EventConflictError("O33 byte ledger published coordinate changed")
+    return point
+
+
+def _o33_state_preimage(kind: str, point: dict[str, Any]) -> bytes:
+    """Size unchanged frozen state recipes; this is diagnostic, not production.
+
+    No new state identity is created, nor can this choose an after-state. Inputs
+    are already-held published points or the accepted prepared after payloads.
+    """
+    t, i, h, q = text_field, int_field, hash_field, sequence_field
+    p = digests.stable_m5_preimage
+    if kind == "requirement":
+        return p(
+            "m5-requirement-state-artifact-v2",
+            t(point["requirement_version_id"]),
+            q(h(v) for v in point["witness_hashes"]),
+            q(t(v) for v in point["supporting_observation_ids"]),
+            i(point["witness_count"]),
+            bool_field(point["satisfied"]),
+            t(point["decision_policy_version"]),
+        )
+    if kind == "group":
+        return p(
+            "m5-group-state-artifact-v2",
+            t(point["group_version_id"]),
+            i(point["requirement_count"]),
+            i(point["satisfied_count"]),
+            i(point["matching_size"]),
+            bool_field(point["complete"]),
+            t(point["decision_policy_version"]),
+            option_field(
+                None
+                if point["certificate_digest"] is None
+                else h(point["certificate_digest"])
+            ),
+        )
+    if kind == "claim":
+        return p(
+            "m5-claim-state-artifact-v2",
+            t(point["claim_id"]),
+            i(point["support_count"]),
+            i(point["refute_count"]),
+            option_field(
+                None
+                if point["best_support_score"] is None
+                else f64_field(float(point["best_support_score"]))
+            ),
+            option_field(
+                None
+                if point["best_refute_score"] is None
+                else f64_field(float(point["best_refute_score"]))
+            ),
+            q(t(v) for v in point["supporting_observation_ids"]),
+            q(t(v) for v in point["refuting_observation_ids"]),
+            i(point["complete_group_count"]),
+            q(t(v) for v in point["complete_group_ids"]),
+            enum_field(point["status"]),
+            t(point["decision_policy_version"]),
+            h(point["certificate_digest"]),
+        )
+    if kind == "answer":
+        return p(
+            "m5-answer-state-artifact-v2",
+            t(point["answer_version_id"]),
+            i(point["required_claim_count"]),
+            i(point["supported_count"]),
+            i(point["unsupported_count"]),
+            i(point["refuted_count"]),
+            i(point["conflicted_count"]),
+            enum_field(point["status"]),
+        )
+    raise AssertionError("unknown O33 state family")
+
+
+def _o33_native_matching_regions(
+    cursor: Cursor[Any], matching: _o33_matching._PreparedMatchingTransition
+) -> tuple[_O33ByteRegion, ...]:
+    """Explicit accepted DELETE producer ledger, not a retained-length alias.
+
+    Successful derive builds and discards one document plan; prepare builds it
+    again. Its tier12 validator rebuild is wholly excluded. Preview constructs
+    desired group certificates three times, excluding equality-only rebuilds.
+    Finalizer's fixed fresh suffix is sized prospectively, never run early.
+    """
+    intent = matching.official_intent
+    artifact = matching.prewrite_patch_artifact
+    plan = matching.physical_and_logical_write_plan
+    row = cursor.execute("SELECT current_schema()").fetchone()
+    assert row is not None
+    schema = str(row[0])
+    regions: list[_O33ByteRegion] = []
+
+    def add(name: str, size: int, hashes: int = 1, encodes: int = 1) -> None:
+        regions.append(_O33ByteRegion(name, size * hashes, size * encodes))
+
+    t, i, h, q = text_field, int_field, hash_field, sequence_field
+    p = digests.stable_m5_preimage
+    intent_bytes = p(
+        "m5-persisted-matching-transition-intent-v1",
+        enum_field(intent.source_kind),
+        t(intent.source_id),
+        h(intent.source_identity_hash),
+        i(intent.before_epoch_id),
+        i(intent.before_revision),
+        i(intent.resulting_epoch_id),
+        i(intent.resulting_revision),
+        t(intent.decision_policy_version),
+        q(
+            q(
+                (
+                    t(s.group_version_id),
+                    i(s.requirement_count),
+                    q(q((i(o), t(r))) for o, r in s.requirements),
+                )
+            )
+            for s in intent.group_shapes
+        ),
+        q(t(v) for v in intent.observation_ids),
+        q(q((t(g), i(o), h(v), t(r))) for g, o, v, r in intent.edge_keys),
+        q(q((t(g), h(v))) for g, v in intent.mask_keys),
+        *(
+            q(t(v) for v in values)
+            for values in (
+                intent.hall_group_ids,
+                intent.requirement_state_ids,
+                intent.group_state_ids,
+                intent.claim_state_ids,
+                intent.answer_state_ids,
+                intent.group_certificate_ids,
+                intent.claim_certificate_ids,
+            )
+        ),
+    )
+    add("d25.intent", len(intent_bytes))
+    before: dict[str, dict[str, dict[str, Any]]] = {}
+    after: dict[str, dict[str, dict[str, Any]]] = {}
+    for kind, ids, writes in (
+        ("requirement", intent.requirement_state_ids, plan.requirement_state_rows),
+        ("group", intent.group_state_ids, plan.group_state_rows),
+        ("claim", intent.claim_state_ids, plan.claim_state_rows),
+        ("answer", intent.answer_state_ids, plan.answer_state_rows),
+    ):
+        before[kind] = {
+            identity: _o33_before_point(
+                cursor, schema, kind, identity, intent.before_epoch_id
+            )
+            for identity in ids
+        }
+        after[kind] = dict(before[kind])
+        key = {
+            "requirement": "requirement_version_id",
+            "group": "group_version_id",
+            "claim": "claim_id",
+            "answer": "answer_version_id",
+        }[kind]
+        for write in writes:
+            write_fields = asdict(write)
+            point = (
+                write_fields
+                if kind == "answer"
+                else {**write_fields.pop("state"), **write_fields}
+            )
+            identity = point[key]
+            after[kind][identity] = point
+            add(
+                f"d25.state.{kind}.{identity}.before",
+                len(_o33_state_preimage(kind, before[kind][identity])),
+                2,
+                2,
+            )
+            add(
+                f"d25.state.{kind}.{identity}.after",
+                len(_o33_state_preimage(kind, point)),
+                2,
+                2,
+            )
+    outputs = {
+        (kind, identity): value
+        for kind, identity, value in artifact.logical_patch.output_records
+    }
+    for identity, point in after["group"].items():
+        if not point["complete"]:
+            continue
+        desired = outputs.get(("group_certificate", identity))
+        if desired is None:
+            desired = _o33_matching._stored_group_certificate_artifact(
+                cursor, str(point["certificate_digest"]).strip(), lock=False
+            )
+        if (
+            not isinstance(desired, GroupMatchingCertificateArtifact)
+            or desired.group_version_id != identity
+        ):
+            raise EventConflictError("O33 byte ledger desired group artifact absent")
+        encoded = p(
+            "m5-group-certificate-v1",
+            t(desired.decision_policy_version),
+            t(desired.group_version_id),
+            i(len(desired.rows)),
+            q(
+                q(
+                    (
+                        i(r.requirement_ordinal),
+                        t(r.requirement_version_id),
+                        h(r.text_hash),
+                        t(r.selected_observation_id),
+                    )
+                )
+                for r in desired.rows
+            ),
+        )
+        add(f"d25.desired_group_certificate.{identity}", len(encoded), 3, 3)
+    for identity, point in after["claim"].items():
+        supports, refutes, groups = (
+            point["supporting_observation_ids"],
+            point["refuting_observation_ids"],
+            point["complete_group_ids"],
+        )
+        # Only the fixed HASH field width is needed here. This is diagnostic
+        # sizing, not a fabricated certificate or an expected-state input.
+        encoded = p(
+            "m5-claim-certificate-v2",
+            t(identity),
+            t(intent.decision_policy_version),
+            enum_field("direct" if supports else "group" if groups else "none"),
+            option_field(t(supports[0]) if supports else None),
+            option_field(t(groups[0]) if groups and not supports else None),
+            option_field(h("0" * 64) if groups and not supports else None),
+            option_field(t(refutes[0]) if refutes else None),
+        )
+        add(f"d25.desired_claim_certificate.{identity}", len(encoded), 2, 2)
+    for binding in artifact.logical_patch.binding_rows:
+        encoded = p(
+            "m5-persisted-certificate-binding-row-v1",
+            enum_field(binding.kind),
+            i(binding.epoch_id),
+            t(binding.object_id),
+            i(binding.valid_from_revision),
+            option_field(
+                None
+                if binding.valid_to_revision is None
+                else i(binding.valid_to_revision)
+            ),
+            h(binding.certificate_digest),
+        )
+        add(f"d25.binding.{binding.kind}.{binding.object_id}", len(encoded), 2, 2)
+    for family, preimages in (
+        ("observation", artifact.observation_change_preimages),
+        ("edge", artifact.edge_change_preimages),
+        ("mask", artifact.mask_change_preimages),
+        ("hall", artifact.hall_change_preimages),
+    ):
+        add(f"d25.changes.{family}", sum(map(len, preimages)), 2, 4)
+    add("d25.shape_set", len(artifact.group_shape_set_preimage), 2, 4)
+    add("d25.logical_patch", len(artifact.logical_patch.patch_preimage), 2, 4)
+    add("d25.logical_output", len(artifact.logical_patch.logical_output_preimage), 2, 4)
+    work_bytes = p(
+        "m5-matching-work-v1",
+        *(i(v) for v in m5_overlay_work_values(artifact.work)),
+    )
+    add("d25.matching_work", len(work_bytes), 4, 4)
+    add("d25.outer_patch", len(artifact.patch_preimage), 2, 4)
+    patch = artifact.patch
+    contribution_bytes = p(
+        "m5-matching-work-contribution-v1",
+        i(patch.resulting_epoch_id),
+        enum_field(patch.source_kind),
+        t(patch.source_id),
+        h(patch.source_identity_hash),
+        i(patch.before_epoch_id),
+        i(patch.before_revision),
+        i(patch.resulting_revision),
+        h(patch.patch_digest),
+        h(patch.matching_work_digest),
+    )
+    add("d25.finalizer_contribution", len(contribution_bytes))
+    for index, (relation, coordinate_key) in enumerate(
+        _o33_matching_reservation_coordinates(cursor, matching)
+    ):
+        # This is the unchanged signed length-framed advisory-key producer,
+        # not typed M5 digest framing. Full coordinates, never truncated keys,
+        # determine multiplicity. Reservation-proof rehashes are excluded.
+        size = len(b"m5-d28-matching-absence-v1") + sum(
+            8 + len(str(part).encode("utf-8")) for part in (relation, *coordinate_key)
+        )
+        add(f"d25.absence_reservation.{index}.{relation}", size)
+    return tuple(regions)
+
+
+def _o33_matching_reservation_coordinates(
+    cursor: Cursor[Any], matching: _o33_matching._PreparedMatchingTransition
+) -> tuple[tuple[str, tuple[object, ...]], ...]:
+    """Actual derive-acquisition coordinates, including reserved no-op targets."""
+    intent = matching.official_intent
+    plan = matching.physical_and_logical_write_plan
+    k, p, s = (
+        intent.resulting_epoch_id,
+        intent.before_epoch_id,
+        intent.resulting_revision,
+    )
+    coordinates: list[tuple[str, tuple[object, ...]]] = []
+    for before in matching.observation_currency_before_images:
+        coordinates.extend(
+            (
+                ("groundloop_m5_working_currency_history", (*before.key, s)),
+                ("groundloop_m5_working_currency_history#open", before.key),
+            )
+        )
+    coordinates.append(("groundloop_m5_matching_image_working", (k,)))
+    coordinates.extend(
+        ("groundloop_m5_matching_observation_working", (k, v))
+        for v in intent.observation_ids
+    )
+    coordinates.extend(
+        ("groundloop_m5_matching_edge_working", (k, r, h))
+        for _, _, h, r in intent.edge_keys
+    )
+    coordinates.extend(
+        ("groundloop_m5_matching_hash_mask_working", (k, g, h))
+        for g, h in intent.mask_keys
+    )
+    coordinates.extend(
+        ("groundloop_m5_matching_hall_working", (k, g)) for g in intent.hall_group_ids
+    )
+    for kind, ids in (
+        ("requirement", intent.requirement_state_ids),
+        ("group", intent.group_state_ids),
+        ("claim", intent.claim_state_ids),
+        ("answer", intent.answer_state_ids),
+    ):
+        coordinates.extend(
+            (f"groundloop_m5_working_{kind}_state", (k, identity)) for identity in ids
+        )
+    for kind, ids, column in (
+        ("group", intent.group_certificate_ids, "group_version_id"),
+        ("claim", intent.claim_certificate_ids, "claim_id"),
+    ):
+        relation = f"groundloop_m5_working_{kind}_certificate_binding"
+        for identity in ids:
+            present = cursor.execute(
+                sql.SQL(
+                    "SELECT 1 FROM {} WHERE {}=%s AND valid_to_epoch IS NULL"
+                ).format(
+                    sql.Identifier(
+                        f"groundloop_m5_published_{kind}_certificate_binding"
+                    ),
+                    sql.Identifier(column),
+                ),
+                (identity,),
+            ).fetchall()
+            if len(present) > 1 or (not present and kind == "claim"):
+                raise EventConflictError("O33 published binding presence changed")
+            if not present:
+                coordinates.append(
+                    (
+                        f"groundloop_m5_published_{kind}_certificate_binding",
+                        (identity, p),
+                    )
+                )
+            coordinates.extend(
+                ((relation, (k, identity, s)), (relation + "#open", (k, identity)))
+            )
+    for artifact in plan.group_certificate_artifact_rows:
+        coordinates.append(
+            ("groundloop_m5_group_certificate_artifact", (artifact.certificate_digest,))
+        )
+        coordinates.extend(
+            (
+                "groundloop_m5_group_certificate_artifact_row",
+                (artifact.certificate_digest, r.requirement_ordinal),
+            )
+            for r in artifact.rows
+        )
+    coordinates.extend(
+        ("groundloop_m5_claim_certificate_artifact", (a.certificate_digest,))
+        for a in plan.claim_certificate_artifact_rows
+    )
+    if (
+        plan.expected_direct_m4_claim_after_images
+        or plan.expected_direct_m4_answer_after_images
+    ):
+        raise EventConflictError(
+            "O33 job-free direct plan unexpectedly writes M4 state"
+        )
+    if len(set(coordinates)) != len(coordinates):
+        raise EventConflictError("O33 native reservation coordinates repeat")
+    return tuple(coordinates)
+
+
+def _o33_native_declaration_regions(
+    plan: M5TypedEventPlan,
+    locked: _o33_withdrawal._LockedDocumentOpenResult,
+    epoch_id: int,
+    manifest: M5CandidatePolicyManifest,
+) -> tuple[_O33ByteRegion, ...]:
+    """Native D29 declarations, M4 counter and D24 recovery producers."""
+    regions: list[_O33ByteRegion] = []
+    p = digests.stable_m5_preimage
+    t, h, i, q = text_field, hash_field, int_field, sequence_field
+
+    def add(name: str, encoded: bytes) -> None:
+        regions.append(_O33ByteRegion(name, len(encoded), len(encoded)))
+
+    withdrawal = locked.requirement_withdrawal
+    add(
+        "d29.withdrawal",
+        p(
+            "m5-requirement-withdrawal-plan-v2",
+            t(withdrawal.event_id),
+            q(t(v) for v in withdrawal.deactivated_chunk_version_ids),
+            q(h(v) for v in withdrawal.withdrawn_candidate_pair_digests),
+            q(t(v) for v in withdrawal.withdrawn_observation_ids),
+            q(t(v) for v in withdrawal.cancelled_job_ids),
+            q(
+                q((t(v.requirement_version_id), t(v.candidate_policy_id)))
+                for v in withdrawal.fallback_keys
+            ),
+        ),
+    )
+    for root in locked.requirement_roots:
+        scope, job = root.scope, root.job
+        assert job.scope_contract_digest is not None
+        # These are the execution-spec's first factory evaluations. Its later
+        # validate_manifest_and_scope/property rechecks are excluded, as are
+        # ALL prospective D29-private factories: D29 falsifier20 requires
+        # counter neutrality under operationally irrelevant locator additions.
+        policy_bytes = p(
+            "m5-candidate-policy-v2",
+            t(manifest.embedding_model_artifact_id),
+            h(manifest.requirement_role_template_hash),
+            h(manifest.chunk_role_template_hash),
+            t(manifest.vector_method_version),
+            enum_field(manifest.vector_index_kind),
+            h(manifest.vector_index_build_config_hash),
+            h(manifest.vector_search_config_hash),
+            t(manifest.lexical_method_version),
+            h(manifest.lexical_config_hash),
+            t(manifest.lexical_postgres_version),
+            t(manifest.lexical_regconfig_identity),
+            t(manifest.fusion_version),
+            i(manifest.reverse_budget_per_inserted_chunk),
+            i(manifest.forward_budget_per_requirement),
+            h(manifest.verifier_execution_spec_hash),
+            t(manifest.decision_policy_version),
+            bool_field(manifest.lineage_safety_override),
+        )
+        regions.append(
+            _O33ByteRegion(
+                f"d29.job_manifest.{job.logical_job_id}",
+                3 * len(policy_bytes),
+                3 * len(policy_bytes),
+            )
+        )
+        normalizer = M5TextNormalizerProvenance()
+        add(
+            f"d29.job_normalizer.{job.logical_job_id}",
+            p(
+                "m5-text-normalizer-provenance-v1",
+                t(normalizer.normalizer_id),
+                q(i(v) for v in normalizer.whitespace_codepoints),
+                t(normalizer.boundary_rule),
+                t(normalizer.internal_rule),
+                t(normalizer.other_codepoint_rule),
+                t(normalizer.unicode_normalization_rule),
+                t(normalizer.encoding),
+                t(normalizer.hash_algorithm),
+            ),
+        )
+        add(
+            f"d29.job_execution.{job.logical_job_id}",
+            p(
+                "m5-forward-requirement-retrieval-execution-v2",
+                h(job.candidate_policy_manifest_hash),
+                h(normalizer.normalizer_provenance_hash),
+            ),
+        )
+        add(
+            f"d29.scope.{job.logical_job_id}",
+            p(
+                "m5-discovery-scope-contract-v2",
+                enum_field(scope.direction),
+                option_field(
+                    t(scope.requirement_version_id)
+                    if scope.requirement_version_id is not None
+                    else None
+                ),
+                option_field(
+                    t(scope.inserted_chunk_version_id)
+                    if scope.inserted_chunk_version_id is not None
+                    else None
+                ),
+                t(scope.candidate_policy_id),
+                h(scope.requirement_registry_snapshot_digest),
+                h(scope.active_chunk_snapshot_digest),
+            ),
+        )
+        add(
+            f"d29.job_payload.{job.logical_job_id}",
+            p(
+                "m5-job-payload-v2",
+                enum_field(job.job_kind),
+                t(job.candidate_policy_id),
+                h(job.candidate_policy_manifest_hash),
+                option_field(None),
+                option_field(None),
+                option_field(h(job.scope_contract_digest)),
+                h(job.requirement_registry_snapshot_digest),
+                h(job.active_chunk_snapshot_digest),
+                h(job.role_template_hash),
+                h(job.execution_spec_hash),
+                bool_field(True),
+            ),
+        )
+        add(
+            f"d29.job_id.{job.logical_job_id}",
+            p(
+                "m5-logical-job-v2",
+                t(job.structural_event_id),
+                h(job.payload_hash),
+            ),
+        )
+        add(
+            f"d24.root_provenance.{job.logical_job_id}",
+            p(
+                "m5-requirement-root-provenance-v1",
+                i(epoch_id),
+                t(job.logical_job_id),
+                bool_field(True),
+            ),
+        )
+    add(
+        "d29.root_set",
+        p(
+            "m5-requirement-root-set-v2",
+            q(t(r.job.logical_job_id) for r in locked.requirement_roots),
+        ),
+    )
+    # Only size the existing frozen M4 producer's numeric declaration. No JSON
+    # is hashed here; no new identity/recipe or direct counter is introduced.
+    native_m4_bytes = (
+        f'{{"confirmed_as_of_epoch":{plan.expected_previous_published_epoch_id},'
+        f'"epoch_id":{epoch_id},"open_discovery_scope_count":0,"revision":1}}'
+    ).encode("ascii")
+    add("m4.evaluation_declaration", native_m4_bytes)
+    add(
+        "d24.structural_contribution_key",
+        p(
+            "m5-runtime-work-contribution-key-v1",
+            i(epoch_id),
+            enum_field(M5RuntimeWorkContributionKind.STRUCTURAL_OPEN),
+            t(plan.structural_event_id),
+        ),
+    )
+    return tuple(regions)
+
+
+def _o33_complete_structural_work(
+    cursor: Cursor[Any],
+    *,
+    plan: M5TypedEventPlan,
+    locked: _o33_withdrawal._LockedDocumentOpenResult,
+    matching: _o33_matching._PreparedMatchingTransition,
+    manifest: M5CandidatePolicyManifest,
+) -> M5RuntimeWork:
+    """Store-owned vector; no requirement-state-write alias or oracle input."""
+    epoch_id = matching.official_intent.resulting_epoch_id
+    direct = locked.direct_open.withdrawal
+    assert direct is not None
+    required = locked.requirement_withdrawal
+    counts = matching.d24_owned_planned_write_counts
+    physical = matching.physical_and_logical_write_plan
+    if matching.requirement_state_write_count_diagnostic != len(
+        physical.requirement_state_rows
+    ):
+        raise EventConflictError("O33 requirement write diagnostic changed")
+    if (
+        counts.group_state_write_count != len(physical.group_state_rows)
+        or counts.claim_state_write_count != len(physical.claim_state_rows)
+        or counts.answer_state_write_count != len(physical.answer_state_rows)
+        or counts.certificate_binding_write_count
+        != len(physical.group_binding_rows) + len(physical.claim_binding_rows)
+    ):
+        raise EventConflictError("O33 prepared physical write counts changed")
+    regions = (
+        *_o33_native_matching_regions(cursor, matching),
+        *_o33_native_declaration_regions(plan, locked, epoch_id, manifest),
+    )
+    values = dict.fromkeys(M5RuntimeWork.counter_names(), 0)
+    values.update(
+        deactivated_chunk_count=len(direct.plan.deactivated_chunk_ids),
+        withdrawn_candidate_edge_count=(
+            len(direct.plan.candidate_edge_ids)
+            + len(required.withdrawn_candidate_pair_digests)
+        ),
+        withdrawn_current_observation_count=(
+            len(direct.plan.observation_ids) + len(required.withdrawn_observation_ids)
+        ),
+        group_state_write_count=counts.group_state_write_count,
+        claim_state_write_count=counts.claim_state_write_count,
+        answer_state_write_count=counts.answer_state_write_count,
+        certificate_binding_write_count=counts.certificate_binding_write_count,
+        bytes_hashed=sum(r.bytes_hashed for r in regions),
+        bytes_serialized=sum(r.bytes_serialized for r in regions),
+    )
+    # Final work-object creation hashes its frozen vector once. The size of its
+    # own numeric byte counters has a small deterministic fixed point; sizing
+    # below creates no work object/hash and cannot count diagnostic reruns.
+    base_h, base_s = values["bytes_hashed"], values["bytes_serialized"]
+    for _ in range(16):
+        size = len(
+            digests.stable_m5_preimage(
+                "m5-runtime-work-v2",
+                *(int_field(values[n]) for n in M5RuntimeWork.counter_names()),
+            )
+        )
+        if (values["bytes_hashed"], values["bytes_serialized"]) == (
+            base_h + size,
+            base_s + size,
+        ):
+            return M5RuntimeWork(
+                deactivated_chunk_count=values["deactivated_chunk_count"],
+                withdrawn_candidate_edge_count=values["withdrawn_candidate_edge_count"],
+                withdrawn_current_observation_count=values[
+                    "withdrawn_current_observation_count"
+                ],
+                group_state_write_count=values["group_state_write_count"],
+                claim_state_write_count=values["claim_state_write_count"],
+                answer_state_write_count=values["answer_state_write_count"],
+                certificate_binding_write_count=values[
+                    "certificate_binding_write_count"
+                ],
+                bytes_hashed=values["bytes_hashed"],
+                bytes_serialized=values["bytes_serialized"],
+            )
+        values["bytes_hashed"], values["bytes_serialized"] = (
+            base_h + size,
+            base_s + size,
+        )
+    raise AssertionError("O33 work-preimage sizing failed to converge")
 
 
 @dataclass(frozen=True, slots=True)
@@ -3155,6 +4176,568 @@ class PostgresM5RuntimeStore:
 
     def __init__(self, connection: Connection[Any]) -> None:
         self._connection = connection
+
+    def _open_document_open_prerequisite(
+        self,
+        plan: M5TypedEventPlan,
+        *,
+        ports: PostgresM4ApplicationPorts,
+        execution_policy: ApplicationExecutionPolicy,
+        supplied_direct_open: M5DirectOpenPlan,
+        supplied_requirement_withdrawal: M5RequirementWithdrawalPlan,
+        requirement_roots: tuple[M5RequirementRootDeclaration, ...],
+        requirement_root_set_hash: str,
+        recovery_operational_config: M5RuntimeOperationalConfig,
+        recovery_root_fallback_required: dict[str, bool],
+        failure_injector: RuntimeFailureInjector | None = None,
+    ) -> OpenEventReceipt:
+        """Private O33 source-first, job-free DELETE composition, not readiness.
+
+        Proposals are compared only on the absent-event branch. The concrete
+        ports object supplies genuine M4 primitives, not a caller phase action.
+        SQL is authority; a detached cache is adopted only after outer commit.
+        """
+
+        _o33_require_idle(self._connection)
+        if (
+            type(ports) is not PostgresM4ApplicationPorts
+            or ports.connection is not self._connection
+            or ports.execution_mode is not M4ExecutionMode.MEASURED
+            or type(ports.runtime_store) is not PostgresM4RuntimeStore
+            or ports.runtime_store._connection is not self._connection
+            or ports.runtime_store._audit_transitions is not False
+            or type(ports.evaluation_store) is not PostgresEvaluationOverlayStore
+            or ports.evaluation_store._connection is not self._connection
+            or type(execution_policy) is not ApplicationExecutionPolicy
+            or type(recovery_operational_config) is not M5RuntimeOperationalConfig
+        ):
+            raise ValidationError("O33 requires same-connection measured M4 ports")
+        checked = _o33_withdrawal._document_event(plan)
+        if (
+            replace(checked) != checked
+            or replace(checked.requirement_registry_snapshot)
+            != checked.requirement_registry_snapshot
+            or replace(checked.active_chunk_snapshot) != checked.active_chunk_snapshot
+            or replace(recovery_operational_config) != recovery_operational_config
+            or replace(execution_policy) != execution_policy
+        ):
+            raise ValidationError("O33 typed input reconstruction changed")
+        if type(checked.event) is not DeleteDocumentVersionEvent:
+            raise InvalidEventError("O33 admits job-free DELETE only")
+        assert checked.direct_plan is not None
+        staged_cache = None
+        with self._connection.transaction(), self._connection.cursor() as cursor:
+            schema = _o33_schema_authority(cursor)
+            # These are the retained event-prefix serializers, not replay
+            # predecessor authority. Only the genuinely absent branch checks P.
+            mode = cursor.execute(
+                "SELECT mode FROM groundloop_runtime_mode WHERE singleton FOR UPDATE"
+            ).fetchone()
+            m4 = cursor.execute(
+                "SELECT epoch_id FROM groundloop_m4_publication_head "
+                "WHERE singleton FOR UPDATE"
+            ).fetchone()
+            m5 = cursor.execute(
+                "SELECT epoch_id FROM groundloop_m5_publication_head "
+                "WHERE singleton FOR UPDATE"
+            ).fetchone()
+            activation = cursor.execute(
+                "SELECT activation_id FROM groundloop_m5_activation "
+                "WHERE singleton FOR UPDATE"
+            ).fetchone()
+            if mode != ("m5_active",) or m4 is None or m5 is None or activation is None:
+                raise InvalidEventError("O33 requires genuine matching activation")
+            existing = self._read_existing_open(cursor, checked, for_update=True)
+            if existing is not None:
+                terminal = _load_terminal_result(
+                    cursor,
+                    structural_event_id=checked.structural_event_id,
+                    payload_hash=checked.payload_hash,
+                )
+                if terminal is not None:
+                    # Accepted canonical result envelope precedes hydration.
+                    return existing
+                if existing.already_sealed or existing.already_failed:
+                    raise EventConflictError("O33 partial terminal declaration")
+                retained = _o33_withdrawal._load_retained_document_open(
+                    cursor, checked, expected_epoch_id=existing.epoch_id
+                )
+                retained_direct, _, retained_roots, retained_hash = retained
+                _o33_require_job_free(cursor, existing.epoch_id, retained_direct)
+                manifest = _load_candidate_manifest(cursor, checked.candidate_policy_id)
+                roots, root_hash = _root_declarations_for_open(
+                    checked, manifest, retained_roots, retained_hash
+                )
+                _validate_persisted_root_declarations(
+                    cursor,
+                    epoch_id=existing.epoch_id,
+                    roots=roots,
+                    root_set_hash=root_hash,
+                )
+                fallback = _validate_recovery_root_fallback_map(
+                    roots, recovery_root_fallback_required
+                )
+                if not all(fallback.values()):
+                    raise EventConflictError(
+                        "O33 forward roots require fallback provenance"
+                    )
+                work = _o33_read_structural_work(cursor, existing.epoch_id)
+                validate_structural_open_recovery(
+                    cursor,
+                    epoch_id=existing.epoch_id,
+                    structural_event_id=checked.structural_event_id,
+                    payload_hash=checked.payload_hash,
+                    config=recovery_operational_config,
+                    root_fallback_required=fallback,
+                    expected_structural_work=work,
+                )
+                intent = _o33_matching._candidate_retained_replay_intent(
+                    cursor,
+                    epoch_id=existing.epoch_id,
+                    expected_runtime_revision=1,
+                    resulting_revision=1,
+                    source_kind=M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
+                    source_id=checked.structural_event_id,
+                    expected_source_identity_hash=checked.payload_hash,
+                )
+                if intent is None:
+                    raise EventConflictError(
+                        "O33 retained matching contribution is absent"
+                    )
+                retained_matching = _o33_matching.apply_matching_transition(
+                    cursor, intent
+                )
+                if not retained_matching.exact_replay:
+                    raise EventConflictError(
+                        "O33 existing matching event was not replay"
+                    )
+                return existing
+
+            if m4 != m5 or m5 != (checked.expected_previous_published_epoch_id,):
+                raise EventConflictError("O33 absent-event predecessor changed")
+            base = cursor.execute(
+                "SELECT semantic_status FROM groundloop_epoch "
+                "WHERE epoch_id=%s FOR UPDATE",
+                (checked.expected_previous_published_epoch_id,),
+            ).fetchone()
+            if base != ("sealed",):
+                raise EventConflictError("O33 predecessor is not sealed")
+            if (
+                cursor.execute(
+                    "SELECT epoch_id FROM groundloop_epoch "
+                    "WHERE structural_status='committed' "
+                    "AND semantic_status IN ('pending','complete') "
+                    "ORDER BY epoch_id FOR UPDATE LIMIT 1"
+                ).fetchone()
+                is not None
+            ):
+                raise EventConflictError("O33 another structural epoch is live")
+            manifest = _load_candidate_manifest(cursor, checked.candidate_policy_id)
+            if (
+                manifest.manifest_hash != checked.candidate_policy_manifest_hash
+                or execution_policy.verifier_execution_spec_hash
+                != manifest.verifier_execution_spec_hash
+            ):
+                raise EventConflictError("O33 execution/candidate policy changed")
+            _validate_supplied_root_primitive_shape(
+                requirement_roots, requirement_root_set_hash
+            )
+            roots, root_hash = _root_declarations_for_open(
+                checked, manifest, requirement_roots, requirement_root_set_hash
+            )
+            fallback = _validate_recovery_root_fallback_map(
+                roots, recovery_root_fallback_required
+            )
+            if not all(fallback.values()):
+                raise EventConflictError(
+                    "O33 forward roots require fallback provenance"
+                )
+            # M4's legacy empty-scope validator otherwise falls back to a global
+            # claim scan. Missing measured registry is a rejection, not fallback.
+            if (
+                cursor.execute(
+                    "SELECT claim_count FROM groundloop_m4_claim_registry_snapshot "
+                    "WHERE claim_registry_snapshot_id=%s",
+                    (checked.direct_plan.claim_registry_snapshot_id,),
+                ).fetchone()
+                is None
+            ):
+                raise EventConflictError("O33 requires the measured claim registry")
+            if type(supplied_direct_open) is not M5DirectOpenPlan:
+                raise ValidationError("O33 requires an exact direct proposal")
+            _o33_require_empty_direct(supplied_direct_open)
+            assert supplied_direct_open.structural_payload is not None
+            declaration = _o33_withdrawal._document_declaration_manifest(
+                supplied_direct_open
+            )
+            row = cursor.execute(
+                "INSERT INTO groundloop_epoch "
+                "(event_id,payload_hash,revision,structural_status,semantic_status,"
+                "evaluation_state,publication_mode,sealed_at) "
+                "VALUES (%s,%s,1,'committed','pending','pending','provisional',NULL) "
+                "RETURNING epoch_id",
+                (checked.structural_event_id, checked.payload_hash),
+            ).fetchone()
+            assert row is not None
+            epoch_id = int(row[0])
+            _inject(failure_injector, "o33_epoch_inserted")
+            cursor.execute(
+                "INSERT INTO groundloop_m5_update "
+                "(epoch_id,update_kind,previous_published_epoch_id,"
+                "decision_policy_version,manifest) "
+                "VALUES (%s,'document_delete',%s,%s,%s)",
+                (
+                    epoch_id,
+                    checked.expected_previous_published_epoch_id,
+                    manifest.decision_policy_version,
+                    Jsonb(declaration),
+                ),
+            )
+            _inject(failure_injector, "o33_update_inserted")
+            cursor.execute(
+                "INSERT INTO groundloop_m5_runtime_epoch "
+                "(epoch_id,structural_event_id,candidate_policy_id,"
+                "candidate_policy_manifest_hash,requirement_registry_snapshot_digest,"
+                "active_chunk_snapshot_digest,expected_previous_published_epoch_id,"
+                "requirement_root_set_hash,runtime_state,revision,open_work_count,"
+                "open_scope_count,blocking_failure_count,terminal_at) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,"
+                "'structural_committed',1,%s,%s,0,NULL)",
+                (
+                    epoch_id,
+                    checked.structural_event_id,
+                    checked.candidate_policy_id,
+                    checked.candidate_policy_manifest_hash,
+                    checked.requirement_registry_snapshot.requirement_registry_snapshot_digest,
+                    checked.active_chunk_snapshot.active_chunk_snapshot_digest,
+                    checked.expected_previous_published_epoch_id,
+                    root_hash,
+                    len(roots),
+                    len(roots),
+                ),
+            )
+            _inject(failure_injector, "o33_runtime_inserted")
+
+            def structural_action(
+                source_cursor: Cursor[Any], source_epoch: int
+            ) -> None:
+                if source_cursor is not cursor or source_epoch != epoch_id:
+                    raise ValidationError("O33 fixed structural action changed cursor")
+                _o33_matching._authorize_matching_transition(
+                    cursor,
+                    epoch_id=epoch_id,
+                    expected_runtime_revision=1,
+                    resulting_revision=1,
+                    source_kind=M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
+                    source_id=checked.structural_event_id,
+                )
+                _o33_stage_delete_source(
+                    cursor,
+                    checked,
+                    supplied_direct_open,
+                    ports,
+                    epoch_id,
+                    failure_injector,
+                )
+
+            opened = ports.runtime_store.stage_open_epoch_local(
+                cursor,
+                epoch_id,
+                checked.direct_plan.update,
+                (),
+                (),
+                registry_snapshot_id=checked.direct_plan.claim_registry_snapshot_id,
+                structural_action=structural_action,
+                event_manifest=supplied_direct_open.structural_payload.manifest,
+            )
+            if opened.replayed:
+                raise EventConflictError("O33 fresh M4 declaration became replay")
+            prepared = _o33_withdrawal._prepare_locked_document_open(
+                cursor, checked, execution_policy=execution_policy
+            )
+            _inject(failure_injector, "o33_document_prepared")
+            # Snapshot admission is explicit new-event input work, separate from
+            # the bounded D29 withdrawal kernel. It cannot seed its source proof.
+            _validate_effective_snapshots(
+                cursor, plan=checked, epoch_id=epoch_id, direct_open=True
+            )
+            _persist_requirement_snapshot(
+                cursor,
+                snapshot=checked.requirement_registry_snapshot,
+                epoch_id=epoch_id,
+            )
+            _persist_active_chunk_snapshot(
+                cursor, snapshot=checked.active_chunk_snapshot, epoch_id=epoch_id
+            )
+            locked = _o33_withdrawal._continue_locked_document_open(
+                cursor,
+                checked,
+                prepared,
+                execution_policy=execution_policy,
+                supplied_direct_open=supplied_direct_open,
+                supplied_requirement_withdrawal=supplied_requirement_withdrawal,
+                supplied_requirement_roots=requirement_roots,
+                supplied_requirement_root_set_hash=requirement_root_set_hash,
+            )
+            _o33_require_empty_direct(locked.direct_open)
+            _inject(failure_injector, "o33_document_continued")
+            roots, root_hash = _root_declarations_for_open(
+                checked,
+                manifest,
+                locked.requirement_roots,
+                locked.requirement_root_set_hash,
+            )
+            fallback = _validate_recovery_root_fallback_map(
+                roots, recovery_root_fallback_required
+            )
+            derive = (
+                _o33_matching._derive_matching_transition_intent_with_document_authority
+            )
+            intent = derive(
+                cursor,
+                epoch_id,
+                1,
+                1,
+                M5PersistedMatchingSourceKind.STRUCTURAL_OPEN,
+                checked.structural_event_id,
+                locked.direct_matching_authority,
+                checked.payload_hash,
+            )
+            matching = (
+                _o33_matching._prepare_matching_transition_with_document_authority(
+                    cursor, intent, locked.direct_matching_authority
+                )
+            )
+            _o33_persist_scopes(cursor, epoch_id, roots)
+            _o33_persist_jobs(cursor, epoch_id, checked, roots)
+            _inject(failure_injector, "o33_roots_written")
+            _o33_matching._stage_prepared_matching_transition_through_tier_12(
+                cursor, intent, matching
+            )
+            _inject(failure_injector, "o33_matching_tier12")
+            _o33_matching._stage_prepared_matching_transition_through_tier_13(
+                cursor, intent, matching
+            )
+            _inject(failure_injector, "o33_matching_tier13")
+            _o33_matching._stage_prepared_matching_transition_through_tier_14(
+                cursor, intent, matching
+            )
+            _inject(failure_injector, "o33_matching_tier14")
+            _persist_initial_pending_counters(
+                cursor,
+                snapshot=checked.requirement_registry_snapshot,
+                epoch_id=epoch_id,
+                roots=roots,
+            )
+            ports._register_execution_accounting(cursor, epoch_id)
+            counter = ports.evaluation_store.declare_epoch_local(
+                cursor,
+                epoch_id,
+                revision=1,
+                confirmed_as_of_epoch=checked.expected_previous_published_epoch_id,
+                open_discovery_scope_count=0,
+            )
+            if counter.replayed:
+                raise EventConflictError("O33 fresh evaluation declaration was replay")
+            _o33_require_job_free(cursor, epoch_id, locked.direct_open)
+            _inject(failure_injector, "o33_evaluation_declared")
+            persist_structural_open_identity(
+                cursor,
+                epoch_id=epoch_id,
+                config=recovery_operational_config,
+                root_fallback_required=fallback,
+            )
+            work = _o33_complete_structural_work(
+                cursor,
+                plan=checked,
+                locked=locked,
+                matching=matching,
+                manifest=manifest,
+            )
+            persist_structural_open_accounting(
+                cursor,
+                epoch_id=epoch_id,
+                structural_event_id=checked.structural_event_id,
+                payload_hash=checked.payload_hash,
+                structural_work=work,
+            )
+            _inject(failure_injector, "o33_recovery_accounted")
+            _o33_matching._finalize_prepared_matching_transition(
+                cursor, intent, matching
+            )
+            _inject(failure_injector, "o33_matching_finalized")
+            for (
+                kind,
+                _,
+                output,
+            ) in matching.prewrite_patch_artifact.logical_patch.output_records:
+                if kind == "status_delta":
+                    if type(output) is not StatusDelta:
+                        raise ValidationError("O33 status output has wrong type")
+                    cursor.execute(
+                        "INSERT INTO groundloop_status_delta "
+                        "(event_id,epoch_id,revision,object_type,object_id,"
+                        "old_status,new_status,reason) VALUES (%s,%s,1,%s,%s,%s,%s,%s)",
+                        (
+                            checked.structural_event_id,
+                            epoch_id,
+                            output.object_type,
+                            output.object_id,
+                            output.old_status,
+                            output.new_status,
+                            output.reason,
+                        ),
+                    )
+            if cursor.execute("SELECT current_schema()").fetchone() != (schema,):
+                raise EventConflictError("O33 captured schema changed")
+            # Cache preparation is not source/state/write authority and runs
+            # only after persisted D29/D25/counter closure has validated.
+            _o33_validate_consumed_cache(
+                cursor,
+                ports,
+                checked,
+                locked.direct_open,
+                manifest.decision_policy_version,
+            )
+            assert locked.direct_open.structural_payload is not None
+            staged_cache = ports._stage_structural_detached(
+                checked.direct_plan, locked.direct_open.structural_payload
+            )
+            _force_deferred_validation(cursor)
+            _inject(failure_injector, "o33_before_commit")
+        assert staged_cache is not None
+        ports._adopt_direct_working_cache(epoch_id, *staged_cache)
+        return OpenEventReceipt(epoch_id=epoch_id, replayed=False, already_sealed=False)
+
+    def _activate_document_open_prerequisite(
+        self,
+        request: M5ActivationRequest,
+        *,
+        failure_injector: RuntimeFailureInjector | None = None,
+    ) -> M5ActivationReceipt:
+        """O33 private activation; the legacy public activation is unchanged."""
+
+        _o33_require_idle(self._connection)
+        if type(request) is not M5ActivationRequest or replace(request) != request:
+            raise ValidationError("O33 activation requires an exact request")
+        with self._connection.transaction(), self._connection.cursor() as cursor:
+            _o33_schema_authority(cursor)
+            mode = cursor.execute(
+                "SELECT mode, mode_revision FROM groundloop_runtime_mode "
+                "WHERE singleton FOR UPDATE"
+            ).fetchone()
+            m4 = cursor.execute(
+                "SELECT epoch_id FROM groundloop_m4_publication_head "
+                "WHERE singleton FOR UPDATE"
+            ).fetchone()
+            m5 = cursor.execute(
+                "SELECT epoch_id, sealed_revision FROM groundloop_m5_publication_head "
+                "WHERE singleton FOR UPDATE"
+            ).fetchone()
+            existing = cursor.execute(
+                "SELECT activation_id, payload_hash, base_m4_epoch_id "
+                "FROM groundloop_m5_activation WHERE singleton FOR UPDATE"
+            ).fetchone()
+            if mode is None or m4 is None:
+                raise InvalidEventError("O33 activation singleton/head missing")
+            core_hash, _ = _runtime_bundle_ledgers(cursor)
+            if request.core_schema_bundle_sha256 != core_hash:
+                raise EventConflictError("O33 activation core identity changed")
+            if existing is not None:
+                image = cursor.execute(
+                    "SELECT installed_epoch_id, installed_revision "
+                    "FROM groundloop_m5_matching_image_current WHERE singleton"
+                ).fetchone()
+                if (
+                    tuple(existing)
+                    != (
+                        request.activation_id,
+                        request.payload_hash,
+                        request.expected_base_m4_epoch_id,
+                    )
+                    or tuple(mode) != ("m5_active", request.expected_mode_revision + 1)
+                    or m5 is None
+                    or m4[0] != m5[0]
+                    or int(m4[0]) < request.expected_base_m4_epoch_id
+                    or image != (m5[0], m5[1])
+                ):
+                    raise EventConflictError("O33 activation retained identity changed")
+                return M5ActivationReceipt.build(request, replayed=True)
+            if (
+                tuple(mode) != ("v1_only", request.expected_mode_revision)
+                or m5 is not None
+                or int(m4[0]) != request.expected_base_m4_epoch_id
+            ):
+                raise EventConflictError("O33 activation base/mode changed")
+            base = cursor.execute(
+                "SELECT revision, structural_status, semantic_status, evaluation_state "
+                "FROM groundloop_epoch WHERE epoch_id=%s FOR UPDATE",
+                (int(m4[0]),),
+            ).fetchone()
+            if base is None or tuple(base[1:]) != ("committed", "sealed", "complete"):
+                raise InvalidEventError("O33 activation requires a sealed base")
+            if (
+                cursor.execute(
+                    "SELECT epoch_id FROM groundloop_epoch "
+                    "WHERE structural_status='committed' AND semantic_status "
+                    "IN ('pending','complete') ORDER BY epoch_id FOR UPDATE LIMIT 1"
+                ).fetchone()
+                is not None
+            ):
+                raise EventConflictError("O33 activation rejects a live epoch")
+            projection = build_m5_bootstrap_projection(self._connection)
+            if (projection.epoch_id, projection.revision) != (
+                int(m4[0]),
+                int(base[0]),
+            ) or m5_bootstrap_state_hash(projection) != request.bootstrap_state_hash:
+                raise EventConflictError("O33 activation bootstrap changed")
+            _inject(failure_injector, "o33_activation_before_bootstrap")
+            write_m5_materialized_states(
+                self._connection,
+                states=projection.states,
+                decision_policy_version=projection.decision_policy_version,
+                epoch_id=projection.epoch_id,
+                revision=projection.revision,
+                group_certificates=projection.group_certificates,
+                claim_certificates=projection.claim_certificates,
+                publish=True,
+            )
+            _inject(failure_injector, "o33_activation_bootstrap_written")
+            install_matching_activation_projection(
+                cursor,
+                expected_m4_head_epoch_id=projection.epoch_id,
+                expected_head_epoch_revision=projection.revision,
+                decision_policy_version=projection.decision_policy_version,
+            )
+            _inject(failure_injector, "o33_activation_matching_installed")
+            cursor.execute(
+                "INSERT INTO groundloop_m5_publication_head "
+                "(singleton,epoch_id,sealed_revision,updated_at) "
+                "VALUES (true,%s,%s,now())",
+                (projection.epoch_id, projection.revision),
+            )
+            _inject(failure_injector, "o33_activation_head_written")
+            cursor.execute(
+                "INSERT INTO groundloop_m5_activation "
+                "(singleton,activation_id,payload_hash,base_m4_epoch_id,activated_at) "
+                "VALUES (true,%s,%s,%s,now())",
+                (request.activation_id, request.payload_hash, projection.epoch_id),
+            )
+            _inject(failure_injector, "o33_activation_record_written")
+            if (
+                cursor.execute(
+                    "UPDATE groundloop_runtime_mode SET mode='m5_active', "
+                    "mode_revision=mode_revision+1,updated_at=now() "
+                    "WHERE singleton AND mode='v1_only' AND mode_revision=%s",
+                    (request.expected_mode_revision,),
+                ).rowcount
+                != 1
+            ):
+                raise EventConflictError("O33 activation mode CAS failed")
+            _inject(failure_injector, "o33_activation_mode_written")
+            _force_deferred_validation(cursor)
+            _inject(failure_injector, "o33_activation_before_commit")
+            return M5ActivationReceipt.build(request)
 
     def prepare_activation_request(self, activation_id: str) -> M5ActivationRequest:
         """Read a stable activation candidate; ``activate`` revalidates it."""
