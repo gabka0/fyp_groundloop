@@ -1,6 +1,20 @@
 # GroundLoop Roadmap
 
-Current M5 contract checkpoint (2026-10-10): accepted through M5-D33,
+Current M5 contract checkpoint (2026-10-14): accepted through M5-D34,
+runtime-addendum revision15. REQUIREMENT_OBSERVATION_SOURCE_ORDER_AMENDMENT.md
+is authoritative at SHA256
+1fade6fd70d7bce5a4548bf1f0d37ed0682ce185f0c36089df6dd0dd8977ef6b.
+Contract-PASS / implementation-PENDING. The narrow fresh archive/order/replay
+correction grants no source path, schema/provider/default change or gate waiver.
+Next is a NEW independently audited path-exclusive C2/dependency-order
+activation, preserving B33's complete five-file checkpoint/current C1 pins and
+fixing exact future ancestry. Genuine C2 plus new-positive/carry/absence and
+independent group full-image evidence must precede full B33, then P33 and
+reconciled C1 under accepted barriers. D25 integration, Task2/Task17, remaining
+M5.4--M5.6, deployment, AI quality, independent natural histories and end-to-end
+utility/speed/cost stay PENDING; defaults remain v1_only.
+
+Historical M5 contract checkpoint (2026-10-10): accepted through M5-D33,
 runtime-addendum revision14. DOCUMENT_UPDATE_COMPLETION_AMENDMENT.md is
 authoritative at SHA256
 055ef0d6f971a23be31cc23d2b9f03b4b7cd17fa9f9bc7c505d1f565d6726b32.

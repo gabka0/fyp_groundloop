@@ -1,5 +1,45 @@
 # GroundLoop Decision Log
 
+## 2026-10-14 — M5-D34 Fresh Requirement-Source Archive Order Accepted
+
+Decision status: contract-PASS / implementation-PENDING; runtime-addendum15.
+Authoritative REQUIREMENT_OBSERVATION_SOURCE_ORDER_AMENDMENT.md SHA256
+1fade6fd70d7bce5a4548bf1f0d37ed0682ce185f0c36089df6dd0dd8977ef6b.
+Reviewed candidate commit f372f2bf94ac5527609a2595deaed50b9607e22a,
+sole parent4f50dc6701b462024e125a45505eb7be17bd4112,
+treebde34605fc6db992599cf804860c3ef057d1b5fa, one added mode100644
+blob91a5c21cb679b4a4a8a13deecbf3f412377ee452,404lines25454bytes.
+Both independent complete same-byte candidate audits and both fresh postcommit
+checks returned GO/P0=0/P1=0. Candidate branch/main were atomically pushed and
+live refs verified before preparing this freeze. Exact receipts and current
+custody are in D34_CONTRACT_FREEZE_HANDOFF.md.
+
+The existing source-present derivation requires an actual observation and
+execution, while execution immediately FK-references observation and the old
+lock/stage outline places it later at11a. The sole correction is a bounded
+fresh requirement archive tail after earlier parents: complete global aliases,
+separate D34A namespace, physical-ID sorting/dedup, R/V/O/E absence and P-only
+exact reuse before ordered result/pair/artifact/observation/execution creation.
+Validate full closure/all15 observation fields. Sole derive revalidates but
+does not reacquire that source row; old-holder/currency stays11a and later D28
+header/stage/terminal/account/finalizer order remains exact.
+
+Retained replay preserves native source locks with ordinary immutable pair/
+observation reads, avoiding an early-observation/global-image/certificate-FK
+cycle. Reclassify a serialized winner before fresh authorization; after fresh
+prefix, occupancy conflicts without repair/late replay. New inactive writers
+also need prefix-before-accounting rearrangement, not today's bundled order.
+Keep D24 definitions/ownership and charge actual new producer bytes once;
+no claim of identical numerical byte counts or measured latency follows.
+
+No public/frozen API/DTO, persisted digest, schema/migration000--021, source/
+reference kind, counter definition, provider or default change. Freeze grants
+no source paths: NEW audited C2/dependency-order activation must preserve all
+B33/C1 contents, fix exact B33 ancestry and retain new-positive/carry/absence
+and separate full independent group-image gates. D25 integration, full B33/
+P33/C1/C2, Task2, M5.4--M5.6, deployment, AI quality, independently adjudicated
+natural histories and end-to-end utility/speed/cost stay PENDING; v1_only stays.
+
 ## 2026-10-10 — M5-D33 Narrow Document-Update Completion Accepted
 
 Decision status: contract-PASS / implementation-PENDING; runtime-addendum14.

@@ -1,14 +1,29 @@
 # GroundLoop M5 Implementation Plan
 
-Status: M5.0 contract accepted through M5-D33 and M5.1--M5.3 complete;
-M5.0-24 through M5.0-33 are contract-`PASS` /
+Status: M5.0 contract accepted through M5-D34 and M5.1--M5.3 complete;
+M5.0-24 through M5.0-34 are contract-`PASS` /
 implementation-`PENDING`; M5.4-01 through M5.4-04 are `PASS`, M5.4-05 through
-M5.4-09 remain `PENDING`; the runtime addendum is revision 14. D33 freezes no
-implementation. Its separately audited NEW manifest must sequence021 schema/
+M5.4-09 remain `PENDING`; the runtime addendum is revision 15. D34 freezes no
+implementation. A separately audited NEW C2/dependency-order manifest is
+required after the pushed D34 barrier, preserving B33/C1 and every pending gate.
+The historical D33 manifest required021 schema/
 shared primitives (preinstall hash freeze), metadata, readiness, private
 job-free seal adapter, reader and held C1. No parallel source work.
 
-Current D33 boundary (2026-10-10): DOCUMENT_UPDATE_COMPLETION_AMENDMENT.md,
+Current D34 boundary (2026-10-14): REQUIREMENT_OBSERVATION_SOURCE_ORDER_AMENDMENT.md,
+SHA2561fade6fd70d7bce5a4548bf1f0d37ed0682ce185f0c36089df6dd0dd8977ef6b.
+Fresh source archival has a bounded global-reservation/preflight/ordered-row
+tail before sole derive; old-holder/currency remains11a, retained replay has
+no early observation lock, and both new active/inactive writers must acquire
+the archive prefix before later accounting. Full15-field validation, exact
+identities, D24 producer ownership and all D34 falsifiers are mandatory.
+No source ownership is inherited. The new activation must allocate bounded
+header repair and source/replay/accounting/test functions explicitly, preserve
+all five B33 files and nine C1 pins, and fix exact future B33 ancestry. New
+positives/carry/absence and group full-image remain PENDING; no new N/A waiver.
+Contract-PASS / implementation-PENDING, with no schema/provider/default change.
+
+Historical D33 boundary (2026-10-10): DOCUMENT_UPDATE_COMPLETION_AMENDMENT.md,
 SHA256055ef0d6f971a23be31cc23d2b9f03b4b7cd17fa9f9bc7c505d1f565d6726b32.
 Exact job-free eligibility reuses D32 identities/work; the private M5 adapter
 retains canonical M4 SEAL1->2 versus base N->N+1 without M4 source changes.

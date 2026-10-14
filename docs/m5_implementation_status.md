@@ -1,17 +1,28 @@
 # GroundLoop M5 Implementation Status
 
-Status date: 2026-10-10
+Status date: 2026-10-14
 
-Milestone status: **M5.0 contract through accepted M5-D33 and M5.1--M5.3 are
+Milestone status: **M5.0 contract through accepted M5-D34 and M5.1--M5.3 are
 complete; M5.4 is partially complete.**
 M5.4-01 through M5.4-04 pass. M5.4-05 through M5.4-09 and every M5.5--M5.6
 implementation/evaluation closure remain pending. M5-D24-C1 through M5-D24-C7
-are accepted. M5.0-24 through M5.0-33 are each contract-`PASS` /
-implementation-`PENDING`. M5-D31's accepted candidate SHA-256 is
+are accepted. M5.0-24 through M5.0-34 are each contract-`PASS` /
+implementation-`PENDING`. Runtime-addendum revision15 is authoritative.
+D34's exact accepted amendment SHA256 is
+1fade6fd70d7bce5a4548bf1f0d37ed0682ce185f0c36089df6dd0dd8977ef6b.
+It fixes only fresh source archive/replay sequencing, with no implementation
+or schema change. A NEW audited path-exclusive C2 activation is still required.
+Accepted private J33 is4f50dc6; B33 remains an uncommitted diagnostic five-file
+checkpoint, not full acceptance. Its retained135-pass focused qualification
+and broader inventories are not rerun or promoted by this docs freeze. New
+positives/carry/absence and separate group full-image remain PENDING. All held
+B33/C1 contents and protected prerequisites are unchanged; no source grant.
+
+Historical D33 freeze checkpoint (2026-10-10): M5-D31's accepted candidate SHA-256 is
 `6331c8149e38031c51cb22b6a9dc2d49d30d27df67d25b5fae24b00c52058dc9`.
 M5-D32's accepted candidate SHA-256 is
 `0e9a4bbe8da34d8248ce138c4bc21cb8076ddb4a578ea6a36cd6a4e100811435`;
-runtime-addendum revision14 is authoritative. D33's exact accepted amendment
+runtime-addendum revision14 was authoritative then. D33's exact accepted amendment
 SHA256 is055ef0d6f971a23be31cc23d2b9f03b4b7cd17fa9f9bc7c505d1f565d6726b32.
 It supplies contract-only repairs for job-free document readiness/two-clock
 seal, metadata preservation and as-of-K group-certificate loss. Future021,

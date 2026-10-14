@@ -89,6 +89,10 @@ order:
     (authoritative M5-D33 job-free document completion, metadata and certificate absence)
 58. `docs/workstreams/m5_runtime_implementation/D33_CONTRACT_FREEZE_HANDOFF.md`
     (accepted D33 bytes, current custody and new sequential implementation boundary)
+59. `docs/workstreams/m5_runtime_contract/REQUIREMENT_OBSERVATION_SOURCE_ORDER_AMENDMENT.md`
+    (authoritative M5-D34 fresh requirement-source archival order and replay safety)
+60. `docs/workstreams/m5_runtime_implementation/D34_CONTRACT_FREEZE_HANDOFF.md`
+    (accepted D34 bytes, preserved checkpoints and next C2 activation barrier)
 
 `docs/initial_technical_design.md` (v0.1) is superseded and retained for audit
 only. The M0.5 design freeze and M1.1 amendments are complete; frozen decisions
@@ -292,7 +296,7 @@ allowed. Implementation requires a fresh audited path-exclusive activation:
 schema/shared primitives -> private readiness -> held R-T -> held C1. Preserve
 both held WIP sets and protected checkouts. Task 17, C1, Task 2, remaining M5,
 deployment and AI quality remain PENDING; defaults stay v1_only.
-Current override (2026-10-10): M5-D33/M5.0-33 are contract-PASS /
+Historical override (2026-10-10): M5-D33/M5.0-33 are contract-PASS /
 implementation-PENDING; runtime-addendum revision 14 is current. The amendment
 DOCUMENT_UPDATE_COMPLETION_AMENDMENT.md is authoritative at SHA-256
 055ef0d6f971a23be31cc23d2b9f03b4b7cd17fa9f9bc7c505d1f565d6726b32.
@@ -310,6 +314,26 @@ CURRENT nine C1 pins in D33 handoff, not historical pre-edit pins. Existing
 accepted S32/R32/R-T are scoped prerequisites, not public/C1 acceptance.
 No source work is activated by this freeze alone. C1, Task17/Task2, remaining
 M5, deployment, AI quality and end-to-end utility stay PENDING; v1_only remains.
+
+Current override (2026-10-14): M5-D34/M5.0-34 are contract-PASS /
+implementation-PENDING; runtime-addendum revision 15 is authoritative.
+REQUIREMENT_OBSERVATION_SOURCE_ORDER_AMENDMENT.md is authoritative at SHA-256
+1fade6fd70d7bce5a4548bf1f0d37ed0682ce185f0c36089df6dd0dd8977ef6b.
+Its sole exception is the bounded fresh requirement-source archive tail:
+complete global conflict reservations in physical-ID order, R/V/O/E absence,
+exact pair-input-only reuse, ordered result/pair/artifact/observation/execution
+creation before sole derivation, full observation validation and no later
+source-observation relock. Old-holder/currency keys remain at 11a. Retained
+replay keeps native locks and ordinary immutable observation/pair reads;
+locked-loser classification precedes fresh authorization. New active and
+inactive archive writers must obey the common prefix before later accounting.
+No public API, persisted identity, schema/migration, counter definition,
+provider or default changes. Actual new producer bytes retain D24 ownership.
+This freeze grants NO source paths. A NEW audited path-exclusive C2 activation
+must preserve all five B33 checkpoint files and the current nine C1 pins,
+settle exact B33 ancestry, and retain new-positive/carry/absence and independent
+group full-image gates. B33 remains diagnostic-only; P33/C1/C2, D25 integration,
+M5.4--M5.6, deployment, AI quality and end-to-end claims remain PENDING.
 
 M5 is not complete until every remaining M5.4--M5.6 executable gate is
 recorded.

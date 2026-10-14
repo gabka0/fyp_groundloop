@@ -1,6 +1,22 @@
 # GroundLoop M5 Multi-Agent Execution Plan
 
-Current authority update (2026-10-10): M5-D33/M5.0-33 are contract-PASS /
+Current authority update (2026-10-14): M5-D34/M5.0-34 are contract-PASS /
+implementation-PENDING; runtime-addendum revision15 is authoritative.
+REQUIREMENT_OBSERVATION_SOURCE_ORDER_AMENDMENT.md SHA256
+1fade6fd70d7bce5a4548bf1f0d37ed0682ce185f0c36089df6dd0dd8977ef6b
+requires a NEW audited path-exclusive C2/dependency-order activation after this
+freeze is accepted/pushed. Root is the sole source editor; two independent
+read-only auditors own zero paths; only one source lane at a time. The freeze
+grants no implementation paths. Preserve the complete five-file B33 diagnostic
+checkpoint and current nine held C1 pins; no B33/P33/C1 advance or publication
+until a new activation fixes exact ancestry/disjointness and every applicable
+original gate passes. D34's common new active/inactive archive prefix, physical
+reservation order, source validation/no-relock, native replay and accounting
+placement need explicit source/function/test ownership, not a historical C2
+grant. New-positive/carry/absence and separate group full-image gates stay
+mandatory/PENDING. No N/A, schema/provider/default or broader claim changes.
+
+Historical authority update (2026-10-10): M5-D33/M5.0-33 are contract-PASS /
 implementation-PENDING; runtime-addendum revision14 is authoritative.
 DOCUMENT_UPDATE_COMPLETION_AMENDMENT.md SHA256
 055ef0d6f971a23be31cc23d2b9f03b4b7cd17fa9f9bc7c505d1f565d6726b32

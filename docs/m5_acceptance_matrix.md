@@ -1,11 +1,11 @@
 # GroundLoop M5 Acceptance Matrix
 
-Status: accepted M5 falsification contract through M5-D33; staged evidence
+Status: accepted M5 falsification contract through M5-D34; staged evidence
 is current through the integrated M5.4-02/-03/-04 late-result activity tranche;
 M5.4-01 through M5.4-04 are `PASS`, M5.4 remains partial, and M5.0-24 is
-`PASS / PENDING`; M5.0-25 through M5.0-33 are `PASS / PENDING`
+`PASS / PENDING`; M5.0-25 through M5.0-34 are `PASS / PENDING`
 
-Date: 2026-10-10
+Date: 2026-10-14
 
 Authority: each row is a necessary condition, not a menu. In Section 1, the
 first status is the M5.0 contract audit and the second is implementation
@@ -18,12 +18,20 @@ design freeze is reopened and the scope change is recorded.
 Historical D32 precedence: its exact future migration-020 delta was the sole
 new exception to earlier migration-inventory and no-new-kind/recipe falsifiers.
 All unchanged D24--D31 mechanisms and historical receipts remain exact.
-Runtime-addendum revision 14 is current; no implementation gate is promoted.
+Runtime-addendum revision 15 is current; no implementation gate is promoted.
 M5-D33 overrides older row exclusions ONLY for exact job-free documents and
 their private two-clock seal, preserved REPLACE metadata, document-withdrawal
 group_certificate absence as-of K, and021's three named validator bodies.
 000--020/ledgers and exact020 checker remain intact; later same-group binding
 restoration cannot invalidate historical absence. All other negatives stand.
+
+M5-D34 supersedes only its named fresh-source archive/replay sequencing:
+complete global alias reservations ordered by physical IDs, R/V/O/E absence
+and P-only exact reuse before ordered source persistence, full15-field checks,
+no source-observation relock, native immutable-read replay, and active/inactive
+archival before later accounting. No schema/identity/counter-definition change
+or implementation/N/A waiver follows. Exact amendment SHA-256:
+1fade6fd70d7bce5a4548bf1f0d37ed0682ce185f0c36089df6dd0dd8977ef6b.
 
 ## 1. M5.0 design-decision gates
 
@@ -62,6 +70,7 @@ restoration cannot invalidate historical absence. All other negatives stand.
 | M5.0-31 | M5-D31 trusted preterminal context access | Read the trusted promotion context directly; accept owner-only evidence, raw temporary-table/private-helper privilege, NULL or malformed input, wrong mode/GUC/table/OID/owner/backend/xid/role/cardinality/coordinate/policy/validation flag, a transition-triplet collision, a mutable or nonrepeatable accessor, a wrong migration-018 prerequisite or migration-019 ledger/catalog/ACL, another migration object, mixed-schema composition, changed D25/D26/result/digest semantics, preterminal child insertion, altered seal order, or changed public/runtime bytes | All 14 D31 falsifier groups: exact bundle/ledger/install/replay/rollback/concurrency and sole-function catalog proof; unchanged migrations 001--018; owner and distinct non-owner positives with raw-access denial; forged-triplet, NULL and full fail-closed matrices; repeatability/nonmutation; one-schema binding; real REPLACE/RETIRE preterminal contribution and terminal builder equality; D26 absence, present-state, certificate-only, malformed-child, replay and rollback regressions; compile/static/package gates, two same-byte audits and exact identity checks | PASS / PENDING |
 | M5.0-32 | M5-D32 group-only semantic readiness | Fake M4 update/job; SC-to-complete shortcut; two edges in one transaction; unaccounted/after-advance contribution; wrong event/declaration/phase/revision/hash/work; open/failed jobs/scopes or positive counters; direct/document surface outside exact D33 eligibility; replay writes/new anchor; schema/temp lookup; extra 020 object or modified 000--019; D25 semantic write or D26 recipe change; early pending clear or fabricated positive fixture | All Section-7 D32 falsifiers, with D33's narrow document exception: SQL/Python source/key/S+K vectors; exact three CHECKs/two validators/one guard+trigger; ledger/catalog/install/rerun/rollback/races and 019 prerequisites; real owner/non-owner zero-root RETIRE and nonempty-root REPLACE readiness; exact work/timing/missing/replay; disjoint schema->readiness->R-T->C1 custody; genuine pending-anchor seal and terminal equality; static/package/live compatibility and two same-byte audits | PASS / PENDING |
 | M5.0-33 | M5-D33 narrow document-update completion | Zero counts without empty direct declaration; fake/direct-history work; wrong counter1/P or two-clock seal; catch-up DELTA/raw counter overwrite; M4 wrapper weakening; wrong metadata/default overwrite/legacy rehash; document state or claim-certificate absence; bad predecessor/withdrawal/final binding/point/set proof; rejecting replay after later restoration; altered020 checker or extra021 object; fabricated production/C2/failure evidence | All Section-6 D33 falsifiers: old SQL/Python identity/S+K vectors; genuine owner/distinct-LOGIN job-free document readiness and production canonical M4 SEAL1->2 versus M5 N->N+1; exact metadata and document binding-loss proofs; as-of-K replay after L>K restoration; rollback/races/work/timing; three-function021 catalog/install/hash/ledger matrix and unchanged000--020; retained D26/present/differential/static/package diagnostics and two same-byte audits per scoped tranche | PASS / PENDING |
+| M5.0-34 | M5-D34 fresh requirement-source archive order | Derive before durable FK closure; reserve epoch-local/incomplete aliases or logical rather than physical hash order; reuse occupied R/V/O/E; repair partial archive; relock source observation; omit one of15 fields; move old currency early; add replay observation lock; late replay after fresh context; inactive archival after15d; omit actual producer bytes; weaken identities/schema or waive B33 gates | All Section-7 D34 falsifiers: genuine SUPPORT/REFUTE/NEUTRAL SQL order, complete global aliases/namespace/hash collisions and P reuse,15-field mutations/FKs, both active/inactive and retained representative-FK serializer orders, locked-loser classification, every mutation rollback/reconnect, exact zero-write older replay, unchanged inactive/late accounting, independent postcommit oracles and frozen byte inventories | PASS / PENDING |
 
 M5.0 originally froze after the contract side of every row passed, three
 independent audits reported no unresolved P0/P1, and the coordinator recorded
@@ -71,15 +80,15 @@ Accepted M5-D24-C5 resolves its successful-return active-cutoff invocation-
 work defect. Accepted M5-D24-C6 resolves the three additional checked origins
 outside C5, and accepted M5-D24-C7 closes the typed-direct acquisition/failure-
 closure provenance boundary. The current accepted contract set is M5-D21
-through M5-D33 plus runtime-addendum revision 14, the M5-D24 recovery amendment
+through M5-D34 plus runtime-addendum revision 15, the M5-D24 recovery amendment
 and accepted C1--C7 corrections, the M5-D25 persisted-matching amendment, the
 M5-D26 changed-state absence amendment, the M5-D27 counter-ownership erratum,
 the M5-D28 phased persisted-matching composition amendment, the M5-D29 bounded
 document-withdrawal amendment, the M5-D30 direct-M4 current-observation
 provenance amendment, the M5-D31 preterminal-context access amendment, the
 M5-D32 semantic-readiness amendment, M5-D33 document-update-completion amendment,
-and rows M5.0-21 through M5.0-33.
-M5.0-24 through M5.0-33 are each contract-`PASS` /
+M5-D34 requirement-source-order amendment, and rows M5.0-21 through M5.0-34.
+M5.0-24 through M5.0-34 are each contract-`PASS` /
 implementation-`PENDING`; the exact R2e C7
 implementation lane integrated at `2c2aed9` and its grant is closed. No D24
 lane is active. The later separately activated evidence tranche integrated at

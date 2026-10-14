@@ -1,6 +1,6 @@
 # GroundLoop M5.4 Byte-Total Runtime Contract Addendum
 
-Status: frozen runtime contract revision 14; M5-D25 through M5-D33 contracts
+Status: frozen runtime contract revision 15; M5-D25 through M5-D34 contracts
 **GO** / implementation **PENDING**; full M5.4 remains blocked on executable
 runtime evidence
 
@@ -9,10 +9,11 @@ revision 6 / M5-D25 amendment 2026-09-03; revision 7 / M5-D26 amendment
 2026-09-07; revision 8 / M5-D27 erratum 2026-09-17; revision 9 / M5-D28
 amendment 2026-09-18; revision 10 / M5-D29 amendment 2026-09-22; revision 11 /
 M5-D30 amendment 2026-09-22; revision 12 / M5-D31 amendment 2026-09-25;
-revision 13 / M5-D32 amendment 2026-10-09; revision 14 / M5-D33 amendment 2026-10-10
+revision 13 / M5-D32 amendment 2026-10-09; revision 14 / M5-D33 amendment 2026-10-10;
+revision 15 / M5-D34 amendment 2026-10-14
 
 Authority: this addendum specializes `docs/m5_design_freeze.md` M5-D1 through
-M5-D33 and M5-T1/M5-T2. It does not change those decisions. The M5 design
+M5-D34 and M5-T1/M5-T2. It does not change those decisions. The M5 design
 freeze remains authoritative for semantic truth; this addendum is authoritative
 for M5.4 runtime DTOs, identities, transition boundaries, persistence
 ownership, replay, and acceptance tests.
@@ -2223,6 +2224,7 @@ database I/O MUST remain explicit.
 | M5-D31 | The authoritative preterminal-context amendment adds one argument-bound, read-only trusted accessor in migration 019 so a distinct non-owner runtime can attest the genuine migration-017 promotion context while preserving one-schema binding, unchanged D25/D26 derivation, result-bound child authority and exact seal order. |
 | M5-D32 | The authoritative semantic-readiness amendment preserves the full state graph and zero-root no-barrier rule, supplies separately committed group-only readiness with exact predecessor/result proof, S+K work and one pending anchor, and narrowly authorizes future additive 020 while retaining D25/D26 state/result semantics and pending implementation gates. |
 | M5-D33 | Section31 and the authoritative document-update amendment add exact job-free document eligibility with unchanged D32 identities/work, the sole canonical M4 SEAL1->2 versus M5 N->N+1 exception, locked REPLACE metadata preservation and as-of-K group-certificate absence allowing later restoration;021 replaces only three validator bodies, preserving000--020 and strict020 verification, with implementation pending. |
+| M5-D34 | Section32 and the authoritative requirement-source-order amendment define one bounded fresh archive tail, complete global alias reservations sorted by physical IDs, strict R/V/O/E absence/P-only reuse, full source validation, no source-observation relock and retained immutable-read replay; old-holder/currency order, persisted identities and implementation gates remain exact. |
 | M5-T1 | Section 18.6 requires incremental/Python/SQL equality after every relevant measured seal. |
 | M5-T2 | Sections 10 and 19 expose touched rows, bytes, model calls, and physical exclusions without hiding them in the affected-group bound. |
 
@@ -2582,3 +2584,47 @@ schema -> metadata -> readiness -> private job-free seal -> reader -> held C1.
 This revision implements nothing. C1/Task17/Task2, remaining M5.4--M5.6,
 deployment, AI quality and end-to-end utility/speed/cost stay PENDING; v1_only
 remains the default. Accepted S32/R32/R-T are scoped prerequisites only.
+
+## 32. Revision 15 / M5-D34 fresh requirement-source archival order
+
+The accepted REQUIREMENT_OBSERVATION_SOURCE_ORDER_AMENDMENT.md at SHA-256
+1fade6fd70d7bce5a4548bf1f0d37ed0682ce185f0c36089df6dd0dd8977ef6b
+is authoritative for precisely its Section-3 supersessions: this addendum's
+Sections14.3/15, D25 Sections9.2/10 and D28 Sections2/4/6/7/8 yield only for
+the exact fresh source tail, no-relock and replay rules. Original outlines
+remain historical wording where they conflict with this explicit precedence.
+
+After earlier frozen parents, gather every R/P/V/O/E global alias. At10A use
+the separate two-int D34A namespace1144206401, accepted private hash/framing,
+and deduplicated ascending ACTUAL physical IDs. Point-preflight all aliases
+before row locks: R/V/O/E globally absent, P-only exact reuse. Ordered rows
+result -> pair -> verifier artifact -> new observation -> execution satisfy
+the unchanged immediate FKs. Validate complete source and all15 observation
+fields. This archive installs no currency/state/header/accumulator. It is not
+permission to salt IDs, repair partial closure or archive an unauthorized late
+return. Both new active/inactive writers must follow the common prefix before
+later accounting, rather than inserting it into today's late bundled helper.
+
+Sole derive byte-checks but does not reacquire the exact new source observation;
+all other11a keys, 11b discovery and later D28 preparation/header/stage/
+terminalization/15a--16 placement remain exact. Preserve native intent/patch
+recipes; never force REFUTE/NEUTRAL IDs into SUPPORT matching keys. Count actual
+new serialization/hash production once under existing verifier_completion
+ownership, without inventing a counter or promising unchanged numerical bytes.
+
+Reclassify a retained winner under tier5/6 serialization before fresh
+authorization/prefix. Replay retains native source locks with ordinary
+immutable pair/observation validation, no added observation lock/reservation,
+no fresh derivation/context, DML, constraint forcing, calls or work. The
+representative/certificate FK race and global artifact/execution inversion
+must be tested in both orders; fresh-prefix occupancy conflicts, never late
+replay. All complete alias/collision,15-field, namespace/hash, rollback,
+inactive/accounting, reconnect and independent-oracle falsifiers in D34 govern.
+
+M5-D34/M5.0-34 are contract-PASS / implementation-PENDING. No public API, DTO,
+persisted digest, schema/migration000--021, source/reference kind, counter
+definition, provider or default changes. This revision grants no source paths.
+A NEW audited path-exclusive C2 activation must preserve B33's full five-file
+checkpoint and held C1 pins, settle exact ancestry and retain every outstanding
+carry/absence/new-positive/group-oracle gate. D25 integration, C2/B33/P33/C1,
+Task2, M5.4--M5.6, deployment, AI quality and end-to-end claims stay PENDING.
