@@ -1,16 +1,33 @@
 # GroundLoop M5 Implementation Plan
 
-Status: M5.0 contract accepted through M5-D34 and M5.1--M5.3 complete;
-M5.0-24 through M5.0-34 are contract-`PASS` /
+Status: M5.0 contract accepted through M5-D35 and M5.1--M5.3 complete;
+M5.0-24 through M5.0-35 are contract-`PASS` /
 implementation-`PENDING`; M5.4-01 through M5.4-04 are `PASS`, M5.4-05 through
-M5.4-09 remain `PENDING`; the runtime addendum is revision 15. D34 freezes no
-implementation. A separately audited NEW C2/dependency-order manifest is
-required after the pushed D34 barrier, preserving B33/C1 and every pending gate.
+M5.4-09 remain `PENDING`; the runtime addendum is revision 16. D35 freezes no
+implementation. A separately audited NEW sequential S35/hash-freeze/C2 manifest
+is required after the pushed D35 barrier, preserving every held path/gate.
 The historical D33 manifest required021 schema/
 shared primitives (preinstall hash freeze), metadata, readiness, private
 job-free seal adapter, reader and held C1. No parallel source work.
 
-Current D34 boundary (2026-10-14): REQUIREMENT_OBSERVATION_SOURCE_ORDER_AMENDMENT.md,
+Current D35 boundary (2026-10-15): TRANSITION_CONTEXT_ACCESS_AMENDMENT.md,
+SHA2568251885227c4a712c06d11ba48bcd2153764da28bbbba8b089f7b8c2ede560c8.
+The fresh distinct-LOGIN C2 failure is a private transition-context/journal
+access prerequisite, not permission for raw grants or a source-only bypass.
+Next activation must allocate additive022 schema/admin/tests/handoff disjoint
+from all thirteen held C2/five B33/nine C1 paths; exact preinstall literal hash
+freeze and accepted schema integration precede checked same-held-C2 advance.
+Only then may root edit the two native reader bodies/new private helpers and
+narrow owned C2 prerequisite/test glue. Keep old strict020/021 checkers and
+000--021 exact, new closed174 proof, legacy owner routes/no malformed fallback,
+and fresh active C2 exact022-before-source rule. All eleven D35 and original
+C2/D34 gates remain PENDING. The third direct pre-source reader/public blocker
+is unowned; no parallel matching-file editor or WIP transplant is permitted.
+After separately accepted C2, perform the still-separate literal B33 parent-pin
+task before B33/P33/reconciled C1. This contract freeze activates no source or
+held advance, and promotes no wider implementation/AI/end-to-end claim.
+
+Historical D34 boundary (2026-10-14): REQUIREMENT_OBSERVATION_SOURCE_ORDER_AMENDMENT.md,
 SHA2561fade6fd70d7bce5a4548bf1f0d37ed0682ce185f0c36089df6dd0dd8977ef6b.
 Fresh source archival has a bounded global-reservation/preflight/ordered-row
 tail before sole derive; old-holder/currency remains11a, retained replay has

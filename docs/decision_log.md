@@ -1,5 +1,46 @@
 # GroundLoop Decision Log
 
+## 2026-10-15 — M5-D35 Trusted Transition-Context Access Accepted
+
+Decision status: contract-PASS / implementation-PENDING; runtime-addendum16.
+Authoritative TRANSITION_CONTEXT_ACCESS_AMENDMENT.md SHA256
+8251885227c4a712c06d11ba48bcd2153764da28bbbba8b089f7b8c2ede560c8.
+Accepted immutable candidate commit f9da529259c4983279b37e839416a3145b9b1f74,
+sole parent a83e8c3085d3f496c83a11e0cab9ab5902223d3d,
+tree a84ffcd04c2cffdf3d77590f98c2d26658c41d5b, one added100644 blob
+e25226e4669ffbf2045dfb80452b6cc5a00db24d,570lines32459bytes.
+Both independent full same-byte content audits and both fresh postcommit
+identity/custody checks returned GO/P0=0/P1=0. Atomic no-force branch/main push
+succeeded and both live refs matched before this separate freeze. Exact
+receipts/custody and the immutable candidate's historical drafting header are
+explained in D35_CONTRACT_FREEZE_HANDOFF.md. Acceptance does not rewrite it.
+
+Genuine fresh distinct-LOGIN C2 cannot directly read migration017's trusted
+private context/journal; owner fresh and LOGIN retained replay do not qualify
+that missing boundary. D35 authorizes future additive022 with exactly two
+guarded eight-argument ten-column SECURITY DEFINER projections, exact native
+fourteen-relation journal/multiplicity, full owner/temp/OID/GUC/backend/full-XID/
+session/source/coordinate/flag validation, and no raw privilege/role bypass.
+Structural-open context1/1 is not the actual sealed predecessor revision.
+
+Exact021 prerequisite, separate literal preinstall SQL/bundle/body/catalog
+hash freeze, ledger-first replay and NOWAIT ledger -> runtime-epoch exclusion
+govern installation. New closed174 verification preserves old172 structural
+projection and all old strict020/021 bytes. Only the named prerequisite
+dispatcher/two native reader bodies receive future existing-function grants;
+legacy owner reads require both022 ledger/names absent, no malformed fallback.
+Fresh active private C2 requires exact022 before authorization/source mutation.
+Third direct pre-source reader/public wrapper blocker stay unowned/pending.
+
+This ten-path freeze grants no source/advance. NEW audited sequential disjoint
+S35/hash-freeze -> accepted schema -> SAME-held-C2/root-only reader/glue/full
+qualification is required. Every original C2/D34 and eleven D35 falsifier group
+stays mandatory. Only after accepted C2 may a separate literal B33 parent-pin
+task unlock its existing gates. Full thirteen C2/five B33/nine C1 checkpoints
+and protected prerequisites remain unchanged. D25/D34/D35 implementation,
+B33/P33/C1/C2, Task2/Task17, M5.4--M5.6, deployment/security/AI quality and
+end-to-end utility/speed/cost remain PENDING; v1_only stays outside fixtures.
+
 ## 2026-10-14 — M5-D34 Fresh Requirement-Source Archive Order Accepted
 
 Decision status: contract-PASS / implementation-PENDING; runtime-addendum15.

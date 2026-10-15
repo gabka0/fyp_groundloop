@@ -1,6 +1,6 @@
 # GroundLoop M5.4 Byte-Total Runtime Contract Addendum
 
-Status: frozen runtime contract revision 15; M5-D25 through M5-D34 contracts
+Status: frozen runtime contract revision 16; M5-D25 through M5-D35 contracts
 **GO** / implementation **PENDING**; full M5.4 remains blocked on executable
 runtime evidence
 
@@ -10,10 +10,11 @@ revision 6 / M5-D25 amendment 2026-09-03; revision 7 / M5-D26 amendment
 amendment 2026-09-18; revision 10 / M5-D29 amendment 2026-09-22; revision 11 /
 M5-D30 amendment 2026-09-22; revision 12 / M5-D31 amendment 2026-09-25;
 revision 13 / M5-D32 amendment 2026-10-09; revision 14 / M5-D33 amendment 2026-10-10;
-revision 15 / M5-D34 amendment 2026-10-14
+revision 15 / M5-D34 amendment 2026-10-14;
+revision 16 / M5-D35 amendment 2026-10-15
 
 Authority: this addendum specializes `docs/m5_design_freeze.md` M5-D1 through
-M5-D34 and M5-T1/M5-T2. It does not change those decisions. The M5 design
+M5-D35 and M5-T1/M5-T2. It does not change those decisions. The M5 design
 freeze remains authoritative for semantic truth; this addendum is authoritative
 for M5.4 runtime DTOs, identities, transition boundaries, persistence
 ownership, replay, and acceptance tests.
@@ -25,7 +26,7 @@ start only after migration 014 and its SQL oracle bundle have passed the M5.3
 fresh-install, populated-upgrade, compatibility, and three-oracle gates.
 
 This addendum MUST NOT authorize a change to an M5.0 semantic decision. An
-implementation conflict with this addendum and M5-D1 through M5-D33 MUST stop
+implementation conflict with this addendum and M5-D1 through M5-D35 MUST stop
 M5.4 as **NO-GO**. The exact amendment procedure MUST be a new numbered M5
 decision in `docs/m5_design_freeze.md`, a matching acceptance-matrix row, and a
 new runtime-addendum revision before code resumes. The migration-014 M4-open
@@ -105,6 +106,14 @@ changed-state-reference, absence-artifact, work, timing, replay, failure,
 digest, DTO, counter, public Python API, provider/model choice, or runtime mode.
 Migrations 001--018 remain byte-identical. Implementation requires a new path-
 exclusive D31 activation from the pushed authority barrier.
+
+Current D35 precedence: the accepted TRANSITION_CONTEXT_ACCESS_AMENDMENT.md,
+SHA-2568251885227c4a712c06d11ba48bcd2153764da28bbbba8b089f7b8c2ede560c8,
+supersedes ONLY its Section-2 transition-reader, prerequisite and inventory
+exclusions. Additive022 may add two guarded trusted projections; the new
+closed174 successor preserves old strict020/021 checkers and all000--021
+bytes. Section33 records revision16. Contract-PASS / implementation-PENDING;
+no source path, held-checkout advance or executable gate is granted here.
 
 Normative wire values in backticks MUST be exact lowercase UTF-8. Every DTO in
 this document MUST be immutable. Every tuple MUST use the order stated here.
@@ -2225,6 +2234,7 @@ database I/O MUST remain explicit.
 | M5-D32 | The authoritative semantic-readiness amendment preserves the full state graph and zero-root no-barrier rule, supplies separately committed group-only readiness with exact predecessor/result proof, S+K work and one pending anchor, and narrowly authorizes future additive 020 while retaining D25/D26 state/result semantics and pending implementation gates. |
 | M5-D33 | Section31 and the authoritative document-update amendment add exact job-free document eligibility with unchanged D32 identities/work, the sole canonical M4 SEAL1->2 versus M5 N->N+1 exception, locked REPLACE metadata preservation and as-of-K group-certificate absence allowing later restoration;021 replaces only three validator bodies, preserving000--020 and strict020 verification, with implementation pending. |
 | M5-D34 | Section32 and the authoritative requirement-source-order amendment define one bounded fresh archive tail, complete global alias reservations sorted by physical IDs, strict R/V/O/E absence/P-only reuse, full source validation, no source-observation relock and retained immutable-read replay; old-holder/currency order, persisted identities and implementation gates remain exact. |
+| M5-D35 | Section33 and the authoritative transition-context-access amendment authorize only two guarded022 projections, exact prerequisite/catalog/admin barriers and narrow native reader consumption; private ACLs, old strict checkers, native matching/journal semantics and remaining executable gates stay exact. |
 | M5-T1 | Section 18.6 requires incremental/Python/SQL equality after every relevant measured seal. |
 | M5-T2 | Sections 10 and 19 expose touched rows, bytes, model calls, and physical exclusions without hiding them in the affected-group bound. |
 
@@ -2628,3 +2638,51 @@ A NEW audited path-exclusive C2 activation must preserve B33's full five-file
 checkpoint and held C1 pins, settle exact ancestry and retain every outstanding
 carry/absence/new-positive/group-oracle gate. D25 integration, C2/B33/P33/C1,
 Task2, M5.4--M5.6, deployment, AI quality and end-to-end claims stay PENDING.
+
+## 33. Revision 16 / M5-D35 trusted transition-context access
+
+TRANSITION_CONTEXT_ACCESS_AMENDMENT.md is authoritative at accepted SHA-256
+8251885227c4a712c06d11ba48bcd2153764da28bbbba8b089f7b8c2ede560c8.
+Its complete Section2 supersessions and Sections3--8 requirements govern;
+this summary changes no matching, result, digest, work, timing or public DTO.
+
+Additive022 has exactly two eight-argument guarded SECURITY DEFINER functions,
+each returning the specified ten-column projection. The context accessor
+returns exactly one genuine transition row; the stage accessor returns the
+complete possibly empty native fourteen-relation journal with actual row
+multiplicity and all fields. Private triplet/helper ACLs stay intact. Validate
+nonnull typed coordinates/OIDs, exact mode/canonical GUCs, genuine trusted
+temp relations, backend/already-assigned full-XID/session identity, source,
+cardinality and false validation flags. Structural-open context is1/1, distinct
+from the actual sealed predecessor revision; other contexts are N/N+1. No
+expected-set content substitution, caller key filter, repair, role switch,
+explicit bridge lock, business DML, XID assignment or early validation.
+
+Installation requires exact five-field021 ledger and the separately audited
+preinstall literal SQL/bundle/body/catalog hash freeze. Ledger-first replay
+precedes install locks; fresh installation takes SHARE ROW EXCLUSIVE NOWAIT
+on the ledger then EXCLUSIVE NOWAIT on runtime_epoch, rereads the ledger,
+checks full pre/post catalogs and writes the new ledger last atomically.
+New closed174 verification is old172 with ONLY the two exact new identities
+omitted from its function-identity projection, plus their complete successor
+proof. Existing strict020/021 functions remain byte-identical. Only the named
+document-completion prerequisite dispatcher may choose the new successor:
+exact022 selects full174 including021; absence of ledger AND both names keeps
+legacy021; malformed/orphan/partial presence fails without fallback.
+
+The two native readers may later consume the bridges via bounded matching-
+phase metadata points, not full runtime catalog scans. Legacy owner reads are
+allowed only on the exact old schema, never privilege-exception fallback.
+Fresh active private C2 requires exact022 before sole authorization or source
+mutation, including owner. Inactive/late/retained routes stay exact. The third
+direct pre-source reader/public wrapper blocker is outside this correction.
+O(J+B) projection work is not a constant-time or performance claim.
+
+M5-D35/M5.0-35 are contract-PASS / implementation-PENDING. A NEW audited
+sequential activation must allocate disjoint S35, preinstall literal hash
+freeze, then checked same-held-C2 advance/root-only reader and C2 glue work.
+All eleven D35 groups and original C2/D34 gates remain mandatory/PENDING;
+separate B33 literal-parent pin follows accepted C2. This revision implements
+nothing. D25/D34/D35 integration, B33/P33/C1/C2, Task2/Task17, M5.4--M5.6,
+deployment/security/AI quality/end-to-end utility/speed/cost remain PENDING;
+runtime stays v1_only outside isolated fixtures. Preserve all held custody.

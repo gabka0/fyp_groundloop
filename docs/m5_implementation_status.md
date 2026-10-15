@@ -1,13 +1,30 @@
 # GroundLoop M5 Implementation Status
 
-Status date: 2026-10-14
+Status date: 2026-10-15
 
-Milestone status: **M5.0 contract through accepted M5-D34 and M5.1--M5.3 are
+Milestone status: **M5.0 contract through accepted M5-D35 and M5.1--M5.3 are
 complete; M5.4 is partially complete.**
 M5.4-01 through M5.4-04 pass. M5.4-05 through M5.4-09 and every M5.5--M5.6
 implementation/evaluation closure remain pending. M5-D24-C1 through M5-D24-C7
-are accepted. M5.0-24 through M5.0-34 are each contract-`PASS` /
-implementation-`PENDING`. Runtime-addendum revision15 is authoritative.
+are accepted. M5.0-24 through M5.0-35 are each contract-`PASS` /
+implementation-`PENDING`. Runtime-addendum revision16 is authoritative.
+
+Current D35 freeze checkpoint: TRANSITION_CONTEXT_ACCESS_AMENDMENT.md SHA256
+8251885227c4a712c06d11ba48bcd2153764da28bbbba8b089f7b8c2ede560c8.
+Only the contract is accepted. Migration022/two trusted projections and
+closed174 admin successor are NOT IMPLEMENTED by this docs tranche. Held C2
+remains UNACCEPTED_P1_STOP: native owner fresh and distinct-LOGIN retained replay
+passed scoped diagnostics, but genuine fresh LOGIN cannot read the trusted
+transition triplet/journal. No test/DB/provider run or new numerical result is
+claimed here. The full thirteen-file checkpoint SHA256
+c64f9e7630bb1a249cb5214fba7d9c3cc02034c823f062ede2d60a22ad9d0df8
+is unchanged, as are B33's five files, C1's nine current pins and all protected
+prerequisites. NEW audited S35/hash-freeze/same-held-C2 activation is required;
+this freeze grants no source or advance. Original C2/D34 and D35 executable
+gates, D25 integration, B33/P33/C1/C2, Task2/Task17, M5.4--M5.6, deployment,
+security, AI quality and end-to-end utility/speed/cost remain PENDING.
+
+Historical D34 freeze checkpoint (2026-10-14):
 D34's exact accepted amendment SHA256 is
 1fade6fd70d7bce5a4548bf1f0d37ed0682ce185f0c36089df6dd0dd8977ef6b.
 It fixes only fresh source archive/replay sequencing, with no implementation

@@ -93,6 +93,10 @@ order:
     (authoritative M5-D34 fresh requirement-source archival order and replay safety)
 60. `docs/workstreams/m5_runtime_implementation/D34_CONTRACT_FREEZE_HANDOFF.md`
     (accepted D34 bytes, preserved checkpoints and next C2 activation barrier)
+61. `docs/workstreams/m5_runtime_contract/TRANSITION_CONTEXT_ACCESS_AMENDMENT.md`
+    (authoritative M5-D35 guarded transition-context/journal access correction)
+62. `docs/workstreams/m5_runtime_implementation/D35_CONTRACT_FREEZE_HANDOFF.md`
+    (accepted D35 bytes, current custody and separate sequential activation)
 
 `docs/initial_technical_design.md` (v0.1) is superseded and retained for audit
 only. The M0.5 design freeze and M1.1 amendments are complete; frozen decisions
@@ -315,7 +319,7 @@ accepted S32/R32/R-T are scoped prerequisites, not public/C1 acceptance.
 No source work is activated by this freeze alone. C1, Task17/Task2, remaining
 M5, deployment, AI quality and end-to-end utility stay PENDING; v1_only remains.
 
-Current override (2026-10-14): M5-D34/M5.0-34 are contract-PASS /
+Historical override (2026-10-14): M5-D34/M5.0-34 are contract-PASS /
 implementation-PENDING; runtime-addendum revision 15 is authoritative.
 REQUIREMENT_OBSERVATION_SOURCE_ORDER_AMENDMENT.md is authoritative at SHA-256
 1fade6fd70d7bce5a4548bf1f0d37ed0682ce185f0c36089df6dd0dd8977ef6b.
@@ -334,6 +338,26 @@ must preserve all five B33 checkpoint files and the current nine C1 pins,
 settle exact B33 ancestry, and retain new-positive/carry/absence and independent
 group full-image gates. B33 remains diagnostic-only; P33/C1/C2, D25 integration,
 M5.4--M5.6, deployment, AI quality and end-to-end claims remain PENDING.
+
+Current override (2026-10-15): M5-D35/M5.0-35 are contract-PASS /
+implementation-PENDING; runtime-addendum revision16 is authoritative.
+TRANSITION_CONTEXT_ACCESS_AMENDMENT.md is authoritative at SHA-256
+8251885227c4a712c06d11ba48bcd2153764da28bbbba8b089f7b8c2ede560c8.
+Only additive022's two guarded read-only SECURITY DEFINER accessors, the new
+closed174 catalog/prerequisite route and the two named native reader bodies
+are the future correction. Private temp/helper ACLs and000--021 stay exact;
+old strict020/021 checkers remain unchanged. Fresh active private C2 requires
+exact022 before authorization/source mutation; retained replay stays native.
+This freeze grants no source paths or held-checkout advance. A NEW audited
+sequential activation must allocate S35 schema/admin/tests disjoint from ALL
+thirteen held C2/five B33/nine C1 paths, a separate preinstall literal hash
+freeze, then checked advance of the SAME held C2 and root-only reader/glue
+qualification. No matching-file parallel lane, WIP transplant or third direct
+pre-source reader repair. Full original C2/D34 and D35 falsifiers remain;
+separate literal B33 parent-pin task follows accepted C2, not this freeze.
+D25/D34/D35 implementation, B33/P33/C1/C2, Task2/Task17, M5.4--M5.6,
+deployment, security, AI quality and end-to-end claims stay PENDING;
+v1_only remains outside isolated fixtures. Preserve every protected checkpoint.
 
 M5 is not complete until every remaining M5.4--M5.6 executable gate is
 recorded.

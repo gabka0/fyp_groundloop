@@ -1,6 +1,23 @@
 # GroundLoop M5 Multi-Agent Execution Plan
 
-Current authority update (2026-10-14): M5-D34/M5.0-34 are contract-PASS /
+Current authority update (2026-10-15): M5-D35/M5.0-35 are contract-PASS /
+implementation-PENDING; runtime-addendum revision16 is authoritative.
+TRANSITION_CONTEXT_ACCESS_AMENDMENT.md SHA256
+8251885227c4a712c06d11ba48bcd2153764da28bbbba8b089f7b8c2ede560c8
+requires a NEW audited sequential path-exclusive S35 schema/admin/test lane,
+separate preinstall literal hash freeze, accepted schema integration, then
+checked advance of the SAME held C2/root-only reader and prerequisite/test
+glue work. S35 must be disjoint from ALL thirteen C2/five B33/nine C1 paths.
+Root is the sole editor; two independent read-only auditors own zero paths.
+No parallel matching-file lane or WIP transplant. This ten-doc freeze owns no
+source paths and grants no held advance. All original C2/D34 and eleven D35
+falsifier groups remain; separate literal B33 parent-pin task follows accepted
+C2, not schema/contract acceptance. Strict020/021 checkers/private ACLs and
+000--021 remain exact. Third direct pre-source reader/public blocker is held.
+B33/P33/C1/C2, D25/D34/D35 implementation, Task2/Task17, M5.4--M5.6 and wider
+deployment/security/AI/end-to-end claims remain PENDING; v1_only stays.
+
+Historical authority update (2026-10-14): M5-D34/M5.0-34 are contract-PASS /
 implementation-PENDING; runtime-addendum revision15 is authoritative.
 REQUIREMENT_OBSERVATION_SOURCE_ORDER_AMENDMENT.md SHA256
 1fade6fd70d7bce5a4548bf1f0d37ed0682ce185f0c36089df6dd0dd8977ef6b

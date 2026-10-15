@@ -1,6 +1,23 @@
 # GroundLoop Roadmap
 
-Current M5 contract checkpoint (2026-10-14): accepted through M5-D34,
+Current M5 contract checkpoint (2026-10-15): accepted through M5-D35,
+runtime-addendum revision16. TRANSITION_CONTEXT_ACCESS_AMENDMENT.md is
+authoritative at SHA256
+8251885227c4a712c06d11ba48bcd2153764da28bbbba8b089f7b8c2ede560c8.
+Contract-PASS / implementation-PENDING. Next is a NEW audited sequential
+path-exclusive S35 schema/admin/tests/handoff activation disjoint from all
+thirteen held C2/five B33/nine C1 paths, with separate preinstall literal hash
+freeze and accepted additive022 integration. Only then checked SAME-held-C2
+advance/root-only two-reader and narrow C2 glue work/full qualification; after
+accepted C2, a separate literal B33 parent-pin task precedes B33/P33/reconciled
+C1. No raw temp/helper grants, old strict-checker weakening, WIP transplant or
+parallel matching-file lane. This docs freeze grants no source/advance and
+repairs no runtime. All original C2/D34 and D35 falsifiers remain mandatory.
+D25/D34/D35 integration, Task2/Task17, M5.4--M5.6, deployment/security/AI,
+independent natural histories and end-to-end utility/speed/cost stay PENDING;
+v1_only remains outside isolated fixtures.
+
+Historical M5 contract checkpoint (2026-10-14): accepted through M5-D34,
 runtime-addendum revision15. REQUIREMENT_OBSERVATION_SOURCE_ORDER_AMENDMENT.md
 is authoritative at SHA256
 1fade6fd70d7bce5a4548bf1f0d37ed0682ce185f0c36089df6dd0dd8977ef6b.
