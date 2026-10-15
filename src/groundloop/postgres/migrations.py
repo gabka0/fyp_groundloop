@@ -13,7 +13,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from psycopg import Connection, Cursor, Error, IsolationLevel, sql
 from psycopg.pq import TransactionStatus
@@ -5178,6 +5178,15 @@ def require_m5_document_update_completion_bundle(
         raise M5DocumentUpdateCompletionBundleError(
             "021 authority schema is absent or temporary"
         )
+    successor = _m5_readiness_bundle_row(
+        executor, M5_TRANSITION_CONTEXT_ACCESS_BUNDLE_ID, schema_name=schema_name
+    )
+    bridges = _m5_transition_access_new_names(executor, schema_name=schema_name)
+    if successor is not None:
+        require_m5_transition_context_access_bundle(executor, schema_name=schema_name)
+        return
+    if bridges:
+        raise M5TransitionContextAccessBundleError("022 orphan bridge has no ledger")
     identity = m5_document_update_completion_bundle_identity(
         migration_bytes=_m5_document_completion_pinned_source()
     )
@@ -5303,7 +5312,699 @@ def install_m5_document_update_completion_bundle(
         return M5DocumentUpdateCompletionBundleInstallResult(identity, True)
 
 
+M5_TRANSITION_CONTEXT_ACCESS_BUNDLE_ID = "m5-transition-context-access-schema-bundle-v1"
+M5_TRANSITION_CONTEXT_ACCESS_MIGRATION_LABEL = (
+    "migrations/022_m5_transition_context_access.sql"
+)
+M5_TRANSITION_CONTEXT_ACCESS_MIGRATION_PATH = (
+    ROOT / M5_TRANSITION_CONTEXT_ACCESS_MIGRATION_LABEL
+)
+M5_TRANSITION_CONTEXT_ACCESS_ORACLE_SHA256 = (
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+)
+# H35 authority9845d847ac8a41c25eeedcd86c03ca03b1c5d362; never learned at runtime.
+M5_ACCEPTED_TRANSITION_CONTEXT_ACCESS_MIGRATION_SHA256 = (
+    "f6de8e14635addb4ac61c266fd10f0a5bbc1d163858bbffb77e39daf3edf484e"
+)
+M5_ACCEPTED_TRANSITION_CONTEXT_ACCESS_BUNDLE_SHA256 = (
+    "44990a145629abbf4212a58b8d235631799cbf8dd56b1dc4ed012bdc2e3ab1d7"
+)
+M5_ACCEPTED_TRANSITION_CONTEXT_ACCESS_CATALOG_SHA256 = (
+    "425083d8390866803d948ebe8de9ea4dfbf11f2b22f41a8842a0ce8f0b228840"
+)
+M5_ACCEPTED_TRANSITION_CONTEXT_ACCESS_DEPENDENCIES_SHA256 = (
+    "d421688502cb8b3032f6386bb88659ee27f0e8e524997cb02077d84fc686f5bd"
+)
+M5_ACCEPTED_TRANSITION_CONTEXT_ACCESS_BODY_SHA256: dict[str, str] = {
+    "groundloop_m5_matching_read_transition_context": (
+        "859fd609bd95f37b87b8d590ec5779213cb98190463978b42823290e83f3446f"
+    ),
+    "groundloop_m5_matching_read_transition_stage_journal": (
+        "9dd652819ddd33ecaa7a3ed23dd71b4bf92a14b52e0a45ec32e66731338a91ca"
+    ),
+}
+_m5_transition_access_names = (
+    "groundloop_m5_matching_read_transition_context",
+    "groundloop_m5_matching_read_transition_stage_journal",
+)
+_m5_transition_access_argument_names = [
+    "selected_epoch_id",
+    "selected_expected_revision",
+    "selected_resulting_revision",
+    "selected_source_kind",
+    "selected_source_id",
+    "selected_context_oid",
+    "selected_journal_oid",
+    "selected_expected_oid",
+]
+_m5_transition_access_argument_types = [
+    "int8",
+    "int8",
+    "int8",
+    "text",
+    "text",
+    "oid",
+    "oid",
+    "oid",
+]
+_m5_transition_access_result_columns = (
+    [
+        ("backend_pid", "int4"),
+        ("transaction_id", "text"),
+        ("session_role", "text"),
+        ("epoch_id", "int8"),
+        ("expected_revision", "int8"),
+        ("resulting_revision", "int8"),
+        ("source_kind", "text"),
+        ("source_id", "text"),
+        ("validation_started", "bool"),
+        ("validation_done", "bool"),
+    ],
+    [
+        ("relation_name", "text"),
+        ("key_preimage", "bytea"),
+        ("first_old", "jsonb"),
+        ("final_new", "jsonb"),
+        ("first_operation", "text"),
+        ("last_operation", "text"),
+        ("mutation_count", "int4"),
+        ("saw_insert", "bool"),
+        ("saw_update", "bool"),
+        ("saw_delete", "bool"),
+    ],
+)
+_m5_transition_access_identity_query = (
+    "\n        WITH installation AS (SELECT %s::pg_catalog.text AS nam"
+    "e),\n        root_relations AS MATERIALIZED (\n          SELECT c."
+    "* FROM pg_catalog.pg_class c\n          JOIN pg_catalog.pg_namesp"
+    "ace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace\n          C"
+    "ROSS JOIN installation s\n          WHERE n.nspname OPERATOR(pg_c"
+    "atalog.=) s.name AND pg_catalog.left(c.relname,11) OPERATOR(pg_c"
+    "atalog.=) 'groundloop_'),\n        own_relations AS MATERIALIZED "
+    "(\n          SELECT c.* FROM root_relations c\n          UNION ALL"
+    "\n          SELECT c.* FROM pg_catalog.pg_class c\n          JOIN "
+    "pg_catalog.pg_index i ON i.indexrelid OPERATOR(pg_catalog.=) c.o"
+    "id\n          JOIN root_relations t ON t.oid OPERATOR(pg_catalog."
+    "=) i.indrelid\n          WHERE NOT EXISTS (SELECT 1 FROM root_rel"
+    "ations r WHERE r.oid OPERATOR(pg_catalog.=) c.oid)),\n        own"
+    "_constraints AS MATERIALIZED (\n          SELECT k.* FROM pg_cata"
+    "log.pg_constraint k\n          JOIN own_relations c ON c.oid OPER"
+    "ATOR(pg_catalog.=) k.conrelid),\n        own_types AS MATERIALIZE"
+    "D (\n          SELECT t.* FROM pg_catalog.pg_type t\n          JOI"
+    "N pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) t.ty"
+    "pnamespace\n          CROSS JOIN installation s WHERE n.nspname O"
+    "PERATOR(pg_catalog.=) s.name\n          AND (pg_catalog.left(t.ty"
+    "pname,11) OPERATOR(pg_catalog.=) 'groundloop_'\n               OR"
+    " pg_catalog.left(t.typname,12) OPERATOR(pg_catalog.=) '_groundlo"
+    "op_')),\n        catalog_owner AS (\n          SELECT relowner FRO"
+    "M own_relations\n          WHERE relname OPERATOR(pg_catalog.=) '"
+    "groundloop_m5_schema_bundle')\n    \n          SELECT p.proname,pg"
+    "_catalog.pg_get_function_identity_arguments(p.oid)\n          FRO"
+    "M pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n\n          "
+    "  ON n.oid OPERATOR(pg_catalog.=) p.pronamespace CROSS JOIN inst"
+    "allation s\n          WHERE n.nspname OPERATOR(pg_catalog.=) s.na"
+    "me AND pg_catalog.left(p.proname,11) OPERATOR(pg_catalog.=) 'gro"
+    "undloop_'"
+)
+
+_m5_transition_access_sources_query = (
+    "SELECT p.proname,p.prosrc FROM pg_catalog.pg_proc p JOIN pg_cata"
+    "log.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) p.pronamespac"
+    "e WHERE n.nspname OPERATOR(pg_catalog.=) %s AND pg_catalog.textl"
+    "ike(p.proname::pg_catalog.text,'groundloop_%%') ORDER BY p.prona"
+    'me COLLATE "C"'
+)
+
+
+class M5TransitionContextAccessBundleError(M5RuntimeBundleError):
+    """The additive022 trusted projection or its authority is not exact."""
+
+
+@dataclass(frozen=True, slots=True)
+class M5TransitionContextAccessBundleIdentity:
+    bundle_id: str
+    bundle_sha256: str
+    migration_sha256: str
+    oracle_sha256: str
+    prerequisite_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class M5TransitionContextAccessBundleInstallResult:
+    identity: M5TransitionContextAccessBundleIdentity
+    applied: bool
+
+
+def m5_transition_context_access_bundle_identity(
+    *, migration_bytes: bytes | None = None
+) -> M5TransitionContextAccessBundleIdentity:
+    """Describe caller bytes, without blessing content or installing authority."""
+    source = (
+        M5_TRANSITION_CONTEXT_ACCESS_MIGRATION_PATH.read_bytes()
+        if migration_bytes is None
+        else migration_bytes
+    )
+    if type(source) is not bytes:
+        raise M5TransitionContextAccessBundleError("022 requires immutable bytes")
+    digest = _sha256(source)
+    return M5TransitionContextAccessBundleIdentity(
+        M5_TRANSITION_CONTEXT_ACCESS_BUNDLE_ID,
+        stable_m5_digest(
+            M5_TRANSITION_CONTEXT_ACCESS_BUNDLE_ID,
+            text_field(M5_TRANSITION_CONTEXT_ACCESS_MIGRATION_LABEL),
+            hash_field(digest),
+            hash_field(M5_ACCEPTED_DOCUMENT_UPDATE_COMPLETION_BUNDLE_SHA256),
+        ),
+        digest,
+        M5_TRANSITION_CONTEXT_ACCESS_ORACLE_SHA256,
+        M5_ACCEPTED_DOCUMENT_UPDATE_COMPLETION_BUNDLE_SHA256,
+    )
+
+
+def _m5_transition_access_ledger(
+    identity: M5TransitionContextAccessBundleIdentity,
+) -> tuple[str, ...]:
+    return (
+        identity.bundle_id,
+        identity.bundle_sha256,
+        identity.migration_sha256,
+        identity.oracle_sha256,
+        identity.prerequisite_sha256,
+    )
+
+
+def _m5_transition_access_expected_ledger() -> tuple[str, ...]:
+    hashes = (
+        M5_ACCEPTED_TRANSITION_CONTEXT_ACCESS_MIGRATION_SHA256,
+        M5_ACCEPTED_TRANSITION_CONTEXT_ACCESS_BUNDLE_SHA256,
+        M5_ACCEPTED_TRANSITION_CONTEXT_ACCESS_CATALOG_SHA256,
+        M5_ACCEPTED_TRANSITION_CONTEXT_ACCESS_DEPENDENCIES_SHA256,
+        *M5_ACCEPTED_TRANSITION_CONTEXT_ACCESS_BODY_SHA256.values(),
+    )
+    if set(M5_ACCEPTED_TRANSITION_CONTEXT_ACCESS_BODY_SHA256) != set(
+        _m5_transition_access_names
+    ) or any(re.fullmatch("[0-9a-f]{64}", value) is None for value in hashes):
+        raise M5TransitionContextAccessBundleError("022 has no accepted H35 pins")
+    return (
+        M5_TRANSITION_CONTEXT_ACCESS_BUNDLE_ID,
+        M5_ACCEPTED_TRANSITION_CONTEXT_ACCESS_BUNDLE_SHA256,
+        M5_ACCEPTED_TRANSITION_CONTEXT_ACCESS_MIGRATION_SHA256,
+        M5_TRANSITION_CONTEXT_ACCESS_ORACLE_SHA256,
+        M5_ACCEPTED_DOCUMENT_UPDATE_COMPLETION_BUNDLE_SHA256,
+    )
+
+
+def _m5_transition_access_pinned_source() -> bytes:
+    _m5_transition_access_expected_ledger()
+    source = M5_TRANSITION_CONTEXT_ACCESS_MIGRATION_PATH.read_bytes()
+    if _sha256(source) != M5_ACCEPTED_TRANSITION_CONTEXT_ACCESS_MIGRATION_SHA256:
+        raise M5TransitionContextAccessBundleError("022 source differs from H35")
+    return source
+
+
+def _m5_transition_access_statements(source: bytes) -> tuple[tuple[str, str], ...]:
+    """Parse the six labelled statements, then require exact reviewed bytes."""
+    try:
+        text = source.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise M5TransitionContextAccessBundleError("022 is not UTF-8") from error
+    parts = text.split("-- M5-D35-STATEMENT: ")
+    if any(
+        line.strip() and not line.lstrip().startswith("--")
+        for line in parts[0].splitlines()
+    ) or any("\n" not in part for part in parts[1:]):
+        raise M5TransitionContextAccessBundleError("022 statement marker is invalid")
+    statements = tuple(
+        (part.split("\n", 1)[0], part.split("\n", 1)[1].strip()) for part in parts[1:]
+    )
+    expected = tuple(
+        f"{operation}_{name}"
+        for name in _m5_transition_access_names
+        for operation in ("create", "revoke", "grant")
+    )
+    if tuple(name for name, _ in statements) != expected:
+        raise M5TransitionContextAccessBundleError("022 statement inventory is invalid")
+    if source != _m5_transition_access_pinned_source():
+        raise M5TransitionContextAccessBundleError("022 statements differ from H35")
+    return statements
+
+
+def _m5_transition_access_require_prerequisites(
+    executor: _M5_READINESS_EXECUTOR, *, schema_name: str
+) -> None:
+    _m5_document_completion_require_prerequisites(executor, schema_name=schema_name)
+    _m5_document_completion_pinned_source()
+    expected = (
+        "m5-document-update-completion-schema-bundle-v1",
+        "893baf9d50cbb84c27b356cbc329f97bc714ca8c280778ece920b5a4dc728eb5",
+        "198646f9a4b2f965d9ca89df684eb4f4287f3753aeff1d255c848bcb0352681c",
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "b7706feb7d54fcf9fdb4f9f38350a32967e0b460229b6f264493fb428be8ddfc",
+    )
+    if (
+        _m5_readiness_bundle_row(executor, expected[0], schema_name=schema_name)
+        != expected
+    ):
+        raise M5PrerequisiteError("022 requires exact five-field021 authority")
+
+
+def _m5_transition_access_new_names(
+    executor: _M5_READINESS_EXECUTOR, *, schema_name: str
+) -> list[tuple[Any, ...]]:
+    return _m5_readiness_query(
+        executor,
+        "SELECT p.oid,p.proname FROM pg_catalog.pg_proc p JOIN "
+        "pg_catalog.pg_namespace n ON n.oid=p.pronamespace "
+        "WHERE n.nspname=%s AND p.proname=ANY(%s) ORDER BY p.proname",
+        (schema_name, list(_m5_transition_access_names)),
+    ).fetchall()
+
+
+class _m5_transition_access_projection:
+    """Administrative old172 projection, never a runtime binding or fake cursor."""
+
+    def __init__(
+        self, executor: _M5_READINESS_EXECUTOR, schema_name: str, oids: tuple[int, int]
+    ) -> None:
+        self.executor = executor
+        self.schema_name = schema_name
+        self.oids = oids
+        self.intercepted: list[str] = []
+
+    def execute(self, query: Any, params: Any = None) -> Cursor[Any]:
+        if isinstance(query, str) and query in (
+            _m5_transition_access_identity_query,
+            _m5_transition_access_sources_query,
+        ):
+            if params != (self.schema_name,):
+                raise M5TransitionContextAccessBundleError(
+                    "022 old-catalog projection names another schema"
+                )
+            self.intercepted.append(query)
+            predicate = " AND p.oid OPERATOR(pg_catalog.<>) ALL(%s::pg_catalog.oid[])"
+            if query == _m5_transition_access_sources_query:
+                order = ' ORDER BY p.proname COLLATE "C"'
+                query = query.removesuffix(order) + predicate + order
+            else:
+                query += predicate
+            return self.executor.execute(query, (*params, list(self.oids)))
+        return self.executor.execute(query, params)
+
+
+def _m5_transition_access_frame(value: Any) -> bytes:
+    """Typed administrative catalog framing; not a persisted semantic recipe."""
+    if value is None:
+        return b"n"
+    if type(value) is bool:
+        return b"b1" if value else b"b0"
+    if type(value) is int:
+        tag, payload = b"i", str(value).encode("ascii")
+    elif type(value) is str:
+        tag, payload = b"t", value.encode("utf-8")
+    elif isinstance(value, (bytes, memoryview)):
+        tag, payload = b"x", bytes(value)
+    elif isinstance(value, (tuple, list)):
+        return (
+            b"l"
+            + len(value).to_bytes(8, "big")
+            + b"".join(_m5_transition_access_frame(item) for item in value)
+        )
+    else:
+        raise M5TransitionContextAccessBundleError("unexpected022 catalog field type")
+    return tag + len(payload).to_bytes(8, "big") + payload
+
+
+def _m5_transition_access_dependency_fingerprint(
+    executor: _M5_READINESS_EXECUTOR, *, schema_name: str
+) -> str:
+    rows = _m5_readiness_query(
+        executor,
+        "SELECT p.proname,pg_catalog.pg_get_function_identity_arguments(p.oid),"
+        "d.deptype,rc.relname,"
+        "CASE WHEN d.refclassid='pg_catalog.pg_namespace'::regclass "
+        "AND d.refobjid=n.oid THEN '<installation>' "
+        "ELSE pg_catalog.pg_describe_object(d.refclassid,d.refobjid,d.refobjsubid) END,"
+        "CASE WHEN COALESCE(rn.nspname,tn.nspname,fn.nspname,onsp.nspname,"
+        "refns.nspname)=n.nspname "
+        "THEN '<installation>' "
+        "ELSE COALESCE(rn.nspname,tn.nspname,fn.nspname,onsp.nspname,"
+        "refns.nspname) END,"
+        "d.refobjsubid FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n "
+        "ON n.oid=p.pronamespace JOIN pg_catalog.pg_depend d "
+        "ON d.classid='pg_catalog.pg_proc'::regclass AND d.objid=p.oid "
+        "JOIN pg_catalog.pg_class rc ON rc.oid=d.refclassid "
+        "LEFT JOIN pg_catalog.pg_class r "
+        "ON d.refclassid='pg_catalog.pg_class'::regclass "
+        "AND r.oid=d.refobjid LEFT JOIN pg_catalog.pg_namespace rn "
+        "ON rn.oid=r.relnamespace "
+        "LEFT JOIN pg_catalog.pg_type t ON d.refclassid='pg_catalog.pg_type'::regclass "
+        "AND t.oid=d.refobjid LEFT JOIN pg_catalog.pg_namespace tn "
+        "ON tn.oid=t.typnamespace "
+        "LEFT JOIN pg_catalog.pg_proc f ON d.refclassid='pg_catalog.pg_proc'::regclass "
+        "AND f.oid=d.refobjid LEFT JOIN pg_catalog.pg_namespace fn "
+        "ON fn.oid=f.pronamespace "
+        "LEFT JOIN pg_catalog.pg_operator o "
+        "ON d.refclassid='pg_catalog.pg_operator'::regclass AND o.oid=d.refobjid "
+        "LEFT JOIN pg_catalog.pg_namespace onsp ON onsp.oid=o.oprnamespace "
+        "LEFT JOIN pg_catalog.pg_namespace refns "
+        "ON d.refclassid='pg_catalog.pg_namespace'::regclass "
+        "AND refns.oid=d.refobjid "
+        "WHERE n.nspname=%s AND pg_catalog.left(p.proname,11)='groundloop_'",
+        (schema_name,),
+    ).fetchall()
+    encoded = sorted(
+        _m5_transition_access_frame(
+            tuple(
+                _m5_readiness_catalog_sql(value, schema_name)
+                if position in (1, 4) and type(value) is str
+                else value
+                for position, value in enumerate(row)
+            )
+        )
+        for row in rows
+    )
+    attributes = _m5_readiness_query(
+        executor,
+        "SELECT p.proname,pg_catalog.pg_get_function_identity_arguments(p.oid),"
+        "p.procost::text,p.prorows::text,"
+        "pg_catalog.pg_get_function_identity_arguments(support.oid),"
+        "CASE WHEN sn.nspname=n.nspname THEN '<installation>' ELSE sn.nspname END,"
+        "p.probin,pg_catalog.pg_get_expr(p.proargdefaults,0),"
+        "p.prosqlbody IS NULL,p.protrftypes IS NULL "
+        "FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n "
+        "ON n.oid=p.pronamespace LEFT JOIN pg_catalog.pg_proc support "
+        "ON support.oid=p.prosupport LEFT JOIN pg_catalog.pg_namespace sn "
+        "ON sn.oid=support.pronamespace WHERE n.nspname=%s "
+        "AND pg_catalog.left(p.proname,11)='groundloop_'",
+        (schema_name,),
+    ).fetchall()
+    encoded_attributes = sorted(
+        _m5_transition_access_frame(
+            tuple(
+                _m5_readiness_catalog_sql(value, schema_name)
+                if position in (1, 4, 7) and type(value) is str
+                else value
+                for position, value in enumerate(row)
+            )
+        )
+        for row in attributes
+    )
+    # Costs/rows use PostgreSQL's exact native float4 text projection, never
+    # repr/JSON. Existing172 body/signature/flag/config/ACL checks plus the new
+    # two-function proof cover the other fields. No raw OID/owner ID is pinned.
+    digest = hashlib.sha256(b"m5-transition-access-function-catalog-v1\x00")
+    for name, section in (
+        ("attributes", encoded_attributes),
+        ("dependencies", encoded),
+    ):
+        digest.update(_m5_transition_access_frame(name))
+        digest.update(len(section).to_bytes(8, "big"))
+        for row in section:
+            digest.update(len(row).to_bytes(8, "big"))
+            digest.update(row)
+    return digest.hexdigest()
+
+
+def _m5_transition_access_function_rows(
+    executor: _M5_READINESS_EXECUTOR, *, schema_name: str
+) -> list[tuple[Any, ...]]:
+    return _m5_readiness_query(
+        executor,
+        "SELECT p.oid,p.proname,p.proowner=c.relowner,l.lanname,p.prosecdef,"
+        "p.proconfig,p.provolatile,p.proisstrict,p.proleakproof,p.proparallel,"
+        "p.prokind,p.pronargdefaults,p.provariadic,p.proretset,"
+        "tn.nspname,t.typname,p.pronargs,p.proargnames,p.proargmodes,"
+        "ARRAY(SELECT n.nspname||':'||t.typname "
+        "FROM unnest(p.proallargtypes) WITH ORDINALITY x(oid,position) "
+        "JOIN pg_catalog.pg_type t ON t.oid=x.oid "
+        "JOIN pg_catalog.pg_namespace n ON n.oid=t.typnamespace ORDER BY x.position),"
+        "ARRAY(SELECT n.nspname||':'||t.typname "
+        "FROM unnest(p.proargtypes::oid[]) WITH ORDINALITY x(oid,position) "
+        "JOIN pg_catalog.pg_type t ON t.oid=x.oid "
+        "JOIN pg_catalog.pg_namespace n ON n.oid=t.typnamespace ORDER BY x.position),"
+        "ARRAY(SELECT a.grantee::text||':'||a.privilege_type||':'||"
+        "a.is_grantable::text FROM pg_catalog.aclexplode(COALESCE(p.proacl,"
+        "pg_catalog.acldefault('f',p.proowner))) a ORDER BY a.grantee),"
+        "p.probin,p.prosupport::oid,p.procost,p.prorows,p.prosqlbody,"
+        "p.prosrc,c.relowner "
+        "FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n "
+        "ON n.oid=p.pronamespace JOIN pg_catalog.pg_language l ON l.oid=p.prolang "
+        "JOIN pg_catalog.pg_type t ON t.oid=p.prorettype "
+        "JOIN pg_catalog.pg_namespace tn ON tn.oid=t.typnamespace "
+        "JOIN pg_catalog.pg_class c ON c.relnamespace=n.oid "
+        "AND c.relname='groundloop_m5_schema_bundle' "
+        "WHERE n.nspname=%s AND p.proname=ANY(%s) ORDER BY p.proname",
+        (schema_name, list(_m5_transition_access_names)),
+    ).fetchall()
+
+
+def _m5_transition_access_verify_new_functions(
+    executor: _M5_READINESS_EXECUTOR, *, schema_name: str
+) -> tuple[int, int]:
+    rows = _m5_transition_access_function_rows(executor, schema_name=schema_name)
+    if (
+        len(rows) != 2
+        or tuple(str(row[1]) for row in rows) != _m5_transition_access_names
+    ):
+        raise M5TransitionContextAccessBundleError("022 exact two bridges are absent")
+    config = _m5_readiness_query(
+        executor,
+        "SELECT 'search_path='||pg_catalog.quote_ident(%s)||', pg_catalog'",
+        (schema_name,),
+    ).fetchone()
+    if config is None:
+        raise M5TransitionContextAccessBundleError("022 pinned path is absent")
+    for row, columns in zip(rows, _m5_transition_access_result_columns, strict=True):
+        expected = (
+            True,
+            "plpgsql",
+            True,
+            [str(config[0])],
+            "s",
+            False,
+            False,
+            "u",
+            "f",
+            0,
+            0,
+            True,
+            "pg_catalog",
+            "record",
+            8,
+            _m5_transition_access_argument_names + [name for name, _ in columns],
+            ["i"] * 8 + ["t"] * 10,
+            [
+                "pg_catalog:" + name
+                for name in _m5_transition_access_argument_types
+                + [kind for _, kind in columns]
+            ],
+            ["pg_catalog:" + name for name in _m5_transition_access_argument_types],
+            ["0:EXECUTE:false", f"{row[-1]}:EXECUTE:false"],
+            None,
+            0,
+            100,
+            1000,
+            None,
+        )
+        if tuple(row[2:-2]) != expected or _sha256(str(row[-2]).encode("utf-8")) != (
+            M5_ACCEPTED_TRANSITION_CONTEXT_ACCESS_BODY_SHA256.get(str(row[1]))
+        ):
+            raise M5TransitionContextAccessBundleError(
+                "022 bridge body/signature/owner/flags/path/ACL is not exact"
+            )
+    oids = (int(rows[0][0]), int(rows[1][0]))
+    if oids[0] == oids[1]:
+        raise M5TransitionContextAccessBundleError("022 bridge OIDs are not distinct")
+    return oids
+
+
+def _m5_transition_access_verify_catalog(
+    executor: _M5_READINESS_EXECUTOR, *, schema_name: str
+) -> None:
+    """Full real174 check, plus ONLY the permitted old172 projection."""
+    _m5_transition_access_statements(_m5_transition_access_pinned_source())
+    oids = _m5_transition_access_verify_new_functions(executor, schema_name=schema_name)
+    count = _m5_readiness_query(
+        executor,
+        "SELECT count(*),count(DISTINCT p.proname) FROM pg_catalog.pg_proc p "
+        "JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace "
+        "WHERE n.nspname=%s AND pg_catalog.left(p.proname,11)='groundloop_'",
+        (schema_name,),
+    ).fetchone()
+    if count != (174, 174):
+        raise M5TransitionContextAccessBundleError(
+            "022 closed174 inventory is not exact"
+        )
+    projection = _m5_transition_access_projection(executor, schema_name, oids)
+    _m5_document_completion_verify_catalog(
+        cast(_M5_READINESS_EXECUTOR, projection),
+        schema_name=schema_name,
+        installed=True,
+    )
+    if projection.intercepted != [
+        _m5_transition_access_identity_query,
+        _m5_transition_access_sources_query,
+    ]:
+        raise M5TransitionContextAccessBundleError("022 old172 projection drift")
+    if (
+        _m5_readiness_catalog_fingerprint(executor, schema_name=schema_name)
+        != M5_ACCEPTED_TRANSITION_CONTEXT_ACCESS_CATALOG_SHA256
+    ):
+        raise M5TransitionContextAccessBundleError(
+            "022 full structural catalog differs"
+        )
+    if (
+        _m5_transition_access_dependency_fingerprint(executor, schema_name=schema_name)
+        != M5_ACCEPTED_TRANSITION_CONTEXT_ACCESS_DEPENDENCIES_SHA256
+    ):
+        raise M5TransitionContextAccessBundleError("022 function dependencies differ")
+
+
+def require_m5_transition_context_access_bundle(
+    executor: _M5_READINESS_EXECUTOR, *, schema_name: str
+) -> None:
+    """Strict read-only same-schema022 authority; no legacy fallback."""
+    expected = _m5_transition_access_expected_ledger()
+    actual_schema = _m5_readiness_query(
+        executor,
+        "SELECT nspname FROM pg_catalog.pg_namespace WHERE nspname=%s "
+        "AND nspname !~ '^pg_' AND oid<>pg_catalog.pg_my_temp_schema()",
+        (schema_name,),
+    ).fetchone()
+    if actual_schema != (schema_name,):
+        raise M5TransitionContextAccessBundleError("022 schema is absent or temporary")
+    if (
+        _m5_readiness_bundle_row(executor, expected[0], schema_name=schema_name)
+        != expected
+    ):
+        raise M5TransitionContextAccessBundleError(
+            "022 requires exact five-field ledger"
+        )
+    _m5_transition_access_require_prerequisites(executor, schema_name=schema_name)
+    _m5_transition_access_verify_catalog(executor, schema_name=schema_name)
+
+
+def install_m5_transition_context_access_bundle(
+    connection: Connection[Any],
+    *,
+    failure_injector: Callable[[str], None] | None = None,
+    migration_bytes: bytes | None = None,
+) -> M5TransitionContextAccessBundleInstallResult:
+    """Opt-in ledger-first022; never installs during an active matching phase."""
+    if (
+        connection.closed
+        or connection.info.transaction_status != TransactionStatus.IDLE
+    ):
+        raise M5TransitionContextAccessBundleError(
+            "022 requires an idle outer transaction"
+        )
+    if connection.read_only is True or connection.isolation_level not in (
+        None,
+        IsolationLevel.READ_COMMITTED,
+    ):
+        raise M5TransitionContextAccessBundleError(
+            "022 requires read-write READ COMMITTED"
+        )
+    source = (
+        M5_TRANSITION_CONTEXT_ACCESS_MIGRATION_PATH.read_bytes()
+        if migration_bytes is None
+        else migration_bytes
+    )
+    identity = m5_transition_context_access_bundle_identity(migration_bytes=source)
+    requested = _m5_transition_access_ledger(identity)
+
+    def cut(point: str) -> None:
+        if failure_injector is not None:
+            failure_injector(point)
+
+    def replay(
+        ledger: tuple[str, str, str, str, str] | None,
+    ) -> M5TransitionContextAccessBundleInstallResult | None:
+        if ledger is None:
+            return None
+        if ledger != requested:
+            raise M5BundleHashConflictError("022 ledger conflicts with requested bytes")
+        require_m5_transition_context_access_bundle(connection, schema_name=schema_name)
+        return M5TransitionContextAccessBundleInstallResult(identity, False)
+
+    with connection.transaction():
+        if connection.execute("SHOW transaction_isolation").fetchone() != (
+            "read committed",
+        ) or connection.execute("SHOW transaction_read_only").fetchone() != ("off",):
+            raise M5TransitionContextAccessBundleError(
+                "022 server transaction is not read-write READ COMMITTED"
+            )
+        schema_name = _m5_readiness_schema(connection)
+        found = replay(
+            _m5_readiness_bundle_row(
+                connection, identity.bundle_id, schema_name=schema_name
+            )
+        )
+        if found is not None:
+            return found
+        cut("after_initial_ledger")
+        if requested != _m5_transition_access_expected_ledger():
+            raise M5TransitionContextAccessBundleError(
+                "022 bytes differ from H35 authority"
+            )
+        statements = _m5_transition_access_statements(source)
+        _m5_transition_access_require_prerequisites(connection, schema_name=schema_name)
+        cut("after_prerequisite")
+        connection.execute(
+            sql.SQL("LOCK TABLE {} IN SHARE ROW EXCLUSIVE MODE NOWAIT").format(
+                sql.Identifier(schema_name, "groundloop_m5_schema_bundle")
+            )
+        )
+        cut("after_ledger_lock")
+        connection.execute(
+            sql.SQL("LOCK TABLE {} IN EXCLUSIVE MODE NOWAIT").format(
+                sql.Identifier(schema_name, "groundloop_m5_runtime_epoch")
+            )
+        )
+        cut("after_runtime_lock")
+        found = replay(
+            _m5_readiness_bundle_row(
+                connection, identity.bundle_id, schema_name=schema_name
+            )
+        )
+        if found is not None:
+            return found
+        _m5_transition_access_require_prerequisites(connection, schema_name=schema_name)
+        if _m5_transition_access_new_names(connection, schema_name=schema_name):
+            raise M5TransitionContextAccessBundleError("022 has orphan bridge objects")
+        _m5_document_completion_verify_catalog(
+            connection, schema_name=schema_name, installed=True
+        )
+        connection.execute(
+            "SELECT pg_catalog.set_config('search_path',"
+            "pg_catalog.quote_ident(%s) OPERATOR(pg_catalog.||) ', pg_catalog',true)",
+            (schema_name,),
+        )
+        for name, statement in statements:
+            cut(f"before_{name}")
+            connection.execute(statement)
+            cut(f"after_{name}")
+        _m5_transition_access_verify_catalog(connection, schema_name=schema_name)
+        cut("before_ledger")
+        connection.execute(
+            sql.SQL(
+                "INSERT INTO {} (bundle_id,bundle_sha256,migration_sha256,"
+                "oracle_sha256,prerequisite_sha256,applied_at) "
+                "VALUES (%s,%s,%s,%s,%s,pg_catalog.now())"
+            ).format(sql.Identifier(schema_name, "groundloop_m5_schema_bundle")),
+            requested,
+        )
+        cut("after_ledger")
+        return M5TransitionContextAccessBundleInstallResult(identity, True)
+
+
 __all__ = [
+    "M5TransitionContextAccessBundleError",
+    "M5TransitionContextAccessBundleIdentity",
+    "M5TransitionContextAccessBundleInstallResult",
+    "m5_transition_context_access_bundle_identity",
+    "install_m5_transition_context_access_bundle",
+    "require_m5_transition_context_access_bundle",
     "LEGACY_MIGRATION_NAMES",
     "LEGACY_MIGRATION_PATHS",
     "M5_BUNDLE_ID",
