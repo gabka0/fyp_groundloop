@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 from collections import Counter
+from collections.abc import Callable as _d34_Callable
 from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from enum import StrEnum
 from typing import Any, Literal, NoReturn
 
 from psycopg import Cursor, sql
+from psycopg.errors import InvalidParameterValue as _d34_InvalidParameterValue
 
 from groundloop.ai.contracts import (
     ScoreTriple,
@@ -114,9 +116,13 @@ from groundloop.m5.runtime.contracts import (
     M5PersistedMatchingPatchReceipt,
     M5PersistedMatchingSourceKind,
     M5PersistedMatchingTransitionIntent,
+    M5RequirementPairInput,
+    M5RequirementVerifierArtifact,
     M5TypedDirectVerificationExecution,
+    SemanticPairKey,
     m5_overlay_work_values,
 )
+from groundloop.postgres import migrations as _d35_migrations
 
 _PERSISTED_MATCHING_BUNDLE_ROW = (
     "m5-persisted-matching-schema-bundle-v1",
@@ -136,6 +142,415 @@ _EMPTY_LOGICAL_OUTPUT_DIGEST = (
 _EMPTY_OUTPUT_BYTES = 71
 _MATCHING_ARTIFACT_LOCK_NAMESPACE = 1_295_338_832  # signed int32 for b"M5MP"
 _MATCHING_ABSENCE_LOCK_NAMESPACE = 1_295_338_833
+
+_d34_ARCHIVE_NAMESPACE = 1_144_206_401
+
+
+@dataclass(frozen=True, slots=True)
+class _d34_ArchiveCoordinate:
+    relation: str
+    columns: tuple[str, ...]
+    values: tuple[str, ...]
+    preimage: bytes
+    physical_id: int
+
+
+def _d34_archive_coordinates(
+    *,
+    result: tuple[str, str, str, str],
+    pair: tuple[str, str, str, str],
+    verifier: tuple[str, str],
+    observation: tuple[str, str, str, str, str],
+    execution: tuple[str, str, str, str, str],
+) -> tuple[_d34_ArchiveCoordinate, ...]:
+    """Canonical complete D34 aliases; hashes serialize, never identify rows."""
+
+    for source_values, length in (
+        (result, 4),
+        (pair, 4),
+        (verifier, 2),
+        (observation, 5),
+        (execution, 5),
+    ):
+        if type(source_values) is not tuple or len(source_values) != length:
+            raise ValidationError("D34 archive coordinate shape changed")
+        for value in source_values:
+            _require_text("D34 archive scalar", value)
+    for value in (*result, *pair[:3], *verifier, observation[0], *execution):
+        _require_sha256("D34 archive hash", value)
+    if (
+        observation[1] != "requirement"
+        or observation[4] != "verify_requirement_v1"
+        or execution[:2] != (observation[0], verifier[0])
+        or execution[3] != result[3]
+        or execution[4] != pair[0]
+    ):
+        raise EventConflictError("D34 archive aliases have different sources")
+    definitions = (
+        (
+            "groundloop_m5_attempt_result_artifact",
+            (
+                (("attempt_result_artifact_id",), (result[0],)),
+                (("attempt_result_artifact_hash",), (result[1],)),
+                (("attempt_output_digest",), (result[2],)),
+                (("attempt_id",), (result[3],)),
+            ),
+        ),
+        (
+            "groundloop_m5_requirement_pair_input",
+            (
+                (("pair_input_hash",), (pair[0],)),
+                (
+                    (
+                        "semantic_pair_digest",
+                        "scope_contract_digest",
+                        "candidate_policy_id",
+                    ),
+                    pair[1:],
+                ),
+                (("pair_input_hash", "semantic_pair_digest"), pair[:2]),
+            ),
+        ),
+        (
+            "groundloop_m5_requirement_verifier_artifact",
+            (
+                (("artifact_id",), (verifier[0],)),
+                (("artifact_hash",), (verifier[1],)),
+            ),
+        ),
+        (
+            "groundloop_semantic_observation",
+            (
+                (("observation_id",), (observation[0],)),
+                (
+                    (
+                        "observation_id",
+                        "subject_kind",
+                        "subject_id",
+                        "chunk_version_id",
+                        "task_type",
+                    ),
+                    observation,
+                ),
+            ),
+        ),
+        (
+            "groundloop_m5_requirement_verifier_execution",
+            (
+                (("observation_id",), (execution[0],)),
+                (("artifact_id",), (execution[1],)),
+                (("logical_job_id", "attempt_id"), execution[2:4]),
+                (
+                    ("observation_id", "artifact_id", "pair_input_hash"),
+                    (execution[0], execution[1], execution[4]),
+                ),
+            ),
+        ),
+    )
+    coordinates: list[_d34_ArchiveCoordinate] = []
+    for relation, aliases in definitions:
+        for columns, values in aliases:
+            preimage = b"m5-d28-matching-absence-v1" + _matching_journal_key_preimage(
+                relation, (",".join(columns), *values)
+            )
+            unsigned = int.from_bytes(hashlib.sha256(preimage).digest()[:4], "big")
+            coordinate = _d34_ArchiveCoordinate(
+                relation,
+                columns,
+                values,
+                preimage,
+                unsigned if unsigned < 2**31 else unsigned - 2**32,
+            )
+            if coordinate not in coordinates:
+                coordinates.append(coordinate)
+    return tuple(coordinates)
+
+
+def _d34_reserve_archive(
+    cursor: Cursor[Any], coordinates: tuple[_d34_ArchiveCoordinate, ...]
+) -> None:
+    for key in sorted({coordinate.physical_id for coordinate in coordinates}):
+        cursor.execute(
+            "SELECT pg_advisory_xact_lock(%s, %s)", (_d34_ARCHIVE_NAMESPACE, key)
+        )
+
+
+def _d34_require_archive_reservations(
+    cursor: Cursor[Any], coordinates: tuple[_d34_ArchiveCoordinate, ...]
+) -> None:
+    for key in sorted({coordinate.physical_id for coordinate in coordinates}):
+        row = cursor.execute(
+            """
+            SELECT 1 FROM pg_catalog.pg_locks
+            WHERE locktype='advisory' AND pid=pg_catalog.pg_backend_pid()
+              AND classid::bigint=%s AND objid::bigint=%s AND objsubid=2
+              AND mode='ExclusiveLock' AND granted
+            """,
+            (_d34_ARCHIVE_NAMESPACE, key & 0xFFFFFFFF),
+        ).fetchall()
+        if row != [(1,)]:
+            raise EventConflictError("D34 archive reservation is not held")
+
+
+def _d34_preflight_archive(
+    cursor: Cursor[Any], coordinates: tuple[_d34_ArchiveCoordinate, ...]
+) -> None:
+    """Probe every global alias before acquiring any archive-tail row."""
+
+    pair_hash = next(
+        coordinate.values[0]
+        for coordinate in coordinates
+        if coordinate.relation == "groundloop_m5_requirement_pair_input"
+        and coordinate.columns == ("pair_input_hash",)
+    )
+    for coordinate in coordinates:
+        pair_relation = coordinate.relation == "groundloop_m5_requirement_pair_input"
+        projection = (
+            sql.Identifier("pair_input_hash") if pair_relation else sql.SQL("1")
+        )
+        rows = cursor.execute(
+            sql.SQL("SELECT {} FROM {} WHERE {}").format(
+                projection,
+                sql.Identifier(coordinate.relation),
+                sql.SQL(" AND ").join(
+                    sql.SQL("{}=%s").format(sql.Identifier(column))
+                    for column in coordinate.columns
+                ),
+            ),
+            coordinate.values,
+        ).fetchall()
+        if rows and (
+            not pair_relation or len(rows) != 1 or _sha256_text(rows[0][0]) != pair_hash
+        ):
+            raise EventConflictError("D34 fresh archive alias is occupied")
+
+
+def _d34_require_current_archive_rows(
+    cursor: Cursor[Any], coordinates: tuple[_d34_ArchiveCoordinate, ...]
+) -> None:
+    """Native transaction-family check supplements the fresh source closure.
+
+    Ordinary MVCC reads expose our active/released child inserts, whose xmin
+    need not equal the top XID. Their native status remains in progress even
+    after RELEASE drops a child's transactionid lock. Forward lifting retains
+    the top XID's epoch and rejects non-normal/half-range/overflow coordinates.
+    Snapshot xmax is not the next allocated XID and cannot bound our children.
+
+    This is NOT a historical ownership oracle: frozen old tuples can retain
+    reused xmin bits. Complete reservations, fresh global absence/insert-once,
+    immutable source bindings and the noncommittable running/reserved closure
+    remain essential. No raw xmin/status test replaces those native guards.
+    """
+
+    _d34_require_archive_reservations(cursor, coordinates)
+    for coordinate in coordinates:
+        if coordinate.relation == "groundloop_m5_requirement_pair_input":
+            continue
+        if len(coordinate.columns) != 1 or coordinate.columns[0] not in {
+            "attempt_result_artifact_id",
+            "artifact_id",
+            "observation_id",
+        }:
+            continue
+        row = cursor.execute(
+            sql.SQL(
+                "SELECT xmin::text::bigint, "
+                "pg_catalog.pg_current_xact_id()::text::numeric "
+                "FROM {} WHERE {}=%s"
+            ).format(
+                sql.Identifier(coordinate.relation),
+                sql.Identifier(coordinate.columns[0]),
+            ),
+            coordinate.values,
+        ).fetchone()
+        if row is None:
+            raise EventConflictError(
+                "D34 source is not owned by the current transaction"
+            )
+        xmin, top_xid = int(row[0]), int(row[1])
+        distance = (xmin - top_xid % 2**32) % 2**32
+        full_xid = top_xid + distance
+        if (
+            not 3 <= xmin < 2**32
+            or not 3 <= top_xid < 2**64
+            or top_xid % 2**32 < 3
+            or distance >= 2**31
+            or full_xid >= 2**64
+        ):
+            raise EventConflictError(
+                "D34 source is not owned by the current transaction"
+            )
+        try:
+            status = cursor.execute(
+                "SELECT pg_catalog.pg_current_xact_id()::text, "
+                "pg_catalog.pg_xact_status(%s::text::xid8)",
+                (str(full_xid),),
+            ).fetchone()
+        except _d34_InvalidParameterValue as error:
+            # Native future-XID rejection must not authorize a stale alias.
+            raise EventConflictError(
+                "D34 source is not owned by the current transaction"
+            ) from error
+        if status is None or int(status[0]) != top_xid or status[1] != "in progress":
+            raise EventConflictError(
+                "D34 source is not owned by the current transaction"
+            )
+
+
+def _d34_validate_source_observation(
+    cursor: Cursor[Any],
+    *,
+    observation_id: str,
+    epoch_id: int,
+    artifact_id: str,
+    pair_input_hash: str,
+    eligible: bool,
+) -> tuple[M5RequirementPairInput, M5RequirementVerifierArtifact]:
+    """Reconstruct native immutable DTOs and compare every observation field."""
+
+    pair_row = cursor.execute(
+        """SELECT pair_input_hash, subject_kind, subject_id, chunk_version_id,
+                  semantic_pair_digest, scope_contract_digest, candidate_policy_id,
+                  owner_claim_id, group_version_id, group_family_id,
+                  requirement_ordinal, normalized_requirement_text,
+                  requirement_text_hash, document_version_id, chunk_index,
+                  chunk_text, stored_chunk_text_hash, m5_chunk_text_hash,
+                  chunker_artifact_id, normalizer_id, normalizer_provenance_hash
+           FROM groundloop_m5_requirement_pair_input WHERE pair_input_hash=%s""",
+        (pair_input_hash,),
+    ).fetchone()
+    verifier_row = cursor.execute(
+        """SELECT artifact_id, artifact_hash, subject_kind, subject_id,
+                  chunk_version_id, semantic_pair_digest, pair_input_hash,
+                  execution_spec_hash, model_artifact_id, model_id,
+                  model_revision, prompt_artifact_id, prompt_version,
+                  calibration_version, calibration_artifact_hash, temperature,
+                  decision_policy_version, decision_policy_hash,
+                  support_score, refute_score, neutral_score,
+                  raw_logit_contradiction, raw_logit_entailment,
+                  raw_logit_neutral, raw_output_hash, operational_label
+           FROM groundloop_m5_requirement_verifier_artifact WHERE artifact_id=%s""",
+        (artifact_id,),
+    ).fetchone()
+    observation_row = cursor.execute(
+        """SELECT observation_id, subject_kind, subject_id, chunk_version_id,
+                  task_type, support_score, refute_score, neutral_score,
+                  model_id, model_version, prompt_version, input_hash,
+                  produced_epoch, raw_output_hash, eligible_for_currency
+           FROM groundloop_semantic_observation WHERE observation_id=%s""",
+        (observation_id,),
+    ).fetchone()
+    if pair_row is None or verifier_row is None or observation_row is None:
+        raise EventConflictError("D34 immutable source closure is incomplete")
+    p, v = tuple(pair_row), tuple(verifier_row)
+    pair = SemanticPairKey(SubjectKind(_text(p[1])), _text(p[2]), _text(p[3]))
+    try:
+        checked_pair = M5RequirementPairInput(
+            pair=pair,
+            semantic_pair_digest=_sha256_text(p[4]),
+            scope_contract_digest=_sha256_text(p[5]),
+            candidate_policy_id=_text(p[6]),
+            owner_claim_id=_text(p[7]),
+            group_version_id=_text(p[8]),
+            group_family_id=_text(p[9]),
+            requirement_ordinal=int(p[10]),
+            normalized_requirement_text=_text(p[11]),
+            requirement_text_hash=_sha256_text(p[12]),
+            document_version_id=_text(p[13]),
+            chunk_index=int(p[14]),
+            chunk_text=_text(p[15]),
+            stored_chunk_text_hash=_sha256_text(p[16]),
+            m5_chunk_text_hash=_sha256_text(p[17]),
+            chunker_artifact_id=_text(p[18]),
+            normalizer_id=_text(p[19]),
+            normalizer_provenance_hash=_sha256_text(p[20]),
+            pair_input_hash=_sha256_text(p[0]),
+        )
+        checked_verifier = M5RequirementVerifierArtifact(
+            artifact_id=_text(v[0]),
+            artifact_hash=_sha256_text(v[1]),
+            pair=pair,
+            semantic_pair_digest=_sha256_text(v[5]),
+            pair_input_hash=_sha256_text(v[6]),
+            execution_spec_hash=_sha256_text(v[7]),
+            model_artifact_id=_text(v[8]),
+            model_id=_text(v[9]),
+            model_revision=_text(v[10]),
+            prompt_artifact_id=_text(v[11]),
+            prompt_version=_text(v[12]),
+            calibration_version=_text(v[13]),
+            calibration_artifact_hash=None if v[14] is None else _sha256_text(v[14]),
+            temperature=float(v[15]),
+            decision_policy_version=_text(v[16]),
+            decision_policy_hash=_sha256_text(v[17]),
+            support_score=float(v[18]),
+            refute_score=float(v[19]),
+            neutral_score=float(v[20]),
+            raw_logits=(float(v[21]), float(v[22]), float(v[23])),
+            raw_output_hash=_sha256_text(v[24]),
+            operational_label=VerificationLabel(_text(v[25])),
+        )
+        policy = cursor.execute(
+            """SELECT policy_version, support_threshold,
+                      refute_threshold, tie_rule_version
+               FROM groundloop_decision_policy WHERE policy_version=%s""",
+            (v[16],),
+        ).fetchone()
+        if policy is None:
+            raise ValidationError("D34 decision policy is absent")
+        checked_verifier.validate_decision_policy(
+            DecisionPolicy(
+                _text(policy[0]), float(policy[1]), float(policy[2]), _text(policy[3])
+            )
+        )
+    except (TypeError, ValueError, ValidationError) as error:
+        raise EventConflictError(
+            "D34 native input/artifact identity changed"
+        ) from error
+    expected = checked_verifier.to_semantic_observation()
+    expected_fields = (
+        expected.observation_id,
+        expected.subject_kind.value,
+        expected.subject_id,
+        expected.chunk_version_id,
+        expected.task_type,
+        expected.support_score,
+        expected.refute_score,
+        expected.neutral_score,
+        expected.producer.model_id,
+        expected.producer.model_version,
+        expected.producer.prompt_version,
+        expected.input_hash,
+        epoch_id,
+        checked_verifier.raw_output_hash,
+        eligible,
+    )
+    actual = tuple(
+        _sha256_text(value) if index in {11, 13} else value
+        for index, value in enumerate(observation_row)
+    )
+    model = cursor.execute(
+        "SELECT task,model_id,immutable_revision FROM groundloop_model_artifact "
+        "WHERE model_artifact_id=%s",
+        (checked_verifier.model_artifact_id,),
+    ).fetchone()
+    prompt = cursor.execute(
+        "SELECT task,version FROM groundloop_prompt_artifact "
+        "WHERE prompt_artifact_id=%s",
+        (checked_verifier.prompt_artifact_id,),
+    ).fetchone()
+    if (
+        actual != expected_fields
+        or expected.observation_id != observation_id
+        or checked_verifier.pair_input_hash != checked_pair.pair_input_hash
+        or tuple(map(_text, v[2:5]))
+        != (pair.subject_kind.value, pair.subject_id, pair.chunk_version_id)
+        or model
+        != ("verification", checked_verifier.model_id, checked_verifier.model_revision)
+        or prompt != ("verification", checked_verifier.prompt_version)
+    ):
+        raise EventConflictError("D34 full observation or provenance changed")
+    return checked_pair, checked_verifier
 
 
 class _MatchingPhase(StrEnum):
@@ -254,6 +669,7 @@ class _RequirementCompletionSource:
     epoch_id: int
     expected_runtime_revision: int
     resulting_revision: int
+    structural_event_id: str
     attempt_id: str
     attempt_result_artifact_hash: str
     logical_job_id: str
@@ -958,6 +1374,107 @@ def _transition_context_row(cursor: Cursor[Any]) -> tuple[Any, ...]:
     return tuple(row)
 
 
+def _d35_transition_reader_schema(
+    cursor: Cursor[Any], *, schema_name: str | None = None
+) -> str:
+    """Bind one permanent installation to the already-held native table lock.
+
+    Neither the temporary context nor the frozen binding stores a schema. The
+    single native runtime-table ROW SHARE envelope supplies this phase proof;
+    no namespace GUC, cached route, additional binding field or lock is created.
+    """
+    row = _d35_migrations._m5_readiness_query(
+        cursor,
+        "SELECT n.nspname,r.oid,b.oid,"
+        "pg_catalog.to_regclass('groundloop_m5_runtime_epoch')::oid,"
+        "pg_catalog.to_regclass('groundloop_m5_schema_bundle')::oid,"
+        "r.relkind,r.relpersistence,b.relkind,b.relpersistence,"
+        "r.relowner=b.relowner FROM pg_catalog.pg_namespace n "
+        "JOIN pg_catalog.pg_class r ON r.relnamespace=n.oid "
+        "AND r.relname='groundloop_m5_runtime_epoch' "
+        "JOIN pg_catalog.pg_class b ON b.relnamespace=n.oid "
+        "AND b.relname='groundloop_m5_schema_bundle' "
+        "WHERE n.nspname=pg_catalog.current_schema() "
+        "AND n.nspname !~ '^pg_' AND n.oid<>pg_catalog.pg_my_temp_schema()",
+    ).fetchone()
+    if (
+        row is None
+        or (schema_name is not None and row[0] != schema_name)
+        or row[1] != row[3]
+        or row[2] != row[4]
+        or tuple(row[5:]) != ("r", "p", "r", "p", True)
+    ):
+        raise EventConflictError("D35 permanent reader namespace is not exact")
+    schema = str(row[0])
+    held = _d35_migrations._m5_readiness_query(
+        cursor,
+        "SELECT locks.relation,n.nspname FROM pg_catalog.pg_locks locks "
+        "JOIN pg_catalog.pg_class r ON r.oid=locks.relation "
+        "JOIN pg_catalog.pg_namespace n ON n.oid=r.relnamespace "
+        "WHERE locks.locktype='relation' AND locks.pid=pg_catalog.pg_backend_pid() "
+        "AND locks.mode='RowShareLock' AND locks.granted "
+        "AND r.relname='groundloop_m5_runtime_epoch' "
+        "AND r.relkind='r' AND r.relpersistence='p'",
+    ).fetchall()
+    if held != [(row[1], schema)]:
+        raise EventConflictError("D35 reader lost its single native runtime envelope")
+    return schema
+
+
+def _d35_transition_reader_route(
+    cursor: Cursor[Any], *, schema_name: str | None = None, require_022: bool = False
+) -> str | None:
+    """Exact bounded022 authority or wholly absent legacy route, never fallback."""
+    schema = _d35_transition_reader_schema(cursor, schema_name=schema_name)
+    expected = _d35_migrations._m5_transition_access_expected_ledger()
+    row = cursor.execute(
+        sql.SQL(
+            "SELECT bundle_id,bundle_sha256::pg_catalog.text,"
+            "migration_sha256::pg_catalog.text,oracle_sha256::pg_catalog.text,"
+            "prerequisite_sha256::pg_catalog.text FROM {} "
+            "WHERE bundle_id OPERATOR(pg_catalog.=) %s::pg_catalog.text"
+        ).format(sql.Identifier(schema, "groundloop_m5_schema_bundle")),
+        (expected[0],),
+    ).fetchone()
+    names = _d35_migrations._m5_transition_access_new_names(cursor, schema_name=schema)
+    if row is None and not names:
+        if require_022:
+            raise EventConflictError("D35 fresh active C2 requires exact022 authority")
+        return None
+    if row != expected:
+        raise EventConflictError("D35 transition reader requires exact022 ledger")
+    try:
+        # Two named functions ONLY: no full174/dependency/history scan here.
+        # Rehashing retained catalog bodies is validation, not a new typed
+        # producer charge. Its elapsed work stays inside the existing owner.
+        _d35_migrations._m5_transition_access_verify_new_functions(
+            cursor, schema_name=schema
+        )
+    except _d35_migrations.M5RuntimeBundleError as error:
+        raise EventConflictError("D35 transition bridge metadata changed") from error
+    return schema
+
+
+def _d35_read_transition_projection(
+    cursor: Cursor[Any],
+    *,
+    schema_name: str,
+    function_name: str,
+    arguments: tuple[Any, ...],
+) -> list[tuple[Any, ...]]:
+    """Read a complete native projection through its same-schema exact bridge."""
+    if function_name not in _d35_migrations._m5_transition_access_names:
+        raise ValidationError("D35 transition projection is not an accepted bridge")
+    return cursor.execute(
+        sql.SQL(
+            "SELECT * FROM {}(%s::pg_catalog.int8,%s::pg_catalog.int8,"
+            "%s::pg_catalog.int8,%s::pg_catalog.text,%s::pg_catalog.text,"
+            "%s::pg_catalog.oid,%s::pg_catalog.oid,%s::pg_catalog.oid)"
+        ).format(sql.Identifier(schema_name, function_name)),
+        arguments,
+    ).fetchall()
+
+
 def _capture_cursor_binding(
     cursor: Cursor[Any], intent: M5PersistedMatchingTransitionIntent
 ) -> _CursorBinding:
@@ -987,14 +1504,32 @@ def _capture_cursor_binding(
         or row[5] != row[14]
     ):
         raise ValidationError("persisted matching transition context changed")
-    context = cursor.execute(
-        """
-        SELECT backend_pid, transaction_id::text, session_role, epoch_id,
-               expected_revision, resulting_revision, source_kind, source_id,
-               validation_started, validation_done
-        FROM pg_temp.groundloop_m5_matching_transition_context
-        """
-    ).fetchall()
+    reader_schema = _d35_transition_reader_route(cursor)
+    if reader_schema is None:
+        context = cursor.execute(
+            """
+            SELECT backend_pid, transaction_id::text, session_role, epoch_id,
+                   expected_revision, resulting_revision, source_kind, source_id,
+                   validation_started, validation_done
+            FROM pg_temp.groundloop_m5_matching_transition_context
+            """
+        ).fetchall()
+    else:
+        context = _d35_read_transition_projection(
+            cursor,
+            schema_name=reader_schema,
+            function_name="groundloop_m5_matching_read_transition_context",
+            arguments=(
+                intent.resulting_epoch_id,
+                expected_revision,
+                intent.resulting_revision,
+                intent.source_kind.value,
+                intent.source_id,
+                row[3],
+                row[4],
+                row[5],
+            ),
+        )
     if len(context) != 1 or (
         int(context[0][0]) != int(row[0])
         or str(context[0][1]) != str(row[1])
@@ -1292,7 +1827,8 @@ def _requirement_completion_source(
         SELECT epoch_id, job_kind, job_state, result_artifact_id,
                result_artifact_hash, completed_revision, payload_hash,
                execution_spec_hash, semantic_pair_digest, subject_kind,
-               subject_id, chunk_version_id, candidate_policy_id
+               subject_id, chunk_version_id, candidate_policy_id,
+               scope_contract_digest
         FROM groundloop_m5_semantic_job
         WHERE logical_job_id = %s AND epoch_id = %s
         """,
@@ -1316,7 +1852,7 @@ def _requirement_completion_source(
                activity_snapshot_epoch_id, activity_snapshot_revision,
                epoch_active, chunk_active, requirement_active, group_active,
                archive_reason, cancelled_by_event_id, cancelled_by_epoch_id,
-               cancellation_reason
+               cancellation_reason, attempt_result_artifact_id
         FROM groundloop_m5_attempt_result_artifact
         WHERE attempt_id = %s AND job_epoch_id = %s
         """,
@@ -1374,7 +1910,8 @@ def _requirement_completion_source(
                typed_update.decision_policy_version,
                runtime.candidate_policy_id,
                typed_policy.decision_policy_version,
-               epoch.revision, runtime.revision
+               epoch.revision, runtime.revision,
+               epoch.event_id, runtime.structural_event_id
         FROM groundloop_epoch AS epoch
         JOIN groundloop_m5_runtime_epoch AS runtime USING (epoch_id)
         JOIN groundloop_m5_update AS typed_update USING (epoch_id)
@@ -1408,6 +1945,10 @@ def _requirement_completion_source(
         raise InvalidEventError("requirement matching immutable closure is incomplete")
 
     source_identity_hash = _sha256_text(artifact[0])
+    if _sha256_text(artifact[21]) != digests.attempt_result_artifact_id(
+        proposed_attempt_id, source_identity_hash
+    ):
+        raise EventConflictError("requirement matching result ID changed")
     if expected_source_identity_hash is not None and (
         source_identity_hash != expected_source_identity_hash
     ):
@@ -1477,6 +2018,10 @@ def _requirement_completion_source(
         != (resulting_revision if headers_installed else expected_runtime_revision)
         or int(authority[5])
         != (resulting_revision if headers_installed else expected_runtime_revision)
+        or type(authority[6]) is not str
+        or not authority[6]
+        or type(authority[7]) is not str
+        or authority[6] != authority[7]
         or _text(structure[0]) != _text(pair[7])
         or int(structure[1]) != int(pair[9])
         or _text(structure[2]) != _text(pair[8])
@@ -1487,10 +2032,51 @@ def _requirement_completion_source(
         label = VerificationLabel(_text(verifier[11]))
     except ValueError as error:
         raise EventConflictError("requirement matching source label changed") from error
+    checked_pair, checked_verifier = _d34_validate_source_observation(
+        cursor,
+        observation_id=observation_id,
+        epoch_id=epoch_id,
+        artifact_id=_text(execution[1]),
+        pair_input_hash=_sha256_text(execution[5]),
+        eligible=True,
+    )
+    if checked_pair.scope_contract_digest != _sha256_text(job[13]):
+        raise EventConflictError("requirement matching source scope changed")
+    coordinates = _d34_archive_coordinates(
+        result=(
+            _text(artifact[21]),
+            source_identity_hash,
+            _sha256_text(artifact[4]),
+            proposed_attempt_id,
+        ),
+        pair=(
+            checked_pair.pair_input_hash,
+            checked_pair.semantic_pair_digest,
+            checked_pair.scope_contract_digest,
+            checked_pair.candidate_policy_id,
+        ),
+        verifier=(checked_verifier.artifact_id, checked_verifier.artifact_hash),
+        observation=(
+            observation_id,
+            "requirement",
+            requirement_id,
+            chunk_id,
+            "verify_requirement_v1",
+        ),
+        execution=(
+            observation_id,
+            checked_verifier.artifact_id,
+            logical_job_id,
+            proposed_attempt_id,
+            checked_pair.pair_input_hash,
+        ),
+    )
+    _d34_require_current_archive_rows(cursor, coordinates)
     return _RequirementCompletionSource(
         epoch_id=epoch_id,
         expected_runtime_revision=expected_runtime_revision,
         resulting_revision=resulting_revision,
+        structural_event_id=_text(authority[6]),
         attempt_id=proposed_attempt_id,
         attempt_result_artifact_hash=source_identity_hash,
         logical_job_id=logical_job_id,
@@ -1587,7 +2173,7 @@ def _capture_requirement_currency_before_image(
             FROM groundloop_semantic_observation
             WHERE observation_id = %s
             """
-            + suffix,
+            + (suffix if observation_id != source.observation_id else ""),
             (observation_id,),
         ).fetchone()
         if observation is None or (
@@ -3022,7 +3608,7 @@ def _requirement_logical_transition(
     if claim_after.state.status is not claim_before.state.status:
         status_deltas.append(
             StatusDelta(
-                source.attempt_id,
+                source.structural_event_id,
                 "claim",
                 source.owner_claim_id,
                 claim_before.state.status.value,
@@ -3056,7 +3642,7 @@ def _requirement_logical_transition(
             if next_answer_status is not answer_before.status:
                 status_deltas.append(
                     StatusDelta(
-                        source.attempt_id,
+                        source.structural_event_id,
                         "answer",
                         source.answer_version_id,
                         answer_before.status.value,
@@ -10182,27 +10768,13 @@ def _requirement_header_after_images(
         or runtime.open_work_count < 1
     ):
         raise EventConflictError("requirement completion header changed")
-    counts = cursor.execute(
-        """
-        SELECT count(*) FILTER (
-                   WHERE job_state IN ('declared', 'running', 'retryable_failed')
-               ),
-               count(*) FILTER (WHERE job_state = 'terminal_failed'),
-               (SELECT count(*)
-                FROM groundloop_m5_discovery_scope
-                WHERE epoch_id = %s
-                  AND scope_state IN ('open', 'result_staged'))
-        FROM groundloop_m5_semantic_job
-        WHERE epoch_id = %s
-        """,
-        (source.epoch_id, source.epoch_id),
+    job = cursor.execute(
+        "SELECT job_kind,job_state,completed_revision FROM groundloop_m5_semantic_job "
+        "WHERE epoch_id=%s AND logical_job_id=%s",
+        (source.epoch_id, source.logical_job_id),
     ).fetchone()
-    if counts is None or (
-        int(counts[0]) != runtime.open_work_count
-        or int(counts[1]) != runtime.blocking_failure_count
-        or int(counts[2]) != runtime.open_scope_count
-    ):
-        raise EventConflictError("requirement completion runtime counts changed")
+    if job != ("verify_requirement_pair", "running", None):
+        raise EventConflictError("requirement completion point counter source changed")
     return (
         _BaseHeaderAfterImage(
             source.epoch_id,
@@ -13654,16 +14226,35 @@ def _validate_matching_stage_journal(
     expected_old = _matching_stage_before_map(prepared)
     if set(expected_old) != set(expected):
         raise EventConflictError("matching prepared before/final key sets differ")
-    rows = cursor.execute(
-        """
-        SELECT relation_name, key_preimage, first_old, final_new,
-               first_operation, last_operation, mutation_count,
-               saw_insert, saw_update, saw_delete
-        FROM pg_temp.groundloop_m5_matching_change_journal
-        WHERE relation_name = ANY(%s)
-        """,
-        (list(_STAGE_JOURNAL_RELATIONS),),
-    ).fetchall()
+    reader_schema = _d35_transition_reader_route(cursor)
+    if reader_schema is None:
+        rows = cursor.execute(
+            """
+            SELECT relation_name, key_preimage, first_old, final_new,
+                   first_operation, last_operation, mutation_count,
+                   saw_insert, saw_update, saw_delete
+            FROM pg_temp.groundloop_m5_matching_change_journal
+            WHERE relation_name = ANY(%s)
+            """,
+            (list(_STAGE_JOURNAL_RELATIONS),),
+        ).fetchall()
+    else:
+        binding = prepared.binding
+        rows = _d35_read_transition_projection(
+            cursor,
+            schema_name=reader_schema,
+            function_name="groundloop_m5_matching_read_transition_stage_journal",
+            arguments=(
+                binding.epoch_id,
+                binding.expected_revision,
+                binding.resulting_revision,
+                binding.source_kind.value,
+                binding.source_id,
+                binding.matching_context_identity,
+                binding.matching_journal_identity,
+                binding.matching_expected_identity,
+            ),
+        )
     actual_keys = {(_text(row[0]), bytes(row[1])) for row in rows}
     if actual_keys != set(expected) or len(actual_keys) != len(rows):
         raise EventConflictError(
@@ -19734,7 +20325,8 @@ def _lock_requirement_replay_source(
                job.result_artifact_id, job.result_artifact_hash,
                job.completed_revision, job.payload_hash,
                job.execution_spec_hash, job.semantic_pair_digest,
-               job.subject_kind, job.subject_id, job.chunk_version_id
+               job.subject_kind, job.subject_id, job.chunk_version_id,
+               job.candidate_policy_id, job.scope_contract_digest
         FROM groundloop_m5_semantic_job AS job
         WHERE job.logical_job_id = %s AND job.epoch_id = %s
         FOR UPDATE
@@ -19776,7 +20368,8 @@ def _lock_requirement_replay_source(
     execution = cursor.execute(
         """
         SELECT logical_job_id, attempt_id, artifact_id, artifact_hash,
-               pair_input_hash, produced_epoch_id
+               pair_input_hash, produced_epoch_id, observation_id,
+               decision_policy_version, eligible_for_currency, decision_policy_hash
         FROM groundloop_m5_requirement_verifier_execution
         WHERE logical_job_id = %s AND attempt_id = %s
           AND artifact_id = %s AND artifact_hash = %s
@@ -19830,6 +20423,23 @@ def _lock_requirement_replay_source(
         or _text(verifier[6]) != _text(job[12])
     ):
         raise EventConflictError("requirement matching replay closure changed")
+    checked_pair, checked_verifier = _d34_validate_source_observation(
+        cursor,
+        observation_id=_text(execution[6]),
+        epoch_id=intent.resulting_epoch_id,
+        artifact_id=_text(execution[2]),
+        pair_input_hash=_sha256_text(execution[4]),
+        eligible=True,
+    )
+    if (
+        checked_pair.candidate_policy_id != _text(job[13])
+        or checked_pair.scope_contract_digest != _sha256_text(job[14])
+        or checked_verifier.decision_policy_version != _text(execution[7])
+        or checked_verifier.decision_policy_version != intent.decision_policy_version
+        or checked_verifier.decision_policy_hash != _sha256_text(execution[9])
+        or execution[8] is not True
+    ):
+        raise EventConflictError("requirement matching replay full source changed")
 
 
 def _lock_direct_replay_source(
@@ -19890,6 +20500,25 @@ def _read_matching_transition_replay(
     expected_work: M5OverlayWork | None,
 ) -> M5PersistedMatchingPatchReceipt:
     retained_image_revision = _lock_replay_envelope(cursor, intent)
+    return _d34_read_matching_transition_replay_tail(
+        cursor,
+        intent,
+        contribution_hint,
+        retained_image_revision=retained_image_revision,
+        expected_patch_digest=expected_patch_digest,
+        expected_work=expected_work,
+    )
+
+
+def _d34_read_matching_transition_replay_tail(
+    cursor: Cursor[Any],
+    intent: M5PersistedMatchingTransitionIntent,
+    contribution_hint: tuple[Any, ...],
+    *,
+    retained_image_revision: int,
+    expected_patch_digest: str | None,
+    expected_work: M5OverlayWork | None,
+) -> M5PersistedMatchingPatchReceipt:
     candidate_patch_digest = _sha256_text(contribution_hint[7])
     artifact_row = _lock_matching_artifact_key(cursor, candidate_patch_digest)
     if artifact_row is None:
@@ -19968,6 +20597,56 @@ def _read_matching_transition_replay(
         accumulated,
         intent.resulting_revision,
         True,
+    )
+
+
+def _d34_read_matching_replay_with_held_prefix(
+    cursor: Cursor[Any],
+    intent: M5PersistedMatchingTransitionIntent,
+    owner: object,
+    failure_injector: _d34_Callable[[str], None] | None = None,
+) -> M5PersistedMatchingPatchReceipt:
+    """Continue native replay from this exact internally owned tier-5/6 frame."""
+
+    # Late import avoids a module cycle; there is no cursor attachment/cache.
+    from groundloop.m5.runtime.postgres_verifier import (
+        _d34_CompletionOwner,
+        _d34_validate_owner,
+    )
+
+    if not isinstance(owner, _d34_CompletionOwner):
+        raise ValidationError("D34 replay requires internally issued owner authority")
+    _d34_validate_owner(cursor, owner)
+    if (
+        intent.source_kind is not M5PersistedMatchingSourceKind.REQUIREMENT_COMPLETION
+        or intent.resulting_epoch_id != owner.epoch_id
+        or intent.resulting_revision > owner.revision
+    ):
+        raise EventConflictError("D34 retained replay lost its held epoch/revision")
+    _require_checked_prefix(
+        cursor,
+        epoch_id=owner.epoch_id,
+        expected_revision=owner.revision,
+        reauthorize=False,
+    )
+    contribution_hint = _matching_contribution_hint(cursor, intent)
+    if contribution_hint is None:
+        raise EventConflictError("D34 retained matching contribution disappeared")
+    _lock_requirement_replay_source(cursor, intent)
+    if failure_injector is not None:
+        failure_injector("d34_retained_source_locked")
+    retained_image_revision = _matching_work_read_context(
+        cursor, intent.resulting_epoch_id, reauthorize=False
+    )
+    if retained_image_revision < intent.resulting_revision:
+        raise EventConflictError("D34 retained source is newer than matching image")
+    return _d34_read_matching_transition_replay_tail(
+        cursor,
+        intent,
+        contribution_hint,
+        retained_image_revision=retained_image_revision,
+        expected_patch_digest=None,
+        expected_work=None,
     )
 
 

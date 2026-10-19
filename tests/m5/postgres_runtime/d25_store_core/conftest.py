@@ -88,8 +88,15 @@ from groundloop.m5.runtime.postgres_recovery import (
     persist_structural_open_accounting,
     persist_structural_open_identity,
 )
+from groundloop.m5.runtime.postgres_roots import (
+    _lock_snapshot_headers,
+    _read_scope,
+)
 from groundloop.m5.runtime.postgres_verifier import (
-    _insert_attempt_result,
+    _d34_lock_document_parents,
+    _d34_lock_provenance_parents,
+    _lock_verifier_activity,
+    _lock_verifier_jobs,
     _persist_verifier_closure,
 )
 from groundloop.postgres.migrations import (
@@ -1523,6 +1530,45 @@ def _lock_requirement_completion_source_prefix(
     fixture = database.verifier
     leased_attempt = fixture.lease.attempt
     assert leased_attempt is not None
+    # Read the actual already-authorized header, never author a ready image.
+    header_row = cursor.execute(
+        """SELECT epoch.structural_status,epoch.semantic_status,
+                  epoch.evaluation_state,runtime.runtime_state,
+                  runtime.requirement_registry_snapshot_digest,
+                  runtime.active_chunk_snapshot_digest
+           FROM groundloop_epoch epoch JOIN groundloop_m5_runtime_epoch runtime
+             USING(epoch_id) WHERE epoch_id=%s""",
+        (database.epoch_id,),
+    ).fetchone()
+    assert header_row is not None
+    from types import SimpleNamespace
+
+    header = SimpleNamespace(
+        structural_status=header_row[0],
+        semantic_status=header_row[1],
+        evaluation_state=header_row[2],
+        runtime_state=header_row[3],
+        requirement_registry_snapshot_digest=str(header_row[4]).rstrip(" "),
+        active_chunk_snapshot_digest=str(header_row[5]).rstrip(" "),
+    )
+    _d34_lock_document_parents(cursor, fixture.pair_input)
+    assert all(
+        _lock_verifier_activity(cursor, header=header, pair_input=fixture.pair_input)
+    )
+    _lock_snapshot_headers(cursor, header=header)
+    assert fixture.job.parent_job_id is not None
+    _read_scope(
+        cursor,
+        epoch_id=database.epoch_id,
+        root_job_id=fixture.job.parent_job_id,
+        for_update=True,
+    )
+    _lock_verifier_jobs(
+        cursor,
+        epoch_id=database.epoch_id,
+        parent_job_id=fixture.job.parent_job_id,
+        verifier_job_id=fixture.job.logical_job_id,
+    )
     job = cursor.execute(
         """
         SELECT logical_job_id, job_state, result_artifact_id,
@@ -1578,15 +1624,6 @@ def _lock_requirement_completion_source_prefix(
     if reserved != 1:
         raise AssertionError("requirement fixture output reservation failed")
 
-    _persist_verifier_closure(
-        cursor,
-        epoch_id=database.epoch_id,
-        job=fixture.job,
-        attempt_id=leased_attempt.attempt_id,
-        pair_input=fixture.pair_input,
-        artifact=fixture.verifier_artifact,
-        eligible_for_currency=True,
-    )
     result = M5AttemptResultArtifact.build(
         attempt_output=fixture.attempt_output,
         job_state_at_receipt=M5JobState.RUNNING,
@@ -1601,40 +1638,20 @@ def _lock_requirement_completion_source_prefix(
         archive_reason=None,
     )
     result.validate_job_shape(fixture.job.job_kind)
-    _insert_attempt_result(cursor, artifact=result, output=fixture.attempt_output)
-
-    # The outer composition owns these locks.  The matching loader may only
-    # byte-check them with ordinary reads after this exact prefix is held.
-    lock_rows = (
-        cursor.execute(
-            "SELECT attempt_result_artifact_id "
-            "FROM groundloop_m5_attempt_result_artifact "
-            "WHERE attempt_id=%s AND job_epoch_id=%s FOR UPDATE",
-            (leased_attempt.attempt_id, database.epoch_id),
-        ).fetchall(),
-        cursor.execute(
-            "SELECT pair_input_hash FROM groundloop_m5_requirement_pair_input "
-            "WHERE pair_input_hash=%s FOR UPDATE",
-            (fixture.pair_input.pair_input_hash,),
-        ).fetchall(),
-        cursor.execute(
-            "SELECT artifact_id FROM groundloop_m5_requirement_verifier_artifact "
-            "WHERE artifact_id=%s FOR UPDATE",
-            (fixture.verifier_artifact.artifact_id,),
-        ).fetchall(),
-        cursor.execute(
-            "SELECT observation_id FROM groundloop_semantic_observation "
-            "WHERE observation_id=%s FOR UPDATE",
-            (fixture.verifier_artifact.to_semantic_observation().observation_id,),
-        ).fetchall(),
-        cursor.execute(
-            "SELECT artifact_id FROM groundloop_m5_requirement_verifier_execution "
-            "WHERE logical_job_id=%s AND attempt_id=%s FOR UPDATE",
-            (fixture.job.logical_job_id, leased_attempt.attempt_id),
-        ).fetchall(),
+    _d34_lock_provenance_parents(cursor, fixture.pair_input, fixture.verifier_artifact)
+    # Genuine D34 global absence/pair-reuse prefix, then R/P/V/O/E owned
+    # inserts. In particular the new observation is never explicitly relocked.
+    _persist_verifier_closure(
+        cursor,
+        epoch_id=database.epoch_id,
+        job=fixture.job,
+        attempt_id=leased_attempt.attempt_id,
+        pair_input=fixture.pair_input,
+        artifact=fixture.verifier_artifact,
+        attempt_result=result,
+        attempt_output=fixture.attempt_output,
+        eligible_for_currency=True,
     )
-    if any(len(rows) != 1 for rows in lock_rows):
-        raise AssertionError("requirement fixture immutable closure is incomplete")
     return result
 
 

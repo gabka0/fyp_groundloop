@@ -284,34 +284,35 @@ def test_requirement_source_and_phase_trace_obeys_the_d28_order(
     job_lock = index_after("FROM groundloop_m5_semantic_job", authorizer)
     attempt_lock = index_after("FROM groundloop_m5_job_attempt", job_lock)
     result_lock = index_after(
-        "FROM groundloop_m5_attempt_result_artifact", attempt_lock
+        "INSERT INTO groundloop_m5_attempt_result_artifact", attempt_lock
     )
-    pair_lock = index_after("FROM groundloop_m5_requirement_pair_input", result_lock)
+    archive_reservations = tuple(
+        index
+        for index, statement in enumerate(statements[:result_lock])
+        if "pg_advisory_xact_lock" in statement
+    )
+    assert len(archive_reservations) == 15
+    assert archive_reservations[0] > attempt_lock
+    pair_lock = locked_index_after(
+        "FROM groundloop_m5_requirement_pair_input", result_lock
+    )
     verifier_lock = index_after(
-        "FROM groundloop_m5_requirement_verifier_artifact", pair_lock
+        "INSERT INTO groundloop_m5_requirement_verifier_artifact", pair_lock
     )
     observation_lock = index_after(
-        "FROM groundloop_semantic_observation", verifier_lock
+        "INSERT INTO groundloop_semantic_observation (", verifier_lock
     )
     execution_lock = index_after(
-        "FROM groundloop_m5_requirement_verifier_execution", observation_lock
+        "INSERT INTO groundloop_m5_requirement_verifier_execution", observation_lock
     )
-    assert all(
-        "FOR UPDATE" in statements[index]
-        for index in (
-            job_lock,
-            attempt_lock,
-            result_lock,
-            pair_lock,
-            verifier_lock,
-            observation_lock,
-            execution_lock,
-        )
+    assert "FOR UPDATE" in statements[job_lock]
+    assert "FOR UPDATE" in statements[attempt_lock]
+    assert not any(
+        "FROM groundloop_semantic_observation" in statement
+        and "FOR UPDATE" in statement
+        for statement in statements
     )
-
-    tier_11a = locked_index_after(
-        "FROM groundloop_semantic_observation", execution_lock
-    )
+    tier_11a = index_after("pg_advisory_xact_lock", execution_lock)
     assert not any(
         "FOR UPDATE" in statement
         for statement in statements[execution_lock + 1 : tier_11a]

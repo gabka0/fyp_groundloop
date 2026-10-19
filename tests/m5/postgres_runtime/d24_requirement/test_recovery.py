@@ -6530,7 +6530,7 @@ def _m54_04_verifier_owned_row_counts(database: Any, fixture: Any) -> tuple[int,
 
 
 def _m54_04_verifier_completion_work(database: Any, fixture: Any) -> M5RuntimeWork:
-    """Independently frame the exact seven-row inactive completion image."""
+    """Independently frame the seven rows and fifteen D34 archive aliases."""
 
     attempt_id = fixture.lease.attempt.attempt_id
     job_id = fixture.job.logical_job_id
@@ -6592,6 +6592,147 @@ def _m54_04_verifier_completion_work(database: Any, fixture: Any) -> M5RuntimeWo
     ).fetchall()
     assert len(rows) == 7
     byte_count = sum(8 + len(str(row[0]).encode("utf-8")) for row in rows)
+    # Read immutable source identities, never production work totals or its
+    # alias/accounting helpers. The original seven-row baseline stays exact.
+    alias_rows = database.connection.execute(
+        """
+        SELECT result.attempt_result_artifact_id,
+               result.attempt_result_artifact_hash,
+               result.attempt_output_digest, result.attempt_id,
+               pair.pair_input_hash, pair.semantic_pair_digest,
+               pair.scope_contract_digest, pair.candidate_policy_id,
+               verifier.artifact_id, verifier.artifact_hash,
+               observation.observation_id, observation.subject_kind,
+               observation.subject_id, observation.chunk_version_id,
+               observation.task_type, execution.observation_id,
+               execution.artifact_id, execution.logical_job_id,
+               execution.attempt_id, execution.pair_input_hash
+        FROM groundloop_m5_attempt_result_artifact AS result
+        JOIN groundloop_m5_requirement_verifier_execution AS execution
+          ON execution.logical_job_id = result.logical_job_id
+         AND execution.attempt_id = result.attempt_id
+        JOIN groundloop_m5_requirement_pair_input AS pair
+          ON pair.pair_input_hash = execution.pair_input_hash
+        JOIN groundloop_m5_requirement_verifier_artifact AS verifier
+          ON verifier.artifact_id = execution.artifact_id
+        JOIN groundloop_semantic_observation AS observation
+          ON observation.observation_id = execution.observation_id
+        WHERE result.logical_job_id = %s AND result.attempt_id = %s
+        """,
+        (job_id, attempt_id),
+    ).fetchall()
+    assert len(alias_rows) == 1 and len(alias_rows[0]) == 20
+    assert all(type(value) is str for value in alias_rows[0])
+    hash_positions = (*range(7), 8, 9, 10, *range(15, 20))
+    values = tuple(
+        value.rstrip(" ") if index in hash_positions else value
+        for index, value in enumerate(alias_rows[0])
+    )
+    assert all(
+        len(values[index]) == 64
+        and all(character in "0123456789abcdef" for character in values[index])
+        for index in hash_positions
+    )
+    result, pair, verifier = values[:4], values[4:8], values[8:10]
+    observation, execution = values[10:15], values[15:20]
+    assert result[2:] == (fixture.attempt_output.attempt_output_digest, attempt_id)
+    assert pair == (
+        fixture.pair_input.pair_input_hash,
+        fixture.pair_input.semantic_pair_digest,
+        fixture.pair_input.scope_contract_digest,
+        fixture.pair_input.candidate_policy_id,
+    )
+    assert verifier == (
+        fixture.verifier_artifact.artifact_id,
+        fixture.verifier_artifact.artifact_hash,
+    )
+    assert observation[1:] == (
+        "requirement",
+        fixture.pair_input.pair.subject_id,
+        fixture.pair_input.pair.chunk_version_id,
+        "verify_requirement_v1",
+    )
+    assert execution == (observation[0], verifier[0], job_id, attempt_id, pair[0])
+    # Literal D34 Section4.2 coverage: R4 / P3 / V2 / O2 / E4. Logical
+    # aliases remain distinct even when their physical advisory IDs collide.
+    definitions = (
+        (
+            "groundloop_m5_attempt_result_artifact",
+            (
+                (("attempt_result_artifact_id",), (result[0],)),
+                (("attempt_result_artifact_hash",), (result[1],)),
+                (("attempt_output_digest",), (result[2],)),
+                (("attempt_id",), (result[3],)),
+            ),
+        ),
+        (
+            "groundloop_m5_requirement_pair_input",
+            (
+                (("pair_input_hash",), (pair[0],)),
+                (
+                    (
+                        "semantic_pair_digest",
+                        "scope_contract_digest",
+                        "candidate_policy_id",
+                    ),
+                    pair[1:],
+                ),
+                (("pair_input_hash", "semantic_pair_digest"), pair[:2]),
+            ),
+        ),
+        (
+            "groundloop_m5_requirement_verifier_artifact",
+            (
+                (("artifact_id",), (verifier[0],)),
+                (("artifact_hash",), (verifier[1],)),
+            ),
+        ),
+        (
+            "groundloop_semantic_observation",
+            (
+                (("observation_id",), (observation[0],)),
+                (
+                    (
+                        "observation_id",
+                        "subject_kind",
+                        "subject_id",
+                        "chunk_version_id",
+                        "task_type",
+                    ),
+                    observation,
+                ),
+            ),
+        ),
+        (
+            "groundloop_m5_requirement_verifier_execution",
+            (
+                (("observation_id",), (execution[0],)),
+                (("artifact_id",), (execution[1],)),
+                (("logical_job_id", "attempt_id"), execution[2:4]),
+                (
+                    ("observation_id", "artifact_id", "pair_input_hash"),
+                    (execution[0], execution[1], execution[4]),
+                ),
+            ),
+        ),
+    )
+    assert tuple(len(aliases) for _, aliases in definitions) == (4, 3, 2, 2, 4)
+    logical_aliases = set()
+    alias_sizes = []
+    for relation, aliases in definitions:
+        for columns, scalars in aliases:
+            assert len(columns) == len(scalars)
+            identity = (relation, columns, scalars)
+            assert identity not in logical_aliases
+            logical_aliases.add(identity)
+            preimage = b"m5-d28-matching-absence-v1"
+            for scalar in (relation, ",".join(columns), *scalars):
+                assert type(scalar) is str and scalar
+                encoded = scalar.encode("utf-8")
+                preimage += len(encoded).to_bytes(8, "big") + encoded
+            alias_sizes.append(len(preimage))
+    assert len(logical_aliases) == len(alias_sizes) == 15
+    byte_count += sum(alias_sizes)
     return M5RuntimeWork(
         requirement_observation_artifact_count=1,
         requirement_inactive_completion_count=1,
