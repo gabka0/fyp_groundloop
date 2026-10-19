@@ -392,28 +392,47 @@ def promote_matching_overlay(
         """,
         (epoch_id,),
     ).rowcount
-    observation_writes = cursor.execute(
+    # A BEFORE INSERT guard runs even when ON CONFLICT later updates a row.
+    # Keep exactly one journal operation per key: update overlaps first, then
+    # insert only absent keys under the caller's checked epoch/image authority.
+    observation_updates = cursor.execute(
         """
+        UPDATE groundloop_m5_matching_observation_current AS current_row
+        SET requirement_version_id = working.requirement_version_id,
+            group_version_id = working.group_version_id,
+            requirement_ordinal = working.requirement_ordinal,
+            text_hash = working.text_hash,
+            installed_epoch_id = %s,
+            installed_revision = %s
+        FROM groundloop_m5_matching_observation_working AS working
+        WHERE working.epoch_id = %s AND working.present
+          AND current_row.observation_id = working.observation_id
+        """,
+        (epoch_id, sealed_revision, epoch_id),
+    ).rowcount
+    observation_writes = (
+        observation_updates
+        + cursor.execute(
+            """
         INSERT INTO groundloop_m5_matching_observation_current (
             observation_id, requirement_version_id, group_version_id,
             requirement_ordinal, text_hash,
             installed_epoch_id, installed_revision
         )
-        SELECT observation_id, requirement_version_id, group_version_id,
-               requirement_ordinal, text_hash, %s, %s
-        FROM groundloop_m5_matching_observation_working
-        WHERE epoch_id = %s AND present
-        ORDER BY observation_id COLLATE "C"
-        ON CONFLICT (observation_id) DO UPDATE SET
-            requirement_version_id = EXCLUDED.requirement_version_id,
-            group_version_id = EXCLUDED.group_version_id,
-            requirement_ordinal = EXCLUDED.requirement_ordinal,
-            text_hash = EXCLUDED.text_hash,
-            installed_epoch_id = EXCLUDED.installed_epoch_id,
-            installed_revision = EXCLUDED.installed_revision
+        SELECT working.observation_id, working.requirement_version_id,
+               working.group_version_id, working.requirement_ordinal,
+               working.text_hash, %s, %s
+        FROM groundloop_m5_matching_observation_working AS working
+        WHERE working.epoch_id = %s AND working.present
+          AND NOT EXISTS (
+              SELECT 1 FROM groundloop_m5_matching_observation_current AS current_row
+              WHERE current_row.observation_id = working.observation_id
+          )
+        ORDER BY working.observation_id COLLATE "C"
         """,
-        (epoch_id, sealed_revision, epoch_id),
-    ).rowcount
+            (epoch_id, sealed_revision, epoch_id),
+        ).rowcount
+    )
 
     edge_deletes = cursor.execute(
         """
@@ -425,28 +444,47 @@ def promote_matching_overlay(
         """,
         (epoch_id,),
     ).rowcount
-    edge_writes = cursor.execute(
+    edge_updates = cursor.execute(
         """
+        UPDATE groundloop_m5_matching_edge_current AS current_row
+        SET group_version_id = working.group_version_id,
+            requirement_ordinal = working.requirement_ordinal,
+            refcount = working.refcount,
+            installed_epoch_id = %s,
+            installed_revision = %s
+        FROM groundloop_m5_matching_edge_working AS working
+        WHERE working.epoch_id = %s AND working.refcount > 0
+          AND current_row.requirement_version_id = working.requirement_version_id
+          AND current_row.text_hash = working.text_hash
+        """,
+        (epoch_id, sealed_revision, epoch_id),
+    ).rowcount
+    edge_writes = (
+        edge_updates
+        + cursor.execute(
+            """
         INSERT INTO groundloop_m5_matching_edge_current (
             requirement_version_id, text_hash, group_version_id,
             requirement_ordinal, refcount,
             installed_epoch_id, installed_revision
         )
-        SELECT requirement_version_id, text_hash, group_version_id,
-               requirement_ordinal, refcount, %s, %s
-        FROM groundloop_m5_matching_edge_working
-        WHERE epoch_id = %s AND refcount > 0
-        ORDER BY group_version_id COLLATE "C", requirement_ordinal,
-                 text_hash COLLATE "C", requirement_version_id COLLATE "C"
-        ON CONFLICT (requirement_version_id, text_hash) DO UPDATE SET
-            group_version_id = EXCLUDED.group_version_id,
-            requirement_ordinal = EXCLUDED.requirement_ordinal,
-            refcount = EXCLUDED.refcount,
-            installed_epoch_id = EXCLUDED.installed_epoch_id,
-            installed_revision = EXCLUDED.installed_revision
+        SELECT working.requirement_version_id, working.text_hash,
+               working.group_version_id, working.requirement_ordinal,
+               working.refcount, %s, %s
+        FROM groundloop_m5_matching_edge_working AS working
+        WHERE working.epoch_id = %s AND working.refcount > 0
+          AND NOT EXISTS (
+              SELECT 1 FROM groundloop_m5_matching_edge_current AS current_row
+              WHERE current_row.requirement_version_id = working.requirement_version_id
+                AND current_row.text_hash = working.text_hash
+          )
+        ORDER BY working.group_version_id COLLATE "C", working.requirement_ordinal,
+                 working.text_hash COLLATE "C",
+                 working.requirement_version_id COLLATE "C"
         """,
-        (epoch_id, sealed_revision, epoch_id),
-    ).rowcount
+            (epoch_id, sealed_revision, epoch_id),
+        ).rowcount
+    )
 
     mask_deletes = cursor.execute(
         """
@@ -458,23 +496,40 @@ def promote_matching_overlay(
         """,
         (epoch_id,),
     ).rowcount
-    mask_writes = cursor.execute(
+    mask_updates = cursor.execute(
         """
+        UPDATE groundloop_m5_matching_hash_mask_current AS current_row
+        SET mask = working.mask,
+            installed_epoch_id = %s,
+            installed_revision = %s
+        FROM groundloop_m5_matching_hash_mask_working AS working
+        WHERE working.epoch_id = %s AND working.mask > 0
+          AND current_row.group_version_id = working.group_version_id
+          AND current_row.text_hash = working.text_hash
+        """,
+        (epoch_id, sealed_revision, epoch_id),
+    ).rowcount
+    mask_writes = (
+        mask_updates
+        + cursor.execute(
+            """
         INSERT INTO groundloop_m5_matching_hash_mask_current (
             group_version_id, text_hash, mask,
             installed_epoch_id, installed_revision
         )
-        SELECT group_version_id, text_hash, mask, %s, %s
-        FROM groundloop_m5_matching_hash_mask_working
-        WHERE epoch_id = %s AND mask > 0
-        ORDER BY group_version_id COLLATE "C", text_hash COLLATE "C"
-        ON CONFLICT (group_version_id, text_hash) DO UPDATE SET
-            mask = EXCLUDED.mask,
-            installed_epoch_id = EXCLUDED.installed_epoch_id,
-            installed_revision = EXCLUDED.installed_revision
+        SELECT working.group_version_id, working.text_hash, working.mask, %s, %s
+        FROM groundloop_m5_matching_hash_mask_working AS working
+        WHERE working.epoch_id = %s AND working.mask > 0
+          AND NOT EXISTS (
+              SELECT 1 FROM groundloop_m5_matching_hash_mask_current AS current_row
+              WHERE current_row.group_version_id = working.group_version_id
+                AND current_row.text_hash = working.text_hash
+          )
+        ORDER BY working.group_version_id COLLATE "C", working.text_hash COLLATE "C"
         """,
-        (epoch_id, sealed_revision, epoch_id),
-    ).rowcount
+            (epoch_id, sealed_revision, epoch_id),
+        ).rowcount
+    )
 
     hall_deletes = cursor.execute(
         """
@@ -485,33 +540,49 @@ def promote_matching_overlay(
         """,
         (epoch_id,),
     ).rowcount
-    hall_writes = cursor.execute(
+    hall_updates = cursor.execute(
         """
+        UPDATE groundloop_m5_matching_hall_current AS current_row
+        SET requirement_count = working.requirement_count,
+            mask_histogram = working.mask_histogram,
+            neighbor_counts = working.neighbor_counts,
+            deficiencies = working.deficiencies,
+            maximum_deficiency = working.maximum_deficiency,
+            matching_size = working.matching_size,
+            distinct_hash_count = working.distinct_hash_count,
+            installed_epoch_id = %s,
+            installed_revision = %s
+        FROM groundloop_m5_matching_hall_working AS working
+        WHERE working.epoch_id = %s AND working.present
+          AND current_row.group_version_id = working.group_version_id
+        """,
+        (epoch_id, sealed_revision, epoch_id),
+    ).rowcount
+    hall_writes = (
+        hall_updates
+        + cursor.execute(
+            """
         INSERT INTO groundloop_m5_matching_hall_current (
             group_version_id, requirement_count, mask_histogram,
             neighbor_counts, deficiencies, maximum_deficiency,
             matching_size, distinct_hash_count,
             installed_epoch_id, installed_revision
         )
-        SELECT group_version_id, requirement_count, mask_histogram,
-               neighbor_counts, deficiencies, maximum_deficiency,
-               matching_size, distinct_hash_count, %s, %s
-        FROM groundloop_m5_matching_hall_working
-        WHERE epoch_id = %s AND present
-        ORDER BY group_version_id COLLATE "C"
-        ON CONFLICT (group_version_id) DO UPDATE SET
-            requirement_count = EXCLUDED.requirement_count,
-            mask_histogram = EXCLUDED.mask_histogram,
-            neighbor_counts = EXCLUDED.neighbor_counts,
-            deficiencies = EXCLUDED.deficiencies,
-            maximum_deficiency = EXCLUDED.maximum_deficiency,
-            matching_size = EXCLUDED.matching_size,
-            distinct_hash_count = EXCLUDED.distinct_hash_count,
-            installed_epoch_id = EXCLUDED.installed_epoch_id,
-            installed_revision = EXCLUDED.installed_revision
+        SELECT working.group_version_id, working.requirement_count,
+               working.mask_histogram, working.neighbor_counts,
+               working.deficiencies, working.maximum_deficiency,
+               working.matching_size, working.distinct_hash_count, %s, %s
+        FROM groundloop_m5_matching_hall_working AS working
+        WHERE working.epoch_id = %s AND working.present
+          AND NOT EXISTS (
+              SELECT 1 FROM groundloop_m5_matching_hall_current AS current_row
+              WHERE current_row.group_version_id = working.group_version_id
+          )
+        ORDER BY working.group_version_id COLLATE "C"
         """,
-        (epoch_id, sealed_revision, epoch_id),
-    ).rowcount
+            (epoch_id, sealed_revision, epoch_id),
+        ).rowcount
+    )
 
     return M5MatchingPromotionReceipt(
         mode="seal",

@@ -1682,7 +1682,7 @@ def _controlled_document_seal(
     payload: str,
     *,
     reference_fault: str | None = None,
-    production_promotion_diagnostic: bool = False,
+    production_promotion: bool = False,
     before_checks: Callable[[Connection[Any]], None] | None = None,
     binding_fault: str | None = None,
     result_fault: str | None = None,
@@ -1703,7 +1703,7 @@ def _controlled_document_seal(
         start = start_event_accounting(
             cursor, epoch_id=epoch, expected_revision=expected_revision
         )
-        if production_promotion_diagnostic:
+        if production_promotion:
             promote_matching_overlay(
                 cursor,
                 epoch_id=epoch,
@@ -1717,12 +1717,7 @@ def _controlled_document_seal(
             "saw_update FROM pg_temp.groundloop_m5_matching_promotion_journal "
             "WHERE relation_name='groundloop_m5_matching_hall_current'"
         ).fetchall()
-        expected_journal = (
-            ("INSERT", "UPDATE", 2, True, True)
-            if production_promotion_diagnostic
-            else ("UPDATE", "UPDATE", 1, False, True)
-        )
-        assert journal == [expected_journal], journal
+        assert journal == [("UPDATE", "UPDATE", 1, False, True)], journal
     chunks = list(database.base.chunk_ids)
     connection.execute(
         "UPDATE groundloop_published_observation_currency SET valid_to_epoch=%s "
@@ -2759,26 +2754,32 @@ def test_typed_predecessor_corruption_is_rejected_before_immutable_insertion(
     ).fetchone() == (0,)
 
 
-def test_diagnostic_unmodified_production_helper_double_journal_rejected(
+def test_repaired_production_helper_single_update_seals_with_intact_guards(
     raw_loss_database: M5RuntimeDatabase,
 ) -> None:
-    """OPEN production blocker, not a positive or a production acceptance gate.
+    """Genuine repaired matching helper + controlled SQL-validator envelope.
 
-    The originally failed seal/probe XML is retained outside the repository.
-    This passing diagnostic means ONLY that the current defect is reproducible
-    and intact017 guards reject it. A new activation must repair the helper.
+    Accepted pre-repair rejection is retained in the external B33 receipt.
+    This is NOT the J33/C1 production coordinator or absence-reader acceptance;
+    certificate/result construction remains the existing controlled SQL fixture.
     """
     database = raw_loss_database
     epoch, event, payload = _prepare_loss_edges(database)
-    with pytest.raises(psycopg.Error, match="current upsert mismatch"):
-        _controlled_document_seal(
-            database,
-            epoch,
-            event,
-            payload,
-            production_promotion_diagnostic=True,
-        )
-    database.connection.rollback()
+    _controlled_document_seal(
+        database, epoch, event, payload, production_promotion=True
+    )
+    with psycopg.connect(_database_url(), autocommit=True) as reconnected:
+        _select_schema(reconnected, database.schema_name)
+        assert reconnected.execute(
+            "SELECT outcome,epoch_id FROM groundloop_m5_event_result "
+            "WHERE structural_event_id=%s",
+            (event,),
+        ).fetchone() == ("sealed", epoch)
+        assert reconnected.execute(
+            "SELECT installed_epoch_id,installed_revision "
+            "FROM groundloop_m5_matching_hall_current WHERE group_version_id=%s",
+            (database.group.group_version_id,),
+        ).fetchone() == (epoch, 4)
 
 
 @pytest.mark.parametrize(

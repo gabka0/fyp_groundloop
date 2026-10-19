@@ -92,6 +92,8 @@ class _RecordingCursor:
             self.rowcount = 1
         elif normalized.startswith("DELETE FROM"):
             self.rowcount = 2
+        elif normalized.startswith("UPDATE groundloop_m5_matching_"):
+            self.rowcount = 5
         elif normalized.startswith("INSERT INTO"):
             self.rowcount = 3
         else:
@@ -590,19 +592,19 @@ def test_seal_promotion_is_one_epoch_and_does_not_own_outer_transaction() -> Non
     )
     assert receipt.mode == "seal"
     assert receipt.observation_deletes == 2
-    assert receipt.observation_writes == 3
+    assert receipt.observation_writes == 8
     assert receipt.edge_deletes == 2
-    assert receipt.edge_writes == 3
+    assert receipt.edge_writes == 8
     assert receipt.mask_deletes == 2
-    assert receipt.mask_writes == 3
+    assert receipt.mask_writes == 8
     assert receipt.hall_deletes == 2
-    assert receipt.hall_writes == 3
+    assert receipt.hall_writes == 8
     sql = "\n".join(query for query, _ in cursor.calls).lower()
     assert "groundloop_m5_authorize_checked_transition" in sql
     assert "groundloop_m5_authorize_persisted_matching_seal" in sql
     assert "set_config('groundloop.m5_checked_transition'" not in sql
     assert cursor.calls[0][1] == (17, 4)
-    assert "where epoch_id = %s" in sql
+    assert "where working.epoch_id = %s" in sql
     assert "groundloop_m5_publication_head" not in sql
     assert "groundloop_m5_event_result" not in sql
     assert "commit" not in sql
@@ -1354,6 +1356,7 @@ def _sql_pending_seal_boundary(
     epoch: int,
     revision: int,
     cut: Callable[[str], None] = lambda _: None,
+    promotion_observer: Callable[[Any, Any], None] | None = None,
 ) -> Any:
     """Reader/SQL-boundary adapter, not production C1 or full work measurement.
 
@@ -1431,9 +1434,11 @@ def _sql_pending_seal_boundary(
             timing.pending_anchor_revision,
         )
         cut("after_accounting_locks")
-        promote_matching_overlay(
+        promotion = promote_matching_overlay(
             cursor, epoch_id=epoch, expected_revision=revision, sealed_revision=sealed
         )
+        if promotion_observer is not None:
+            promotion_observer(cursor, promotion)
         deactivation = cursor.execute(
             "SELECT d.group_version_id,d.action,d.successor_group_version_id,"
             "v.group_family_id FROM groundloop_m5_group_deactivation d "
