@@ -19,8 +19,9 @@ from psycopg import Connection, Cursor, Error, IsolationLevel, sql
 from psycopg.pq import TransactionStatus
 
 from groundloop.m5.digests import hash_field, stable_m5_digest, text_field
+from groundloop.postgres._resource_root import _sql_resource_root
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = _sql_resource_root(Path(__file__))
 
 LEGACY_MIGRATION_NAMES = (
     "000_extensions.sql",
