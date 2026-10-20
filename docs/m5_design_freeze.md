@@ -1,7 +1,7 @@
 # GroundLoop M5 Bounded Evidence-Group Design Freeze
 
-Status: frozen M5.0 contract, amended through accepted M5-D35 and
-M5-D24-C1--C7; implementation evidence for M5-D24 through M5-D35 remains
+Status: frozen M5.0 contract, amended through accepted M5-D36 and
+M5-D24-C1--C7; implementation evidence for M5-D24 through M5-D36 remains
 pending
 
 Date: 2026-08-02; M5-D21 through M5-D24-C7 amendments 2026-08-06--2026-08-18;
@@ -9,13 +9,13 @@ M5-D25 amendment 2026-09-03; M5-D26 amendment 2026-09-07; M5-D27 erratum
 2026-09-17; M5-D28 amendment 2026-09-18; M5-D29 and M5-D30 amendments
 2026-09-22; M5-D31 amendment 2026-09-25; M5-D32 amendment 2026-10-09;
 M5-D33 amendment 2026-10-10; M5-D34 amendment 2026-10-14;
-M5-D35 amendment 2026-10-15
+M5-D35 amendment 2026-10-15; M5-D36 amendment 2026-10-20
 
 Authority: this document specializes `docs/technical_design.md` v0.2 for M5.
 It preserves original decisions D-1 through D-20 except where the earlier
 pseudocode is mathematically inconsistent with its own stated system-of-
 distinct-representatives semantics. Those corrections, the later runtime
-decisions M5-D21 through M5-D35, and accepted M5-D24-C1 through M5-D24-C7 are
+decisions M5-D21 through M5-D36, and accepted M5-D24-C1 through M5-D24-C7 are
 recorded in the decision log and frozen here. The byte-total M5-D24
 specialization is authoritative at
 `docs/workstreams/m5_runtime_contract/RECOVERY_WORK_AMENDMENT.md`.
@@ -57,7 +57,7 @@ The M5-D32 group-only readiness correction is authoritative at
 `docs/workstreams/m5_runtime_contract/SEMANTIC_READINESS_AMENDMENT.md`, exact
 accepted SHA-256
 `0e9a4bbe8da34d8248ce138c4bc21cb8076ddb4a578ea6a36cd6a4e100811435`.
-Runtime-addendum revision 16 is current. Earlier D31 inventory prohibitions are
+Runtime-addendum revision 17 is current. Earlier D31 inventory prohibitions are
 superseded only for D32's explicitly enumerated future migration-020 delta;
 historical decisions and implementation receipts are not rewritten.
 
@@ -85,6 +85,15 @@ Only its Section-2 exclusions yield to additive022's two guarded accessors,
 closed174 successor verification and the two native transition reader routes.
 Private ACLs,000--021 bytes and old strict020/021 checkers stay unchanged.
 This is contract acceptance, not implementation or a source ownership grant.
+
+The narrow M5-D36 nonempty-document direct-counter correction is authoritative
+at `docs/workstreams/m5_runtime_contract/DOCUMENT_DIRECT_CLOCK_AMENDMENT.md`,
+accepted SHA-256
+`f72d47070cf3aca94cfc18aca0b6fc5b30a19b1ff2861f87c005f7c12692e847`.
+Only its explicit exclusions yield to new-origin N/C clock proofs, exact023,
+producer accounting and named admin/reader exceptions. Legacy D33 and native
+M4 wrapper bytes stay exact. The complete amendment governs, not a summary;
+contract-PASS / implementation-PENDING grants no source or held advance.
 
 M5 implementation begins only after the M5.0 *contract* gate passes. Later
 implementation-evidence cells in the acceptance matrix remain `PENDING` until
@@ -1703,6 +1712,39 @@ falsifier groups and original C2 qualification remain PENDING. M5-D35/M5.0-35
 are contract-PASS / implementation-PENDING; revision16 grants no source paths,
 held advance, public completion, security, AI or end-to-end claim.
 
+### M5-D36 -- nonempty-document direct-counter clock binding
+
+Only a new genuine nonempty document_replace may install the same fresh
+OPEN1/1 origin. Shared runtime/base/job/scope/pending/D24/D25/public revision N
+is distinct from native M4 evaluation/override/payload counter C. Each genuine
+M4 C->C+1 operation has one immutable N->N+1 binding to its actual canonical
+source and applied contribution. C_at(r) is a bounded indexed predecessor
+lookup, not a history scan. M5-only transitions advance N without advancing C.
+Full origin freshness, causal counter/override before/after, source identity,
+immutability, FAIL and uniqueness guards are required, not merely C<=N.
+
+Preserve canonical M4 wrappers. Future private producers reserve at15c,
+materialize after the complete source hash and advance once. Direct-last may
+genuinely complete; M5-last uses the separate preheader D36 readiness edge
+with EXACT D32 S+K bytes. Account actual new origin/binding producer bytes once;
+only the two stated acquisition exceptions and retry byte-only companion are
+new. No work kind/counter or attempt-evidence/anchor alias is added.
+SEAL/FAIL use C with shared N results. Seal preserves genuine half-terminal
+base/heads N+1 versus typed runtime/work N through trusted P33 reading, then
+finishes exactly. Expired/audit-only returns and retained replay preserve the
+specified no-advance/zero-write boundaries.
+
+Future023 adds only two immutable proof tables, two invoker trigger functions,
+nine guards and four explicitly named SQL validator body replacements. Its
+exact022 prerequisite, five-field ledger, separate literal preinstall freeze,
+ledger-first replay, NOWAIT ledger->runtime exclusion, explicit runtime role
+manifest and closed catalog/ACL proof are mandatory. Old000--022 and strict
+020/021/022 checkers remain unchanged. Only two prerequisite dispatcher bodies
+and the named direct-context reader/identity-preserving glue obtain future
+exceptions; no third accessor, raw grants, old-history retrofit or public
+route change. All eleven D36 groups and original P33/D26/D33 negatives remain
+mandatory. Contract-PASS / implementation-PENDING; revision17 grants no edits.
+
 ## 11. Dynamic M4 integration contract
 
 ### M5-D14 -- typed v2 runtime identity
@@ -2340,6 +2382,7 @@ regression evidence.
 | M5-D33 | Narrow document-update completion | Exact job-free document readiness reuses D32 identities/work; a private two-clock M5 seal keeps canonical M4 SEAL1->2 versus M5 N->N+1; locked REPLACE metadata is preserved; document-induced active-group certificate absence is validated as-of K; additive021 replaces only three validator bodies, preserving000--020 and exact020 checks |
 | M5-D34 | Fresh requirement-source archive order | One bounded globally reserved fresh archive tail places observation before execution's immediate FK; strict R/V/O/E absence and P-only reuse, physical advisory-ID ordering, no source-observation relock and native immutable-read replay preserve exact identities and pending implementation gates |
 | M5-D35 | Trusted transition-context access | Additive022 adds only two guarded owner-context/native-journal projections with exact021 prerequisite, ledger/runtime exclusion and closed174 catalog; legacy strict checkers/private ACLs and matching semantics stay exact; fresh active C2 requires022 and separate sequential schema/hash-freeze/same-held-C2 activation |
+| M5-D36 | Nonempty-document direct-counter clock binding | New genuine document_replace origins bind shared N to native M4 C with immutable origin/binding proofs, causal guards, exact producer bytes/readiness/terminal/replay order and narrow023/admin/reader exceptions; legacy histories/wrappers and000--022 remain exact; implementation and new path-exclusive activation remain pending |
 
 ## 15. Release gate
 
@@ -2361,6 +2404,6 @@ that:
    retained replay, M5-D29 bounded persisted document withdrawal, M5-D30
    total claim-current/direct-M4/M3 provenance closure, and M5-D31 trusted
    preterminal context access, M5-D32 readiness, M5-D33 document completion,
-   M5-D34 fresh requirement-source archival order, and M5-D35 trusted
-   transition-context access; and
+   M5-D34 fresh requirement-source archival order, M5-D35 trusted
+   transition-context access, and M5-D36 nonempty-document clock binding; and
 7. path ownership prevents shared-schema or shared-contract collisions.

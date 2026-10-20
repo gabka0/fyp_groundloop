@@ -97,6 +97,10 @@ order:
     (authoritative M5-D35 guarded transition-context/journal access correction)
 62. `docs/workstreams/m5_runtime_implementation/D35_CONTRACT_FREEZE_HANDOFF.md`
     (accepted D35 bytes, current custody and separate sequential activation)
+63. `docs/workstreams/m5_runtime_contract/DOCUMENT_DIRECT_CLOCK_AMENDMENT.md`
+    (authoritative M5-D36 nonempty document direct-counter clock correction)
+64. `docs/workstreams/m5_runtime_implementation/D36_CONTRACT_FREEZE_HANDOFF.md`
+    (accepted D36 bytes, current protected custody and next activation barrier)
 
 `docs/initial_technical_design.md` (v0.1) is superseded and retained for audit
 only. The M0.5 design freeze and M1.1 amendments are complete; frozen decisions
@@ -339,7 +343,7 @@ settle exact B33 ancestry, and retain new-positive/carry/absence and independent
 group full-image gates. B33 remains diagnostic-only; P33/C1/C2, D25 integration,
 M5.4--M5.6, deployment, AI quality and end-to-end claims remain PENDING.
 
-Current override (2026-10-15): M5-D35/M5.0-35 are contract-PASS /
+Historical override (2026-10-15): M5-D35/M5.0-35 are contract-PASS /
 implementation-PENDING; runtime-addendum revision16 is authoritative.
 TRANSITION_CONTEXT_ACCESS_AMENDMENT.md is authoritative at SHA-256
 8251885227c4a712c06d11ba48bcd2153764da28bbbba8b089f7b8c2ede560c8.
@@ -358,6 +362,29 @@ separate literal B33 parent-pin task follows accepted C2, not this freeze.
 D25/D34/D35 implementation, B33/P33/C1/C2, Task2/Task17, M5.4--M5.6,
 deployment, security, AI quality and end-to-end claims stay PENDING;
 v1_only remains outside isolated fixtures. Preserve every protected checkpoint.
+
+Current override (2026-10-20): M5-D36/M5.0-36 are contract-PASS /
+implementation-PENDING; runtime-addendum revision17 is authoritative.
+DOCUMENT_DIRECT_CLOCK_AMENDMENT.md is authoritative at SHA-256
+f72d47070cf3aca94cfc18aca0b6fc5b30a19b1ff2861f87c005f7c12692e847.
+Its explicit exclusions alone supersede prior rules: NEW genuine nonempty
+document_replace origins bind shared N to native M4 C with immutable origin/
+binding proofs; legacy and D33 job-free histories remain exact. Future023 is
+limited to its two tables, two invoker functions, nine triggers and four named
+validator replacements, plus separately activated admin/reader exceptions.
+000--022 and strict020/021/022 checker bodies stay exact. No new counter,
+work kind, public wrapper/default, provider/model or runtime-mode change.
+This ten-doc freeze grants no source path, install or held-checkout advance.
+After publication, prepare a NEW audited path-exclusive activation, sequencing
+schema/admin with literal preinstall freeze, private clock-aware producers/
+receipts/context glue, genuine complete predecessor and nonempty OPEN through
+execution/readiness/seal, checked P33 resumption, then separate C1 overlap
+reconciliation. Root alone edits; two independent auditors own zero paths.
+Preserve all P33/C1 full pins; no transplant, parallel overlapping editor or
+test waiver. All eleven D36 groups and original D25/D26/D33/P33/C1 falsifiers
+remain mandatory. D25 integration, P33/C1, Task2/Task17, M5.4--M5.6,
+deployment/security, AI quality and end-to-end claims remain PENDING;
+runtime stays v1_only outside isolated fixtures.
 
 M5 is not complete until every remaining M5.4--M5.6 executable gate is
 recorded.

@@ -1,6 +1,24 @@
 # GroundLoop M5 Multi-Agent Execution Plan
 
-Current authority update (2026-10-15): M5-D35/M5.0-35 are contract-PASS /
+Current authority update (2026-10-20): M5-D36/M5.0-36 are contract-PASS /
+implementation-PENDING; runtime-addendum revision17 is authoritative.
+DOCUMENT_DIRECT_CLOCK_AMENDMENT.md SHA256
+f72d47070cf3aca94cfc18aca0b6fc5b30a19b1ff2861f87c005f7c12692e847 governs.
+The ten authority paths are enumerated in D36_CONTRACT_FREEZE_HANDOFF.md;
+root alone edits, two independent complete same-byte auditors own ZERO paths.
+Every source/migration/test, accepted amendment and held checkpoint is read-only.
+After the freeze's own audits/commit/postchecks/publication, prepare a NEW
+one-path docs activation with explicit sequential disjoint S36 schema/admin,
+literal preinstall, later private clock-aware production/receipts/context,
+genuine complete baseline/nonempty OPEN through seal, then checked P33 and
+separate C1 reconciliation barriers. Source ownership requires its own accepted
+manifest; no advance/import/transplant or overlapping editor is inherited.
+Every original P33/D26/D33 gate and all eleven D36 groups remain mandatory.
+Schema-only evidence cannot close D36, P33 or public composition. D25
+integration, Task2/Task17, M5.4--M5.6, deployment/security/AI/end-to-end claims
+remain PENDING; runtime stays v1_only outside isolated fixtures.
+
+Historical authority update (2026-10-15): M5-D35/M5.0-35 are contract-PASS /
 implementation-PENDING; runtime-addendum revision16 is authoritative.
 TRANSITION_CONTEXT_ACCESS_AMENDMENT.md SHA256
 8251885227c4a712c06d11ba48bcd2153764da28bbbba8b089f7b8c2ede560c8

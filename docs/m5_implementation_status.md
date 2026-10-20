@@ -1,15 +1,35 @@
 # GroundLoop M5 Implementation Status
 
-Status date: 2026-10-15
+Status date: 2026-10-20
 
-Milestone status: **M5.0 contract through accepted M5-D35 and M5.1--M5.3 are
+Milestone status: **M5.0 contract through accepted M5-D36 and M5.1--M5.3 are
 complete; M5.4 is partially complete.**
 M5.4-01 through M5.4-04 pass. M5.4-05 through M5.4-09 and every M5.5--M5.6
 implementation/evaluation closure remain pending. M5-D24-C1 through M5-D24-C7
-are accepted. M5.0-24 through M5.0-35 are each contract-`PASS` /
-implementation-`PENDING`. Runtime-addendum revision16 is authoritative.
+are accepted. M5.0-24 through M5.0-36 are each contract-`PASS` /
+implementation-`PENDING`. Runtime-addendum revision17 is authoritative.
 
-Current D35 freeze checkpoint: TRANSITION_CONTEXT_ACCESS_AMENDMENT.md SHA256
+Current D36 freeze checkpoint: DOCUMENT_DIRECT_CLOCK_AMENDMENT.md SHA256
+f72d47070cf3aca94cfc18aca0b6fc5b30a19b1ff2861f87c005f7c12692e847,
+accepted/published immutable amendment d41a89fa90aa899640d336047b45cb9005d32548.
+Contract-PASS / implementation-PENDING only. No023 or new runtime behavior is
+implemented by this docs tranche. Private C2/D34+D35 integration a3c1268 and
+B33 matching promotion67bfe7 are accepted scoped prerequisites, not whole-row
+or public completion. The historical D35 stops below remain historical, not
+current descriptions of those accepted tranches. Current P33 at67bfe7 is
+uncommitted and held: R31 passed539/0skip; R32 and R33 each passed539/failed4/
+errors0/skips0 on543. These overlapping runs are not summed or fresh results.
+The four new restoration/later-only-loss cases fail before the target reader;
+the audited DOC-F report at906697b7 proves the missing genuine completed
+nonempty replacement prerequisite. D36 supplies its narrow contract, not code.
+All four P33 path states, nine C1 pins and all protected worktrees remain
+unchanged. New S36/schema literal-freeze, private production/complete baseline,
+full lifecycle, checked P33 and C1 reconciliation require separate audited
+activations. No test, SQL, DB/container or provider mutation occurs here.
+D25 integration, P33/C1, Task2/Task17, M5.4--M5.6, deployment/security,
+AI quality and end-to-end utility/speed/cost remain PENDING; v1_only stays.
+
+Historical D35 freeze checkpoint (2026-10-15): TRANSITION_CONTEXT_ACCESS_AMENDMENT.md SHA256
 8251885227c4a712c06d11ba48bcd2153764da28bbbba8b089f7b8c2ede560c8.
 Only the contract is accepted. Migration022/two trusted projections and
 closed174 admin successor are NOT IMPLEMENTED by this docs tranche. Held C2

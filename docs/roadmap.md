@@ -1,6 +1,24 @@
 # GroundLoop Roadmap
 
-Current M5 contract checkpoint (2026-10-15): accepted through M5-D35,
+Current M5 contract checkpoint (2026-10-20): accepted through M5-D36,
+runtime-addendum revision17. DOCUMENT_DIRECT_CLOCK_AMENDMENT.md is
+authoritative at SHA256
+f72d47070cf3aca94cfc18aca0b6fc5b30a19b1ff2861f87c005f7c12692e847.
+Contract-PASS / implementation-PENDING. Accepted C2/D34+D35 and B33 scoped
+prerequisites do not provide the completed nonempty replacement P33 needs.
+Next: NEW independently audited path-exclusive activation for sequential
+023 schema/admin and separate literal preinstall freeze; then new private
+clock-aware producers/receipts/context glue, real typed complete predecessor,
+nonempty OPEN/execution in both orders/readiness/seal/failure/replay; only then
+checked same-P33 resumption and separate C1 overlap reconciliation/public
+composition. Each source boundary needs exact ownership; this freeze grants
+none. No fake READY/catch-up, old-history retrofit, held-source copying,
+strict-checker weakening, N/A or test waiver. All eleven D36 and original
+P33/D26/D33 gates remain mandatory. D25 integration, Task2/Task17,
+M5.4--M5.6, deployment/security/AI, independent natural histories and end-to-end
+utility/speed/cost remain PENDING; runtime stays v1_only outside fixtures.
+
+Historical M5 contract checkpoint (2026-10-15): accepted through M5-D35,
 runtime-addendum revision16. TRANSITION_CONTEXT_ACCESS_AMENDMENT.md is
 authoritative at SHA256
 8251885227c4a712c06d11ba48bcd2153764da28bbbba8b089f7b8c2ede560c8.

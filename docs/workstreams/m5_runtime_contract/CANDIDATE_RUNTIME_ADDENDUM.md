@@ -1,6 +1,6 @@
 # GroundLoop M5.4 Byte-Total Runtime Contract Addendum
 
-Status: frozen runtime contract revision 16; M5-D25 through M5-D35 contracts
+Status: frozen runtime contract revision 17; M5-D25 through M5-D36 contracts
 **GO** / implementation **PENDING**; full M5.4 remains blocked on executable
 runtime evidence
 
@@ -11,10 +11,11 @@ amendment 2026-09-18; revision 10 / M5-D29 amendment 2026-09-22; revision 11 /
 M5-D30 amendment 2026-09-22; revision 12 / M5-D31 amendment 2026-09-25;
 revision 13 / M5-D32 amendment 2026-10-09; revision 14 / M5-D33 amendment 2026-10-10;
 revision 15 / M5-D34 amendment 2026-10-14;
-revision 16 / M5-D35 amendment 2026-10-15
+revision 16 / M5-D35 amendment 2026-10-15;
+revision 17 / M5-D36 amendment 2026-10-20
 
 Authority: this addendum specializes `docs/m5_design_freeze.md` M5-D1 through
-M5-D35 and M5-T1/M5-T2. It does not change those decisions. The M5 design
+M5-D36 and M5-T1/M5-T2. It does not change those decisions. The M5 design
 freeze remains authoritative for semantic truth; this addendum is authoritative
 for M5.4 runtime DTOs, identities, transition boundaries, persistence
 ownership, replay, and acceptance tests.
@@ -26,7 +27,7 @@ start only after migration 014 and its SQL oracle bundle have passed the M5.3
 fresh-install, populated-upgrade, compatibility, and three-oracle gates.
 
 This addendum MUST NOT authorize a change to an M5.0 semantic decision. An
-implementation conflict with this addendum and M5-D1 through M5-D35 MUST stop
+implementation conflict with this addendum and M5-D1 through M5-D36 MUST stop
 M5.4 as **NO-GO**. The exact amendment procedure MUST be a new numbered M5
 decision in `docs/m5_design_freeze.md`, a matching acceptance-matrix row, and a
 new runtime-addendum revision before code resumes. The migration-014 M4-open
@@ -107,13 +108,22 @@ digest, DTO, counter, public Python API, provider/model choice, or runtime mode.
 Migrations 001--018 remain byte-identical. Implementation requires a new path-
 exclusive D31 activation from the pushed authority barrier.
 
-Current D35 precedence: the accepted TRANSITION_CONTEXT_ACCESS_AMENDMENT.md,
+Historical D35 precedence: the accepted TRANSITION_CONTEXT_ACCESS_AMENDMENT.md,
 SHA-2568251885227c4a712c06d11ba48bcd2153764da28bbbba8b089f7b8c2ede560c8,
 supersedes ONLY its Section-2 transition-reader, prerequisite and inventory
 exclusions. Additive022 may add two guarded trusted projections; the new
 closed174 successor preserves old strict020/021 checkers and all000--021
 bytes. Section33 records revision16. Contract-PASS / implementation-PENDING;
 no source path, held-checkout advance or executable gate is granted here.
+
+Current D36 precedence: DOCUMENT_DIRECT_CLOCK_AMENDMENT.md, exact accepted
+SHA-256f72d47070cf3aca94cfc18aca0b6fc5b30a19b1ff2861f87c005f7c12692e847,
+supersedes ONLY its explicit exclusions for new-origin nonempty document_replace
+N/C clocks, proof schema/guards, producer accounting, readiness/terminal order
+and named prerequisite/reader exceptions. Section34 records revision17.
+The full amendment governs conflicting older wording only in that exact scope;
+legacy histories and wrappers remain exact. Contract-PASS /
+implementation-PENDING; no source, install or held advance is granted here.
 
 Normative wire values in backticks MUST be exact lowercase UTF-8. Every DTO in
 this document MUST be immutable. Every tuple MUST use the order stated here.
@@ -2686,3 +2696,70 @@ separate B33 literal-parent pin follows accepted C2. This revision implements
 nothing. D25/D34/D35 integration, B33/P33/C1/C2, Task2/Task17, M5.4--M5.6,
 deployment/security/AI quality/end-to-end utility/speed/cost remain PENDING;
 runtime stays v1_only outside isolated fixtures. Preserve all held custody.
+
+## 34. Revision 17 / M5-D36 nonempty-document direct-counter clock binding
+
+The complete accepted DOCUMENT_DIRECT_CLOCK_AMENDMENT.md at SHA-256
+f72d47070cf3aca94cfc18aca0b6fc5b30a19b1ff2861f87c005f7c12692e847 is
+normative. This summary neither broadens its exclusions nor allocates paths.
+Only NEW genuine nonempty document_replace may create its same-transaction
+fresh OPEN1/1 origin. It does not retrofit old histories or replace D33's exact
+job-free branch. Shared base/runtime/jobs/scopes/pending/D24/D25/public N is
+separate from native M4 evaluation/override/transition C. The two immutable
+origin/binding relations and typed recipes bind each genuine C->C+1 operation
+to one N->N+1 source/contribution, with bounded indexed C_at(r), no skipped C,
+false-zero binding, forged payload/override or raw catch-up. M5-only advances N.
+All counter/override OLD/NEW causal guards apply, including FAIL audit counts.
+
+Native wrappers stay byte-exact. New private producers reserve at15c under the
+unchanged counter lock, materialize only once the full D24 source hash exists,
+then perform one CAS. Actual new origin/binding producer bytes belong exactly
+once to the stated open/acquisition/direct/retry/seal/fail contributions.
+Only D36's two acquisition exceptions relax the old zero-byte branch; old/M5
+acquisition remains canonical zero. Retry uses its real byte-only DELTA
+DIRECT_TRANSITION companion, never attempt_work/evidence or a new anchor.
+No new work kind, counter or speculative source. Actual timings include
+validation even where D32 readiness work is EXACT S+K with no extra bytes.
+
+Direct-last may genuinely reach SCOMP. M5-last stays SP until a separate D36
+readiness contribution BEFORE headers. Both full combined closures are
+mandatory. Canonical SEAL/FAIL uses C while shared results use N. Genuine
+half-terminal base/heads N+1 versus typed runtime/work N is preserved through
+trusted P33 derivation from actual promoted children, then binding/ledger/final
+runtime finish. D34 archival order remains; no new terminal archive. Expired
+audit-only return does not advance N/C; retained K/E replay after later L has
+zero writes/model calls and exact retained children/work/timing.
+
+Future023 may add ONLY two proof tables, two SECURITY INVOKER functions and
+nine triggers, and replace ONLY four named SQL bodies:
+groundloop_m5_matching_deferred_validate (017),
+groundloop_m5_validate_semantic_readiness_predecessor (021),
+groundloop_m5_validate_work_contribution (021), and
+groundloop_m5_validate_event_result_children (021).
+All000--022 source/ledger identities remain exact; no tombstone, nullable hash,
+seventh reference kind, new public semantics or model choice. New proof ACLs
+give PUBLIC no DML and explicitly approved existing runtime roles SELECT/INSERT
+only; immutable guards and strict owner/function/dependency/catalog checks
+remain mandatory. No role creation or private temp/helper grant.
+
+Exact022 bundle44990a145629abbf4212a58b8d235631799cbf8dd56b1dc4ed012bdc2e3ab1d7
+is prerequisite to the five-field m5-document-direct-clock-schema-bundle-v1
+identity. Literal023 SQL/bundle/body/catalog hashes must be separately frozen
+BEFORE install. Ledger-first idle READ COMMITTED replay, same captured schema,
+NOWAIT ledger SHARE ROW EXCLUSIVE -> runtime_epoch EXCLUSIVE exclusion, full
+pre/post proof, and atomic ledger LAST are required. No self-learned hashes.
+Only require_m5_document_update_completion_bundle and
+require_m5_transition_context_access_bundle dispatcher bodies may later select
+the new closed023 verifier; old strict020/021/022 checkers stay byte-identical.
+Absent023 ledger AND every023-only name absent keeps exact prior dispatch;
+malformed/partial/orphan successors fail without fallback or recursion.
+Only _capture_direct_context_binding and identity-preserving private glue may
+later consume the existing022 bridge; no third accessor or public wiring.
+
+All eleven D36 falsifier groups and every original P33/D26/D33 test remain
+mandatory/PENDING, including genuine typed complete baseline, both mixed
+orders, owner/LOGIN and forced race orders, producer-byte accounting, replay,
+package and whole-repository diagnostics. Schema-only tests cannot close them.
+NEW audited path-exclusive activations follow this freeze's publication.
+D25 integration, P33/C1, Task2/Task17, M5.4--M5.6, deployment/security/AI
+and end-to-end utility/speed/cost remain PENDING; runtime stays v1_only.

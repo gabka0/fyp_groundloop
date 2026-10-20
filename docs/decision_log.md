@@ -1,5 +1,50 @@
 # GroundLoop Decision Log
 
+## 2026-10-20 — M5-D36 Nonempty-Document Direct-Counter Clock Binding Accepted
+
+Decision status: contract-PASS / implementation-PENDING; runtime-addendum17.
+Authoritative DOCUMENT_DIRECT_CLOCK_AMENDMENT.md SHA256
+f72d47070cf3aca94cfc18aca0b6fc5b30a19b1ff2861f87c005f7c12692e847.
+Accepted immutable amendment commit d41a89fa90aa899640d336047b45cb9005d32548,
+sole parent906697b7ad37062f4d9ef35657b93c5e819e5e60,
+treeb6a07e7832dafd601b16ae859e225f63611b241c, sole added100644 blob
+5ccaad53729fb2d639bcde28ae7a3ba339fbc13e,690lines44040bytes.
+Two independent complete R2 identical-byte audits and two fresh postcommit
+identity/custody checks returned GO/P0=0/P1=0/P2=0. Atomic no-force publication
+succeeded; branch/main refs matched exactly. Publication receipt SHA256
+19add1a7068f527303e4f6dd417f8e76977ada5e0ef98d7c73285161f13e2e8e.
+Earlier R1 HOLDs remain disclosed; both full audits restarted after changes.
+The immutable drafting header is historical; this separately reviewed freeze
+records current authority without changing any accepted amendment byte.
+
+DOC-F proves current prerequisites lack a conforming completed nonempty
+replacement for P33's four restoration/later-only-loss cases. D36 separates
+shared N from native M4 C only for new genuine document_replace origins, with
+immutable typed origin/binding proofs and full causal counter/override guards.
+Actual producer-byte accounting, retry companion, exact readiness S+K,
+canonical C SEAL/FAIL, shared N half-terminal/P33 ordering and zero-write K/E
+replay after later restoration are explicit. No fake catch-up/READY, old epoch
+opt-in, new counter/work kind or legacy wrapper change is permitted.
+
+Future023 is limited to two tables, two invoker functions, nine triggers and
+four named validator replacements. Exact022 prerequisite, five-field bundle,
+separate literal preinstall hash freeze, ledger-first replay, NOWAIT ledger ->
+runtime exclusion, closed catalog/ACL/role proof and ledger LAST are mandatory.
+Only the two named admin prerequisite dispatcher bodies and direct-context
+reader/identity-preserving glue have future exceptions. Preserve000--022 and
+strict020/021/022 checkers, no malformed successor fallback or third accessor.
+
+The ten-doc freeze grants no source, install or held advance. After publication
+prepare a NEW audited path-exclusive activation, first narrow schema/admin,
+then later private producers/receipts/context, genuine complete baseline and
+nonempty OPEN through readiness/seal, checked P33 resumption and separate C1
+overlap reconciliation. All eleven D36 groups and original P33/D26/D33 gates
+remain mandatory. Accepted scoped C2/B33 evidence stays scoped; all P33/C1 pins
+and147 preexisting worktrees stay protected. D25 integration, Task2/Task17,
+M5.4--M5.6, deployment/security/AI and end-to-end utility/speed/cost remain
+PENDING; runtime stays v1_only outside isolated fixtures. Exact custody and
+receipts are recorded in D36_CONTRACT_FREEZE_HANDOFF.md.
+
 ## 2026-10-15 — M5-D35 Trusted Transition-Context Access Accepted
 
 Decision status: contract-PASS / implementation-PENDING; runtime-addendum16.

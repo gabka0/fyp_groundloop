@@ -1,16 +1,35 @@
 # GroundLoop M5 Implementation Plan
 
-Status: M5.0 contract accepted through M5-D35 and M5.1--M5.3 complete;
-M5.0-24 through M5.0-35 are contract-`PASS` /
+Status: M5.0 contract accepted through M5-D36 and M5.1--M5.3 complete;
+M5.0-24 through M5.0-36 are contract-`PASS` /
 implementation-`PENDING`; M5.4-01 through M5.4-04 are `PASS`, M5.4-05 through
-M5.4-09 remain `PENDING`; the runtime addendum is revision 16. D35 freezes no
-implementation. A separately audited NEW sequential S35/hash-freeze/C2 manifest
-is required after the pushed D35 barrier, preserving every held path/gate.
+M5.4-09 remain `PENDING`; the runtime addendum is revision 17. D36 freezes no
+implementation. A NEW audited path-exclusive implementation activation is
+required after the published D36 authority freeze, preserving every held gate.
 The historical D33 manifest required021 schema/
 shared primitives (preinstall hash freeze), metadata, readiness, private
 job-free seal adapter, reader and held C1. No parallel source work.
 
-Current D35 boundary (2026-10-15): TRANSITION_CONTEXT_ACCESS_AMENDMENT.md,
+Current D36 boundary (2026-10-20): DOCUMENT_DIRECT_CLOCK_AMENDMENT.md,
+SHA256f72d47070cf3aca94cfc18aca0b6fc5b30a19b1ff2861f87c005f7c12692e847.
+The accepted feasibility audit proves that current prerequisites do not supply
+the genuine completed nonempty REPLACE path needed by P33 restoration cases.
+Do not manufacture READY, execution provenance or catch-up transitions.
+Sequence new activations: (1) narrow023 schema/admin/tests with a separate
+literal preinstall hash freeze; (2) explicitly owned private N/C producers,
+actual-byte acquisition/retry receipts and named context-reader glue; (3) real
+typed complete predecessor and nonempty metadata-preserving OPEN, both direct/
+M5 orders, readiness and canonical seal/failure/replay; (4) checked same-P33
+resumption with all original full-image/restoration/absence gates; (5) separate
+C1 overlap reconciliation and public composition. These are barriers, not
+concurrent source grants. Each later manifest must enumerate actual paths and
+existing functions from the then-published parent. Schema-only tests cannot
+promote the full D36 row. All eleven amendment groups remain mandatory,
+including installed-wheel payload and whole-repository diagnostics. Preserve
+000--022, strict old checkers, public/default routes and all P33/C1 pins.
+No source/install/provider execution or held advance is authorized here.
+
+Historical D35 boundary (2026-10-15): TRANSITION_CONTEXT_ACCESS_AMENDMENT.md,
 SHA2568251885227c4a712c06d11ba48bcd2153764da28bbbba8b089f7b8c2ede560c8.
 The fresh distinct-LOGIN C2 failure is a private transition-context/journal
 access prerequisite, not permission for raw grants or a source-only bypass.
