@@ -1,0 +1,22 @@
+{
+  "schema_version": "groundloop-viability-v1",
+  "model": "gpt-6-sol",
+  "reasoning_effort": "none",
+  "service_tier": "default",
+  "structured_sizes": [20, 200, 2000],
+  "affected_fractions": [0.05, 0.25, 1.0],
+  "structured_repetitions": 5,
+  "entities": ["Veloran", "Asterwick", "Mirehaven", "Orrendale", "Caldris", "Fenmere", "Lunovar", "Thistrel", "Briarwyn", "Soravel", "Eldamar", "Nerith"],
+  "cities": ["Ravenshore", "Amberford", "Pinecrest", "Northvale", "Silverbrook", "Eastmere", "Oakfen", "Westfall", "Highgrove", "Dawnport", "Ashfield", "Lowmarsh"],
+  "replacement_city": "Stonehaven",
+  "rival_city": "Willowmere",
+  "reads_per_update": [1, 4],
+  "concurrency": 4,
+  "verifier_batch_size": 8,
+  "max_output_tokens": 512,
+  "max_new_posts": 200,
+  "aggregate_cap_usd": "5.00",
+  "legacy_accounted_usd": "2.4166946",
+  "conservative_input_rate_per_million": "7",
+  "conservative_output_rate_per_million": "10"
+}
