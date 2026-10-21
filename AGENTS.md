@@ -101,6 +101,10 @@ order:
     (authoritative M5-D36 nonempty document direct-counter clock correction)
 64. `docs/workstreams/m5_runtime_implementation/D36_CONTRACT_FREEZE_HANDOFF.md`
     (accepted D36 bytes, current protected custody and next activation barrier)
+65. `docs/workstreams/m5_runtime_contract/DOCUMENT_CLOCK_VALIDATOR_PRIVILEGE_AMENDMENT.md`
+    (authoritative M5-D37 narrow reverse-validator privilege/routing correction)
+66. `docs/workstreams/m5_runtime_implementation/D37_CONTRACT_FREEZE_HANDOFF.md`
+    (accepted D37 bytes, current S36/P33/C1 custody and continuation barrier)
 
 `docs/initial_technical_design.md` (v0.1) is superseded and retained for audit
 only. The M0.5 design freeze and M1.1 amendments are complete; frozen decisions
@@ -363,7 +367,7 @@ D25/D34/D35 implementation, B33/P33/C1/C2, Task2/Task17, M5.4--M5.6,
 deployment, security, AI quality and end-to-end claims stay PENDING;
 v1_only remains outside isolated fixtures. Preserve every protected checkpoint.
 
-Current override (2026-10-20): M5-D36/M5.0-36 are contract-PASS /
+Historical override (2026-10-20): M5-D36/M5.0-36 are contract-PASS /
 implementation-PENDING; runtime-addendum revision17 is authoritative.
 DOCUMENT_DIRECT_CLOCK_AMENDMENT.md is authoritative at SHA-256
 f72d47070cf3aca94cfc18aca0b6fc5b30a19b1ff2861f87c005f7c12692e847.
@@ -385,6 +389,29 @@ test waiver. All eleven D36 groups and original D25/D26/D33/P33/C1 falsifiers
 remain mandatory. D25 integration, P33/C1, Task2/Task17, M5.4--M5.6,
 deployment/security, AI quality and end-to-end claims remain PENDING;
 runtime stays v1_only outside isolated fixtures.
+
+Current override (2026-10-21): M5-D37/M5.0-37 are contract-PASS /
+implementation-PENDING; runtime-addendum revision18 is authoritative.
+DOCUMENT_CLOCK_VALIDATOR_PRIVILEGE_AMENDMENT.md is authoritative at SHA-256
+72b22368fa3a38c1e1c8024ae25fdd43463f04cc3b2c00646cc14ea6ea514136.
+Only the new023 binding/reverse validator becomes validation-only SECURITY
+DEFINER; origin stays SECURITY INVOKER/owner-only OPEN. Attachment/key proof
+precedes the owner origin lookup; absence preserves old callers, presence
+requires explicit ORIGINAL session_user permissions and complete D36 proof.
+Current_user is only the old-body read-feasibility gate, not authorization.
+The same four old body replacements preserve flags/ACLs and exact legacy
+validation; their permission-gated routing needs independently enforced reverse
+coverage, immutable-origin/FK/OPEN closure and every D37 falsifier. No third
+function/accessor, new grant, old ACL/checker/000--022 edit or inventory growth.
+This freeze grants no source edit, install or held-checkout advance. A NEW
+audited twelve-path/two-dispatcher-body S36 continuation/ancestry amendment must
+preserve all seven current WIP files/five absent test paths and all P33/C1 pins,
+then permit checked docs-only same-S36 fast-forward and correct the literal H36
+parent. Complete source reviews and separate H36 preinstall freeze remain
+mandatory BEFORE any023 execution. All later producer/lifecycle/P33/C1 gates
+stay separate. D25 integration, Task2/Task17, M5.4--M5.6, deployment/security,
+AI quality and end-to-end claims remain PENDING; runtime stays v1_only outside
+isolated fixtures. Root alone edits; two independent auditors own zero paths.
 
 M5 is not complete until every remaining M5.4--M5.6 executable gate is
 recorded.

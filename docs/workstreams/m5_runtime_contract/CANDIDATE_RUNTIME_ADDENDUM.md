@@ -1,6 +1,6 @@
 # GroundLoop M5.4 Byte-Total Runtime Contract Addendum
 
-Status: frozen runtime contract revision 17; M5-D25 through M5-D36 contracts
+Status: frozen runtime contract revision 18; M5-D25 through M5-D37 contracts
 **GO** / implementation **PENDING**; full M5.4 remains blocked on executable
 runtime evidence
 
@@ -12,10 +12,11 @@ M5-D30 amendment 2026-09-22; revision 12 / M5-D31 amendment 2026-09-25;
 revision 13 / M5-D32 amendment 2026-10-09; revision 14 / M5-D33 amendment 2026-10-10;
 revision 15 / M5-D34 amendment 2026-10-14;
 revision 16 / M5-D35 amendment 2026-10-15;
-revision 17 / M5-D36 amendment 2026-10-20
+revision 17 / M5-D36 amendment 2026-10-20;
+revision 18 / M5-D37 amendment 2026-10-21
 
 Authority: this addendum specializes `docs/m5_design_freeze.md` M5-D1 through
-M5-D36 and M5-T1/M5-T2. It does not change those decisions. The M5 design
+M5-D37 and M5-T1/M5-T2. It does not change those decisions. The M5 design
 freeze remains authoritative for semantic truth; this addendum is authoritative
 for M5.4 runtime DTOs, identities, transition boundaries, persistence
 ownership, replay, and acceptance tests.
@@ -27,7 +28,7 @@ start only after migration 014 and its SQL oracle bundle have passed the M5.3
 fresh-install, populated-upgrade, compatibility, and three-oracle gates.
 
 This addendum MUST NOT authorize a change to an M5.0 semantic decision. An
-implementation conflict with this addendum and M5-D1 through M5-D36 MUST stop
+implementation conflict with this addendum and M5-D1 through M5-D37 MUST stop
 M5.4 as **NO-GO**. The exact amendment procedure MUST be a new numbered M5
 decision in `docs/m5_design_freeze.md`, a matching acceptance-matrix row, and a
 new runtime-addendum revision before code resumes. The migration-014 M4-open
@@ -116,7 +117,7 @@ closed174 successor preserves old strict020/021 checkers and all000--021
 bytes. Section33 records revision16. Contract-PASS / implementation-PENDING;
 no source path, held-checkout advance or executable gate is granted here.
 
-Current D36 precedence: DOCUMENT_DIRECT_CLOCK_AMENDMENT.md, exact accepted
+Historical D36 precedence: DOCUMENT_DIRECT_CLOCK_AMENDMENT.md, exact accepted
 SHA-256f72d47070cf3aca94cfc18aca0b6fc5b30a19b1ff2861f87c005f7c12692e847,
 supersedes ONLY its explicit exclusions for new-origin nonempty document_replace
 N/C clocks, proof schema/guards, producer accounting, readiness/terminal order
@@ -124,6 +125,14 @@ and named prerequisite/reader exceptions. Section34 records revision17.
 The full amendment governs conflicting older wording only in that exact scope;
 legacy histories and wrappers remain exact. Contract-PASS /
 implementation-PENDING; no source, install or held advance is granted here.
+
+Current D37 precedence: DOCUMENT_CLOCK_VALIDATOR_PRIVILEGE_AMENDMENT.md,
+accepted SHA-256
+72b22368fa3a38c1e1c8024ae25fdd43463f04cc3b2c00646cc14ea6ea514136,
+supersedes ONLY D36's binding-function invoker/no-privileged-read wording and
+closes its same-four-body legacy routing as specified there. Section35 records
+revision18; origin remains invoker, no ordinary grant or object is added.
+Contract-PASS / implementation-PENDING grants no source/install/held advance.
 
 Normative wire values in backticks MUST be exact lowercase UTF-8. Every DTO in
 this document MUST be immutable. Every tuple MUST use the order stated here.
@@ -2763,3 +2772,43 @@ package and whole-repository diagnostics. Schema-only tests cannot close them.
 NEW audited path-exclusive activations follow this freeze's publication.
 D25 integration, P33/C1, Task2/Task17, M5.4--M5.6, deployment/security/AI
 and end-to-end utility/speed/cost remain PENDING; runtime stays v1_only.
+
+## 35. Revision 18 / M5-D37 document-clock reverse-validator privileges
+
+The complete accepted DOCUMENT_CLOCK_VALIDATOR_PRIVILEGE_AMENDMENT.md, SHA-256
+72b22368fa3a38c1e1c8024ae25fdd43463f04cc3b2c00646cc14ea6ea514136,
+is normative. Section34's two-invoker wording is historical and superseded ONLY
+for groundloop_m5_validate_document_clock_binding(): validation-only SECURITY
+DEFINER under the existing trusted owner. Origin stays SECURITY INVOKER and
+owner-only fresh OPEN. All other flags/config/ACL/attachment and the exact023
+two-table/two-function/nine-trigger/four-body inventory remain mandatory.
+
+Before privileged origin/runtime reads validate the closed permanent target,
+trigger name/event/ROW/AFTER/schema/OIDs and unchanged OLD/NEW epoch. The origin
+PK lookup is first: genuine absence returns inertly without new role/grant/session
+requirements. Present origin must explicitly validate original native
+session_user, no SET ROLE, fixed owner/LOGIN and all required new/old schema,
+table/column and helper privileges from a finite independently reviewed H36
+projection. Definer current_user is not authorization. No permission-error
+fallback, private-temp read, accessor, repair, writes or extra locks.
+
+Only the same four old body replacements may use current_user's native
+schema/SELECT feasibility to choose whether to read membership. A false gate
+executes exact original legacy validation, NOT authenticated absence or a D36
+positive.017 keeps its definer flag; the three021 invoker flags remain exact.
+Independent definer reverse coverage must prove no origin-sensitive commit can
+escape true membership/original-session checks, including raw no-advance writes,
+early deferred checks and late-origin attempts. All causal N/C/source/XID/
+closure/OLD/NEW checks and all original D36/P33/D26/D33 gates remain unchanged.
+
+Require four-old-target no-new-grant legacy positives, two-new-proof-target
+separate authorized/negative paths, gate-false bypass/coverage negatives,
+each applicable original-session permission class, owner/separate-LOGIN
+qualification and exact catalog/rollback/replay tests. Source/H36 proof and
+genuine lifecycle positives remain PENDING. A NEW audited S36 continuation must
+preserve its seven full WIP/five absent paths, twelve-path/two-body ownership,
+P33/C1 and exact ancestry before any source edit/advance. Literal H36 follows
+complete source audits, BEFORE any023 execution. Later producers, complete
+baseline/both orders, P33/C1/public composition remain separately activated.
+D25 integration, Task2/Task17, M5.4--M5.6, deployment/security/AI/end-to-end
+claims remain PENDING; runtime stays v1_only outside isolated fixtures.

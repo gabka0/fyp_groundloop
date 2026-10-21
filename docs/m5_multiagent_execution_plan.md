@@ -1,6 +1,25 @@
 # GroundLoop M5 Multi-Agent Execution Plan
 
-Current authority update (2026-10-20): M5-D36/M5.0-36 are contract-PASS /
+Current authority update (2026-10-21): M5-D37/M5.0-37 are contract-PASS /
+implementation-PENDING; runtime-addendum revision18 is authoritative.
+DOCUMENT_CLOCK_VALIDATOR_PRIVILEGE_AMENDMENT.md SHA256
+72b22368fa3a38c1e1c8024ae25fdd43463f04cc3b2c00646cc14ea6ea514136 governs.
+The ten authority paths are in D37_CONTRACT_FREEZE_HANDOFF.md. Root alone edits;
+two independent complete identical-byte auditors own ZERO paths. All accepted
+amendments/source/tests/migrations/checkpoints remain read-only. Only after
+this freeze's audits/commit/fresh checks/atomic publication, prepare a NEW
+one-path S36 continuation/ancestry amendment, retaining the original twelve
+paths/two dispatcher bodies and full current WIP. Its accepted publication,
+then checked docs-only SAME-S36 advance, precede source edits. H36 parent must
+be the actual accepted continuation activation; H36 itself still follows full
+source reviews BEFORE023 execution. No old function flag/grant, third accessor,
+unowned source path, P33/C1 advance or parallel source editor is inferred.
+Original-session checks, four-old/two-new compatibility, complete independent
+reverse-guard coverage and every original falsifier remain mandatory/PENDING.
+Later private producer/baseline/lifecycle, P33 and C1 barriers remain separate;
+no deployment/security/AI/end-to-end claim or runtime default changes.
+
+Historical authority update (2026-10-20): M5-D36/M5.0-36 are contract-PASS /
 implementation-PENDING; runtime-addendum revision17 is authoritative.
 DOCUMENT_DIRECT_CLOCK_AMENDMENT.md SHA256
 f72d47070cf3aca94cfc18aca0b6fc5b30a19b1ff2861f87c005f7c12692e847 governs.

@@ -1,5 +1,47 @@
 # GroundLoop Decision Log
 
+## 2026-10-21 — M5-D37 Document-Clock Reverse-Validator Privileges Accepted
+
+Decision status: contract-PASS / implementation-PENDING; runtime-addendum18.
+Authoritative DOCUMENT_CLOCK_VALIDATOR_PRIVILEGE_AMENDMENT.md SHA256
+72b22368fa3a38c1e1c8024ae25fdd43463f04cc3b2c00646cc14ea6ea514136.
+Accepted immutable amendment fe9da88a28ea314db5e4eefcf711c2d23825ddf1,
+sole parentdb2ff2249ad88606297580c92f5cfbec9ea6b082,
+tree28b146a80ffb871d8bb75e08418a02e469e22b17, sole new100644 blob
+76f22b2642f97d1bf478d1b86843d71f1cb1b56f,350lines22057bytes.
+Both independent complete R2 identical-byte audits and both fresh complete
+postcommit checks returned GO/P0=0/P1=0/P2=0 before atomic no-force branch/main
+publication and live-ref proof. Publication receipt SHA256
+cec65b372ffa4396359a6913468db20f48dca726ca9a9ecfb8a68c8621778478.
+R1 HOLDs (A P1=2, B P1=1) remain retained: old-invoker routing was underspecified
+and the new-table nonorigin-positive matrix was impossible. Both full audits
+restarted on all350 R2 lines. The immutable drafting header is historical;
+this separate authority freeze supplies current authority without rewriting it.
+
+Only023's new binding/reverse validator becomes validation-only SECURITY
+DEFINER. Exact permanent attachment/key checks precede the owner origin lookup;
+absence preserves old callers without new grants, while presence explicitly
+checks original session_user fixed-role/ordinary permissions and full D36
+source/clock/XID/closure proof. Origin remains invoker/owner-only fresh OPEN.
+Within the same four old body grants, effective-caller SELECT feasibility may
+choose exact legacy validation but is never proof of origin absence or caller
+authorization. Independent reverse coverage plus immutable-origin/FK/OPEN
+closure must prevent every bypass, including early checks/late origins.
+Four OLD targets carry no-new-grant legacy positives; two NEW proof targets
+have separate authorized/negative tests. All source/H36 evidence is PENDING.
+
+No new object/accessor/grant/old flag/ACL/checker/000--022 change, recipe/counter/
+clock/lock/default/model change or source path is granted. Root alone owns this
+ten-doc freeze; two full independent auditors own zero paths. Preserve S36's
+seven WIP/five absent paths, all154 prior worktrees/P33/C1/15 containers. A NEW
+audited S36 continuation must authorize exact docs-only ancestry and actual
+H36 parent before source edits/advance. Complete source reviews and separate
+literal H36 remain BEFORE any023 execution, followed by all later original
+producer/lifecycle/P33/C1 gates. D25 integration, Task2/Task17, M5.4--M5.6,
+deployment/security, AI quality and end-to-end claims stay PENDING; v1_only
+remains outside isolated fixtures. Exact receipts/current full custody are in
+D37_CONTRACT_FREEZE_HANDOFF.md.
+
 ## 2026-10-20 — M5-D36 Nonempty-Document Direct-Counter Clock Binding Accepted
 
 Decision status: contract-PASS / implementation-PENDING; runtime-addendum17.

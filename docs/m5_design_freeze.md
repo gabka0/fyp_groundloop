@@ -1,7 +1,7 @@
 # GroundLoop M5 Bounded Evidence-Group Design Freeze
 
-Status: frozen M5.0 contract, amended through accepted M5-D36 and
-M5-D24-C1--C7; implementation evidence for M5-D24 through M5-D36 remains
+Status: frozen M5.0 contract, amended through accepted M5-D37 and
+M5-D24-C1--C7; implementation evidence for M5-D24 through M5-D37 remains
 pending
 
 Date: 2026-08-02; M5-D21 through M5-D24-C7 amendments 2026-08-06--2026-08-18;
@@ -9,13 +9,14 @@ M5-D25 amendment 2026-09-03; M5-D26 amendment 2026-09-07; M5-D27 erratum
 2026-09-17; M5-D28 amendment 2026-09-18; M5-D29 and M5-D30 amendments
 2026-09-22; M5-D31 amendment 2026-09-25; M5-D32 amendment 2026-10-09;
 M5-D33 amendment 2026-10-10; M5-D34 amendment 2026-10-14;
-M5-D35 amendment 2026-10-15; M5-D36 amendment 2026-10-20
+M5-D35 amendment 2026-10-15; M5-D36 amendment 2026-10-20;
+M5-D37 amendment 2026-10-21
 
 Authority: this document specializes `docs/technical_design.md` v0.2 for M5.
 It preserves original decisions D-1 through D-20 except where the earlier
 pseudocode is mathematically inconsistent with its own stated system-of-
 distinct-representatives semantics. Those corrections, the later runtime
-decisions M5-D21 through M5-D36, and accepted M5-D24-C1 through M5-D24-C7 are
+decisions M5-D21 through M5-D37, and accepted M5-D24-C1 through M5-D24-C7 are
 recorded in the decision log and frozen here. The byte-total M5-D24
 specialization is authoritative at
 `docs/workstreams/m5_runtime_contract/RECOVERY_WORK_AMENDMENT.md`.
@@ -57,7 +58,7 @@ The M5-D32 group-only readiness correction is authoritative at
 `docs/workstreams/m5_runtime_contract/SEMANTIC_READINESS_AMENDMENT.md`, exact
 accepted SHA-256
 `0e9a4bbe8da34d8248ce138c4bc21cb8076ddb4a578ea6a36cd6a4e100811435`.
-Runtime-addendum revision 17 is current. Earlier D31 inventory prohibitions are
+Runtime-addendum revision 18 is current. Earlier D31 inventory prohibitions are
 superseded only for D32's explicitly enumerated future migration-020 delta;
 historical decisions and implementation receipts are not rewritten.
 
@@ -94,6 +95,16 @@ Only its explicit exclusions yield to new-origin N/C clock proofs, exact023,
 producer accounting and named admin/reader exceptions. Legacy D33 and native
 M4 wrapper bytes stay exact. The complete amendment governs, not a summary;
 contract-PASS / implementation-PENDING grants no source or held advance.
+
+The narrow M5-D37 reverse-validator privilege correction is authoritative at
+`docs/workstreams/m5_runtime_contract/DOCUMENT_CLOCK_VALIDATOR_PRIVILEGE_AMENDMENT.md`,
+accepted SHA-256
+`72b22368fa3a38c1e1c8024ae25fdd43463f04cc3b2c00646cc14ea6ea514136`.
+It supersedes ONLY D36's binding-function invoker/no-privileged-validation-read
+wording and explicitly closes routing inside its same four old-body grants.
+The origin guard stays invoker; ordinary access/grants and the023 inventory
+are unchanged. The complete amendment, not this summary, governs. No source
+path, install or held advance follows from contract acceptance.
 
 M5 implementation begins only after the M5.0 *contract* gate passes. Later
 implementation-evidence cells in the acceptance matrix remain `PENDING` until
@@ -1745,6 +1756,34 @@ exceptions; no third accessor, raw grants, old-history retrofit or public
 route change. All eleven D36 groups and original P33/D26/D33 negatives remain
 mandatory. Contract-PASS / implementation-PENDING; revision17 grants no edits.
 
+### M5-D37 -- document-clock reverse-validator privilege boundary
+
+Only the new023 binding/reverse trigger function becomes validation-only
+SECURITY DEFINER under the existing trusted owner. The origin guard remains
+SECURITY INVOKER and fresh owner-only OPEN. Validate exact permanent attachment
+and native immutable epoch key before the owner origin-PK lookup. True absence
+is inert without new caller grants; true presence requires original-session
+fixed-role/schema/old-and-new privilege checks and every D36 causal proof.
+No owner current_user substitution, permission-error fallback or accessor.
+
+The three021 invoker validators keep their flags. Inside the same four already
+allocated old bodies, effective-caller schema/SELECT feasibility may choose
+exact legacy validation without a new-table read; it is NOT proof of origin
+absence or caller authorization. Mandatory independent reverse guards must
+prevent every origin-sensitive commit escaping real membership/permission
+validation, including early deferred checks and late origin insertion; full
+source/H36 coverage proof and falsifiers are required.017 keeps its existing
+definer mode. Only four OLD targets have no-new-grant nonorigin positives;
+the two NEW proof targets have separate authorized/negative tests.
+
+Preserve two tables/two functions/nine triggers/four bodies,000--022, strict
+checkers, old ACLs/bridges/recipes/clocks/locks and all original gates. Closed
+H36 separately pins exact flags, bodies, helpers, fixed roles and the finite
+original-session privilege projection before ANY023 execution. A NEW S36
+continuation activation must preserve all WIP and authorize exact docs ancestry
+and actual H36 parent. Contract-PASS / implementation-PENDING, revision18;
+no source/public/deployment/security/AI/end-to-end gate is promoted.
+
 ## 11. Dynamic M4 integration contract
 
 ### M5-D14 -- typed v2 runtime identity
@@ -2383,6 +2422,7 @@ regression evidence.
 | M5-D34 | Fresh requirement-source archive order | One bounded globally reserved fresh archive tail places observation before execution's immediate FK; strict R/V/O/E absence and P-only reuse, physical advisory-ID ordering, no source-observation relock and native immutable-read replay preserve exact identities and pending implementation gates |
 | M5-D35 | Trusted transition-context access | Additive022 adds only two guarded owner-context/native-journal projections with exact021 prerequisite, ledger/runtime exclusion and closed174 catalog; legacy strict checkers/private ACLs and matching semantics stay exact; fresh active C2 requires022 and separate sequential schema/hash-freeze/same-held-C2 activation |
 | M5-D36 | Nonempty-document direct-counter clock binding | New genuine document_replace origins bind shared N to native M4 C with immutable origin/binding proofs, causal guards, exact producer bytes/readiness/terminal/replay order and narrow023/admin/reader exceptions; legacy histories/wrappers and000--022 remain exact; implementation and new path-exclusive activation remain pending |
+| M5-D37 | Document-clock reverse-validator privilege boundary | Only023 binding validation becomes constrained definer; origin remains invoker; true membership precedes original-session checks, old-body feasibility routing preserves exact legacy validation and independent reverse closure; no new access/object/source grant, implementation and continuation/H36 remain pending |
 
 ## 15. Release gate
 
@@ -2405,5 +2445,6 @@ that:
    total claim-current/direct-M4/M3 provenance closure, and M5-D31 trusted
    preterminal context access, M5-D32 readiness, M5-D33 document completion,
    M5-D34 fresh requirement-source archival order, M5-D35 trusted
-   transition-context access, and M5-D36 nonempty-document clock binding; and
+   transition-context access, M5-D36 nonempty-document clock binding, and
+   M5-D37 reverse-validator privileges/routing; and
 7. path ownership prevents shared-schema or shared-contract collisions.

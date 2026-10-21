@@ -1,15 +1,31 @@
 # GroundLoop M5 Implementation Status
 
-Status date: 2026-10-20
+Status date: 2026-10-21
 
-Milestone status: **M5.0 contract through accepted M5-D36 and M5.1--M5.3 are
+Milestone status: **M5.0 contract through accepted M5-D37 and M5.1--M5.3 are
 complete; M5.4 is partially complete.**
 M5.4-01 through M5.4-04 pass. M5.4-05 through M5.4-09 and every M5.5--M5.6
 implementation/evaluation closure remain pending. M5-D24-C1 through M5-D24-C7
-are accepted. M5.0-24 through M5.0-36 are each contract-`PASS` /
-implementation-`PENDING`. Runtime-addendum revision17 is authoritative.
+are accepted. M5.0-24 through M5.0-37 are each contract-`PASS` /
+implementation-`PENDING`. Runtime-addendum revision18 is authoritative.
 
-Current D36 freeze checkpoint: DOCUMENT_DIRECT_CLOCK_AMENDMENT.md SHA256
+Current D37 checkpoint: DOCUMENT_CLOCK_VALIDATOR_PRIVILEGE_AMENDMENT.md SHA256
+72b22368fa3a38c1e1c8024ae25fdd43463f04cc3b2c00646cc14ea6ea514136,
+accepted/published amendment fe9da88a28ea314db5e4eefcf711c2d23825ddf1.
+Both full350-line R2 audits and fresh complete postcommit checks passed with
+P0=0/P1=0/P2=0 before atomic no-force publication. R1 HOLDs remain disclosed.
+This corrects the binding/reverse validator's privilege boundary and old-body
+routing contract, not its source implementation. S36 is held atdb2ff22 with
+seven full WIP files/five absent test paths;023 is incomplete/never executed,
+admin H36 pins empty/disabled. Its recorded R4 pure runtime1147 passes and
+114 focused cases overlap and are NOT SQL/lifecycle or fresh freeze tests.
+No source edit/test/SQL/container/provider action occurs in this docs tranche.
+NEW audited continuation/ancestry, full source reviews and separate H36 remain
+mandatory. All P33/C1 full pins and154 preexisting worktrees stay protected.
+D25 integration, P33/C1, Task2/Task17, M5.4--M5.6, deployment/security/AI and
+end-to-end utility remain PENDING; runtime stays v1_only outside fixtures.
+
+Historical D36 freeze checkpoint: DOCUMENT_DIRECT_CLOCK_AMENDMENT.md SHA256
 f72d47070cf3aca94cfc18aca0b6fc5b30a19b1ff2861f87c005f7c12692e847,
 accepted/published immutable amendment d41a89fa90aa899640d336047b45cb9005d32548.
 Contract-PASS / implementation-PENDING only. No023 or new runtime behavior is

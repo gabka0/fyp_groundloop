@@ -1,16 +1,29 @@
 # GroundLoop M5 Implementation Plan
 
-Status: M5.0 contract accepted through M5-D36 and M5.1--M5.3 complete;
-M5.0-24 through M5.0-36 are contract-`PASS` /
+Status: M5.0 contract accepted through M5-D37 and M5.1--M5.3 complete;
+M5.0-24 through M5.0-37 are contract-`PASS` /
 implementation-`PENDING`; M5.4-01 through M5.4-04 are `PASS`, M5.4-05 through
-M5.4-09 remain `PENDING`; the runtime addendum is revision 17. D36 freezes no
+M5.4-09 remain `PENDING`; the runtime addendum is revision 18. D37 freezes no
 implementation. A NEW audited path-exclusive implementation activation is
-required after the published D36 authority freeze, preserving every held gate.
+required after the published D37 authority freeze, preserving every held gate.
 The historical D33 manifest required021 schema/
 shared primitives (preinstall hash freeze), metadata, readiness, private
 job-free seal adapter, reader and held C1. No parallel source work.
 
-Current D36 boundary (2026-10-20): DOCUMENT_DIRECT_CLOCK_AMENDMENT.md,
+Current D37 boundary (2026-10-21): DOCUMENT_CLOCK_VALIDATOR_PRIVILEGE_AMENDMENT.md,
+SHA25672b22368fa3a38c1e1c8024ae25fdd43463f04cc3b2c00646cc14ea6ea514136.
+Only the binding/reverse validator becomes constrained read-only definer;
+original-session checks, exact legacy routing and independent reverse closure
+remain mandatory. Origin stays invoker/owner-only; flags/ACLs of the same four
+old bodies and000--022 remain exact. Next: NEW audited S36 continuation/
+ancestry amendment preserving all seven WIP/five absent paths, twelve paths
+and two dispatcher bodies, then checked SAME-S36 docs-only advance and corrected
+actual H36 parent. Complete023 source/finite permission projection/coverage
+audits and a separate literal H36 freeze must precede any023 execution. No
+source/advance/install is granted by this authority freeze; later private
+producers/lifecycle/P33/C1 activations and all original gates remain required.
+
+Historical D36 boundary (2026-10-20): DOCUMENT_DIRECT_CLOCK_AMENDMENT.md,
 SHA256f72d47070cf3aca94cfc18aca0b6fc5b30a19b1ff2861f87c005f7c12692e847.
 The accepted feasibility audit proves that current prerequisites do not supply
 the genuine completed nonempty REPLACE path needed by P33 restoration cases.

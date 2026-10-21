@@ -1,6 +1,20 @@
 # GroundLoop Roadmap
 
-Current M5 contract checkpoint (2026-10-20): accepted through M5-D36,
+Current M5 contract checkpoint (2026-10-21): accepted through M5-D37,
+runtime-addendum revision18. DOCUMENT_CLOCK_VALIDATOR_PRIVILEGE_AMENDMENT.md is
+authoritative at SHA256
+72b22368fa3a38c1e1c8024ae25fdd43463f04cc3b2c00646cc14ea6ea514136.
+Contract-PASS / implementation-PENDING only. The narrow definer reverse guard
+retains original-session permissions and independent closed legacy routing;
+origin stays invoker and ordinary grants/inventory do not expand. Next: NEW
+audited exact-path S36 continuation/ancestry amendment, preserve full current
+WIP and P33/C1, checked docs-only SAME-S36 advance, then finish source reviews
+and literal H36 BEFORE any023 execution. Schema/admin qualification follows;
+private producer/complete-baseline/both-order lifecycle, checked P33 resumption
+and separate C1/public composition still require their own activations. No
+test waiver or broader stage/AI/end-to-end promotion; runtime stays v1_only.
+
+Historical M5 contract checkpoint (2026-10-20): accepted through M5-D36,
 runtime-addendum revision17. DOCUMENT_DIRECT_CLOCK_AMENDMENT.md is
 authoritative at SHA256
 f72d47070cf3aca94cfc18aca0b6fc5b30a19b1ff2861f87c005f7c12692e847.
