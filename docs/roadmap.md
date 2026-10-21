@@ -1,6 +1,24 @@
 # GroundLoop Roadmap
 
-Current M5 contract checkpoint (2026-10-21): accepted through M5-D37,
+Current M5 contract checkpoint (2026-10-21): accepted through M5-D38,
+runtime-addendum revision19. DOCUMENT_CLOCK_BIRTH_ORDER_AMENDMENT.md is
+authoritative at SHA256
+50abe748d83ea4778b30c1e9661fb0b0c3cf012805fd04518b646fa5b6bccc17.
+Contract-PASS / implementation-PENDING only. Explicit user approval covers
+the JOINT origin-before-counter/absence/deferred fresh1/1 closure plus ONE
+ordinary BEFORE INSERT parent-visible guard using the existing binding
+function: TEN triggers, unchanged two tables/two functions/four body grants.
+Raw child-first/not-yet-visible-parent INSERT is expressly rejected even for
+nonorigin SQL; normal parent-first M4 remains a byte-exact regression gate.
+Next: NEW audited twelve-path/two-body S36 continuation/ancestry authority,
+preserve all seven current WIP/five absences/P33/C1, checked docs-only SAME-S36
+advance through exact D38 commits, then complete source/two GOs and separate
+literal H36 using the ACTUAL new-continuation parent BEFORE any023 SQL.
+All nine D38 groups and original D36/D37 causal/accounting/OLD-NEW gates remain.
+Later private producers/complete baseline/both orders/P33/C1/public composition
+stay separate; no implementation/AI/end-to-end promotion or default change.
+
+Historical M5 contract checkpoint (2026-10-21): accepted through M5-D37,
 runtime-addendum revision18. DOCUMENT_CLOCK_VALIDATOR_PRIVILEGE_AMENDMENT.md is
 authoritative at SHA256
 72b22368fa3a38c1e1c8024ae25fdd43463f04cc3b2c00646cc14ea6ea514136.

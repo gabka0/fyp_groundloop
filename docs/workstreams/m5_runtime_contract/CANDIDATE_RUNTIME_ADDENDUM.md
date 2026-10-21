@@ -1,6 +1,6 @@
 # GroundLoop M5.4 Byte-Total Runtime Contract Addendum
 
-Status: frozen runtime contract revision 18; M5-D25 through M5-D37 contracts
+Status: frozen runtime contract revision 19; M5-D25 through M5-D38 contracts
 **GO** / implementation **PENDING**; full M5.4 remains blocked on executable
 runtime evidence
 
@@ -13,10 +13,11 @@ revision 13 / M5-D32 amendment 2026-10-09; revision 14 / M5-D33 amendment 2026-1
 revision 15 / M5-D34 amendment 2026-10-14;
 revision 16 / M5-D35 amendment 2026-10-15;
 revision 17 / M5-D36 amendment 2026-10-20;
-revision 18 / M5-D37 amendment 2026-10-21
+revision 18 / M5-D37 amendment 2026-10-21;
+revision 19 / M5-D38 amendment 2026-10-21
 
 Authority: this addendum specializes `docs/m5_design_freeze.md` M5-D1 through
-M5-D37 and M5-T1/M5-T2. It does not change those decisions. The M5 design
+M5-D38 and M5-T1/M5-T2. It does not change those decisions. The M5 design
 freeze remains authoritative for semantic truth; this addendum is authoritative
 for M5.4 runtime DTOs, identities, transition boundaries, persistence
 ownership, replay, and acceptance tests.
@@ -28,7 +29,7 @@ start only after migration 014 and its SQL oracle bundle have passed the M5.3
 fresh-install, populated-upgrade, compatibility, and three-oracle gates.
 
 This addendum MUST NOT authorize a change to an M5.0 semantic decision. An
-implementation conflict with this addendum and M5-D1 through M5-D37 MUST stop
+implementation conflict with this addendum and M5-D1 through M5-D38 MUST stop
 M5.4 as **NO-GO**. The exact amendment procedure MUST be a new numbered M5
 decision in `docs/m5_design_freeze.md`, a matching acceptance-matrix row, and a
 new runtime-addendum revision before code resumes. The migration-014 M4-open
@@ -126,13 +127,21 @@ The full amendment governs conflicting older wording only in that exact scope;
 legacy histories and wrappers remain exact. Contract-PASS /
 implementation-PENDING; no source, install or held advance is granted here.
 
-Current D37 precedence: DOCUMENT_CLOCK_VALIDATOR_PRIVILEGE_AMENDMENT.md,
+Historical D37 precedence: DOCUMENT_CLOCK_VALIDATOR_PRIVILEGE_AMENDMENT.md,
 accepted SHA-256
 72b22368fa3a38c1e1c8024ae25fdd43463f04cc3b2c00646cc14ea6ea514136,
 supersedes ONLY D36's binding-function invoker/no-privileged-read wording and
 closes its same-four-body legacy routing as specified there. Section35 records
 revision18; origin remains invoker, no ordinary grant or object is added.
 Contract-PASS / implementation-PENDING grants no source/install/held advance.
+
+Current D38 precedence: DOCUMENT_CLOCK_BIRTH_ORDER_AMENDMENT.md, accepted SHA256
+50abe748d83ea4778b30c1e9661fb0b0c3cf012805fd04518b646fa5b6bccc17,
+supersedes ONLY the origin birth order/counter-dependent BEFORE proof, one
+additional BEFORE INSERT parent-visible attachment in the same binding
+function, ten-trigger inventory and explicit raw-SQL INSERT exception.
+Section36 records revision19. All original six AFTER entry rules and other
+proofs stay. Contract-PASS / implementation-PENDING grants no source/SQL/advance.
 
 Normative wire values in backticks MUST be exact lowercase UTF-8. Every DTO in
 this document MUST be immutable. Every tuple MUST use the order stated here.
@@ -2812,3 +2821,53 @@ complete source audits, BEFORE any023 execution. Later producers, complete
 baseline/both orders, P33/C1/public composition remain separately activated.
 D25 integration, Task2/Task17, M5.4--M5.6, deployment/security/AI/end-to-end
 claims remain PENDING; runtime stays v1_only outside isolated fixtures.
+
+## 36. Revision 19 / M5-D38 document-clock birth and parent visibility
+
+The COMPLETE accepted DOCUMENT_CLOCK_BIRTH_ORDER_AMENDMENT.md is normative,
+SHA25650abe748d83ea4778b30c1e9661fb0b0c3cf012805fd04518b646fa5b6bccc17.
+The user explicitly approved ordering PLUS one guard. Section34's old birth
+order and Section35's nine-trigger/six-AFTER-only attachment inventory yield
+ONLY to this joint correction, not a wider source grant.
+
+Insert the origin BEFORE native counter creation. At birth, prove actual
+permanent counter absence and all unchanged fresh outer-XID/source/context/
+metadata/declaration laws; independently derive the unchanged native M4 initial
+declaration from actual direct scopes/E/r1/P. Counter absence is temporary
+uncommitted absence, NOT a new clock value or public edge. Existing origin-final
+must then prove actual initial counter1/P/default/scope/native declaration,
+same outer-XID and exact initial queued NEW/final native points, fresh N1/SC,
+zero transitions/bindings/overrides and complete D24/D25 OPEN closure. No late
+adoption, masked UPDATE0->1, committed half-origin, fake hash or new state flag.
+
+Exactly ONE new ordinary BEFORE INSERT ROW trigger on the override relation,
+groundloop_m5_document_clock_override_parent_guard, reuses the existing
+validation-only SECURITY DEFINER binding function. Its exact permanent/catalog
+attachment proof precedes only a bounded counter-PK existence read. Missing
+parent raises BEFORE physical insertion/RETURNING/queued FK; present returns
+native NEW unchanged. No origin membership/read or D36 caller restriction in
+this parent-only branch. No extra lock/write/repair/helper/accessor/grant.
+
+This expressly rejects raw child-first and not-yet-visible concurrent-parent
+override INSERT, INCLUDING nonorigin SQL; normal native parent-first M4 retains
+its original byte-exact regression obligation. Do not claim raw-SQL compatibility
+unchanged. Original six AFTER membership/absence/original-session paths remain
+exact, including UPDATE OLD/NEW epoch equality BEFORE membership. Definer parent
+visibility is neither membership nor successful causal validation.
+
+The023 inventory is now TWO tables/TWO new functions/TEN new triggers/FOUR old
+BODY replacements and unchanged five-field registration. No other old flag/
+ACL/trigger,000--022, strict checker, field/recipe/kind/counter/default changes.
+All full operation/OLD-NEW/terminal/source/dispatch/attempt/work/timing proofs
+remain mandatory. Execute all nine D38 falsifier groups and all original gates
+only at their lawful stages; the two callback/early-forcing counterexamples
+remain source-derived diagnoses, not executed performance or lifecycle results.
+
+This freeze grants no source or held advance. NEW audited original-twelve-path/
+two-body S36 continuation must preserve all current WIP/absences/P33/C1 and
+checked docs-only ancestry. Future H36 literal parent is the ACTUAL accepted
+new continuation, with complete ten-trigger/finite privilege/catalog/body/
+dependency/role proof AFTER full source/two GOs and BEFORE ANY023 execution.
+Later private producers/complete baseline/both-order histories/P33/C1 are
+separate. D25 integration, M5.4--M5.6, deployment/security/AI quality/independent
+natural histories/end-to-end utility remain PENDING; runtime stays v1_only.

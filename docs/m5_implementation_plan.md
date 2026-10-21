@@ -1,16 +1,33 @@
 # GroundLoop M5 Implementation Plan
 
-Status: M5.0 contract accepted through M5-D37 and M5.1--M5.3 complete;
-M5.0-24 through M5.0-37 are contract-`PASS` /
+Status: M5.0 contract accepted through M5-D38 and M5.1--M5.3 complete;
+M5.0-24 through M5.0-38 are contract-`PASS` /
 implementation-`PENDING`; M5.4-01 through M5.4-04 are `PASS`, M5.4-05 through
-M5.4-09 remain `PENDING`; the runtime addendum is revision 18. D37 freezes no
+M5.4-09 remain `PENDING`; the runtime addendum is revision 19. D38 freezes no
 implementation. A NEW audited path-exclusive implementation activation is
-required after the published D37 authority freeze, preserving every held gate.
+required after the published D38 authority freeze, preserving every held gate.
 The historical D33 manifest required021 schema/
 shared primitives (preinstall hash freeze), metadata, readiness, private
 job-free seal adapter, reader and held C1. No parallel source work.
 
-Current D37 boundary (2026-10-21): DOCUMENT_CLOCK_VALIDATOR_PRIVILEGE_AMENDMENT.md,
+Current D38 boundary (2026-10-21): DOCUMENT_CLOCK_BIRTH_ORDER_AMENDMENT.md,
+SHA25650abe748d83ea4778b30c1e9661fb0b0c3cf012805fd04518b646fa5b6bccc17.
+The user approved BOTH origin-before-counter/absence/deferred fresh1/1 closure
+and one extra ordinary BEFORE INSERT parent-visible guard in the same binding
+function. Exact023 is two tables/two functions/TEN triggers/four body changes;
+explicitly reject raw child-first/not-yet-visible-parent override INSERT even
+for nonorigin epochs. Preserve the six original AFTER paths and all other
+source/OLD-NEW/terminal/accounting/ACL/recipe/000--022/strict checker rules.
+Next: NEW audited original-twelve-path/two-body S36 continuation and ancestry
+authority preserving all seven CURRENT WIP/five absences/P33/C1, then checked
+docs-only SAME-S36 advance through the exact D38 chain. Future H36 must use
+the ACTUAL accepted new-continuation parent and ten-trigger inventory, AFTER
+complete source/two full GOs and BEFORE any023 SQL. All nine D38 falsifier
+groups and original D36/D37/producer/lifecycle/P33/C1 gates remain mandatory.
+This freeze grants no source/held advance/install; schema-only proof cannot
+close D38 or public composition. Wider M5/AI/end-to-end gates remain PENDING.
+
+Historical D37 boundary (2026-10-21): DOCUMENT_CLOCK_VALIDATOR_PRIVILEGE_AMENDMENT.md,
 SHA25672b22368fa3a38c1e1c8024ae25fdd43463f04cc3b2c00646cc14ea6ea514136.
 Only the binding/reverse validator becomes constrained read-only definer;
 original-session checks, exact legacy routing and independent reverse closure

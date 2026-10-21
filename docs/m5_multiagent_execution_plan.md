@@ -1,6 +1,28 @@
 # GroundLoop M5 Multi-Agent Execution Plan
 
-Current authority update (2026-10-21): M5-D37/M5.0-37 are contract-PASS /
+Current authority update (2026-10-21): M5-D38/M5.0-38 are contract-PASS /
+implementation-PENDING; runtime-addendum revision19 is authoritative.
+DOCUMENT_CLOCK_BIRTH_ORDER_AMENDMENT.md SHA256
+50abe748d83ea4778b30c1e9661fb0b0c3cf012805fd04518b646fa5b6bccc17 governs.
+The controlling user approval covers BOTH ordering and one extra BEFORE INSERT
+parent guard with its explicit raw-SQL exception. Root alone owns the ten
+authority paths in D38_CONTRACT_FREEZE_HANDOFF.md; two independent COMPLETE
+same-byte auditors own ZERO paths. Accepted amendments/source/tests/migrations
+and every held checkpoint remain READ-ONLY. This freeze grants NO source or
+advance. After its audits/commit/fresh checks/atomic publication, prepare a NEW
+one-path S36 continuation/ancestry amendment preserving the original twelve
+paths/two dispatcher bodies and all seven CURRENT WIP/five absences/P33/C1.
+Only its accepted publication and checked docs-only SAME-S36 advance permit
+source edits. Future H36 uses the ACTUAL accepted new continuation parent and
+TEN-trigger projection, after complete source/two GOs and before ANY023 SQL.
+No old flag/ACL/strict checker/000--022/recipe/counter/default expansion, source
+transplant, P33/C1 advance or overlapping source editor. All nine D38 groups,
+original D36/D37 causal/OLD-NEW/accounting proofs and later private producer/
+complete baseline/both orders/P33/C1/public activations remain separate and
+mandatory. D25 integration, Task2/Task17, M5.4--M5.6, deployment/security/AI/
+end-to-end claims remain PENDING; runtime stays v1_only outside fixtures.
+
+Historical authority update (2026-10-21): M5-D37/M5.0-37 are contract-PASS /
 implementation-PENDING; runtime-addendum revision18 is authoritative.
 DOCUMENT_CLOCK_VALIDATOR_PRIVILEGE_AMENDMENT.md SHA256
 72b22368fa3a38c1e1c8024ae25fdd43463f04cc3b2c00646cc14ea6ea514136 governs.

@@ -2,14 +2,34 @@
 
 Status date: 2026-10-21
 
-Milestone status: **M5.0 contract through accepted M5-D37 and M5.1--M5.3 are
+Milestone status: **M5.0 contract through accepted M5-D38 and M5.1--M5.3 are
 complete; M5.4 is partially complete.**
 M5.4-01 through M5.4-04 pass. M5.4-05 through M5.4-09 and every M5.5--M5.6
 implementation/evaluation closure remain pending. M5-D24-C1 through M5-D24-C7
-are accepted. M5.0-24 through M5.0-37 are each contract-`PASS` /
-implementation-`PENDING`. Runtime-addendum revision18 is authoritative.
+are accepted. M5.0-24 through M5.0-38 are each contract-`PASS` /
+implementation-`PENDING`. Runtime-addendum revision19 is authoritative.
 
-Current D37 checkpoint: DOCUMENT_CLOCK_VALIDATOR_PRIVILEGE_AMENDMENT.md SHA256
+Current D38 checkpoint: DOCUMENT_CLOCK_BIRTH_ORDER_AMENDMENT.md SHA256
+50abe748d83ea4778b30c1e9661fb0b0c3cf012805fd04518b646fa5b6bccc17,
+accepted/published amendment21e70e14059e6d4a3d1a13cb5335de1eccd2b815.
+Both COMPLETE348-line candidate audits and both FRESH COMPLETE postcommit
+checks returned GO/P0=0/P1=0/P2=0 before atomic no-force publication/live refs.
+Actual revised user approval covers BOTH birth order and one extra BEFORE
+INSERT parent-visible guard, with explicit raw-SQL compatibility restriction.
+No source fix or executable birth behavior is implemented by this freeze.
+Same S36 atca98e1ce with seven full WIP/five absences is protected.023 remains
+1610lines/incomplete/PRESENT-origin-unconditional-RAISE; six H36 pins empty.
+R9 recorded200 focused/COMPLETE1233 pure runtime passes,0fail/error/skip and
+static/custody0; counts overlap and prove NO SQL/birth/lifecycle behavior.
+The two pre-origin/FK-callback counterexamples remain source-derived, not
+executed. All157 preexisting WTs/P33/C1/15containers are preserved.
+NEW audited continuation/ancestry, full source/two GOs and separate literal
+H36 are mandatory BEFORE any023 SQL. All nine D38 groups and original gates,
+later private producers/baseline/both orders/P33/C1 remain PENDING. D25
+integration, Task2/Task17, M5.4--M5.6, deployment/security/AI/independent natural
+histories/end-to-end utility/speed/cost stay PENDING; runtime remains v1_only.
+
+Historical D37 checkpoint: DOCUMENT_CLOCK_VALIDATOR_PRIVILEGE_AMENDMENT.md SHA256
 72b22368fa3a38c1e1c8024ae25fdd43463f04cc3b2c00646cc14ea6ea514136,
 accepted/published amendment fe9da88a28ea314db5e4eefcf711c2d23825ddf1.
 Both full350-line R2 audits and fresh complete postcommit checks passed with

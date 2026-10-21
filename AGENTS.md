@@ -105,6 +105,10 @@ order:
     (authoritative M5-D37 narrow reverse-validator privilege/routing correction)
 66. `docs/workstreams/m5_runtime_implementation/D37_CONTRACT_FREEZE_HANDOFF.md`
     (accepted D37 bytes, current S36/P33/C1 custody and continuation barrier)
+67. `docs/workstreams/m5_runtime_contract/DOCUMENT_CLOCK_BIRTH_ORDER_AMENDMENT.md`
+    (authoritative M5-D38 joint birth-order and BEFORE-parent guard correction)
+68. `docs/workstreams/m5_runtime_implementation/D38_CONTRACT_FREEZE_HANDOFF.md`
+    (accepted D38 bytes, explicit approval, current custody and continuation barrier)
 
 `docs/initial_technical_design.md` (v0.1) is superseded and retained for audit
 only. The M0.5 design freeze and M1.1 amendments are complete; frozen decisions
@@ -390,7 +394,7 @@ remain mandatory. D25 integration, P33/C1, Task2/Task17, M5.4--M5.6,
 deployment/security, AI quality and end-to-end claims remain PENDING;
 runtime stays v1_only outside isolated fixtures.
 
-Current override (2026-10-21): M5-D37/M5.0-37 are contract-PASS /
+Historical override (2026-10-21): M5-D37/M5.0-37 are contract-PASS /
 implementation-PENDING; runtime-addendum revision18 is authoritative.
 DOCUMENT_CLOCK_VALIDATOR_PRIVILEGE_AMENDMENT.md is authoritative at SHA-256
 72b22368fa3a38c1e1c8024ae25fdd43463f04cc3b2c00646cc14ea6ea514136.
@@ -412,6 +416,32 @@ mandatory BEFORE any023 execution. All later producer/lifecycle/P33/C1 gates
 stay separate. D25 integration, Task2/Task17, M5.4--M5.6, deployment/security,
 AI quality and end-to-end claims remain PENDING; runtime stays v1_only outside
 isolated fixtures. Root alone edits; two independent auditors own zero paths.
+
+Current override (2026-10-21): M5-D38/M5.0-38 are contract-PASS /
+implementation-PENDING; runtime-addendum revision19 is authoritative.
+DOCUMENT_CLOCK_BIRTH_ORDER_AMENDMENT.md is authoritative at SHA256
+50abe748d83ea4778b30c1e9661fb0b0c3cf012805fd04518b646fa5b6bccc17.
+The user explicitly approved BOTH ordering and one extra guard. Only its joint
+correction supersedes D36/D37: origin BEFORE counter with a bounded absence
+proof and unchanged native expected declaration, actual fresh counter1/P/N1
+and complete OPEN validation deferred to origin-final; ONE ordinary BEFORE
+INSERT override-parent-visible guard reuses the binding validator.023 now has
+exactly two proof tables/two new functions/TEN new triggers/four old BODY
+replacements. The original six AFTER membership/absence/original-session paths,
+including pre-membership UPDATE epoch equality, remain exact. Raw child-first/
+not-yet-visible-parent override INSERT SQL is explicitly rejected even for
+nonorigin epochs; do not claim raw-SQL compatibility unchanged. Normal native
+parent-first M4 requires byte-exact regression. No other old flag/ACL/trigger,
+000--022, strict checker, recipe, counter, default or model change is granted.
+This docs freeze implements nothing and grants no source or held advance.
+After publication, a NEW audited twelve-path/two-body S36 continuation must
+preserve all seven current WIP/five absences/P33/C1 and authorize checked
+docs-only SAME-S36 ancestry through the exact D38 chain. Future H36 uses that
+actual accepted continuation parent and the ten-trigger inventory, AFTER full
+source/two complete GOs and BEFORE any023 execution. All original causal/
+OLD-NEW/accounting/producer/lifecycle/P33/C1 gates remain mandatory. D25
+integration, Task2/Task17, M5.4--M5.6, deployment/security, AI quality and
+end-to-end utility remain PENDING; runtime stays v1_only outside fixtures.
 
 M5 is not complete until every remaining M5.4--M5.6 executable gate is
 recorded.

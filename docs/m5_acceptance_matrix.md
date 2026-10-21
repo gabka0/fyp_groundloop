@@ -1,9 +1,9 @@
 # GroundLoop M5 Acceptance Matrix
 
-Status: accepted M5 falsification contract through M5-D37; staged evidence
+Status: accepted M5 falsification contract through M5-D38; staged evidence
 is current through the integrated M5.4-02/-03/-04 late-result activity tranche;
 M5.4-01 through M5.4-04 are `PASS`, M5.4 remains partial, and M5.0-24 is
-`PASS / PENDING`; M5.0-25 through M5.0-37 are `PASS / PENDING`
+`PASS / PENDING`; M5.0-25 through M5.0-38 are `PASS / PENDING`
 
 Date: 2026-10-21
 
@@ -18,7 +18,7 @@ design freeze is reopened and the scope change is recorded.
 Historical D32 precedence: its exact future migration-020 delta was the sole
 new exception to earlier migration-inventory and no-new-kind/recipe falsifiers.
 All unchanged D24--D31 mechanisms and historical receipts remain exact.
-Runtime-addendum revision 18 is current; no implementation gate is promoted.
+Runtime-addendum revision 19 is current; no implementation gate is promoted.
 M5-D33 overrides older row exclusions ONLY for exact job-free documents and
 their private two-clock seal, preserved REPLACE metadata, document-withdrawal
 group_certificate absence as-of K, and021's three named validator bodies.
@@ -64,6 +64,21 @@ absence or original-session authorization. Four-old/two-new target matrices,
 independent reverse coverage and full source/H36 proof remain mandatory.
 No older implementation row or stage is promoted and no N/A waiver follows.
 
+M5-D38 supersedes ONLY D36's origin-after-counter/counter-dependent birth proof,
+the D36/D37 nine-trigger/six-AFTER-only attachment inventory, and otherwise-valid
+raw override INSERT compatibility for the visible-parent prerequisite. Exact
+DOCUMENT_CLOCK_BIRTH_ORDER_AMENDMENT.md SHA256
+50abe748d83ea4778b30c1e9661fb0b0c3cf012805fd04518b646fa5b6bccc17
+requires BOTH origin-before-counter/absence/deferred fresh1/1 closure AND one
+ordinary BEFORE INSERT parent guard reusing the binding function. Exact023
+becomes two tables/two new functions/TEN triggers/four bodies. All original six
+AFTER paths, UPDATE epoch-key rejection, original-session/full causal proofs,
+000--022/strict checker/old flag/ACL/recipe/counter/default rules remain.
+Normal parent-first M4 must pass byte-exact regression; raw child-first or
+not-yet-visible-parent INSERT is expressly rejected even for nonorigin epochs.
+All nine D38 falsifier groups plus original gates remain mandatory/PENDING;
+no older implementation row/stage, N/A, source/advance or H36 waiver follows.
+
 ## 1. M5.0 design-decision gates
 
 | Gate | Decision under test | Falsifying test or audit | Required implementation evidence | Contract / implementation |
@@ -105,6 +120,7 @@ No older implementation row or stage is promoted and no N/A waiver follows.
 | M5.0-35 | M5-D35 trusted transition-context/journal access | Raw temp/helper grants; role impersonation or fabricated binding/context; NULL/forged coordinate/OID/GUC/owner/backend/full-XID/session/cardinality/flag; expected-set substitution or filtered/duplicate/mutated journal; extra022 object or altered000--021/strict checker; self-learned hash authority; partial/orphan/bad022 fallback; install crossing an active phase; early validation/explicit bridge locks/business DML; owner-only or skipped LOGIN evidence; source advance/transplant or waived original C2 gate | All eleven Section-8 D35 groups: exact021/five-field prerequisite, six-statement022 catalog/ACL/body/ledger/hash/install/replay/rollback and both lock orders; closed174 plus unchanged172/strict020/021 proofs; complete eight-input and genuine context/temp/GUC/OID/role/full-XID/nonmutation matrices; exact all14-relation native journal and empty projection; owner/distinct-LOGIN fresh C2 SUPPORT/REFUTE/NEUTRAL, nonzero deltas, work/timing/reconnect/replay/rollback and missing022 before source mutation; legacy compatibility/no fallback/public blocker; full independent Python/SQL images and original D34 races/aliases/producer gates; pure/static/compile/package diagnostics, two same-byte audits and exact commit/push barriers | PASS / PENDING |
 | M5.0-36 | M5-D36 nonempty-document direct-counter clock binding | Retrofit an old epoch; forge OPEN freshness/complete predecessor; unbound/raw/skipped/double M4 counter or override effects; source/clock mismatch; fictitious catch-up/READY; early materialization/extra CAS/backward locks; omit/duplicate origin/binding bytes or retry companion; change legacy acquisition zero-work; wrong readiness S+K or terminal head order; later restoration corrupting K/E replay; bypass LOGIN/ACL; extra023 object/old strict checker mutation, malformed successor fallback or self-learned install hashes; waive original P33 gates | All eleven D36 Section-10 groups: typed Python/SQL proofs and mutation vectors; genuine metadata-preserving nonempty OPEN and complete typed baseline; direct-first/M5-first/interleaved full-image oracles; actual acquisition/retry/active/inactive/losing-return accounting; causal counter/override guards; one CAS/anchor and exact producer bytes; real readiness and both race orders; canonical C SEAL/FAIL with shared N/half-terminal P33 order; K/E after L zero-write replay and every original absence/restoration/six-kind gate; owner/distinct-LOGIN bridge/privilege matrices; exact023 ledger/catalog/preinstall/install/rollback/races,000--022/legacy coexistence, pure/live/static/typing/compile/installed-wheel and whole-repository diagnostics | PASS / PENDING |
 | M5.0-37 | M5-D37 document-clock reverse-validator privilege/routing | Make origin definer or change an old flag/ACL; new accessor/grant/object; privileged lookup before exact attachment/key; permission-denial treated as absence; use owner current_user as original caller; restrict valid nonorigin caller; conflate old-body feasibility gate with absence/authorization; let an origin-sensitive mutation commit without independent reverse coverage; early-check/late-origin escape; impossible new-table nonorigin positive; missing finite permission/helper projection, self-learned H36 pins or source activation bypass | Complete D37 Section7 falsifiers: four-old-target owner/old-only LOGIN legacy positives and all three invoker gate-false routes; two-new-proof authorized paths and missing-origin/permission negatives; raw no-binding/no-advance origin rejection, original-session old/new/schema/helper privilege matrix; exact native-session/attachment/OID/GUC/temp/path negatives; immutable-origin/FK/OPEN closure and every-commit guard coverage; independently derived closed023 flags/body/owner/config/ACL/dependencies and finite permission projection; atomic install/replay/rollback/catalog mutations; all original D36/D25/D26/D33/P33/C1 gates with separate continuation/source/H36/lifecycle evidence | PASS / PENDING |
+| M5.0-38 | M5-D38 joint document-clock birth and visible-parent prerequisite | Retain counter-before-origin or rely on absence alone; accept erased pre-origin INSERT/DELETE or orphan-erasing RETURNING/FK cycles; infer membership from parent; add a helper/table/function or eleventh trigger; allow counter adoption/UPDATE0->1/missing fresh declaration/P/XID/final closure; omit explicit raw-SQL restriction or weaken original AFTER/session/UPDATE-key checks; self-learn H36/skip separate source activation | All nine D38 Section6 falsifier groups: separately reproduce both source-derived cycles at lawful isolated execution; exact counter-absence/deferred native declaration/fresh1/1 owner OPEN and corruption/early-force/subtransaction negatives; visible sibling/SPI and both race orders; missing-parent BEFORE rejection before callback; exact tenth trigger and old-only LOGIN/epoch0 parent-first positives; full ten-trigger catalog/ACL/flags/install/replay/rollback/installed-wheel plus every original D36/D37/D25/D26/D33/P33/C1 gate, complete source/two GOs and separately accepted literal H36 before023 | PASS / PENDING |
 
 M5.0 originally froze after the contract side of every row passed, three
 independent audits reported no unresolved P0/P1, and the coordinator recorded
@@ -114,7 +130,7 @@ Accepted M5-D24-C5 resolves its successful-return active-cutoff invocation-
 work defect. Accepted M5-D24-C6 resolves the three additional checked origins
 outside C5, and accepted M5-D24-C7 closes the typed-direct acquisition/failure-
 closure provenance boundary. The current accepted contract set is M5-D21
-through M5-D37 plus runtime-addendum revision 18, the M5-D24 recovery amendment
+through M5-D38 plus runtime-addendum revision 19, the M5-D24 recovery amendment
 and accepted C1--C7 corrections, the M5-D25 persisted-matching amendment, the
 M5-D26 changed-state absence amendment, the M5-D27 counter-ownership erratum,
 the M5-D28 phased persisted-matching composition amendment, the M5-D29 bounded
@@ -123,8 +139,9 @@ provenance amendment, the M5-D31 preterminal-context access amendment, the
 M5-D32 semantic-readiness amendment, M5-D33 document-update-completion amendment,
 M5-D34 requirement-source-order amendment, M5-D35 transition-context-access
 amendment, M5-D36 document direct-clock amendment, M5-D37 reverse-validator
-privilege amendment, and rows M5.0-21 through M5.0-37.
-M5.0-24 through M5.0-37 are each contract-`PASS` /
+privilege amendment, M5-D38 joint birth-order/parent-visibility amendment, and
+rows M5.0-21 through M5.0-38.
+M5.0-24 through M5.0-38 are each contract-`PASS` /
 implementation-`PENDING`; the exact R2e C7
 implementation lane integrated at `2c2aed9` and its grant is closed. No D24
 lane is active. The later separately activated evidence tranche integrated at

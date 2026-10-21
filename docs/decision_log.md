@@ -1,5 +1,50 @@
 # GroundLoop Decision Log
 
+## 2026-10-21 — M5-D38 Joint Clock-Birth and Visible-Parent Correction Accepted
+
+Decision status: contract-PASS / implementation-PENDING; runtime-addendum19.
+Authoritative DOCUMENT_CLOCK_BIRTH_ORDER_AMENDMENT.md SHA256
+50abe748d83ea4778b30c1e9661fb0b0c3cf012805fd04518b646fa5b6bccc17.
+Immutable amendment21e70e14059e6d4a3d1a13cb5335de1eccd2b815, sole parent
+ca98e1ce9fac9bc48d4eae19ab49616a683e7806,
+tree2b1d7214bd39263b86d9d8e4314f5d246d2a749f, sole new100644 blob
+002b76bd33438d38786e6056c9e6e14f6ff19f09,348lines21473bytes.
+BOTH complete identical-byte candidate audits and BOTH fresh COMPLETE
+postcommit checks returned GO/P0=0/P1=0/P2=0 before atomic no-force branch/main
+publication/live refs. Publication receipt SHA256
+3878e668f25a6fafc2c11158eace0ff02cfa23eea28d8dcddba76006a8f24e90.
+Actual controlling user answer: "Approve ordering correction plus one guard";
+USER_DECISION.json SHA256
+f009eb2776efef095d055c81a176a196259c91e6cc11409511cd8bb4d479a2b3.
+Earlier ordering-only answer is superseded, not treated as ten-trigger authority.
+The accepted drafting header/historical pending-decision gate stay immutable;
+this separate freeze supplies authority only upon its OWN accepted publication.
+
+Confirmed STATIC gap: counter-before-origin allows erased override mutations
+whose named AFTER guard sees genuine absence. Absence alone also misses an
+orphan erased by volatile RETURNING before native FK checking. Neither was
+executed. Correct BOTH together: origin before counter, actual absence and
+unchanged expected native declaration at birth; actual initial fresh counter1/P
+and N1/SC plus full D24/D25 OPEN at deferred origin-final. One extra ordinary
+BEFORE INSERT parent-visible guard reuses the existing binding validator.
+Exactly two tables/two functions/TEN triggers/four old bodies; original six
+AFTER membership/session/causal and UPDATE epoch-key checks stay exact.
+Explicitly narrow raw child-first/not-yet-visible-parent override INSERT SQL,
+including nonorigin epochs; normal parent-first M4 must retain byte-exact tests.
+No new recipe/field/counter/grant/accessor or other old flag/ACL/trigger/000--022/
+strict checker/default/model change. Full OLD-NEW/terminal/accounting proof is
+NOT supplied by this local exclusion argument.
+
+This ten-doc freeze grants no source/install/held advance. Preserve all157
+prior WTs/full seven S36 WIP/five absences/P33/C1/15containers; prepare a NEW
+audited original-twelve-path/two-body S36 continuation with checked docs-only
+SAME-S36 ancestry and ACTUAL future H36 parent. Complete source/two full GOs
+and separate literal H36 with TEN-trigger projection precede ANY023 SQL.
+All nine D38 and original D36/D37/D25/D26/D33/P33/C1 gates remain mandatory.
+D25 integration, Task2/Task17, M5.4--M5.6, deployment/security, AI quality,
+independent natural histories/end-to-end utility remain PENDING; v1_only stays.
+Full actual custody/reviews/receipts are in D38_CONTRACT_FREEZE_HANDOFF.md.
+
 ## 2026-10-21 — M5-D37 Document-Clock Reverse-Validator Privileges Accepted
 
 Decision status: contract-PASS / implementation-PENDING; runtime-addendum18.
